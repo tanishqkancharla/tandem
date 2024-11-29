@@ -1,30 +1,33 @@
-# npm-ts-boilerplate
-A boilerplate for typescript packages for npm. [Esbuild](https://esbuild.github.io), [Vitest](https://vitest.dev).
+# Tandem
 
-```sh
-# Build into dist folder
-npm run build
+A sync engine and database for building collaborative apps.
 
-# Check types
-npm run check
-
-npm run test
-
-# Build and publish to NPM (make sure the version is bumped)
-npm run release
-
-# Print the bundlesize of the minified package and exit
-npm run bundlesize
-```
-
-I've been iterating on this for a while. Here are the interesting bits:
-
-* Packages are bundled into `index.cjs` (for CommonJS) and `index.js` (for ESM).
-* Types are all bundled into `index.d.ts`
-* Sourcemaps for bundles point to `src` directory. One could argue the bundles are readable by themselves (since they're not minified), but the source map files are small, and reading in Typescript vs. Javascript can help debug (you know the type of each variable).
-* Only `src` and `dist` folders are published to NPM.
-* Tests are in `*.test.ts` files, run by Vitest
-
-The reason I don't just use Parcel (my preferred build system) is because of:
-* https://github.com/parcel-bundler/parcel/issues/7951
-* Parcel mangles names, and I didn't know how to turn that off.
+TODO:
+- [x] Basic database
+	- [x] getRecord
+	- [x] listRecords
+	- [x] setRecord
+	- [x] removeRecord
+- [x] Database work
+	- [x] Mutation stream to storage
+	- [x] Rollback on failure
+- [ ] Storage
+	- [x] Mount from storage on initialization
+- [ ] Port changes from @triplit/tuple-database to tuple-database proper
+- [ ] Make a separate git repo for tandem
+- [ ] Set up testing/etc.
+	- [ ] Sqlite testing
+	- [ ] Mock databases
+- [ ] Indexes
+	- [ ] Add indexes for all attribute values
+	- [ ] Backwards compatibility -- how does mounting from a persisted storage work with new versions?
+		- [ ] New database versions
+		- [ ] New schema changes
+- [ ] Remote
+	- [ ] Mutation stream to remote
+	- [ ] Mutation tagged with intents
+	- [ ] Replay: when fetching new changes, re-apply optimistic/pending mutations on top.
+	- [ ] Subscribe to remote
+		- [ ] Scan window
+	- [ ] Indexes
+	- [ ] Migrations
