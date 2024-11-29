@@ -344,7 +344,7 @@ export class LocalTransaction<Schema extends AnySchema> {
 	set<Collection extends CollectionName<Schema>>(
 		collection: Collection,
 		record: Schema[Collection],
-	) {
+	): LocalTransaction<Schema> {
 		const tupleSchema: SchemaToTupleSchema<Schema> = {
 			key: ["record", collection, record.id],
 			value: record,
@@ -375,7 +375,7 @@ export class LocalTransaction<Schema extends AnySchema> {
 	remove<Collection extends CollectionName<Schema>>(
 		collection: Collection,
 		id: string,
-	) {
+	): LocalTransaction<Schema> {
 		const tupleSchemaKey: SchemaToTupleSchema<Schema>["key"] = [
 			"record",
 			collection,
