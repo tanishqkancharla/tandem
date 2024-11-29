@@ -1,5 +1,7 @@
 # Tandem
 
+!IMPORTANT: This is a work in progress and is not ready for use.
+
 A sync engine and database for building collaborative apps.
 
 TODO:
