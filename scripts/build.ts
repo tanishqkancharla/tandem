@@ -22,7 +22,7 @@ async function main() {
 	await fs.promises.rm("dist", { recursive: true, force: true })
 	await fs.promises.mkdir("dist")
 
-	await runEsbuild()
+	// await runEsbuild()
 	runTypeScript()
 }
 
@@ -57,7 +57,7 @@ function runTypeScript() {
 	)
 	const program = typescript.createProgram(tsConfigParseResult.fileNames, {
 		...tsConfigParseResult.options,
-		emitDeclarationOnly: true,
+		// emitDeclarationOnly: true,
 	})
 
 	program.emit()

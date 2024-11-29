@@ -8,6 +8,7 @@
 		"lib": ["ESNext"],
 		"outDir": "dist",
 		"declaration": true,
+		"declarationMap": true,
 		"jsx": "react-jsx",
 		"forceConsistentCasingInFileNames": true,
 		"strict": true,
