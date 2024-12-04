@@ -1,17 +1,20 @@
-import { WriteOps } from "@triplit/tuple-database"
 import { expect as baseExpect } from "extendable-expect"
 import { isEqual } from "lodash-es"
 import {
 	AsyncTupleDatabase,
 	AsyncTupleStorageApi,
 	InMemoryTupleStorage,
+	WriteOps,
 } from "tuple-database"
 import { beforeEach, describe, it, vi } from "vitest"
 import { Database } from "./Database"
 
 const expect = baseExpect.extend({
-	toEventuallyReturn<T>(fn: () => T | Promise<T>, value: T): Promise<void> {
-		return new Promise<void>((resolve, reject) => {
+	async toEventuallyReturn<T>(
+		fn: () => T | Promise<T>,
+		value: T,
+	): Promise<void> {
+		await new Promise<void>((resolve, reject) => {
 			const now = Date.now()
 
 			const check = async () => {
