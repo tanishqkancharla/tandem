@@ -70,14 +70,9 @@ export class Database<Schema extends AnySchema> {
 	}
 
 	private rollback = (mutationsToRollback: readonly Mutation[]) => {
-		console.log(
-			"rolling back",
-			JSON.stringify(mutationsToRollback, undefined, 2),
-		)
 		const inverted = reverse(mutationsToRollback)
 			.map(MutationApi.invertMutation)
 			.map(MutationApi.toWriteOps)
-		console.log("inverted", JSON.stringify(inverted, undefined, 2))
 
 		for (const writeOps of inverted) {
 			this.tupleDb.commit(writeOps)
