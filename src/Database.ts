@@ -43,6 +43,16 @@ type _TestSchemaToTupleSchema1 = Assert<
 	}
 >
 
+type RemoteApi = {
+	apply(mutation: Mutation): Promise<void>
+	receive(handler: (mutation: Mutation) => void): void
+}
+
+type DatabaseArgs = {
+	storage?: AsyncTupleStorageApi
+	remote?: RemoteApi
+}
+
 export class Database<Schema extends AnySchema> {
 	private readonly tupleDb = new TupleDatabaseClient(
 		new TupleDatabase(new InMemoryTupleStorage()),
@@ -52,24 +62,42 @@ export class Database<Schema extends AnySchema> {
 	 */
 	readonly ready: Promise<void>
 
-	private readonly mutationStream?: MutationStream
+	private readonly storage?: AsyncTupleStorageApi
+	private readonly syncEngine?: SyncEngine
 
-	constructor(storage?: AsyncTupleStorageApi) {
-		if (storage) {
-			const receiver: MutationReceiverInterface = {
-				apply(mutation) {
-					return storage.commit(MutationApi.toWriteOps(mutation))
-				},
-			}
-			this.mutationStream = new MutationStream(receiver, this.rollback)
+	constructor({ storage, remote }: DatabaseArgs) {
+		this.syncEngine = new SyncEngine({
+			remote,
+			handleRollback: async (mutationsToRollback) => {
+				await this.rollback(mutationsToRollback)
+			},
+			handleReceive: async (mutation) => {
+				this.tupleDb.commit(MutationApi.toWriteOps(mutation))
+				if (this.storage) {
+					await this.storage.commit(MutationApi.toWriteOps(mutation))
+				}
+			},
+		})
 
-			this.ready = this.loadFromStorage(storage)
-		} else {
-			this.ready = Promise.resolve()
-		}
+		this.ready = storage ? this.loadFromStorage(storage) : Promise.resolve()
 	}
 
-	private rollback = (mutationsToRollback: readonly Mutation[]) => {
+	private async rollback(mutationsToRollback: readonly Mutation[]) {
+		if (this.storage) {
+			try {
+				// Rollback storage by applying inverse mutation
+				for (const mutation of mutationsToRollback) {
+					await this.storage.commit(
+						MutationApi.toWriteOps(MutationApi.invertMutation(mutation)),
+					)
+				}
+			} catch (storageError) {
+				// If storage rollback fails, log error but continue
+				// At this point manual intervention might be needed
+				console.error("Failed to rollback storage:", storageError)
+			}
+		}
+
 		const inverted = reverse(mutationsToRollback)
 			.map(MutationApi.invertMutation)
 			.map(MutationApi.toWriteOps)
@@ -133,10 +161,29 @@ export class Database<Schema extends AnySchema> {
 		return new LocalTransaction(this, tupleDbTx)
 	}
 
-	commit(mutation: Mutation) {
-		this.mutationStream?.push(mutation)
+	async commit(mutation: Mutation) {
+		// First try to persist to storage
+		if (this.storage) {
+			await this.storage.commit(MutationApi.toWriteOps(mutation))
+		}
+		await this.syncEngine?.push(mutation)
 	}
 }
+
+// class Storage {
+// 	constructor(private readonly storageAdapter: AsyncTupleStorageApi) {}
+
+// 	async loadAll(): Promise<KeyValuePair[]> {
+// 		const results = await this.storageAdapter.scan()
+// 		return results
+// 	}
+
+//   sca
+
+// 	async commit(writeOps: WriteOps) {
+// 		await this.storageAdapter.commit(writeOps)
+// 	}
+// }
 
 enum MutationOpType {
 	Set,
@@ -213,16 +260,31 @@ namespace MutationApi {
 	}
 }
 
-class MutationStream {
+class SyncEngine {
 	private pendingMutations: Mutation[] = []
 	private isRunning = false
+	private readonly remote?: RemoteApi
+	private readonly handleRollback: (
+		mutationsToRollback: readonly Mutation[],
+	) => Promise<void>
+	private readonly handleReceive: (mutation: Mutation) => void
 
-	constructor(
-		private readonly receiver: MutationReceiverInterface,
-		private readonly handleRollback: (
-			mutationsToRollback: readonly Mutation[],
-		) => void,
-	) {}
+	constructor(args: {
+		remote?: RemoteApi
+		handleRollback: (mutationsToRollback: readonly Mutation[]) => Promise<void>
+		handleReceive: (mutation: Mutation) => void
+	}) {
+		this.remote = args.remote
+		this.handleRollback = args.handleRollback
+		this.handleReceive = args.handleReceive
+
+		// Start listening to remote mutations if remote is provided
+		if (this.remote) {
+			this.remote.receive((mutation) => {
+				this.handleReceive(mutation)
+			})
+		}
+	}
 
 	push(mutation: Mutation) {
 		this.pendingMutations.push(mutation)
@@ -239,23 +301,21 @@ class MutationStream {
 
 		let nextMutation: Mutation | undefined
 		while ((nextMutation = this.pendingMutations.shift())) {
-			// TODO: batching, retries with backoff
 			try {
-				await this.receiver.apply(nextMutation)
+				// Then apply to remote if available
+				if (this.remote) {
+					await this.remote.apply(nextMutation)
+				}
 			} catch (error) {
 				console.error("Error applying mutation", error)
 
-				this.handleRollback([nextMutation, ...this.pendingMutations])
+				await this.handleRollback([nextMutation, ...this.pendingMutations])
 				this.pendingMutations = []
 			}
 		}
 
 		this.isRunning = false
 	}
-}
-
-type MutationReceiverInterface = {
-	apply(mutation: Mutation): Promise<void>
 }
 
 export class LocalReadonlyDatabase<Schema extends AnySchema> {
@@ -395,9 +455,9 @@ export class LocalTransaction<Schema extends AnySchema> {
 		return this
 	}
 
-	commit() {
+	async commit() {
 		this.tupleDbTx.commit()
-		this.db.commit({
+		await this.db.commit({
 			// TODO: add intent tag
 			ops: this.ops,
 			id: this.tupleDbTx.id,

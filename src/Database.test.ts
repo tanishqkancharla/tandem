@@ -56,7 +56,7 @@ const expect = baseExpect.extend({
 	},
 })
 
-describe("LocalDatabase", () => {
+describe("Database", () => {
 	type TodoSchema = {
 		todos: {
 			id: string
@@ -78,7 +78,7 @@ describe("LocalDatabase", () => {
 
 	beforeEach(() => {
 		storage = new AsyncTupleDatabase(new InMemoryTupleStorage())
-		db = new Database<TodoSchema>(storage)
+		db = new Database<TodoSchema>({ storage })
 	})
 
 	describe("Basic CRUD operations", () => {
@@ -139,7 +139,7 @@ describe("LocalDatabase", () => {
 			tx.set("todos", { id: "1", text: "test", complete: false })
 			tx.commit()
 
-			await expect(() => changes).toEventuallyReturn([
+			expect(changes).toEqual([
 				[],
 				[{ id: "1", text: "test", complete: false }],
 			])
@@ -166,11 +166,11 @@ describe("LocalDatabase", () => {
 			tx.set("todos", { id: "1", text: "test", complete: false })
 			tx.commit()
 
-			await expect(() => changes1).toEventuallyReturn([
+			expect(changes1).toEqual([
 				[],
 				[{ id: "1", text: "test", complete: false }],
 			])
-			await expect(() => changes2).toEventuallyReturn([
+			expect(changes2).toEqual([
 				[],
 				[{ id: "1", text: "test", complete: false }],
 			])
@@ -180,7 +180,7 @@ describe("LocalDatabase", () => {
 		})
 	})
 
-	describe("Transaction handling", () => {
+	describe.only("Transaction handling", () => {
 		it("rolls back failed transactions completely", async () => {
 			// Setup initial state
 			const tx = db.transact()
@@ -199,7 +199,7 @@ describe("LocalDatabase", () => {
 				close: () => Promise.resolve(),
 			}
 
-			const failingDb = new Database<TodoSchema>(failingStorage)
+			const failingDb = new Database<TodoSchema>({ storage: failingStorage })
 			await failingDb.ready
 
 			// Attempt complex transaction
@@ -209,7 +209,7 @@ describe("LocalDatabase", () => {
 			failingTx.commit()
 
 			// Verify rollback
-			await expect(() => failingDb.list("todos")).toEventuallyReturn([
+			expect(failingDb.list("todos")).toEqual([
 				{ id: "1", text: "stable", complete: false },
 			])
 		})
@@ -241,7 +241,7 @@ describe("LocalDatabase", () => {
 			})
 
 			// Create new database instance
-			const newDb = new Database<TodoSchema>(storage)
+			const newDb = new Database<TodoSchema>({ storage })
 			await newDb.ready
 
 			expect(newDb.list("todos")).toEqual([
@@ -262,7 +262,7 @@ describe("LocalDatabase", () => {
 				close: () => Promise.resolve(),
 			}
 
-			const slowDb = new Database<TodoSchema>(delayedStorage)
+			const slowDb = new Database<TodoSchema>({ storage: delayedStorage })
 			await slowDb.ready
 
 			const tx = slowDb.transact()
@@ -283,7 +283,7 @@ describe("LocalDatabase", () => {
 				close: () => Promise.resolve(),
 			}
 
-			const failingDb = new Database<TodoSchema>(failingStorage)
+			const failingDb = new Database<TodoSchema>({ storage: failingStorage })
 			await expect(failingDb.ready).toReject("Scan failed")
 		})
 
@@ -302,7 +302,7 @@ describe("LocalDatabase", () => {
 				close: () => Promise.resolve(),
 			}
 
-			const db = new Database<TodoSchema>(intermittentStorage)
+			const db = new Database<TodoSchema>({ storage: intermittentStorage })
 			await db.ready
 
 			// Successful operation
