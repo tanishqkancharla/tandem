@@ -13,7 +13,7 @@ import {
 	Thenable,
 } from "./types"
 import { randomNumber } from "./utils/randomId"
-import { tag } from "./utils/typeUtils"
+import { AsyncUnsubscribe, tag } from "./utils/typeUtils"
 
 export type TandemClientArgs<Schema extends AnySchema> = {
 	storage?: AsyncTupleStorageApi
@@ -182,14 +182,14 @@ export class TandemClient<Schema extends AnySchema> {
 		return this.syncEngine?.queuePush(mutation)
 	}
 
-	async connect() {
+	async connect(): Promise<AsyncUnsubscribe> {
 		if (!this.syncEngine) {
 			throw new Error("Attempted to connect without a remote server configured")
 		}
 		return await this.syncEngine.connect()
 	}
 
-	async disconnect() {
+	async disconnect(): Promise<void> {
 		if (!this.syncEngine) {
 			console.warn("Attempted to disconnect without a remote server configured")
 			return

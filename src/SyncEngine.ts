@@ -87,6 +87,8 @@ export class SyncEngine<Schema extends AnySchema> {
 			},
 		})
 
+		this.disconnectFromRemote = unsubscribe
+
 		this.logger.info("Connected to remote")
 
 		await this.queuePull()
@@ -94,7 +96,7 @@ export class SyncEngine<Schema extends AnySchema> {
 		return unsubscribe
 	}
 
-	async disconnect() {
+	async disconnect(): Promise<void> {
 		this.logger.info("Disconnecting from remote")
 		await this.disconnectFromRemote?.()
 		this.disconnectFromRemote = undefined
