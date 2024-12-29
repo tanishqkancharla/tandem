@@ -1,5 +1,4 @@
 import { WriteOps } from "tuple-database"
-import { AsyncUnsubscribe, Unsubscribe } from "../utils/typeUtils"
 import { LoggerApi } from "./Logger"
 import { ThrottleQueue } from "./ThrottleQueue"
 import {
@@ -14,6 +13,7 @@ import {
 	Thenable,
 	WriteOpsApi,
 } from "./types"
+import { AsyncUnsubscribe, Unsubscribe } from "./utils/typeUtils"
 
 type SyncEngineArgs<Schema extends AnySchema> = {
 	clientId: ClientId

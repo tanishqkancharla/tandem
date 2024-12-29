@@ -6,11 +6,11 @@ import {
 	WriteOps,
 } from "tuple-database"
 import { beforeEach, describe, test, vi } from "vitest"
-import { isEqual } from "../utils/objectUtils"
 import { LoggerApi, rootLogger } from "./Logger"
 import { TandemClient } from "./TandemClient"
 import { TestRemote } from "./TestRemote"
 import { AnySchema, CollectionName } from "./types"
+import { isEqual } from "./utils/objectUtils"
 
 const expect = baseExpect.extend({
 	async toEventuallyReturn<T>(

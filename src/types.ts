@@ -1,11 +1,11 @@
 import type { WriteOps } from "tuple-database"
-import { isEqual, partition, reverse } from "../utils/objectUtils"
+import { isEqual, partition, reverse } from "./utils/objectUtils"
 import {
 	Assert,
 	AsyncUnsubscribe,
 	Tagged,
 	TestIsEqual,
-} from "../utils/typeUtils"
+} from "./utils/typeUtils"
 
 export type AnyCollectionSchema = Record<string, any> & { id: string | number }
 

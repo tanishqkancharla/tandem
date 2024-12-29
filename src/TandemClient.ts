@@ -15,7 +15,7 @@ import {
 import { randomNumber } from "./utils/randomId"
 import { tag } from "./utils/typeUtils"
 
-type TandemClientArgs<Schema extends AnySchema> = {
+export type TandemClientArgs<Schema extends AnySchema> = {
 	storage?: AsyncTupleStorageApi
 	remote?: RemoteApi<Schema>
 	logger?: LoggerApi

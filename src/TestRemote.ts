@@ -1,4 +1,3 @@
-import { tag, untag } from "../utils/typeUtils"
 import { LoggerApi } from "./Logger"
 import {
 	AnySchema,
@@ -10,6 +9,7 @@ import {
 	ScanWindow,
 	WriteOpsApi,
 } from "./types"
+import { tag, untag } from "./utils/typeUtils"
 
 type ClientState = {
 	poke: () => void
