@@ -1,2 +1,3 @@
-export { Database } from "./Database"
-export type { LocalReadonlyDatabase, LocalTransaction } from "./Database"
+export type { Transaction } from "./Database"
+export type { QueryBuilder, QueryResults } from "./Query"
+export { TandemClient, TandemClientArgs } from "./TandemClient"
