@@ -4,7 +4,7 @@
 	"module": "./dist/index.js",
 	"types": "./dist/index.d.ts",
 	"source": "./src/index.ts",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"author": "Tanishq Kancharla <tanishqkancharla3@gmail.com>",
 	"description": "A sync engine and database for building collaborative apps",
 	"keywords": [],
