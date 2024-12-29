@@ -1,366 +1,194 @@
-import { partition, reverse } from "lodash-es"
-import type {
-	AsyncTupleStorageApi,
-	ReadOnlyTupleDatabaseClientApi,
-	Tuple,
-	TupleRootTransactionApi,
-	WriteOps,
-} from "tuple-database"
 import {
+	type AsyncTupleStorageApi,
 	InMemoryTupleStorage,
+	type ReadOnlyTupleDatabaseClientApi,
+	subscribeQuery,
 	TupleDatabase,
 	TupleDatabaseClient,
-	subscribeQuery,
+	type TupleRootTransactionApi,
+	type WriteOps,
 } from "tuple-database"
-import type { Assert } from "./typeUtils"
-
-type AnySchema = {
-	[collectionName in string]: {
-		id: string
-	} & Record<string, any>
-}
-
-type CollectionName<Schema extends AnySchema> = keyof Schema & string
-
-type SchemaToTupleSchema<Schema extends AnySchema> = {
-	[C in CollectionName<Schema>]: {
-		key: ["record", collection: C, id: string]
-		value: Schema[C]
-	}
-}[CollectionName<Schema>]
-
-type _TestSchemaToTupleSchema1 = Assert<
-	SchemaToTupleSchema<{
-		todos: {
-			id: string
-			text: string
-			complete: boolean
-		}
-	}>,
-	{
-		key: ["record", "todos", string]
-		value: { id: string; text: string; complete: boolean }
-	}
->
-
-type RemoteApi = {
-	apply(mutation: Mutation): Promise<void>
-	receive(handler: (mutation: Mutation) => void): void
-}
+import { LoggerApi } from "./Logger"
+import { QueryBuilder, QueryResults } from "./Query"
+import { Storage } from "./Storage"
+import { ThrottleQueue } from "./ThrottleQueue"
+import {
+	AnySchema,
+	CollectionName,
+	InvertibleMutationOp,
+	SchemaToTupleSchema,
+	WriteOpsApi,
+} from "./types"
+import { isArray, isEqual, pick, sortBy } from "./utils/objectUtils"
+import { unreachable } from "./utils/typeUtils"
 
 type DatabaseArgs = {
 	storage?: AsyncTupleStorageApi
-	remote?: RemoteApi
+	logger: LoggerApi
 }
 
 export class Database<Schema extends AnySchema> {
-	private readonly tupleDb = new TupleDatabaseClient(
+	private readonly tupleDb: TupleDatabaseClient = new TupleDatabaseClient(
 		new TupleDatabase(new InMemoryTupleStorage()),
 	)
-	/**
-	 * Resolves when initial load from storage completes
-	 */
+
+	private readonly storage?: Storage
+	private readonly logger: LoggerApi
 	readonly ready: Promise<void>
 
-	private readonly storage?: AsyncTupleStorageApi
-	private readonly syncEngine?: SyncEngine
+	constructor({ logger, storage: storageAdapter }: DatabaseArgs) {
+		this.logger = logger
+		this.storage = storageAdapter
+			? new Storage(storageAdapter, (error) => {
+					// TODO: clean up? What should we do when storage fails?
+					console.error("Storage error", error)
+				})
+			: undefined
 
-	constructor({ storage, remote }: DatabaseArgs) {
-		this.syncEngine = new SyncEngine({
-			remote,
-			handleRollback: async (mutationsToRollback) => {
-				await this.rollback(mutationsToRollback)
-			},
-			handleReceive: async (mutation) => {
-				this.tupleDb.commit(MutationApi.toWriteOps(mutation))
-				if (this.storage) {
-					await this.storage.commit(MutationApi.toWriteOps(mutation))
-				}
-			},
-		})
-
-		this.ready = storage ? this.loadFromStorage(storage) : Promise.resolve()
+		this.ready = this.storage
+			? this.loadFromStorage(this.storage)
+			: Promise.resolve()
 	}
 
-	private async rollback(mutationsToRollback: readonly Mutation[]) {
-		if (this.storage) {
-			try {
-				// Rollback storage by applying inverse mutation
-				for (const mutation of mutationsToRollback) {
-					await this.storage.commit(
-						MutationApi.toWriteOps(MutationApi.invertMutation(mutation)),
-					)
-				}
-			} catch (storageError) {
-				// If storage rollback fails, log error but continue
-				// At this point manual intervention might be needed
-				console.error("Failed to rollback storage:", storageError)
-			}
-		}
-
-		const inverted = reverse(mutationsToRollback)
-			.map(MutationApi.invertMutation)
-			.map(MutationApi.toWriteOps)
-
-		for (const writeOps of inverted) {
-			this.tupleDb.commit(writeOps)
-		}
-	}
-
-	private async loadFromStorage(storage: AsyncTupleStorageApi) {
+	/**
+	 * What if values in storage changes?
+	 * What if storage too big to load all at once?
+	 */
+	private async loadFromStorage(storage: Storage) {
+		this.logger.info("Loading from storage")
 		const results = await storage.scan()
 		this.tupleDb.commit({ set: results })
-	}
 
-	list<Collection extends CollectionName<Schema>>(
-		collection: Collection,
-	): Schema[Collection][] {
-		const results = this.tupleDb.scan({
-			gte: ["record", collection, null],
-			lte: ["record", collection, true],
+		let writeOpsQueue: WriteOps = {}
+
+		const storageWriteQueue = new ThrottleQueue(
+			async () => {
+				this.logger.info("Committing to storage...")
+				const copy = writeOpsQueue
+				try {
+					writeOpsQueue = {}
+					await storage.commit(copy)
+					this.logger.info("Committed to storage")
+				} catch (error) {
+					this.logger.error("Error committing to storage", error)
+					writeOpsQueue = copy
+				}
+			},
+			(error) => {
+				// TODO: fatal error
+				console.error("Error committing to storage", error)
+			},
+			120,
+		)
+
+		this.tupleDb.subscribe({}, (writeOps) => {
+			writeOpsQueue = WriteOpsApi.merge(writeOpsQueue, writeOps)
+			storageWriteQueue.enqueue()
 		})
-
-		return results.map((result) => result.value)
 	}
 
-	get<Collection extends CollectionName<Schema>>(
-		collection: Collection,
-		id: Schema[Collection]["id"],
-	): Schema[Collection] | undefined {
-		const tupleSchemaKey: SchemaToTupleSchema<Schema>["key"] = [
-			"record",
-			collection,
-			id,
-		]
-
-		const result = this.tupleDb.scan({
-			gte: tupleSchemaKey,
-			lte: tupleSchemaKey,
-		})
-
-		if (result.length === 0) {
-			return undefined
-		}
-
-		return result[0].value
+	makeTupleDbTransaction(): TupleRootTransactionApi {
+		return this.tupleDb.transact()
 	}
 
-	subscribe<O>(
-		query: (db: LocalReadonlyDatabase<Schema>) => O,
-		callback: (result: O) => void,
-	): { result: O; destroy: () => void } {
+	transact(): Transaction<Schema> {
+		const tupleDbTx = this.tupleDb.transact()
+		return new Transaction(tupleDbTx)
+	}
+
+	commit(transaction: Transaction<Schema>) {
+		transaction.tupleDbTx.commit()
+	}
+
+	subscribe<
+		Collection extends CollectionName<Schema>,
+		Query extends QueryBuilder<Schema, Schema[Collection]>,
+	>(
+		query: Query,
+		callback: (result: QueryResults<Query>) => void,
+	): { result: QueryResults<Query>; destroy: () => void } {
 		return subscribeQuery(
 			this.tupleDb,
-			(db) => query(new LocalReadonlyDatabase(db)),
+			(db) => Database.runQuery(query, db),
 			callback,
 		)
 	}
 
-	transact(): LocalTransaction<Schema> {
-		const tupleDbTx = this.tupleDb.transact()
-		return new LocalTransaction(this, tupleDbTx)
+	run<
+		Collection extends CollectionName<Schema>,
+		Query extends QueryBuilder<Schema, Schema[Collection]>,
+	>(query: Query): QueryResults<Query> {
+		return Database.runQuery(query, this.tupleDb)
 	}
 
-	async commit(mutation: Mutation) {
-		// First try to persist to storage
-		if (this.storage) {
-			await this.storage.commit(MutationApi.toWriteOps(mutation))
-		}
-		await this.syncEngine?.push(mutation)
-	}
-}
+	private static runQuery<Query extends QueryBuilder<any, any>>(
+		query: Query,
+		tupleDb: ReadOnlyTupleDatabaseClientApi,
+	): QueryResults<Query> {
+		const { collection, limit, order, select, where } = query.build()
 
-// class Storage {
-// 	constructor(private readonly storageAdapter: AsyncTupleStorageApi) {}
+		let results = tupleDb
+			.scan({
+				gte: ["record", collection, null],
+				lte: ["record", collection, true],
+			})
+			.map(({ value }) => value) as any[]
 
-// 	async loadAll(): Promise<KeyValuePair[]> {
-// 		const results = await this.storageAdapter.scan()
-// 		return results
-// 	}
-
-//   sca
-
-// 	async commit(writeOps: WriteOps) {
-// 		await this.storageAdapter.commit(writeOps)
-// 	}
-// }
-
-enum MutationOpType {
-	Set,
-	Remove,
-	// TODO: intent
-	// TODO: clear?
-}
-
-type SetMutationOp = {
-	type: MutationOpType.Set
-	key: Tuple
-	value: any
-	prevValue?: any
-}
-
-type RemoveMutationOp = {
-	type: MutationOpType.Remove
-	key: Tuple
-	// We have this here so we can rollback
-	value: any
-}
-
-type MutationOp = SetMutationOp | RemoveMutationOp
-
-type Mutation = { ops: MutationOp[]; id: string }
-
-namespace MutationApi {
-	function invertMutationOp(op: MutationOp): MutationOp {
-		switch (op.type) {
-			case MutationOpType.Set:
-				return "prevValue" in op
-					? {
-							type: MutationOpType.Set,
-							key: op.key,
-							value: op.prevValue,
-							prevValue: op.value,
-						}
-					: {
-							type: MutationOpType.Remove,
-							key: op.key,
-							value: op.value,
-						}
-			case MutationOpType.Remove: {
-				return {
-					type: MutationOpType.Set,
-					key: op.key,
-					value: op.value,
-				}
-			}
-			default:
-				throw new Error("Unknown mutation op type")
-		}
-	}
-
-	export function invertMutation(mutation: Mutation): Mutation {
-		return {
-			ops: mutation.ops.map(invertMutationOp),
-			id: `${mutation.id}-reverse`,
-		}
-	}
-
-	export function toWriteOps(mutation: Mutation): WriteOps {
-		const [setOps, removeOps] = partition(
-			mutation.ops,
-			(op) => op.type === MutationOpType.Set,
-		)
-
-		const writeOps = {
-			set: setOps.map((op) => ({ key: op.key, value: op.value })),
-			remove: removeOps.map((op) => op.key),
-		}
-
-		return writeOps
-	}
-}
-
-class SyncEngine {
-	private pendingMutations: Mutation[] = []
-	private isRunning = false
-	private readonly remote?: RemoteApi
-	private readonly handleRollback: (
-		mutationsToRollback: readonly Mutation[],
-	) => Promise<void>
-	private readonly handleReceive: (mutation: Mutation) => void
-
-	constructor(args: {
-		remote?: RemoteApi
-		handleRollback: (mutationsToRollback: readonly Mutation[]) => Promise<void>
-		handleReceive: (mutation: Mutation) => void
-	}) {
-		this.remote = args.remote
-		this.handleRollback = args.handleRollback
-		this.handleReceive = args.handleReceive
-
-		// Start listening to remote mutations if remote is provided
-		if (this.remote) {
-			this.remote.receive((mutation) => {
-				this.handleReceive(mutation)
+		if (where) {
+			results = results.filter((value) => {
+				return where.every(([attribute, operator, valueToTestAgainst]) => {
+					const fieldValue = value[attribute]
+					switch (operator) {
+						case "=":
+							return isEqual(fieldValue, valueToTestAgainst)
+						case ">":
+							return fieldValue > valueToTestAgainst
+						case "<":
+							return fieldValue < valueToTestAgainst
+						case ">=":
+							return fieldValue >= valueToTestAgainst
+						case "<=":
+							return fieldValue <= valueToTestAgainst
+						default:
+							unreachable(operator)
+					}
+				})
 			})
 		}
-	}
 
-	push(mutation: Mutation) {
-		this.pendingMutations.push(mutation)
-
-		this.run().catch((error) => {
-			// TODO: Fatal error
-			console.error("Error running mutation stream", error)
-		})
-	}
-
-	private async run() {
-		if (this.isRunning) return
-		this.isRunning = true
-
-		let nextMutation: Mutation | undefined
-		while ((nextMutation = this.pendingMutations.shift())) {
-			try {
-				// Then apply to remote if available
-				if (this.remote) {
-					await this.remote.apply(nextMutation)
-				}
-			} catch (error) {
-				console.error("Error applying mutation", error)
-
-				await this.handleRollback([nextMutation, ...this.pendingMutations])
-				this.pendingMutations = []
-			}
+		if (order) {
+			results = sortBy(
+				results,
+				...order.map(
+					([attribute, direction]) =>
+						[(item: any) => item[attribute], direction] as const,
+				),
+			)
 		}
 
-		this.isRunning = false
+		if (isArray(select)) {
+			results = results.map((value) => pick(value, select))
+		}
+
+		if (limit) {
+			results = results.slice(0, limit)
+		}
+
+		return results as QueryResults<Query>
 	}
 }
 
-export class LocalReadonlyDatabase<Schema extends AnySchema> {
-	constructor(private readonly tupleDb: ReadOnlyTupleDatabaseClientApi) {}
-
-	list<Collection extends CollectionName<Schema>>(
-		collection: Collection,
-	): Schema[Collection][] {
-		const results = this.tupleDb.scan({
-			gte: ["record", collection, null],
-			lte: ["record", collection, true],
-		})
-
-		return results.map((result) => result.value)
-	}
-
-	get<Collection extends CollectionName<Schema>>(
-		collection: Collection,
-		id: Schema[Collection]["id"],
-	): Schema[Collection] | undefined {
-		const tupleSchemaKey: SchemaToTupleSchema<Schema>["key"] = [
-			"record",
-			collection,
-			id,
-		]
-
-		const result = this.tupleDb.scan({
-			gte: tupleSchemaKey,
-			lte: tupleSchemaKey,
-		})
-
-		if (result.length === 0) {
-			return undefined
-		}
-
-		return result[0].value
-	}
-}
-
-export class LocalTransaction<Schema extends AnySchema> {
-	private readonly ops: MutationOp[] = []
+export class Transaction<Schema extends AnySchema> {
+	/**
+	 * @internal
+	 */
+	readonly ops: InvertibleMutationOp<Schema>[] = []
 
 	constructor(
-		private readonly db: Database<Schema>,
-		private readonly tupleDbTx: TupleRootTransactionApi,
+		/**
+		 * @internal
+		 */
+		readonly tupleDbTx: TupleRootTransactionApi,
 	) {}
 
 	list<Collection extends CollectionName<Schema>>(
@@ -376,7 +204,7 @@ export class LocalTransaction<Schema extends AnySchema> {
 
 	get<Collection extends CollectionName<Schema>>(
 		collection: Collection,
-		id: string,
+		id: Schema[Collection]["id"],
 	): Readonly<Schema[Collection]> | undefined {
 		const tupleSchemaKey: SchemaToTupleSchema<Schema>["key"] = [
 			"record",
@@ -399,7 +227,7 @@ export class LocalTransaction<Schema extends AnySchema> {
 	set<Collection extends CollectionName<Schema>>(
 		collection: Collection,
 		record: Schema[Collection],
-	): LocalTransaction<Schema> {
+	): Transaction<Schema> {
 		const tupleSchema: SchemaToTupleSchema<Schema> = {
 			key: ["record", collection, record.id],
 			value: record,
@@ -412,15 +240,17 @@ export class LocalTransaction<Schema extends AnySchema> {
 
 		this.tupleDbTx.set<any>(tupleSchema.key, tupleSchema.value)
 
-		const setOp: SetMutationOp = {
-			type: MutationOpType.Set,
-			key: tupleSchema.key,
+		const setOp: InvertibleMutationOp<Schema> = {
+			type: "set",
+			collection,
 			value: tupleSchema.value,
 		}
 
 		if (prevValueResult.length > 0) {
 			setOp.prevValue = prevValueResult[0].value
 		}
+
+		console.log({ setOp })
 
 		this.ops.push(setOp)
 
@@ -429,8 +259,8 @@ export class LocalTransaction<Schema extends AnySchema> {
 
 	remove<Collection extends CollectionName<Schema>>(
 		collection: Collection,
-		id: string,
-	): LocalTransaction<Schema> {
+		id: Schema[Collection]["id"],
+	): Transaction<Schema> {
 		const tupleSchemaKey: SchemaToTupleSchema<Schema>["key"] = [
 			"record",
 			collection,
@@ -446,22 +276,14 @@ export class LocalTransaction<Schema extends AnySchema> {
 
 		if (values.length) {
 			this.ops.push({
-				type: MutationOpType.Remove,
-				key: tupleSchemaKey,
+				type: "remove",
+				collection,
+				id,
 				value: values[0].value,
 			})
 		}
 
 		return this
-	}
-
-	async commit() {
-		this.tupleDbTx.commit()
-		await this.db.commit({
-			// TODO: add intent tag
-			ops: this.ops,
-			id: this.tupleDbTx.id,
-		})
 	}
 
 	cancel() {
