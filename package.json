@@ -39,6 +39,7 @@
 		"@triplit/tuple-database": "^2.2.33",
 		"@types/lodash-es": "^4.17.12",
 		"extendable-expect": "^1.0.2",
+		"idb": "^8.0.3",
 		"lodash-es": "^4.17.21",
 		"tuple-database": "^2.2.4"
 	}

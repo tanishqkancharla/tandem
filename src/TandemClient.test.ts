@@ -1,15 +1,10 @@
 import { expect as baseExpect } from "extendable-expect"
-import {
-	AsyncTupleDatabase,
-	AsyncTupleStorageApi,
-	InMemoryTupleStorage,
-	WriteOps,
-} from "tuple-database"
+import { InMemoryTupleStorage, WriteOps } from "tuple-database"
 import { beforeEach, describe, test, vi } from "vitest"
-import { LoggerApi, rootLogger } from "./Logger"
 import { TandemClient } from "./TandemClient"
 import { TestRemote } from "./TestRemote"
-import { AnySchema, CollectionName } from "./types"
+import { AnySchema, CollectionName, StorageApi } from "./types"
+import { LoggerApi, rootLogger } from "./utils/Logger"
 import { isEqual } from "./utils/objectUtils"
 
 const expect = baseExpect.extend({
@@ -105,10 +100,19 @@ describe("Database", () => {
 
 	// TODO: use fixtures instead
 	let db: TandemClient<TodoSchema>
-	let storage: AsyncTupleDatabase
+	let storage: StorageApi
 
 	beforeEach(() => {
-		storage = new AsyncTupleDatabase(new InMemoryTupleStorage())
+		let inMemoryStorage = new InMemoryTupleStorage()
+		storage = {
+			scan: async (args) => await inMemoryStorage.scan(args),
+			commit: async (ops: WriteOps) => await inMemoryStorage.commit(ops),
+			close: async () => await inMemoryStorage.close(),
+			clear: async () => {
+				inMemoryStorage = new InMemoryTupleStorage()
+			},
+		}
+
 		db = new TandemClient<TodoSchema>({ storage })
 	})
 
@@ -162,6 +166,48 @@ describe("Database", () => {
 			},
 		}
 	}
+
+	describe("Clear functionality", () => {
+		test("clears all data from database", async () => {
+			// Add some initial data
+			const tx1 = db.transact()
+			tx1.set("todos", { id: "1", text: "first", complete: false })
+			tx1.set("todos", { id: "2", text: "second", complete: true })
+			tx1.set("lists", { id: "list1", name: "My List" })
+			db.commit(tx1)
+
+			// Verify data exists
+			expectDb(db).list("todos").toHaveLength(2)
+			expectDb(db).list("lists").toHaveLength(1)
+
+			// Clear the database
+			await db.clear()
+
+			// Verify all data is cleared
+			expectDb(db).list("todos").toHaveLength(0)
+			expectDb(db).list("lists").toHaveLength(0)
+		})
+
+		test("can add data after clear", async () => {
+			// Add initial data
+			const tx1 = db.transact()
+			tx1.set("todos", { id: "1", text: "original", complete: false })
+			db.commit(tx1)
+
+			// Clear the database
+			await db.clear()
+
+			// Add new data
+			const tx2 = db.transact()
+			tx2.set("todos", { id: "2", text: "after clear", complete: true })
+			db.commit(tx2)
+
+			// Verify only new data exists
+			expectDb(db)
+				.list("todos")
+				.toEqual([{ id: "2", text: "after clear", complete: true }])
+		})
+	})
 
 	describe("Basic CRUD operations", () => {
 		test("updates existing records", () => {
@@ -274,7 +320,7 @@ describe("Database", () => {
 			db.commit(tx)
 
 			// Create failing storage
-			const failingStorage: AsyncTupleStorageApi = {
+			const failingStorage: StorageApi = {
 				async scan() {
 					const results = await storage.scan()
 					return results
@@ -283,6 +329,7 @@ describe("Database", () => {
 					await Promise.reject(new Error("Simulated failure"))
 				},
 				close: () => Promise.resolve(),
+				clear: () => Promise.resolve(),
 			}
 
 			const failingDb = new TandemClient<TodoSchema>({
@@ -343,16 +390,17 @@ describe("Database", () => {
 		})
 
 		test("handles delayed storage operations", async () => {
-			const delayedStorage: AsyncTupleStorageApi = {
+			const delayedStorage: StorageApi = {
 				async scan() {
 					await new Promise((resolve) => setTimeout(resolve, 100))
 					return storage.scan()
 				},
-				async commit(ops) {
+				async commit(ops: WriteOps) {
 					await new Promise((resolve) => setTimeout(resolve, 100))
 					return storage.commit(ops)
 				},
 				close: () => Promise.resolve(),
+				clear: () => Promise.resolve(),
 			}
 
 			const slowDb = new TandemClient<TodoSchema>({ storage: delayedStorage })
@@ -370,10 +418,11 @@ describe("Database", () => {
 
 	describe("Error handling", () => {
 		test("handles storage initialization failures", async () => {
-			const failingStorage: AsyncTupleStorageApi = {
+			const failingStorage: StorageApi = {
 				scan: () => Promise.reject(new Error("Scan failed")),
 				commit: () => Promise.reject(new Error("Commit failed")),
 				close: () => Promise.resolve(),
+				clear: () => Promise.resolve(),
 			}
 
 			const failingDb = new TandemClient<TodoSchema>({
@@ -388,12 +437,13 @@ describe("Database", () => {
 				return storage.commit(ops)
 			})
 
-			const intermittentStorage: AsyncTupleStorageApi = {
+			const intermittentStorage: StorageApi = {
 				async scan() {
 					return await storage.scan()
 				},
 				commit: commitMock,
 				close: () => Promise.resolve(),
+				clear: () => Promise.resolve(),
 			}
 
 			const db = new TandemClient<TodoSchema>({ storage: intermittentStorage })

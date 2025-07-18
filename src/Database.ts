@@ -1,5 +1,4 @@
 import {
-	type AsyncTupleStorageApi,
 	InMemoryTupleStorage,
 	type ReadOnlyTupleDatabaseClientApi,
 	subscribeQuery,
@@ -8,23 +7,25 @@ import {
 	type TupleRootTransactionApi,
 	type WriteOps,
 } from "tuple-database"
-import { LoggerApi } from "./Logger"
-import { QueryBuilder, QueryResults } from "./Query"
-import { Storage } from "./Storage"
-import { ThrottleQueue } from "./ThrottleQueue"
+import { QueryBuilder, QueryResults } from "./query/Query"
+import { Storage } from "./storage/Storage"
+import { Transaction } from "./transaction/Transaction"
 import {
 	AnySchema,
 	CollectionName,
-	InvertibleMutationOp,
-	SchemaToTupleSchema,
+	RngApi,
+	StorageApi,
 	WriteOpsApi,
 } from "./types"
+import { LoggerApi } from "./utils/Logger"
 import { isArray, isEqual, pick, sortBy } from "./utils/objectUtils"
+import { ThrottleQueue } from "./utils/ThrottleQueue"
 import { unreachable } from "./utils/typeUtils"
 
 type DatabaseArgs = {
-	storage?: AsyncTupleStorageApi
+	storage?: StorageApi
 	logger: LoggerApi
+	rng: RngApi
 }
 
 export class Database<Schema extends AnySchema> {
@@ -34,20 +35,39 @@ export class Database<Schema extends AnySchema> {
 
 	private readonly storage?: Storage
 	private readonly logger: LoggerApi
+	private readonly rng: RngApi
 	readonly ready: Promise<void>
 
-	constructor({ logger, storage: storageAdapter }: DatabaseArgs) {
+	constructor({ logger, storage: storageAdapter, rng }: DatabaseArgs) {
 		this.logger = logger
 		this.storage = storageAdapter
 			? new Storage(storageAdapter, (error) => {
 					// TODO: clean up? What should we do when storage fails?
-					console.error("Storage error", error)
+					this.logger.error("Storage error", error)
 				})
 			: undefined
+
+		this.rng = rng
 
 		this.ready = this.storage
 			? this.loadFromStorage(this.storage)
 			: Promise.resolve()
+	}
+
+	async clear() {
+		// Clear the in-memory tuple database
+		const writeOps = this.tupleDb.scan({}).reduce((ops, { key }) => {
+			ops.remove = ops.remove || []
+			ops.remove.push(key)
+			return ops
+		}, {} as WriteOps)
+
+		if (writeOps.remove?.length) {
+			this.tupleDb.commit(writeOps)
+		}
+
+		// Clear storage if available
+		await this.storage?.clear()
 	}
 
 	/**
@@ -65,8 +85,8 @@ export class Database<Schema extends AnySchema> {
 			async () => {
 				this.logger.info("Committing to storage...")
 				const copy = writeOpsQueue
+				writeOpsQueue = {}
 				try {
-					writeOpsQueue = {}
 					await storage.commit(copy)
 					this.logger.info("Committed to storage")
 				} catch (error) {
@@ -76,7 +96,7 @@ export class Database<Schema extends AnySchema> {
 			},
 			(error) => {
 				// TODO: fatal error
-				console.error("Error committing to storage", error)
+				this.logger.error("Error committing to storage", error)
 			},
 			120,
 		)
@@ -88,11 +108,11 @@ export class Database<Schema extends AnySchema> {
 	}
 
 	makeTupleDbTransaction(): TupleRootTransactionApi {
-		return this.tupleDb.transact()
+		return this.tupleDb.transact(this.rng.randomId())
 	}
 
 	transact(): Transaction<Schema> {
-		const tupleDbTx = this.tupleDb.transact()
+		const tupleDbTx = this.tupleDb.transact(this.rng.randomId())
 		return new Transaction(tupleDbTx)
 	}
 
@@ -102,7 +122,7 @@ export class Database<Schema extends AnySchema> {
 
 	subscribe<
 		Collection extends CollectionName<Schema>,
-		Query extends QueryBuilder<Schema, Schema[Collection]>,
+		Query extends QueryBuilder<Schema, Collection>,
 	>(
 		query: Query,
 		callback: (result: QueryResults<Query>) => void,
@@ -116,7 +136,7 @@ export class Database<Schema extends AnySchema> {
 
 	run<
 		Collection extends CollectionName<Schema>,
-		Query extends QueryBuilder<Schema, Schema[Collection]>,
+		Query extends QueryBuilder<Schema, Collection>,
 	>(query: Query): QueryResults<Query> {
 		return Database.runQuery(query, this.tupleDb)
 	}
@@ -175,118 +195,5 @@ export class Database<Schema extends AnySchema> {
 		}
 
 		return results as QueryResults<Query>
-	}
-}
-
-export class Transaction<Schema extends AnySchema> {
-	/**
-	 * @internal
-	 */
-	readonly ops: InvertibleMutationOp<Schema>[] = []
-
-	constructor(
-		/**
-		 * @internal
-		 */
-		readonly tupleDbTx: TupleRootTransactionApi,
-	) {}
-
-	list<Collection extends CollectionName<Schema>>(
-		collection: Collection,
-	): Readonly<Schema[Collection]>[] {
-		const results = this.tupleDbTx.scan({
-			gte: ["record", collection, null],
-			lte: ["record", collection, true],
-		})
-
-		return results.map((result) => result.value)
-	}
-
-	get<Collection extends CollectionName<Schema>>(
-		collection: Collection,
-		id: Schema[Collection]["id"],
-	): Readonly<Schema[Collection]> | undefined {
-		const tupleSchemaKey: SchemaToTupleSchema<Schema>["key"] = [
-			"record",
-			collection,
-			id,
-		]
-
-		const result = this.tupleDbTx.scan({
-			gte: tupleSchemaKey,
-			lte: tupleSchemaKey,
-		})
-
-		if (result.length === 0) {
-			return undefined
-		}
-
-		return result[0].value
-	}
-
-	set<Collection extends CollectionName<Schema>>(
-		collection: Collection,
-		record: Schema[Collection],
-	): Transaction<Schema> {
-		const tupleSchema: SchemaToTupleSchema<Schema> = {
-			key: ["record", collection, record.id],
-			value: record,
-		}
-
-		const prevValueResult = this.tupleDbTx.scan({
-			gte: tupleSchema.key,
-			lte: tupleSchema.key,
-		})
-
-		this.tupleDbTx.set<any>(tupleSchema.key, tupleSchema.value)
-
-		const setOp: InvertibleMutationOp<Schema> = {
-			type: "set",
-			collection,
-			value: tupleSchema.value,
-		}
-
-		if (prevValueResult.length > 0) {
-			setOp.prevValue = prevValueResult[0].value
-		}
-
-		console.log({ setOp })
-
-		this.ops.push(setOp)
-
-		return this
-	}
-
-	remove<Collection extends CollectionName<Schema>>(
-		collection: Collection,
-		id: Schema[Collection]["id"],
-	): Transaction<Schema> {
-		const tupleSchemaKey: SchemaToTupleSchema<Schema>["key"] = [
-			"record",
-			collection,
-			id,
-		]
-
-		const values = this.tupleDbTx.scan({
-			gte: tupleSchemaKey,
-			lte: tupleSchemaKey,
-		})
-
-		this.tupleDbTx.remove(tupleSchemaKey)
-
-		if (values.length) {
-			this.ops.push({
-				type: "remove",
-				collection,
-				id,
-				value: values[0].value,
-			})
-		}
-
-		return this
-	}
-
-	cancel() {
-		this.tupleDbTx.cancel()
 	}
 }

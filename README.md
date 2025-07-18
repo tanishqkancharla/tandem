@@ -31,6 +31,7 @@ A sync engine and database for building collaborative apps.
     - [x]  `limit`
 - [x]  Make repo public
 - [ ]  Add docs
+- [ ]  Switch to pnpm monorepo
 - [ ]  Think about backwards compatibility -- how does mounting from a persisted storage work with new versions?
     - [ ]  New database versions
     - [ ]  Schema changes

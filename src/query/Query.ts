@@ -1,21 +1,22 @@
 import {
-	AnyCollectionSchema,
 	AnySchema,
 	Attribute,
 	CollectionName,
 	EncodedQuery,
 	Operator,
-} from "./types"
+} from "../types"
 
 export class QueryBuilder<
 	Schema extends AnySchema,
-	CollectionSchema extends Schema[keyof Schema] & AnyCollectionSchema,
+	Collection extends CollectionName<Schema>,
 > {
-	private constructor(private readonly encodedQuery: Readonly<EncodedQuery>) {}
+	private constructor(
+		private readonly encodedQuery: Readonly<EncodedQuery<Schema>>,
+	) {}
 
 	select(
-		attributes: readonly (keyof CollectionSchema & string)[] | "*",
-	): QueryBuilder<Schema, CollectionSchema> {
+		attributes: readonly (keyof Schema[Collection] & string)[] | "*",
+	): QueryBuilder<Schema, Collection> {
 		if (this.encodedQuery.select) {
 			// merge
 			const mergedAttributes = [
@@ -34,11 +35,11 @@ export class QueryBuilder<
 		}
 	}
 
-	where<A extends Attribute<CollectionSchema>>(
+	where<A extends Attribute<Schema>>(
 		attribute: A,
 		operator: Operator,
-		value: CollectionSchema[A],
-	): QueryBuilder<Schema, CollectionSchema> {
+		value: any,
+	): QueryBuilder<Schema, Collection> {
 		const existingClauses = this.encodedQuery.where ?? []
 
 		return new QueryBuilder({
@@ -48,9 +49,9 @@ export class QueryBuilder<
 	}
 
 	order(
-		attribute: Attribute<CollectionSchema>,
+		attribute: Attribute<Schema>,
 		direction: "asc" | "desc",
-	): QueryBuilder<Schema, CollectionSchema> {
+	): QueryBuilder<Schema, Collection> {
 		const existingClauses = this.encodedQuery.order ?? []
 
 		return new QueryBuilder({
@@ -59,28 +60,28 @@ export class QueryBuilder<
 		})
 	}
 
-	limit(limit: number): QueryBuilder<Schema, CollectionSchema> {
+	limit(limit: number): QueryBuilder<Schema, Collection> {
 		// TODO: what happens if limit is already defined?
 		return new QueryBuilder({ ...this.encodedQuery, limit })
 	}
 
-	id(id: string | number): QueryBuilder<Schema, CollectionSchema> {
+	id(id: string | number): QueryBuilder<Schema, Collection> {
 		return this.where("id", "=", id).one()
 	}
 
-	one(): QueryBuilder<Schema, CollectionSchema> {
+	one(): QueryBuilder<Schema, Collection> {
 		return this.limit(1)
 	}
 
-	build(): Readonly<EncodedQuery> {
+	build(): Readonly<EncodedQuery<Schema>> {
 		return this.encodedQuery
 	}
 
 	static new<
 		Schema extends AnySchema,
 		Collection extends CollectionName<Schema>,
-	>(collection: Collection): QueryBuilder<Schema, Schema[Collection]> {
-		return new QueryBuilder<Schema, Schema[Collection]>({ collection })
+	>(collection: Collection): QueryBuilder<Schema, Collection> {
+		return new QueryBuilder<Schema, Collection>({ collection })
 	}
 
 	// join() {}
@@ -88,7 +89,9 @@ export class QueryBuilder<
 
 export type QueryResults<Query extends QueryBuilder<any, any>> =
 	// TODO: account for select
-	Query extends QueryBuilder<any, infer Collection> ? Collection[] : never
+	Query extends QueryBuilder<infer Schema, infer Collection>
+		? Schema[Collection][]
+		: never
 
 export function q<
 	Schema extends AnySchema,
