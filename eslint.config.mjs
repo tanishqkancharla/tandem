@@ -6,7 +6,6 @@ export default tseslint.config(
 	eslintPluginPrettierRecommended,
 	{
 		files: ["**/*.{ts,tsx}"],
-		ignores: ["src/server/**"],
 		plugins: {
 			reactHooks: {
 				rules: {

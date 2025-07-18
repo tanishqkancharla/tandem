@@ -1,5 +1,3 @@
-import { AsyncUnsubscribe, Unsubscribe } from "@repo/utils/typeUtils"
-import { ThrottleQueue } from "../ThrottleQueue"
 import {
 	AnySchema,
 	ClientId,
@@ -16,6 +14,8 @@ import {
 	Thenable,
 } from "../types"
 import { LoggerApi } from "../utils/Logger"
+import { ThrottleQueue } from "../utils/ThrottleQueue"
+import { AsyncUnsubscribe, Unsubscribe } from "../utils/typeUtils"
 
 function invertibleMutationToMutation<Schema extends AnySchema>(
 	invertible: InvertibleMutation<Schema>,
