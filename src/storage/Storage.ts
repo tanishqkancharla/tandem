@@ -1,13 +1,9 @@
-import type {
-	AsyncTupleStorageApi,
-	KeyValuePair,
-	ScanStorageArgs,
-	WriteOps,
-} from "tuple-database"
+import type { KeyValuePair, ScanStorageArgs, WriteOps } from "tuple-database"
+import { StorageApi } from "../types"
 
 export class Storage {
 	constructor(
-		private readonly adapter: AsyncTupleStorageApi,
+		readonly adapter: StorageApi,
 		private readonly onFailure: (error: unknown) => void,
 	) {}
 
@@ -22,5 +18,9 @@ export class Storage {
 	async scan(args?: ScanStorageArgs): Promise<KeyValuePair[]> {
 		// TODO: what should we do if this fails?
 		return await this.adapter.scan(args)
+	}
+
+	async clear() {
+		await this.adapter.clear()
 	}
 }

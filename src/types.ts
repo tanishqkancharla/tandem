@@ -1,4 +1,4 @@
-import type { WriteOps } from "tuple-database"
+import type { AsyncTupleStorageApi, WriteOps } from "tuple-database"
 import { isEqual, partition, reverse } from "./utils/objectUtils"
 import {
 	Assert,
@@ -7,24 +7,30 @@ import {
 	TestIsEqual,
 } from "./utils/typeUtils"
 
+export interface StorageApi extends AsyncTupleStorageApi {
+	clear(): Promise<void>
+}
+
 export type AnyCollectionSchema = Record<string, any> & { id: string | number }
 
-export type Attribute<CollectionSchema extends AnyCollectionSchema> =
-	keyof CollectionSchema & string
+export type Attribute<Schema extends AnySchema> = {
+	[K in keyof Schema]: keyof Schema[K]
+}[keyof Schema] &
+	string
 
 export type AnySchema = Record<string, AnyCollectionSchema>
 
 export type CollectionName<Schema extends AnySchema> = keyof Schema & string
 
 export type ClientId = Tagged<"ClientId", string>
-export type Cookie = Tagged<"Cookie", number>
+export type Cookie = Tagged<"Cookie", number | string>
 
 export type ClientApi = {
 	clientId: ClientId
 	poke: () => void
 }
 
-export type ScanWindow = EncodedQuery[]
+export type ScanWindow<Schema extends AnySchema> = EncodedQuery<Schema>[]
 
 export type RemoteApi<Schema extends AnySchema> = {
 	connect(api: ClientApi): Promise<AsyncUnsubscribe>
@@ -32,13 +38,19 @@ export type RemoteApi<Schema extends AnySchema> = {
 		mutations: Mutation<Schema>[]
 		clientId: ClientId
 	}): Promise<void>
-	pull(
-		args: { clientId: ClientId; cookie?: Cookie; scanWindow: ScanWindow }, // TODO: clean up patch
-	): Promise<{
+	pull(args: {
+		clientId: ClientId
+		cookie?: Cookie
+		scanWindow: ScanWindow<Schema>
+	}): Promise<{
 		cookie: Cookie
-		patch: WriteOps
+		patch: Patch<Schema>
 		lastMutationId?: MutationId
 	}>
+}
+
+export type RngApi = {
+	randomId: () => string
 }
 
 export type InveribleSetMutationOp<Schema extends AnySchema> = {
@@ -96,11 +108,15 @@ export type InvertibleMutation<Schema extends AnySchema> = {
 	id: MutationId
 }
 
-export type EncodedQuery = {
-	collection: string
-	select?: readonly string[] | "*"
-	where?: [attribute: string, operator: Operator, operand: any][]
-	order?: [attribute: string, direction: "asc" | "desc"][]
+export type EncodedQuery<Schema extends AnySchema> = {
+	collection: keyof Schema & string
+	select?: readonly (Attribute<Schema> & string)[] | "*"
+	where?: [
+		attribute: Attribute<Schema>,
+		operator: Operator,
+		operand: Attribute<Schema>,
+	][]
+	order?: [attribute: Attribute<Schema>, direction: "asc" | "desc"][]
 	limit?: number
 }
 
@@ -229,7 +245,7 @@ export namespace MutationApi {
 
 	export function intersectsQuery<Schema extends AnySchema>(
 		mutation: Mutation<Schema>,
-		query: EncodedQuery,
+		query: EncodedQuery<Schema>,
 	): boolean {
 		for (const op of mutation.ops) {
 			const { collection } = query
@@ -244,7 +260,7 @@ export namespace MutationApi {
 
 	export function intersectsScanWindow<Schema extends AnySchema>(
 		mutation: Mutation<Schema>,
-		scanWindow: ScanWindow,
+		scanWindow: ScanWindow<Schema>,
 	): boolean {
 		return scanWindow.some((query) => intersectsQuery(mutation, query))
 	}
@@ -293,6 +309,39 @@ export namespace WriteOpsApi {
 	}
 }
 
+export namespace PatchApi {
+	export function toString<Schema extends AnySchema>(
+		patch: Patch<Schema>,
+	): string {
+		return `Patch {\n${
+			patch.set
+				?.map(
+					(op) =>
+						`  set ${op.collection}.${op.value.id} = ${JSON.stringify(op.value)}`,
+				)
+				.join("\n") ?? ""
+		}\n${patch.remove?.map((op) => `  remove ${op.collection}.${op.id}`).join("\n") ?? ""}}`
+	}
+
+	export function toWriteOps<Schema extends AnySchema>(
+		patch: Patch<Schema>,
+	): WriteOps {
+		const set: WriteOps["set"] = []
+		const remove: WriteOps["remove"] = []
+
+		for (const s of patch.set ?? []) {
+			const key = ["record", s.collection, s.value.id]
+			set!.push({ key, value: s.value })
+		}
+
+		for (const r of patch.remove ?? []) {
+			remove!.push(["record", r.collection, r.id])
+		}
+
+		return { set, remove }
+	}
+}
+
 export type Thenable = { then: (callback: () => void) => Thenable }
 export type SchemaToTupleSchema<Schema extends AnySchema> = {
 	[C in CollectionName<Schema>]: {
@@ -316,3 +365,30 @@ type _TestSchemaToTupleSchema1 = Assert<
 		}
 	>
 >
+
+export type Json =
+	| string
+	| number
+	| boolean
+	| null
+	| Json[]
+	| { [key: string]: Json }
+
+export type PatchSetOp<Schema extends AnySchema> = {
+	[Collection in CollectionName<Schema>]: {
+		collection: Collection
+		value: Schema[Collection]
+	}
+}[CollectionName<Schema>]
+
+export type PatchRemoveOp<Schema extends AnySchema> = {
+	[Collection in CollectionName<Schema>]: {
+		collection: Collection
+		id: Schema[Collection]["id"]
+	}
+}[CollectionName<Schema>]
+
+export type Patch<Schema extends AnySchema = AnySchema> = {
+	set?: PatchSetOp<Schema>[]
+	remove?: PatchRemoveOp<Schema>[]
+}

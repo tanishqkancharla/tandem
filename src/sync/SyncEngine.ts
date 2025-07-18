@@ -1,20 +1,45 @@
+import { AsyncUnsubscribe, Unsubscribe } from "@repo/utils/typeUtils"
+import { ThrottleQueue } from "../ThrottleQueue"
 import {
 	AnySchema,
 	ClientId,
 	Cookie,
 	EncodedQuery,
 	InvertibleMutation,
+	Mutation,
 	MutationId,
+	MutationOp,
 	Patch,
 	PatchApi,
 	RemoteApi,
 	ScanWindow,
 	Thenable,
-	WriteOpsApi,
-} from "./types"
-import { LoggerApi } from "./utils/Logger"
-import { ThrottleQueue } from "./utils/ThrottleQueue"
-import { AsyncUnsubscribe, Unsubscribe } from "./utils/typeUtils"
+} from "../types"
+import { LoggerApi } from "../utils/Logger"
+
+function invertibleMutationToMutation<Schema extends AnySchema>(
+	invertible: InvertibleMutation<Schema>,
+): Mutation<Schema> {
+	return {
+		id: invertible.id,
+		ops: invertible.ops.map((op): MutationOp<Schema> => {
+			if (op.type === "set") {
+				return {
+					type: "set",
+					collection: op.collection,
+					value: op.value,
+				}
+			} else if (op.type === "remove") {
+				return {
+					type: "remove",
+					collection: op.collection,
+					id: op.id,
+				}
+			}
+			return op
+		}),
+	}
+}
 
 type SyncEngineArgs<Schema extends AnySchema> = {
 	clientId: ClientId
@@ -89,8 +114,6 @@ export class SyncEngine<Schema extends AnySchema> {
 			},
 		})
 
-		this.disconnectFromRemote = unsubscribe
-
 		this.logger.info("Connected to remote")
 
 		await this.queuePull()
@@ -98,7 +121,7 @@ export class SyncEngine<Schema extends AnySchema> {
 		return unsubscribe
 	}
 
-	async disconnect(): Promise<void> {
+	async disconnect() {
 		this.logger.info("Disconnecting from remote")
 		await this.disconnectFromRemote?.()
 		this.disconnectFromRemote = undefined
@@ -123,8 +146,8 @@ export class SyncEngine<Schema extends AnySchema> {
 	}
 
 	private async pull() {
-		this.logger.info("Pulling from remote...")
 		if (this.scanWindow.length === 0) return
+		this.logger.info("Pulling from remote...")
 		const { cookie, patch, lastMutationId } = await this.remote.pull({
 			clientId: this.clientId,
 			cookie: this.cookie,
@@ -137,7 +160,7 @@ export class SyncEngine<Schema extends AnySchema> {
 				cookie,
 				lastMutationId,
 			},
-			WriteOpsApi.toString(PatchApi.toWriteOps(patch)),
+			PatchApi.toString(patch),
 		)
 
 		this.cookie = cookie
@@ -158,13 +181,16 @@ export class SyncEngine<Schema extends AnySchema> {
 		this.pendingMutations = []
 
 		try {
+			// Convert invertible mutations to regular mutations before pushing
+			const mutations = mutationsToPush.map(invertibleMutationToMutation)
+
 			// Then apply to remote if available
 			await this.remote.push({
-				mutations: mutationsToPush,
+				mutations,
 				clientId: this.clientId,
 			})
 		} catch (error) {
-			console.error("Error applying mutation", error)
+			this.logger.error("Error applying mutation", error)
 
 			this.handleRollback(mutationsToPush)
 		}

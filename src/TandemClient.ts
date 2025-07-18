@@ -1,24 +1,29 @@
-import type { AsyncTupleStorageApi, WriteOps } from "tuple-database"
-import { Database, Transaction } from "./Database"
-import { ConsoleLogger, LoggerApi } from "./Logger"
-import { q, QueryBuilder, QueryResults } from "./Query"
-import { SyncEngine } from "./SyncEngine"
+import { Database } from "./Database"
+import { q, QueryBuilder, QueryResults } from "./query/Query"
+import { SyncEngine } from "./sync/SyncEngine"
+import { Transaction } from "./transaction/Transaction"
 import {
 	AnySchema,
 	ClientId,
 	CollectionName,
 	InvertibleMutation,
 	MutationApi,
+	Patch,
+	PatchApi,
 	RemoteApi,
+	RngApi,
+	StorageApi,
 	Thenable,
 } from "./types"
-import { randomNumber } from "./utils/randomId"
-import { AsyncUnsubscribe, tag } from "./utils/typeUtils"
+import { ConsoleLogger, LoggerApi } from "./utils/Logger"
+import { randomId } from "./utils/randomId"
+import { tag } from "./utils/typeUtils"
 
-export type TandemClientArgs<Schema extends AnySchema> = {
-	storage?: AsyncTupleStorageApi
+type TandemClientArgs<Schema extends AnySchema> = {
+	storage?: StorageApi
 	remote?: RemoteApi<Schema>
 	logger?: LoggerApi
+	rng?: RngApi
 	autoConnect?: boolean
 	/**
 	 * @default 150
@@ -34,20 +39,25 @@ export class TandemClient<Schema extends AnySchema> {
 	readonly ready: Promise<void>
 
 	// TODO: use a real uuid
-	readonly clientId: ClientId = tag(randomNumber().toString())
+	readonly clientId: ClientId
 
 	private readonly syncEngine?: SyncEngine<Schema>
 	private readonly logger: LoggerApi
-	private speculativeMutations: InvertibleMutation<Schema>[] = []
+	private readonly rng: RngApi
 
+	private speculativeMutations: InvertibleMutation<Schema>[] = []
 	constructor({
 		storage: storageAdapter,
 		remote,
 		logger,
 		autoConnect = true,
 		syncInterval = 150,
+		rng,
 	}: TandemClientArgs<Schema>) {
 		this.logger = logger ?? new ConsoleLogger(["tandem-client"])
+
+		this.rng = rng ?? { randomId }
+		this.clientId = tag(this.rng.randomId())
 
 		this.syncEngine = remote
 			? new SyncEngine({
@@ -66,6 +76,7 @@ export class TandemClient<Schema extends AnySchema> {
 		this.db = new Database({
 			logger: this.logger.scope("db"),
 			storage: storageAdapter,
+			rng: this.rng,
 		})
 
 		this.ready = this.db.ready
@@ -80,7 +91,7 @@ export class TandemClient<Schema extends AnySchema> {
 		patch,
 		lastMutationId,
 	}: {
-		patch: WriteOps
+		patch: Patch<Schema>
 		lastMutationId?: string
 	}) {
 		this.logger.info("Applying patch...")
@@ -103,8 +114,9 @@ export class TandemClient<Schema extends AnySchema> {
 		const inverted = MutationApi.getRollbackWrites(this.speculativeMutations)
 		tx.write(inverted)
 
-		// Apply the patch
-		tx.write(patch)
+		// Convert patch to WriteOps and apply
+		const writeOps = PatchApi.toWriteOps(patch)
+		tx.write(writeOps)
 
 		// Apply the un-committed still speculative mutations on top
 		const stillSpeculative = this.speculativeMutations.slice(
@@ -131,10 +143,10 @@ export class TandemClient<Schema extends AnySchema> {
 
 	run<
 		Collection extends CollectionName<Schema>,
-		Query extends QueryBuilder<Schema, Schema[Collection]>,
+		Query extends QueryBuilder<Schema, Collection>,
 	>(
 		collection: Collection,
-		queryFn: (q: QueryBuilder<Schema, Schema[Collection]>) => Query,
+		queryFn: (q: QueryBuilder<Schema, Collection>) => Query,
 	): QueryResults<Query> {
 		const query = queryFn(q(collection))
 		const result = this.db.run(query)
@@ -144,10 +156,10 @@ export class TandemClient<Schema extends AnySchema> {
 
 	subscribe<
 		Collection extends CollectionName<Schema>,
-		Query extends QueryBuilder<Schema, Schema[Collection]>,
+		Query extends QueryBuilder<Schema, Collection>,
 	>(
 		collection: Collection,
-		queryFn: (q: QueryBuilder<Schema, Schema[Collection]>) => Query,
+		queryFn: (q: QueryBuilder<Schema, Collection>) => Query,
 		// query: Query,
 		callback: (result: QueryResults<Query>) => void,
 	): { result: QueryResults<Query>; destroy: () => void } {
@@ -170,6 +182,13 @@ export class TandemClient<Schema extends AnySchema> {
 	}
 
 	commit(transaction: Transaction<Schema>): Thenable | undefined {
+		if (transaction.ops.length === 0) {
+			this.logger.info(
+				"Attempted to commit transaction with no ops -- bailing.",
+			)
+			return
+		}
+
 		this.logger.info("Committing transaction")
 		const mutation: InvertibleMutation<Schema> = {
 			ops: transaction.ops,
@@ -182,18 +201,28 @@ export class TandemClient<Schema extends AnySchema> {
 		return this.syncEngine?.queuePush(mutation)
 	}
 
-	async connect(): Promise<AsyncUnsubscribe> {
+	async connect() {
 		if (!this.syncEngine) {
 			throw new Error("Attempted to connect without a remote server configured")
 		}
 		return await this.syncEngine.connect()
 	}
 
-	async disconnect(): Promise<void> {
+	async disconnect() {
 		if (!this.syncEngine) {
 			console.warn("Attempted to disconnect without a remote server configured")
 			return
 		}
 		return await this.syncEngine.disconnect()
+	}
+
+	async clear() {
+		this.logger.info("Clearing database")
+
+		// Clear speculative mutations
+		this.speculativeMutations = []
+
+		// Clear the database
+		await this.db.clear()
 	}
 }
