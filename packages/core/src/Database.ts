@@ -16,7 +16,7 @@ import {
 	RngApi,
 	StorageApi,
 	WriteOpsApi,
-} from "./types"
+} from "@tandem/types"
 import { LoggerApi } from "./utils/Logger"
 import { isArray, isEqual, pick, sortBy } from "./utils/objectUtils"
 import { ThrottleQueue } from "./utils/ThrottleQueue"

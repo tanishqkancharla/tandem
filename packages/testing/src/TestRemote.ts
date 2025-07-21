@@ -1,7 +1,9 @@
+import { LoggerApi, untag } from "@tandem/core"
 import {
 	AnySchema,
 	ClientId,
 	CollectionName,
+	Cookie,
 	Mutation,
 	MutationApi,
 	MutationId,
@@ -10,9 +12,7 @@ import {
 	PatchSetOp,
 	RemoteApi,
 	ScanWindow,
-} from "./types"
-import { LoggerApi } from "./utils/Logger"
-import { tag, untag } from "./utils/typeUtils"
+} from "@tandem/types"
 
 function mutationOpToPatch<Schema extends AnySchema>(
 	op: MutationOp<Schema>,
@@ -134,7 +134,7 @@ export class TestRemote<Schema extends AnySchema = AnySchema>
 		})
 
 		return await Promise.resolve({
-			cookie: tag(this.appliedMutations.length),
+			cookie: this.appliedMutations.length as Cookie,
 			patch,
 			lastMutationId,
 		})

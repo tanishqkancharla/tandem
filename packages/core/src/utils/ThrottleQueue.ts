@@ -1,4 +1,4 @@
-import { Thenable } from "../types"
+import { Thenable } from "@tandem/types"
 
 export class ThrottleQueue {
 	private taskThenable: Thenable | undefined

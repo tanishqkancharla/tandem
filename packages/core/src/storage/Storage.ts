@@ -1,5 +1,5 @@
 import type { KeyValuePair, ScanStorageArgs, WriteOps } from "tuple-database"
-import { StorageApi } from "../types"
+import { StorageApi } from "@tandem/types"
 
 export class Storage {
 	constructor(

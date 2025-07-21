@@ -8,16 +8,16 @@ import {
 	CollectionName,
 	InvertibleMutation,
 	MutationApi,
+	MutationId,
 	Patch,
 	PatchApi,
 	RemoteApi,
 	RngApi,
 	StorageApi,
 	Thenable,
-} from "./types"
+} from "@tandem/types"
 import { ConsoleLogger, LoggerApi } from "./utils/Logger"
 import { randomId } from "./utils/randomId"
-import { tag } from "./utils/typeUtils"
 
 type TandemClientArgs<Schema extends AnySchema> = {
 	storage?: StorageApi
@@ -57,7 +57,7 @@ export class TandemClient<Schema extends AnySchema> {
 		this.logger = logger ?? new ConsoleLogger(["tandem-client"])
 
 		this.rng = rng ?? { randomId }
-		this.clientId = tag(this.rng.randomId())
+		this.clientId = this.rng.randomId() as ClientId
 
 		this.syncEngine = remote
 			? new SyncEngine({
@@ -192,7 +192,7 @@ export class TandemClient<Schema extends AnySchema> {
 		this.logger.info("Committing transaction")
 		const mutation: InvertibleMutation<Schema> = {
 			ops: transaction.ops,
-			id: tag(transaction.tupleDbTx.id),
+			id: transaction.tupleDbTx.id as MutationId,
 		}
 		this.db.commit(transaction)
 		this.speculativeMutations.push(mutation)

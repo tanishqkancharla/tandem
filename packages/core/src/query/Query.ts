@@ -4,7 +4,7 @@ import {
 	CollectionName,
 	EncodedQuery,
 	Operator,
-} from "../types"
+} from "@tandem/types"
 
 export class QueryBuilder<
 	Schema extends AnySchema,

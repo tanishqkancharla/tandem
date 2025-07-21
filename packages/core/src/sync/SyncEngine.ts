@@ -12,7 +12,7 @@ import {
 	RemoteApi,
 	ScanWindow,
 	Thenable,
-} from "../types"
+} from "@tandem/types"
 import { LoggerApi } from "../utils/Logger"
 import { ThrottleQueue } from "../utils/ThrottleQueue"
 import { AsyncUnsubscribe, Unsubscribe } from "../utils/typeUtils"

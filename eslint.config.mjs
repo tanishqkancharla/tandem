@@ -5,6 +5,9 @@ export default tseslint.config(
 	tseslint.configs.base,
 	eslintPluginPrettierRecommended,
 	{
+		ignores: ["**/dist/**", "**/node_modules/**"],
+	},
+	{
 		files: ["**/*.{ts,tsx}"],
 		plugins: {
 			reactHooks: {

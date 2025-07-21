@@ -3,7 +3,7 @@
 import { deleteDB, IDBPDatabase, openDB } from "idb"
 import { KeyValuePair, ScanStorageArgs, WriteOps } from "tuple-database"
 import { decodeTuple, encodeTuple } from "tuple-database/helpers/codec"
-import { AnySchema, Json, StorageApi } from "../types"
+import { AnySchema, Json, StorageApi } from "@tandem/types"
 import { Codec } from "../utils/Codec"
 
 const version = 1
