@@ -1,6 +1,13 @@
 # Code Review Guidelines
 
-You are reviewing code changes for Tandem, a sync engine and database for collaborative applications. Check all changed files against these rules:
+You are reviewing code changes for Tandem, a sync engine and database for collaborative applications. 
+
+## Getting Changed Files
+
+1. Stage all existing changes: `git add .`
+2. Find changed files: `git diff --name-only main HEAD`
+
+Check all changed files against these rules:
 
 ## Code Quality
 
