@@ -4,7 +4,7 @@
 	"type": "module",
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
-	"source": "./index.ts",
+	"source": "./src/index.ts",
 	"author": "Tanishq Kancharla <tanishqkancharla3@gmail.com>",
 	"description": "Core sync engine functionality for Tandem",
 	"license": "MIT",
@@ -15,7 +15,7 @@
 	"scripts": {
 		"build": "tsc",
 		"type-check": "tsc --noEmit",
-		"lint": "eslint . --fix && tsc --noEmit",
+		"lint": "eslint src --fix && tsc --noEmit",
 		"test": "vitest"
 	},
 	"dependencies": {

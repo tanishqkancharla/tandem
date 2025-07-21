@@ -4,7 +4,7 @@
 	"type": "module",
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
-	"source": "./index.ts",
+	"source": "./src/index.ts",
 	"author": "Tanishq Kancharla <tanishqkancharla3@gmail.com>",
 	"description": "Shared TypeScript types for Tandem sync engine",
 	"license": "MIT",
@@ -15,7 +15,7 @@
 	"scripts": {
 		"build": "tsc",
 		"type-check": "tsc --noEmit",
-		"lint": "eslint . --fix && tsc --noEmit"
+		"lint": "eslint src --fix && tsc --noEmit"
 	},
 	"dependencies": {
 		"tuple-database": "^2.2.4"
