@@ -20,7 +20,6 @@ Run this command when you have commits on a feature branch and want to create a 
 - Generates an appropriate PR title based on the commit messages
 - Creates a comprehensive PR description with:
   - Summary of changes (bullet points)
-  - Test plan with actionable items
   - Proper formatting for GitHub
 
 ## Requirements
@@ -42,4 +41,4 @@ Body:
 • Update package.json and tsconfig.json for new structure
 ```
 
-The command handles the entire PR creation workflow automatically, ensuring proper formatting and comprehensive descriptions.
+The command handles the entire PR creation workflow automatically, ensuring proper formatting and comprehensive descriptions. Return the link to the PR to the user.
