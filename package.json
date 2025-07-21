@@ -1,28 +1,24 @@
 {
-	"name": "tandem",
+	"name": "tandem-monorepo",
+	"private": true,
 	"type": "module",
-	"module": "./dist/index.js",
-	"types": "./dist/index.d.ts",
-	"source": "./src/index.ts",
 	"version": "0.2.0",
+	"packageManager": "pnpm@10.12.4",
 	"author": "Tanishq Kancharla <tanishqkancharla3@gmail.com>",
 	"description": "A sync engine and database for building collaborative apps",
 	"keywords": [],
 	"license": "MIT",
-	"files": [
-		"dist",
-		"src"
-	],
 	"repository": {
 		"url": "https://github.com/tanishqkancharla/npm-ts-boilerplate"
 	},
 	"scripts": {
-		"build": "tsx scripts/build.ts",
-		"tsc": "tsc --noEmit",
-		"lint": "eslint . --fix && tsc --noEmit",
+		"build": "turbo build",
+		"type-check": "turbo type-check",
+		"lint": "turbo lint",
 		"format": "prettier --write .",
-		"test": "vitest",
-		"release": "npm run build; npm publish"
+		"test": "turbo test",
+		"dev": "turbo dev",
+		"clean": "turbo clean"
 	},
 	"devDependencies": {
 		"@types/node": "^20.14.2",
@@ -30,17 +26,11 @@
 		"eslint-config-prettier": "^9.1.0",
 		"eslint-plugin-prettier": "^5.2.1",
 		"jsr": "^0.13.2",
+		"prettier": "^3.0.0",
 		"tsx": "^4.19.2",
+		"turbo": "^2.0.0",
 		"typescript": "^5.7.2",
 		"typescript-eslint": "^8.17.0",
 		"vitest": "^1.1.0"
-	},
-	"dependencies": {
-		"@triplit/tuple-database": "^2.2.33",
-		"@types/lodash-es": "^4.17.12",
-		"extendable-expect": "^1.0.2",
-		"idb": "^8.0.3",
-		"lodash-es": "^4.17.21",
-		"tuple-database": "^2.2.4"
 	}
 }

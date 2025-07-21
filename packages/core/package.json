@@ -1,0 +1,33 @@
+{
+	"name": "@tandem/core",
+	"version": "0.2.0",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"source": "./index.ts",
+	"author": "Tanishq Kancharla <tanishqkancharla3@gmail.com>",
+	"description": "Core sync engine functionality for Tandem",
+	"license": "MIT",
+	"files": [
+		"dist",
+		"src"
+	],
+	"scripts": {
+		"build": "tsc",
+		"type-check": "tsc --noEmit",
+		"lint": "eslint . --fix && tsc --noEmit",
+		"test": "vitest"
+	},
+	"dependencies": {
+		"@tandem/types": "workspace:*",
+		"@triplit/tuple-database": "^2.2.33",
+		"@types/lodash-es": "^4.17.12",
+		"idb": "^8.0.3",
+		"lodash-es": "^4.17.21",
+		"tuple-database": "^2.2.4"
+	},
+	"devDependencies": {
+		"typescript": "^5.7.2",
+		"vitest": "^1.1.0"
+	}
+}
