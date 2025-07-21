@@ -18,7 +18,6 @@ import {
 } from "@tandem/types"
 import { ConsoleLogger, LoggerApi } from "./utils/Logger"
 import { randomId } from "./utils/randomId"
-import { tag } from "./utils/typeUtils"
 
 type TandemClientArgs<Schema extends AnySchema> = {
 	storage?: StorageApi
