@@ -57,12 +57,12 @@ Implementation should follow a test-first rhythm after the package scaffold exis
 
 ### Phase 1: Scaffold the new package
 
-- [ ] Create `packages/gatekeeper/package.json` as a private workspace package with `build`, `type-check`, and `lint` scripts that match the existing package conventions.
-- [ ] Create `packages/gatekeeper/tsconfig.json` and `packages/gatekeeper/src/index.ts`.
-- [ ] Add a minimal `packages/gatekeeper/src/Gatekeeper.ts` placeholder export so the package builds before behavior work starts.
-- [ ] Update root project references only if needed for package-scoped TypeScript builds; do not fix unrelated workspace reference issues in this phase.
-- [ ] Verify `pnpm --filter @tandem/gatekeeper type-check` passes.
-- [ ] Verify `pnpm --filter @tandem/gatekeeper build` passes.
+- [x] Create `packages/gatekeeper/package.json` as a private workspace package with `build`, `type-check`, and `lint` scripts that match the existing package conventions.
+- [x] Create `packages/gatekeeper/tsconfig.json` and `packages/gatekeeper/src/index.ts`.
+- [x] Add a minimal `packages/gatekeeper/src/Gatekeeper.ts` placeholder export so the package builds before behavior work starts.
+- [x] Update root project references only if needed for package-scoped TypeScript builds; do not fix unrelated workspace reference issues in this phase.
+- [x] Verify `pnpm --filter @tandem/gatekeeper type-check` passes.
+- [x] Verify `pnpm --filter @tandem/gatekeeper build` passes.
 
 ### Phase 2: Add the first unit tests and the no-interception invocation handle
 

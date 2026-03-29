@@ -1,0 +1,24 @@
+{
+	"name": "@tandem/gatekeeper",
+	"version": "0.2.0",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"source": "./index.ts",
+	"author": "Tanishq Kancharla <tanishqkancharla3@gmail.com>",
+	"description": "Testing framework for pausing and inspecting service-to-service async calls",
+	"license": "MIT",
+	"private": true,
+	"files": [
+		"dist",
+		"src"
+	],
+	"scripts": {
+		"build": "tsc",
+		"type-check": "tsc --noEmit",
+		"lint": "eslint src --fix && tsc --noEmit"
+	},
+	"devDependencies": {
+		"typescript": "^5.7.2"
+	}
+}
