@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CLI_BIN="${ROOT}/bin/slack-cli"
+
+if [ ! -x "$CLI_BIN" ]; then
+  "${ROOT}/scripts/install-cli.sh"
+fi
+
+exec "$CLI_BIN" "$@"
