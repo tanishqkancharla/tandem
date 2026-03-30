@@ -75,14 +75,14 @@ Implementation should follow a test-first rhythm after the package scaffold exis
 
 ### Phase 3: Add single-call interception and gate controls
 
-- [ ] Write unit tests first for a later service calling an earlier service through a Gatekeeper proxy.
-- [ ] Add a unit test that `await call.next()` yields intercepted call metadata with service name, method name, and arguments.
-- [ ] Add a unit test that the top-level invocation remains pending until the intercepted call is resolved.
-- [ ] Add a unit test that `allow()` forwards the call to the real implementation and unblocks the top-level invocation.
-- [ ] Add a unit test that `mockReturnValue()` bypasses the real implementation and returns the mocked value instead.
-- [ ] Add a unit test that `fail()` rejects the top-level invocation with the supplied error.
-- [ ] Implement dependency proxies, intercepted call records, and single-resolution guards so `allow()`, `mockReturnValue()`, and `fail()` can only resolve a blocked call once.
-- [ ] Verify `pnpm --filter @tandem/gatekeeper test` passes with all three gate behaviors.
+- [x] Write unit tests first for a later service calling an earlier service through a Gatekeeper proxy.
+- [x] Add a unit test that `await call.next()` yields intercepted call metadata with service name, method name, and arguments.
+- [x] Add a unit test that the top-level invocation remains pending until the intercepted call is resolved.
+- [x] Add a unit test that `allow()` forwards the call to the real implementation and unblocks the top-level invocation.
+- [x] Add a unit test that `mockReturnValue()` bypasses the real implementation and returns the mocked value instead.
+- [x] Add a unit test that `fail()` rejects the top-level invocation with the supplied error.
+- [x] Implement dependency proxies, intercepted call records, and single-resolution guards so `allow()`, `mockReturnValue()`, and `fail()` can only resolve a blocked call once.
+- [x] Verify `pnpm --filter @tandem/gatekeeper test` passes with all three gate behaviors.
 
 ### Phase 4: Support serial downstream calls and enforce v1 guardrails
 
