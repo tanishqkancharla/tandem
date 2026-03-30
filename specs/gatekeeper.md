@@ -105,17 +105,17 @@ handle.expectRequest({ to: "server", method: "addOne", args: [1] })
 const result = await handle.allowRequest({ to: "server", method: "addOne", args: [1] })
 ```
 
-- [ ] Remove `service`, `method`, and `args` from the public `Handle` interface in `packages/gatekeeper/src/Gatekeeper.ts`.
-- [ ] Introduce a public `RequestMatcher` type with required `to`, `method`, and `args` fields, where each field accepts either an exact value or `"*"`.
-- [ ] Add `expectRequest(matcher)` to blocked handles; it should throw on mismatch and leave the invocation blocked when the matcher does not match.
-- [ ] Rename `allow()` to `allowRequest()` and require a `RequestMatcher`; it should throw on mismatch and only resume the invocation when the matcher matches.
-- [ ] Keep `mockReturnValue()` and `fail()` available for bypassing or rejecting the blocked call without forwarding to the real implementation.
-- [ ] Add a unit test that `expectRequest({ to: "server", method: "addOne", args: [1] })` succeeds for the blocked request and does not unblock the invocation.
-- [ ] Add a unit test that `allowRequest({ to: "server", method: "addOne", args: [1] })` forwards the real request and returns the next `Handle`.
-- [ ] Add a unit test that a mismatched `allowRequest(...)` throws and the blocked invocation can still be resolved afterward with a matching gate action.
-- [ ] Add a unit test that each matcher field accepts `"*"` and matches successfully when used as a wildcard.
-- [ ] Verify `pnpm --filter @tandem/gatekeeper test` passes.
-- [ ] Verify `pnpm --filter @tandem/gatekeeper type-check` passes.
+- [x] Remove `service`, `method`, and `args` from the public `Handle` interface in `packages/gatekeeper/src/Gatekeeper.ts`.
+- [x] Introduce a public `RequestMatcher` type with required `to`, `method`, and `args` fields, where each field accepts either an exact value or `"*"`.
+- [x] Add `expectRequest(matcher)` to blocked handles; it should throw on mismatch and leave the invocation blocked when the matcher does not match.
+- [x] Rename `allow()` to `allowRequest()` and require a `RequestMatcher`; it should throw on mismatch and only resume the invocation when the matcher matches.
+- [x] Keep `mockReturnValue()` and `fail()` available for bypassing or rejecting the blocked call without forwarding to the real implementation.
+- [x] Add a unit test that `expectRequest({ to: "server", method: "addOne", args: [1] })` succeeds for the blocked request and does not unblock the invocation.
+- [x] Add a unit test that `allowRequest({ to: "server", method: "addOne", args: [1] })` forwards the real request and returns the next `Handle`.
+- [x] Add a unit test that a mismatched `allowRequest(...)` throws and the blocked invocation can still be resolved afterward with a matching gate action.
+- [x] Add a unit test that each matcher field accepts `"*"` and matches successfully when used as a wildcard.
+- [x] Verify `pnpm --filter @tandem/gatekeeper test` passes.
+- [x] Verify `pnpm --filter @tandem/gatekeeper type-check` passes.
 
 ### Phase 4: Preserve serial-call sequencing and guardrails under the matcher API
 

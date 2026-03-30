@@ -53,16 +53,9 @@ If a phase does not have a clear way to verify it works, the phase is poorly sco
 
 ### End-to-end verification
 
-Agents have access to CLI tools that enable full end-to-end testing of the platform. Specs should leverage these where appropriate:
+Agents have access to CLI tools for running tests and project scripts. Specs should leverage these where appropriate.
 
-- `.bin/dev start` / `.bin/dev stop` — start and stop the dev server + Electron app together in tmux.
-- `.bin/server` — make authenticated requests against the running dev server (e.g. `.bin/server sessions list`, `.bin/server request GET /sessions`).
-- `.bin/server inspector` — inspect Rivet actor state (e.g. `.bin/server inspector <actorId> summary`).
-- `.bin/playwright` — automate the Electron UI (connect, exec, screenshot) against the running dev session.
-
-When a phase involves server-side or UI behavior, prefer success criteria that use these tools to verify the feature works end-to-end rather than only relying on unit tests.
-
-For any phase that involves manual UI testing or end-to-end QA, the success criteria should reference the `qa-testing` skill, which contains common selectors and flows for the Electron app.
+When a phase involves runtime behavior, prefer success criteria that verify end-to-end behavior with the project's existing scripts and test commands rather than only relying on unit tests.
 
 ### Common failure modes
 
@@ -103,12 +96,39 @@ A list of all the files that are involved in the implementation. Also included s
 ## Implementation
 
 A phased plan where each phase represents a single commit-sized change (<100 lines). Each phase should be independently committable and leave the codebase in a working state.
+Each phase heading must be followed by a short one- to two-sentence description that explains the intent of the phase and what changes after it lands.
 ```
 
 Each implementation phase must include success criteria as task items alongside the implementation tasks. Success criteria are verifiable assertions: quick checks ("ensure X is in package.json"), unit tests to write and run, or manual user stories. They should be the minimum set needed to confirm the phase is correctly done.
 
-```markdown
+When a phase is centered on writing or changing code paths, include a short TypeScript code sample in that phase. The sample should show caller-facing interfaces and/or key implementation pieces using high-level descriptive function names. Keep each sample under 30 lines and treat it as a sketch, not production-ready code.
+
+If a phase is documentation-only, infra-only, or otherwise not code-centric, skip the code sample for that phase.
+
+````markdown
 ### Phase 1: Add gender and age fields to the provider search input schema
+
+Define the new input contract first so later query changes are constrained by a typed shape. Keep this phase focused on schema changes and validation coverage.
+
+```ts
+type SearchProvidersInput = {
+	gender?: "M" | "F"
+	ageFilter?: { min_age?: number; max_age?: number }
+}
+
+function buildSearchProvidersInputSchema() {
+	return z.object({
+		gender: z.enum(["M", "F"]).optional(),
+		ageFilter: z
+			.object({
+				min_age: z.number().int().optional(),
+				max_age: z.number().int().optional(),
+			})
+			.optional(),
+	})
+}
+```
+````
 
 - [ ] Add `gender` parameter to `searchProvidersInput` schema in `apps/api/src/tools/searchProviders.ts` as optional `z.enum(["M", "F"])`
 - [ ] Add `ageFilter` parameter using structured object with optional `min_age` and `max_age` integer fields
@@ -117,14 +137,26 @@ Each implementation phase must include success criteria as task items alongside 
 
 ### Phase 2: Implement gender and age filtering logic
 
+Apply the schema fields to query construction so users see behavior changes in runtime results. Validate filtering semantics with focused tests that fail on wrong inclusions.
+
+```ts
+async function searchProviders(input: SearchProvidersInput) {
+	const query = createProviderQuery()
+	const withGender = applyGenderFilter(query, input.gender)
+	const withAgeRange = applyAgeRangeFilter(withGender, input.ageFilter)
+	return runProviderQuery(withAgeRange)
+}
+```
+
 - [ ] Add gender filtering logic to the database query using `eq(providers.gender, gender)` when gender is provided
 - [ ] Add age range filtering logic using `gte(providers.age, min_age)` and `lte(providers.age, max_age)` when age filters are provided
 - [ ] Add a unit test querying with `gender: "F"` and assert only female providers are returned
 - [ ] Add a unit test querying with `ageFilter: { min_age: 30, max_age: 50 }` and assert results are within range
+
 ```
 
 ### What to avoid in the spec
 
-- Avoid any mobile code
-- Avoid creating new UI components unless absolutely necessary to the core functionality. Use design system components as much as possible.
-- Avoid any performance optimization unless specifically requested
+- Avoid introducing new infrastructure, abstractions, or optimization work unless explicitly required for the requested outcome.
+- Avoid refactor-only phases that do not produce user-visible or test-visible progress.
+```

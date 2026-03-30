@@ -1,3 +1,5 @@
+import { isEqual } from "lodash-es"
+
 /**
  * Gatekeeper — a testing harness for intercepting service-to-service async calls.
  *
@@ -14,25 +16,27 @@
  * A handle for a top-level invocation.
  *
  * Resolved handles expose the final value via `unwrapValue()`.
- * Blocked handles expose the intercepted downstream call metadata and can be
- * resumed with `allow()`, `mockReturnValue()`, or `fail()`.
+ * Blocked handles keep the intercepted downstream call internal and can be
+ * asserted/resumed with `expectRequest()`, `allowRequest()`,
+ * `mockReturnValue()`, or `fail()`.
  */
+export type RequestMatcher = {
+	to: string | "*"
+	method: string | "*"
+	args: unknown[] | "*"
+}
+
 export interface Handle<T> {
 	/** Whether the invocation has already resolved to a final value. */
 	readonly resolved: boolean
 
-	/** The blocked downstream service name, or `undefined` when resolved. */
-	readonly service: string | undefined
-	/** The blocked downstream method name, or `undefined` when resolved. */
-	readonly method: string | undefined
-	/** The blocked downstream call arguments, or `undefined` when resolved. */
-	readonly args: unknown[] | undefined
-
 	/** Returns the final value. Throws while the invocation is blocked. */
 	unwrapValue(): T
 
+	/** Assert the currently blocked downstream request without unblocking it. */
+	expectRequest(matcher: RequestMatcher): void
 	/** Forward the blocked downstream call to the real implementation. */
-	allow(): Promise<Handle<T>>
+	allowRequest(matcher: RequestMatcher): Promise<Handle<T>>
 	/** Resolve the blocked downstream call with a mocked value. */
 	mockReturnValue(value: unknown): Promise<Handle<T>>
 	/** Reject the blocked downstream call with the supplied error. */
@@ -49,6 +53,12 @@ type Deferred<T> = {
 	reject: (reason?: unknown) => void
 }
 
+type BlockedRequest = {
+	to: string
+	method: string
+	args: unknown[]
+}
+
 function createDeferred<T>(): Deferred<T> {
 	let resolve!: Deferred<T>["resolve"]
 	let reject!: Deferred<T>["reject"]
@@ -61,12 +71,43 @@ function createDeferred<T>(): Deferred<T> {
 	return { promise, resolve, reject }
 }
 
+function matchesRequest(
+	request: BlockedRequest,
+	matcher: RequestMatcher
+): boolean {
+	return (
+		(matcher.to === "*" || matcher.to === request.to) &&
+		(matcher.method === "*" || matcher.method === request.method) &&
+		(matcher.args === "*" || isEqual(matcher.args, request.args))
+	)
+}
+
+function stringifyForError(value: unknown): string {
+	try {
+		return JSON.stringify(value)
+	} catch {
+		return String(value)
+	}
+}
+
+function assertRequestMatches(
+	request: BlockedRequest,
+	matcher: RequestMatcher
+): void {
+	if (matchesRequest(request, matcher)) {
+		return
+	}
+
+	throw new Error(
+		`Blocked request did not match matcher. Expected ${stringifyForError(
+			matcher
+		)}, received ${stringifyForError(request)}`
+	)
+}
+
 /** Concrete handle for a completed invocation. */
 class ResolvedHandle<T> implements Handle<T> {
 	readonly resolved = true
-	readonly service = undefined
-	readonly method = undefined
-	readonly args = undefined
 
 	constructor(private readonly value: T) {}
 
@@ -74,7 +115,11 @@ class ResolvedHandle<T> implements Handle<T> {
 		return this.value
 	}
 
-	allow(): Promise<Handle<T>> {
+	expectRequest(_matcher: RequestMatcher): void {
+		throw new Error("Invocation is already resolved")
+	}
+
+	allowRequest(_matcher: RequestMatcher): Promise<Handle<T>> {
 		return Promise.reject(new Error("Invocation is already resolved"))
 	}
 
@@ -129,9 +174,7 @@ class InvocationController<T> {
 		return new Promise<unknown>((resolve, reject) => {
 			const blockedHandle = new BlockedHandle(
 				this,
-				service,
-				method,
-				args,
+				{ to: service, method, args },
 				callRealImplementation,
 				resolve,
 				reject
@@ -162,9 +205,7 @@ class BlockedHandle<T> implements Handle<T> {
 
 	constructor(
 		private readonly invocation: InvocationController<T>,
-		readonly service: string,
-		readonly method: string,
-		readonly args: unknown[],
+		private readonly request: BlockedRequest,
 		private readonly callRealImplementation: () => Promise<unknown>,
 		private readonly resolveBlockedCall: (value: unknown) => void,
 		private readonly rejectBlockedCall: (reason: unknown) => void
@@ -174,8 +215,14 @@ class BlockedHandle<T> implements Handle<T> {
 		throw new Error("Invocation is blocked on a downstream call")
 	}
 
-	allow(): Promise<Handle<T>> {
-		return this.runOnce(async () => {
+	expectRequest(matcher: RequestMatcher): void {
+		assertRequestMatches(this.request, matcher)
+	}
+
+	async allowRequest(matcher: RequestMatcher): Promise<Handle<T>> {
+		assertRequestMatches(this.request, matcher)
+
+		return await this.runOnce(async () => {
 			const nextHandle = this.invocation.prepareForResume(this)
 
 			try {

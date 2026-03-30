@@ -71,6 +71,13 @@ importers:
         version: 1.6.1(@types/node@20.19.9)
 
   packages/gatekeeper:
+    dependencies:
+      '@types/lodash-es':
+        specifier: ^4.17.12
+        version: 4.17.12
+      lodash-es:
+        specifier: ^4.17.21
+        version: 4.17.21
     devDependencies:
       typescript:
         specifier: ^5.7.2
