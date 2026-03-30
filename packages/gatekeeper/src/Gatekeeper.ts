@@ -59,6 +59,9 @@ type BlockedRequest = {
 	args: unknown[]
 }
 
+const CONCURRENT_BLOCKED_CALLS_ERROR =
+	"Gatekeeper v1 only supports serial downstream calls; concurrent blocked downstream calls are not supported"
+
 function createDeferred<T>(): Deferred<T> {
 	let resolve!: Deferred<T>["resolve"]
 	let reject!: Deferred<T>["reject"]
@@ -135,6 +138,7 @@ class ResolvedHandle<T> implements Handle<T> {
 class InvocationController<T> {
 	private nextHandle = createDeferred<Handle<T>>()
 	private activeBlockedHandle: BlockedHandle<T> | null = null
+	private blockedWhileSettledReason: unknown = null
 
 	constructor(private readonly onSettled: () => void) {
 		this.nextHandle.promise.catch(() => {})
@@ -153,7 +157,11 @@ class InvocationController<T> {
 					this.onSettled()
 				},
 				(error) => {
-					this.nextHandle.reject(error)
+					if (this.activeBlockedHandle) {
+						this.blockedWhileSettledReason = error
+					} else {
+						this.nextHandle.reject(error)
+					}
 					this.onSettled()
 				}
 			)
@@ -166,8 +174,10 @@ class InvocationController<T> {
 		callRealImplementation: () => Promise<unknown>
 	): Promise<unknown> {
 		if (this.activeBlockedHandle) {
+			this.blockedWhileSettledReason ??= new Error(CONCURRENT_BLOCKED_CALLS_ERROR)
+
 			return Promise.reject(
-				new Error("Concurrent blocked downstream calls are not supported")
+				this.blockedWhileSettledReason
 			)
 		}
 
@@ -187,7 +197,14 @@ class InvocationController<T> {
 
 	prepareForResume(blockedHandle: BlockedHandle<T>): Promise<Handle<T>> {
 		if (this.activeBlockedHandle !== blockedHandle) {
-			return Promise.reject(new Error("Blocked call is already resolved"))
+			throw new Error("Blocked call is already resolved")
+		}
+
+		if (this.blockedWhileSettledReason !== null) {
+			const reason = this.blockedWhileSettledReason
+			this.blockedWhileSettledReason = null
+			this.activeBlockedHandle = null
+			throw reason
 		}
 
 		this.activeBlockedHandle = null

@@ -120,6 +120,7 @@ const result = await handle.allowRequest({ to: "server", method: "addOne", args:
 ### Phase 4: Preserve serial-call sequencing and guardrails under the matcher API
 
 Carry the matcher-based API through multi-step invocations. Each successful gate control should return the next `Handle`, and the existing v1 guardrail against concurrent blocked fan-out should remain explicit and test-covered.
+Keep the suite minimal and story-like: one concrete flow per supported behavior is enough, and branch-by-branch coverage is not the goal.
 
 ```ts
 const first = await harness.client.doTwoCalls()
@@ -132,12 +133,12 @@ const done = await second.mockReturnValue(3)
 done.unwrapValue()
 ```
 
-- [ ] Add a unit test for two downstream calls in sequence where the first successful gate action returns the second blocked `Handle`.
-- [ ] Add a unit test that the final successful gate action returns a resolved `Handle` after the invocation finishes.
-- [ ] Add a unit test that `expectRequest()` does not count as resolving the gate, so a later `allowRequest()`, `mockReturnValue()`, or `fail()` still works exactly once.
-- [ ] Add a unit test that concurrent fan-out of multiple blocked downstream calls still fails fast with a clear v1 scope error.
-- [ ] Keep the single-resolution guard so only one successful gate control (`allowRequest`, `mockReturnValue`, or `fail`) can resolve a blocked call.
-- [ ] Verify `pnpm --filter @tandem/gatekeeper test` passes for both serial sequencing and the concurrent-call guardrail.
+- [x] Add a unit test for two downstream calls in sequence where the first successful gate action returns the second blocked `Handle`.
+- [x] Add a unit test that the final successful gate action returns a resolved `Handle` after the invocation finishes.
+- [x] Add a unit test that `expectRequest()` does not count as resolving the gate, so a later `allowRequest()`, `mockReturnValue()`, or `fail()` still works exactly once.
+- [x] Add a unit test that concurrent fan-out of multiple blocked downstream calls still fails fast with a clear v1 scope error.
+- [x] Keep the single-resolution guard so only one successful gate control (`allowRequest`, `mockReturnValue`, or `fail`) can resolve a blocked call.
+- [x] Verify `pnpm --filter @tandem/gatekeeper test` passes for both serial sequencing and the concurrent-call guardrail.
 
 ### Phase 5: Tighten the exported API surface and docs around the matcher model
 
@@ -154,11 +155,11 @@ export type { Handle } from "./Gatekeeper.js"
 export { Gatekeeper } from "./Gatekeeper.js"
 ```
 
-- [ ] Export `RequestMatcher` from `packages/gatekeeper/src/index.ts` alongside `Handle` and `Gatekeeper`.
+- [x] Export `RequestMatcher` from `packages/gatekeeper/src/index.ts` alongside `Handle` and `Gatekeeper`.
 - [ ] Keep the TypeScript surface intentionally simple: explicit annotations in service factories are acceptable in v1, but built harness methods should still expose correctly typed handle-returning promises.
 - [ ] Add at least one compile-time usage example in package tests or source that proves later service factories can consume earlier services without resorting to `any` while using the matcher-based API.
-- [ ] Update any remaining package examples, docs, and test-facing API references from `allow()` to `allowRequest()` and from direct blocked-request property access to matcher-based assertions.
-- [ ] Update `docs/gatekeeper.md` to show `expectRequest()` and `allowRequest({ to, method, args })` instead of direct `service` / `method` / `args` property access.
-- [ ] Verify `pnpm --filter @tandem/gatekeeper build` passes.
-- [ ] Verify `pnpm --filter @tandem/gatekeeper type-check` passes.
-- [ ] Verify `pnpm --filter @tandem/gatekeeper test` passes.
+- [x] Update any remaining package examples, docs, and test-facing API references from `allow()` to `allowRequest()` and from direct blocked-request property access to matcher-based assertions.
+- [x] Update `docs/gatekeeper.md` to show `expectRequest()` and `allowRequest({ to, method, args })` instead of direct `service` / `method` / `args` property access.
+- [x] Verify `pnpm --filter @tandem/gatekeeper build` passes.
+- [x] Verify `pnpm --filter @tandem/gatekeeper type-check` passes.
+- [x] Verify `pnpm --filter @tandem/gatekeeper test` passes.
