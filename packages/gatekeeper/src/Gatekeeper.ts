@@ -2,272 +2,247 @@
  * Gatekeeper — a testing harness for intercepting service-to-service async calls.
  *
  * Builds an ordered, acyclic harness of async-method-only services.
- * Each built service method returns a thenable InvocationHandle that resolves
- * to a Handle. Tests can call `.next()` on the invocation handle to observe
- * blocked downstream calls and resolve them with gate controls.
+ * When a harness method is awaited, it resolves with a handle for the first
+ * observable state transition of that invocation:
+ * - a resolved handle if the invocation completed without blocking downstream
+ * - a blocked handle if it suspended on a downstream service call
  */
 
 // ---- Public interfaces ------------------------------------------------------
 
 /**
- * A handle representing a completed invocation's result.
+ * A handle for a top-level invocation.
+ *
+ * Resolved handles expose the final value via `unwrapValue()`.
+ * Blocked handles expose the intercepted downstream call metadata and can be
+ * resumed with `allow()`, `mockReturnValue()`, or `fail()`.
  */
 export interface Handle<T> {
-	/** Whether the invocation has resolved to a final value. */
+	/** Whether the invocation has already resolved to a final value. */
 	readonly resolved: boolean
 
-	/**
-	 * Returns the resolved value. Throws if the invocation has not resolved yet.
-	 */
+	/** The blocked downstream service name, or `undefined` when resolved. */
+	readonly service: string | undefined
+	/** The blocked downstream method name, or `undefined` when resolved. */
+	readonly method: string | undefined
+	/** The blocked downstream call arguments, or `undefined` when resolved. */
+	readonly args: unknown[] | undefined
+
+	/** Returns the final value. Throws while the invocation is blocked. */
 	unwrapValue(): T
 
-	/** The downstream service name, if blocked on a call. `undefined` if resolved. */
-	readonly service: string | undefined
-	/** The downstream method name, if blocked on a call. `undefined` if resolved. */
-	readonly method: string | undefined
-	/** The downstream call arguments, if blocked on a call. `undefined` if resolved. */
-	readonly args: unknown[] | undefined
-}
-
-/**
- * Represents an intercepted downstream call that is blocked at a gate.
- * Tests use `allow()`, `mockReturnValue()`, or `fail()` to resolve it.
- */
-export interface BlockedCallHandle {
-	/** The downstream service name. */
-	readonly service: string
-	/** The downstream method name. */
-	readonly method: string
-	/** The arguments passed to the downstream call. */
-	readonly args: unknown[]
-
-	/** Forward the call to the real implementation and resolve the gate. */
-	allow(): Promise<void>
-	/** Resolve the gate with a mocked value, bypassing the real implementation. */
-	mockReturnValue(value: unknown): void
-	/** Reject the gate with the supplied error. */
-	fail(error: Error): void
-}
-
-/**
- * A thenable invocation handle returned by harness service methods.
- * Awaiting it yields the final `Handle<T>` once the invocation completes.
- * Call `.next()` to observe blocked downstream calls.
- */
-export interface InvocationHandle<T> extends PromiseLike<Handle<T>> {
-	/**
-	 * Returns the next blocked downstream call, or `undefined` if the
-	 * invocation has settled with no further blocked calls.
-	 */
-	next(): Promise<BlockedCallHandle | undefined>
+	/** Forward the blocked downstream call to the real implementation. */
+	allow(): Promise<Handle<T>>
+	/** Resolve the blocked downstream call with a mocked value. */
+	mockReturnValue(value: unknown): Promise<Handle<T>>
+	/** Reject the blocked downstream call with the supplied error. */
+	fail(error: Error): Promise<Handle<T>>
 }
 
 // ---- Internal helpers -------------------------------------------------------
 
-/** Concrete resolved handle — the invocation completed with a value. */
+type AsyncMethod = (...args: any[]) => Promise<any>
+
+type Deferred<T> = {
+	promise: Promise<T>
+	resolve: (value: T | PromiseLike<T>) => void
+	reject: (reason?: unknown) => void
+}
+
+function createDeferred<T>(): Deferred<T> {
+	let resolve!: Deferred<T>["resolve"]
+	let reject!: Deferred<T>["reject"]
+
+	const promise = new Promise<T>((innerResolve, innerReject) => {
+		resolve = innerResolve
+		reject = innerReject
+	})
+
+	return { promise, resolve, reject }
+}
+
+/** Concrete handle for a completed invocation. */
 class ResolvedHandle<T> implements Handle<T> {
 	readonly resolved = true
 	readonly service = undefined
 	readonly method = undefined
 	readonly args = undefined
 
-	private _value: T
-
-	constructor(value: T) {
-		this._value = value
-	}
+	constructor(private readonly value: T) {}
 
 	unwrapValue(): T {
-		return this._value
+		return this.value
+	}
+
+	allow(): Promise<Handle<T>> {
+		return Promise.reject(new Error("Invocation is already resolved"))
+	}
+
+	mockReturnValue(_value: unknown): Promise<Handle<T>> {
+		return Promise.reject(new Error("Invocation is already resolved"))
+	}
+
+	fail(_error: Error): Promise<Handle<T>> {
+		return Promise.reject(new Error("Invocation is already resolved"))
 	}
 }
 
-/** Internal implementation of a blocked downstream call with gate controls. */
-class BlockedCallHandleImpl implements BlockedCallHandle {
-	readonly service: string
-	readonly method: string
-	readonly args: unknown[]
+class InvocationController<T> {
+	private nextHandle = createDeferred<Handle<T>>()
+	private activeBlockedHandle: BlockedHandle<T> | null = null
 
-	private _resolve: (value: unknown) => void
-	private _reject: (error: unknown) => void
-	private _realMethod: AsyncMethod
-	private _realInstance: object
-	private _settled = false
+	constructor(private readonly onSettled: () => void) {
+		this.nextHandle.promise.catch(() => {})
+	}
 
-	constructor(
+	observe(): Promise<Handle<T>> {
+		return this.nextHandle.promise
+	}
+
+	start(run: () => Promise<T>): void {
+		Promise.resolve()
+			.then(run)
+			.then(
+				(value) => {
+					this.nextHandle.resolve(new ResolvedHandle(value))
+					this.onSettled()
+				},
+				(error) => {
+					this.nextHandle.reject(error)
+					this.onSettled()
+				}
+			)
+	}
+
+	blockOnCall(
 		service: string,
 		method: string,
 		args: unknown[],
-		realMethod: AsyncMethod,
-		realInstance: object,
-		resolve: (value: unknown) => void,
-		reject: (error: unknown) => void
-	) {
-		this.service = service
-		this.method = method
-		this.args = args
-		this._realMethod = realMethod
-		this._realInstance = realInstance
-		this._resolve = resolve
-		this._reject = reject
-	}
-
-	private _guard(): void {
-		if (this._settled) {
-			throw new Error("Blocked call has already been resolved")
-		}
-		this._settled = true
-	}
-
-	async allow(): Promise<void> {
-		this._guard()
-		try {
-			const result = await this._realMethod.apply(this._realInstance, this.args)
-			this._resolve(result)
-		} catch (error) {
-			this._reject(error)
-		}
-	}
-
-	mockReturnValue(value: unknown): void {
-		this._guard()
-		this._resolve(value)
-	}
-
-	fail(error: Error): void {
-		this._guard()
-		this._reject(error)
-	}
-}
-
-/** Internal implementation of the thenable invocation handle. */
-class InvocationHandleImpl<T> implements InvocationHandle<T> {
-	private _handlePromise!: Promise<Handle<T>>
-	private _callQueue: BlockedCallHandleImpl[] = []
-	private _callWaiter: ((call: BlockedCallHandleImpl | undefined) => void) | null = null
-	private _settled = false
-
-	/** Set the underlying result promise (called after construction so the
-	 *  active-invocation reference is in place before the method executes). */
-	_setResult(resultPromise: Promise<T>): void {
-		this._handlePromise = resultPromise.then(
-			(value) => {
-				this._settled = true
-				this._flushWaiter()
-				return new ResolvedHandle(value)
-			},
-			(error) => {
-				this._settled = true
-				this._flushWaiter()
-				throw error
-			}
-		)
-		// Suppress unhandled-rejection warnings — callers attach their own handlers via then().
-		this._handlePromise.catch(() => {})
-	}
-
-	/** Push an intercepted call from a dependency proxy. */
-	_pushCall(call: BlockedCallHandleImpl): void {
-		if (this._callWaiter) {
-			const waiter = this._callWaiter
-			this._callWaiter = null
-			waiter(call)
-		} else {
-			this._callQueue.push(call)
-		}
-	}
-
-	// -- PromiseLike ----------------------------------------------------------
-
-	then<TResult1 = Handle<T>, TResult2 = never>(
-		onfulfilled?: ((value: Handle<T>) => TResult1 | PromiseLike<TResult1>) | null,
-		onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null
-	): Promise<TResult1 | TResult2> {
-		return this._handlePromise.then(onfulfilled, onrejected)
-	}
-
-	// -- InvocationHandle -----------------------------------------------------
-
-	async next(): Promise<BlockedCallHandle | undefined> {
-		// If there's already a queued call, return it immediately.
-		if (this._callQueue.length > 0) {
-			return this._callQueue.shift()!
-		}
-		// If the invocation has settled, no more calls are coming.
-		if (this._settled) {
-			return undefined
-		}
-		// Wait for either a new blocked call or the invocation to settle.
-		return new Promise<BlockedCallHandle | undefined>((resolve) => {
-			this._callWaiter = resolve as (call: BlockedCallHandleImpl | undefined) => void
-			// Also race against the invocation settling without another call.
-			this._handlePromise.then(
-				() => {
-					if (this._callWaiter === (resolve as unknown)) {
-						this._callWaiter = null
-						resolve(undefined)
-					}
-				},
-				() => {
-					if (this._callWaiter === (resolve as unknown)) {
-						this._callWaiter = null
-						resolve(undefined)
-					}
-				}
+		callRealImplementation: () => Promise<unknown>
+	): Promise<unknown> {
+		if (this.activeBlockedHandle) {
+			return Promise.reject(
+				new Error("Concurrent blocked downstream calls are not supported")
 			)
+		}
+
+		return new Promise<unknown>((resolve, reject) => {
+			const blockedHandle = new BlockedHandle(
+				this,
+				service,
+				method,
+				args,
+				callRealImplementation,
+				resolve,
+				reject
+			)
+
+			this.activeBlockedHandle = blockedHandle
+			this.nextHandle.resolve(blockedHandle)
 		})
 	}
 
-	private _flushWaiter(): void {
-		if (this._callWaiter) {
-			const waiter = this._callWaiter
-			this._callWaiter = null
-			waiter(undefined)
+	prepareForResume(blockedHandle: BlockedHandle<T>): Promise<Handle<T>> {
+		if (this.activeBlockedHandle !== blockedHandle) {
+			return Promise.reject(new Error("Blocked call is already resolved"))
 		}
+
+		this.activeBlockedHandle = null
+		this.nextHandle = createDeferred<Handle<T>>()
+		this.nextHandle.promise.catch(() => {})
+		return this.nextHandle.promise
+	}
+}
+
+/** Concrete handle for an invocation blocked on a downstream call. */
+class BlockedHandle<T> implements Handle<T> {
+	readonly resolved = false
+
+	private alreadyResolved = false
+
+	constructor(
+		private readonly invocation: InvocationController<T>,
+		readonly service: string,
+		readonly method: string,
+		readonly args: unknown[],
+		private readonly callRealImplementation: () => Promise<unknown>,
+		private readonly resolveBlockedCall: (value: unknown) => void,
+		private readonly rejectBlockedCall: (reason: unknown) => void
+	) {}
+
+	unwrapValue(): T {
+		throw new Error("Invocation is blocked on a downstream call")
+	}
+
+	allow(): Promise<Handle<T>> {
+		return this.runOnce(async () => {
+			const nextHandle = this.invocation.prepareForResume(this)
+
+			try {
+				this.resolveBlockedCall(await this.callRealImplementation())
+			} catch (error) {
+				this.rejectBlockedCall(error)
+			}
+
+			return await nextHandle
+		})
+	}
+
+	mockReturnValue(value: unknown): Promise<Handle<T>> {
+		return this.runOnce(async () => {
+			const nextHandle = this.invocation.prepareForResume(this)
+			this.resolveBlockedCall(value)
+			return await nextHandle
+		})
+	}
+
+	fail(error: Error): Promise<Handle<T>> {
+		return this.runOnce(async () => {
+			const nextHandle = this.invocation.prepareForResume(this)
+			this.rejectBlockedCall(error)
+			return await nextHandle
+		})
+	}
+
+	private runOnce(action: () => Promise<Handle<T>>): Promise<Handle<T>> {
+		if (this.alreadyResolved) {
+			return Promise.reject(new Error("Blocked call is already resolved"))
+		}
+
+		this.alreadyResolved = true
+		return action()
 	}
 }
 
 // ---- Dependency proxy -------------------------------------------------------
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AsyncMethod = (...args: any[]) => Promise<any>
-
 /**
  * Create a proxy object for a service that intercepts method calls and routes
- * them through the currently active invocation handle.
+ * them through the currently active top-level invocation.
  */
 function createDependencyProxy(
 	serviceName: string,
 	realInstance: object,
-	getActiveInvocation: () => InvocationHandleImpl<unknown> | null
+	getActiveInvocation: () => InvocationController<unknown> | null
 ): object {
 	const proxy: Record<string, unknown> = {}
-	const proto = Object.getPrototypeOf(realInstance)
+	const prototype = Object.getPrototypeOf(realInstance)
 
-	for (const key of Object.getOwnPropertyNames(proto)) {
+	for (const key of Object.getOwnPropertyNames(prototype)) {
 		if (key === "constructor") continue
+
 		const realMethod = (realInstance as Record<string, AsyncMethod>)[key]
 		if (typeof realMethod !== "function") continue
 
 		proxy[key] = (...args: unknown[]): Promise<unknown> => {
-			const invocation = getActiveInvocation()
-			if (!invocation) {
-				// No active invocation context — pass through directly.
+			const activeInvocation = getActiveInvocation()
+			if (!activeInvocation) {
 				return realMethod.apply(realInstance, args)
 			}
 
-			return new Promise<unknown>((resolve, reject) => {
-				const blocked = new BlockedCallHandleImpl(
-					serviceName,
-					key,
-					args,
-					realMethod,
-					realInstance,
-					resolve,
-					reject
-				)
-				invocation._pushCall(blocked)
-			})
+			return activeInvocation.blockOnCall(serviceName, key, args, () =>
+				realMethod.apply(realInstance, args)
+			)
 		}
 	}
 
@@ -276,20 +251,19 @@ function createDependencyProxy(
 
 // ---- Service type utilities -------------------------------------------------
 
-/** Maps every async method of a service to return an InvocationHandle. */
+/** Maps every async method of a service to return a handle promise. */
 type HandleWrapped<S> = {
 	[K in keyof S]: S[K] extends (...args: infer A) => Promise<infer R>
-		? (...args: A) => InvocationHandle<R>
+		? (...args: A) => Promise<Handle<R>>
 		: never
 }
 
-// ---- Builder ----------------------------------------------------------------
-
 type ServiceEntry = {
 	name: string
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	factory: (deps: Record<string, any>) => object
 }
+
+// ---- Builder ----------------------------------------------------------------
 
 /**
  * Builder for an ordered, acyclic service harness.
@@ -301,13 +275,12 @@ type ServiceEntry = {
  *   .build()
  * ```
  */
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export class Gatekeeper<TServices extends Record<string, object> = {}> {
 	private entries: ServiceEntry[] = []
 
 	/**
-	 * Register a named service factory. Factories receive an object containing
-	 * proxy-wrapped versions of all previously registered services.
+	 * Register a named service factory. Factories receive proxy-wrapped versions
+	 * of all previously registered services.
 	 */
 	add<Name extends string, S extends object>(
 		name: Name,
@@ -319,49 +292,50 @@ export class Gatekeeper<TServices extends Record<string, object> = {}> {
 	}
 
 	/**
-	 * Build all registered services in order and return the harness.
-	 * Each service method on the harness returns an `InvocationHandle<R>`.
+	 * Build all registered services in order.
+	 * Harness methods resolve to a handle when the invocation either completes or
+	 * blocks on the next intercepted downstream call.
 	 */
 	build(): { [K in keyof TServices]: HandleWrapped<TServices[K]> } {
-		const realInstances: Record<string, object> = {}
-		const proxiedDeps: Record<string, object> = {}
+		const proxiedDependencies: Record<string, object> = {}
 		const harness: Record<string, Record<string, unknown>> = {}
 
-		// Shared mutable reference to the currently active invocation.
-		let activeInvocation: InvocationHandleImpl<unknown> | null = null
+		let activeInvocation: InvocationController<unknown> | null = null
 
 		for (const entry of this.entries) {
-			// Build the real service, passing proxied earlier services.
-			const instance = entry.factory({ ...proxiedDeps })
-			realInstances[entry.name] = instance
+			const instance = entry.factory({ ...proxiedDependencies })
 
-			// Create a dependency proxy for later services to consume.
-			proxiedDeps[entry.name] = createDependencyProxy(
+			proxiedDependencies[entry.name] = createDependencyProxy(
 				entry.name,
 				instance,
 				() => activeInvocation
 			)
 
-			// Wrap every method so it returns an InvocationHandle.
-			const wrapped: Record<string, unknown> = {}
-			for (const key of Object.getOwnPropertyNames(Object.getPrototypeOf(instance))) {
+			const wrappedService: Record<string, unknown> = {}
+			const prototype = Object.getPrototypeOf(instance)
+
+			for (const key of Object.getOwnPropertyNames(prototype)) {
 				if (key === "constructor") continue
+
 				const method = (instance as Record<string, AsyncMethod>)[key]
-				if (typeof method === "function") {
-					wrapped[key] = (...args: unknown[]): InvocationHandleImpl<unknown> => {
-						const invocation = new InvocationHandleImpl<unknown>()
-						activeInvocation = invocation
-						const resultPromise = method.apply(instance, args)
-						invocation._setResult(resultPromise)
-						return invocation
-					}
+				if (typeof method !== "function") continue
+
+				wrappedService[key] = (...args: unknown[]): Promise<Handle<unknown>> => {
+					const invocation = new InvocationController<unknown>(() => {
+						if (activeInvocation === invocation) {
+							activeInvocation = null
+						}
+					})
+
+					activeInvocation = invocation
+					invocation.start(() => method.apply(instance, args))
+					return invocation.observe()
 				}
 			}
 
-			harness[entry.name] = wrapped
+			harness[entry.name] = wrappedService
 		}
 
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		return harness as any
 	}
 }

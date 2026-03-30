@@ -1,62 +1,66 @@
 ## Problem overview
 
-`docs/gatekeeper.md` describes a testing framework concept for pausing service-to-service async calls, but the repo does not yet have an implementation. The current testing utilities only provide fakes like `TestRemote`; they do not let tests run a real service until it blocks on a downstream dependency, inspect that blocked call, and then decide whether to allow, mock, or fail it.
+`@tandem/gatekeeper` now exists, but its current blocked-handle API still exposes intercepted request details directly as `service`, `method`, and `args`. That leaks runtime internals into tests and makes request assertions feel like manual object inspection instead of explicit gate checks.
 
-The concept note also leaves the top-level API shape ambiguous. This spec needs to lock down a concrete v1 package API that is small enough to build and test quickly.
+We want to shift the public API to matcher-based request assertions. Tests should declare the request they expect at the gate, and Gatekeeper should throw when the blocked request does not match that expectation before any downstream call is allowed through.
 
 ## Solution overview
 
-Create a new private workspace package at `packages/gatekeeper` that builds an ordered, acyclic harness of async-method-only services. Each built service method returns a thenable invocation handle instead of a raw promise: tests can call `next()` on that handle to get the next blocked downstream call, resolve that blocked call with `allow()`, `mockReturnValue()`, or `fail()`, and still assert the final top-level result by awaiting the invocation handle itself.
+Keep the await-based handle model: awaiting a harness method still yields either a resolved handle or a blocked handle. Replace the public blocked-request metadata with a required matcher object used by `allowRequest()` and a new `expectRequest()` method.
 
-Implementation should follow a test-first rhythm after the package scaffold exists: create the package first, then add the unit tests for each behavior slice before writing the implementation that makes that slice pass. Each committed phase still needs to end in a green package state.
+The matcher shape is:
+
+```ts
+type RequestMatcher = {
+	to: string | "*"
+	method: string | "*"
+	args: unknown[] | "*"
+}
+```
+
+Blocked handles keep the intercepted request internally. `allowRequest(matcher)` only resumes the invocation when the matcher matches; otherwise it throws and leaves the invocation blocked. `expectRequest(matcher)` performs the same match check without resuming the invocation. `mockReturnValue()` and `fail()` remain the escape hatches for bypassing or rejecting the blocked call.
 
 ## Goals
 
-- Add a new private `@tandem/gatekeeper` workspace package under `packages/`.
-- Build a harness from ordered service factories where later services can depend on proxy-wrapped earlier services.
-- Support services whose public API is an object of async methods.
-- Return a thenable invocation handle from built service methods so tests can both inspect blocked downstream calls and await the final top-level result.
-- Let tests resolve blocked downstream calls with `allow()`, `mockReturnValue()`, or `fail()`.
-- Support serial downstream calls within one top-level invocation via repeated `next()` calls.
+- Keep the existing ordered service-harness model for async-method-only services.
+- Keep the await-based gate semantics where awaiting a harness method yields the first observable `Handle` for that invocation.
+- Stop exposing blocked request metadata directly on the public `Handle` shape.
+- Require matcher-based assertions for allowing blocked requests through.
+- Support `"*"` wildcards for `to`, `method`, and `args` in matcher-based request assertions.
+- Add `expectRequest()` so tests can assert the blocked request shape without resuming the invocation.
+- Preserve serial downstream-call support by returning the next `Handle` from gate controls.
 
 ## Non-goals
 
 - No migrations or backfills.
 - No cyclic or bidirectional service graphs in v1.
 - No sync methods, property interception, events, streams, or non-function API members.
+- No partial matcher DSL beyond exact equality or the top-level `"*"` wildcard for each matcher field.
 - No concurrent fan-out of multiple blocked downstream calls within one top-level invocation.
-- No publish-ready API stabilization, docs polish, or workspace-wide cleanup unrelated to `@tandem/gatekeeper`.
-- No advanced matcher DSL, call history browser, debugger UI, or randomized testing in v1.
+- No debugger UI, request history browser, or post-run inspection tools in this spec.
 
 ## Future work
 
-- Allow concurrent downstream calls within a single invocation.
-- Add richer call matching APIs such as filtering by service and method name.
-- Add call history and debugging helpers for post-run inspection.
-- Make the `unwrapValue()` error message specify which downstream call the invocation is blocked on (service name, method, args).
-- Update `docs/gatekeeper.md` and `README.md` with polished examples once the API settles.
+- Support per-argument wildcards or predicate matchers instead of only exact `args` matching or `"*"`.
+- Improve mismatch errors with structured diffs between expected and actual requests.
+- Add helper factories like `request.to("server").method("addOne")` if the plain object API becomes noisy.
+- Add post-run call history helpers for assertions that do not need to happen at the gate.
 
 ## Important files/docs/websites for implementation
 
-- `docs/gatekeeper.md` — source concept and example API for Gatekeeper.
-- `package.json` — root Turbo scripts that the new package should plug into.
-- `pnpm-workspace.yaml` — confirms new packages under `packages/*` are picked up automatically.
-- `turbo.json` — shared build, type-check, lint, and test task pipeline.
-- `tsconfig.json` — root project references; update only if the new package needs to participate here.
-- `vitest.config.js` — shared Vitest configuration used across the monorepo.
-- `packages/testing/package.json` — current private testing package structure to mirror for scripts and metadata.
-- `packages/testing/src/TestRemote.ts` — existing test utility style and helper surface for Tandem.
-- `packages/core/src/utils/typeUtils.ts` — existing async API utility types that can inform Gatekeeper’s local type design.
-- `packages/core/src/query/Query.test.ts` — current Vitest test style in the repo.
-- `packages/gatekeeper/package.json` — new package manifest and scripts.
-- `packages/gatekeeper/tsconfig.json` — new package TypeScript build config.
-- `packages/gatekeeper/src/index.ts` — public exports for the package.
-- `packages/gatekeeper/src/Gatekeeper.ts` — builder, proxies, invocation handles, and intercepted call runtime.
-- `packages/gatekeeper/src/Gatekeeper.test.ts` — unit tests for the v1 API.
+- `docs/gatekeeper.md` — the original concept doc and example API; update it to show matcher-based gates instead of direct blocked-request property access.
+- `packages/gatekeeper/src/Gatekeeper.ts` — current runtime implementation; remove public request metadata, add matcher validation, and introduce `expectRequest()`.
+- `packages/gatekeeper/src/Gatekeeper.test.ts` — rewrite and extend tests to cover matcher-based `allowRequest()` and `expectRequest()` semantics.
+- `packages/gatekeeper/src/index.ts` — export the public `Handle` and matcher types that remain in the v1 surface.
+- `packages/gatekeeper/package.json` — package scripts used for `test`, `type-check`, and `build` verification.
+- `tsconfig.json` — root project references; useful only if exported type changes surface any project-reference issues.
+- `vitest.config.js` — shared Vitest config used by the package tests.
 
 ## Implementation
 
-### Phase 1: Scaffold the new package
+### Phase 1: Scaffold the package and prove the basic build loop
+
+This phase already landed. It created the package and made sure the workspace can build and type-check it independently before runtime behavior work.
 
 - [x] Create `packages/gatekeeper/package.json` as a private workspace package with `build`, `type-check`, and `lint` scripts that match the existing package conventions.
 - [x] Create `packages/gatekeeper/tsconfig.json` and `packages/gatekeeper/src/index.ts`.
@@ -65,38 +69,96 @@ Implementation should follow a test-first rhythm after the package scaffold exis
 - [x] Verify `pnpm --filter @tandem/gatekeeper type-check` passes.
 - [x] Verify `pnpm --filter @tandem/gatekeeper build` passes.
 
-### Phase 2: Add the first unit tests and the no-interception invocation handle
+### Phase 2: Prove the await-based resolved-handle baseline
+
+This phase also already landed. It established that awaiting a harness method yields a `Handle`, and that the no-downstream-call case resolves cleanly before interception logic is layered on top.
+
+```ts
+const harness = new Gatekeeper()
+	.add("counter", () => new Counter())
+	.build()
+
+const handle = await harness.counter.increment(1)
+handle.unwrapValue() // 2
+```
 
 - [x] Add a package-level `test` script and the dev dependencies needed to run Vitest in `packages/gatekeeper`.
-- [x] Write unit tests first for the base contract: a built service method returns a thenable invocation handle, `await call` resolves the final top-level return value when no downstream service call occurs, and `await call.next()` resolves `undefined` once the invocation settles without any intercepted calls.
-- [x] Implement the minimal builder and invocation-handle behavior needed to make those tests pass for services that do not call another registered service.
+- [x] Write unit tests first for the base contract: awaiting a built service method yields a resolved `Handle` when no downstream service call occurs, and `unwrapValue()` returns the final top-level value.
+- [x] Implement the minimal builder and resolved-handle behavior needed to make those tests pass for services that do not call another registered service.
 - [x] Verify `pnpm --filter @tandem/gatekeeper test` passes.
-- [x] Add a success check that `await expect(call).resolves` works in Vitest, so the thenable handle contract is proven before interception logic is added.
+- [x] Add a success check that `await harness.service.method()` can be asserted directly in Vitest, so the handle-returning method contract is proven before interception logic is added.
 
-### Phase 3: Add single-call interception and gate controls
+### Phase 3: Replace direct blocked-request metadata with matcher-based gates
 
-- [x] Write unit tests first for a later service calling an earlier service through a Gatekeeper proxy.
-- [x] Add a unit test that `await call.next()` yields intercepted call metadata with service name, method name, and arguments.
-- [x] Add a unit test that the top-level invocation remains pending until the intercepted call is resolved.
-- [x] Add a unit test that `allow()` forwards the call to the real implementation and unblocks the top-level invocation.
-- [x] Add a unit test that `mockReturnValue()` bypasses the real implementation and returns the mocked value instead.
-- [x] Add a unit test that `fail()` rejects the top-level invocation with the supplied error.
-- [x] Implement dependency proxies, intercepted call records, and single-resolution guards so `allow()`, `mockReturnValue()`, and `fail()` can only resolve a blocked call once.
-- [x] Verify `pnpm --filter @tandem/gatekeeper test` passes with all three gate behaviors.
+Reshape the public blocked-handle API so tests no longer read `service`, `method`, or `args` directly. Instead, blocked handles keep the intercepted request internal and expose matcher-based assertions through `expectRequest()` and `allowRequest(matcher)`.
 
-### Phase 4: Support serial downstream calls and enforce v1 guardrails
+```ts
+type RequestMatcher = {
+	to: string | "*"
+	method: string | "*"
+	args: unknown[] | "*"
+}
 
-- [ ] Write unit tests first for a top-level invocation that produces two downstream calls in sequence and requires `next()` to return them in order.
-- [ ] Add a unit test that `next()` returns `undefined` after the top-level invocation settles and the blocked-call queue is drained.
-- [ ] Add a unit test that concurrent fan-out of multiple blocked downstream calls fails fast with a clear v1 scope error.
-- [ ] Implement per-invocation sequencing so serial downstream calls are observable one at a time through repeated `next()` calls.
-- [ ] Implement a runtime guard that detects concurrent pending downstream calls within the same invocation and throws a descriptive error.
-- [ ] Verify `pnpm --filter @tandem/gatekeeper test` passes for both ordered sequencing and the guardrail case.
+const handle = await harness.client.addOneThroughServer(1)
 
-### Phase 5: Tighten the exported API surface for package use
+handle.expectRequest({ to: "server", method: "addOne", args: [1] })
+const result = await handle.allowRequest({ to: "server", method: "addOne", args: [1] })
+```
 
-- [ ] Export the public runtime types for the v1 surface from `packages/gatekeeper/src/index.ts`, including the builder, invocation handle, and intercepted call handle types.
-- [ ] Keep the TypeScript surface intentionally simple: explicit annotations in service factories are acceptable in v1, but the built harness should still expose correctly typed service methods and thenable invocation handles.
-- [ ] Add at least one compile-time usage example in the package tests or source that proves later service factories can consume earlier services without resorting to `any`.
-- [ ] Verify `pnpm --filter @tandem/gatekeeper type-check` passes with the exported types.
-- [ ] Verify `pnpm --filter @tandem/gatekeeper build && pnpm --filter @tandem/gatekeeper test` passes.
+- [ ] Remove `service`, `method`, and `args` from the public `Handle` interface in `packages/gatekeeper/src/Gatekeeper.ts`.
+- [ ] Introduce a public `RequestMatcher` type with required `to`, `method`, and `args` fields, where each field accepts either an exact value or `"*"`.
+- [ ] Add `expectRequest(matcher)` to blocked handles; it should throw on mismatch and leave the invocation blocked when the matcher does not match.
+- [ ] Rename `allow()` to `allowRequest()` and require a `RequestMatcher`; it should throw on mismatch and only resume the invocation when the matcher matches.
+- [ ] Keep `mockReturnValue()` and `fail()` available for bypassing or rejecting the blocked call without forwarding to the real implementation.
+- [ ] Add a unit test that `expectRequest({ to: "server", method: "addOne", args: [1] })` succeeds for the blocked request and does not unblock the invocation.
+- [ ] Add a unit test that `allowRequest({ to: "server", method: "addOne", args: [1] })` forwards the real request and returns the next `Handle`.
+- [ ] Add a unit test that a mismatched `allowRequest(...)` throws and the blocked invocation can still be resolved afterward with a matching gate action.
+- [ ] Add a unit test that each matcher field accepts `"*"` and matches successfully when used as a wildcard.
+- [ ] Verify `pnpm --filter @tandem/gatekeeper test` passes.
+- [ ] Verify `pnpm --filter @tandem/gatekeeper type-check` passes.
+
+### Phase 4: Preserve serial-call sequencing and guardrails under the matcher API
+
+Carry the matcher-based API through multi-step invocations. Each successful gate control should return the next `Handle`, and the existing v1 guardrail against concurrent blocked fan-out should remain explicit and test-covered.
+
+```ts
+const first = await harness.client.doTwoCalls()
+first.expectRequest({ to: "server", method: "stepOne", args: [1] })
+
+const second = await first.allowRequest({ to: "server", method: "stepOne", args: [1] })
+second.expectRequest({ to: "server", method: "stepTwo", args: [2] })
+
+const done = await second.mockReturnValue(3)
+done.unwrapValue()
+```
+
+- [ ] Add a unit test for two downstream calls in sequence where the first successful gate action returns the second blocked `Handle`.
+- [ ] Add a unit test that the final successful gate action returns a resolved `Handle` after the invocation finishes.
+- [ ] Add a unit test that `expectRequest()` does not count as resolving the gate, so a later `allowRequest()`, `mockReturnValue()`, or `fail()` still works exactly once.
+- [ ] Add a unit test that concurrent fan-out of multiple blocked downstream calls still fails fast with a clear v1 scope error.
+- [ ] Keep the single-resolution guard so only one successful gate control (`allowRequest`, `mockReturnValue`, or `fail`) can resolve a blocked call.
+- [ ] Verify `pnpm --filter @tandem/gatekeeper test` passes for both serial sequencing and the concurrent-call guardrail.
+
+### Phase 5: Tighten the exported API surface and docs around the matcher model
+
+Once the runtime behavior is correct, make the public surface explicit and document the new matcher-first API. This phase should leave package consumers with a clean exported type story and examples that no longer mention direct blocked-request property access.
+
+```ts
+export type RequestMatcher = {
+	to: string | "*"
+	method: string | "*"
+	args: unknown[] | "*"
+}
+
+export type { Handle } from "./Gatekeeper.js"
+export { Gatekeeper } from "./Gatekeeper.js"
+```
+
+- [ ] Export `RequestMatcher` from `packages/gatekeeper/src/index.ts` alongside `Handle` and `Gatekeeper`.
+- [ ] Keep the TypeScript surface intentionally simple: explicit annotations in service factories are acceptable in v1, but built harness methods should still expose correctly typed handle-returning promises.
+- [ ] Add at least one compile-time usage example in package tests or source that proves later service factories can consume earlier services without resorting to `any` while using the matcher-based API.
+- [ ] Update any remaining package examples, docs, and test-facing API references from `allow()` to `allowRequest()` and from direct blocked-request property access to matcher-based assertions.
+- [ ] Update `docs/gatekeeper.md` to show `expectRequest()` and `allowRequest({ to, method, args })` instead of direct `service` / `method` / `args` property access.
+- [ ] Verify `pnpm --filter @tandem/gatekeeper build` passes.
+- [ ] Verify `pnpm --filter @tandem/gatekeeper type-check` passes.
+- [ ] Verify `pnpm --filter @tandem/gatekeeper test` passes.
