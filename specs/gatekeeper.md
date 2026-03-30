@@ -33,6 +33,7 @@ Implementation should follow a test-first rhythm after the package scaffold exis
 - Allow concurrent downstream calls within a single invocation.
 - Add richer call matching APIs such as filtering by service and method name.
 - Add call history and debugging helpers for post-run inspection.
+- Make the `unwrapValue()` error message specify which downstream call the invocation is blocked on (service name, method, args).
 - Update `docs/gatekeeper.md` and `README.md` with polished examples once the API settles.
 
 ## Important files/docs/websites for implementation
@@ -66,11 +67,11 @@ Implementation should follow a test-first rhythm after the package scaffold exis
 
 ### Phase 2: Add the first unit tests and the no-interception invocation handle
 
-- [ ] Add a package-level `test` script and the dev dependencies needed to run Vitest in `packages/gatekeeper`.
-- [ ] Write unit tests first for the base contract: a built service method returns a thenable invocation handle, `await call` resolves the final top-level return value when no downstream service call occurs, and `await call.next()` resolves `undefined` once the invocation settles without any intercepted calls.
-- [ ] Implement the minimal builder and invocation-handle behavior needed to make those tests pass for services that do not call another registered service.
-- [ ] Verify `pnpm --filter @tandem/gatekeeper test` passes.
-- [ ] Add a success check that `await expect(call).resolves` works in Vitest, so the thenable handle contract is proven before interception logic is added.
+- [x] Add a package-level `test` script and the dev dependencies needed to run Vitest in `packages/gatekeeper`.
+- [x] Write unit tests first for the base contract: a built service method returns a thenable invocation handle, `await call` resolves the final top-level return value when no downstream service call occurs, and `await call.next()` resolves `undefined` once the invocation settles without any intercepted calls.
+- [x] Implement the minimal builder and invocation-handle behavior needed to make those tests pass for services that do not call another registered service.
+- [x] Verify `pnpm --filter @tandem/gatekeeper test` passes.
+- [x] Add a success check that `await expect(call).resolves` works in Vitest, so the thenable handle contract is proven before interception logic is added.
 
 ### Phase 3: Add single-call interception and gate controls
 
