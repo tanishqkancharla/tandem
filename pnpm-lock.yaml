@@ -63,6 +63,9 @@ importers:
         specifier: ^2.2.4
         version: 2.2.4
     devDependencies:
+      '@tandem/gatekeeper':
+        specifier: workspace:*
+        version: link:../gatekeeper
       typescript:
         specifier: ^5.7.2
         version: 5.8.3

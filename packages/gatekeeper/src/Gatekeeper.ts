@@ -344,6 +344,25 @@ class BlockedHandle<T, TServices extends ServiceMap>
 // ---- Dependency proxy -------------------------------------------------------
 
 /**
+ * Resolve a service property to an interceptable function call when possible.
+ */
+function getInterceptableMethod(
+	realInstance: object,
+	property: PropertyKey
+): { name: string; method: AsyncMethod } | null {
+	if (typeof property !== "string" || property === "constructor") {
+		return null
+	}
+
+	const value = Reflect.get(realInstance, property, realInstance)
+	if (typeof value !== "function") {
+		return null
+	}
+
+	return { name: property, method: value as AsyncMethod }
+}
+
+/**
  * Create a proxy object for a service that intercepts method calls and routes
  * them through the currently active top-level invocation.
  */
@@ -352,28 +371,45 @@ function createDependencyProxy<TServices extends ServiceMap>(
 	realInstance: object,
 	getActiveInvocation: () => InvocationController<unknown, TServices> | null
 ): object {
-	const proxy: Record<string, unknown> = {}
-	const prototype = Object.getPrototypeOf(realInstance)
-
-	for (const key of Object.getOwnPropertyNames(prototype)) {
-		if (key === "constructor") continue
-
-		const realMethod = (realInstance as Record<string, AsyncMethod>)[key]
-		if (typeof realMethod !== "function") continue
-
-		proxy[key] = (...args: unknown[]): Promise<unknown> => {
-			const activeInvocation = getActiveInvocation()
-			if (!activeInvocation) {
-				return realMethod.apply(realInstance, args)
+	return new Proxy(realInstance, {
+		get(target, property) {
+			const interceptable = getInterceptableMethod(target, property)
+			if (!interceptable) {
+				return Reflect.get(target, property, target)
 			}
 
-			return activeInvocation.blockOnCall(serviceName, key, args, () =>
-				realMethod.apply(realInstance, args)
-			)
-		}
-	}
+			return (...args: unknown[]): Promise<unknown> => {
+				const activeInvocation = getActiveInvocation()
+				if (!activeInvocation) {
+					return interceptable.method.apply(target, args)
+				}
 
-	return proxy
+				return activeInvocation.blockOnCall(
+					serviceName,
+					interceptable.name,
+					args,
+					() => interceptable.method.apply(target, args)
+				)
+			}
+		},
+	})
+}
+
+function createHarnessServiceProxy<TServices extends ServiceMap>(
+	realInstance: object,
+	startInvocation: (run: () => Promise<unknown>) => Promise<Handle<unknown, TServices>>
+): object {
+	return new Proxy(realInstance, {
+		get(target, property) {
+			const interceptable = getInterceptableMethod(target, property)
+			if (!interceptable) {
+				return Reflect.get(target, property, target)
+			}
+
+			return (...args: unknown[]): Promise<Handle<unknown, TServices>> =>
+				startInvocation(() => interceptable.method.apply(target, args))
+		},
+	})
 }
 
 // ---- Service type utilities -------------------------------------------------
@@ -425,7 +461,7 @@ export class Gatekeeper<TServices extends Record<string, object> = {}> {
 	 */
 	build(): { [K in keyof TServices]: HandleWrapped<TServices, TServices[K]> } {
 		const proxiedDependencies: Record<string, object> = {}
-		const harness: Record<string, Record<string, unknown>> = {}
+		const harness: Record<string, object> = {}
 
 		let activeInvocation: InvocationController<unknown, TServices> | null = null
 
@@ -438,33 +474,20 @@ export class Gatekeeper<TServices extends Record<string, object> = {}> {
 				() => activeInvocation
 			)
 
-			const wrappedService: Record<string, unknown> = {}
-			const prototype = Object.getPrototypeOf(instance)
-
-			for (const key of Object.getOwnPropertyNames(prototype)) {
-				if (key === "constructor") continue
-
-				const method = (instance as Record<string, AsyncMethod>)[key]
-				if (typeof method !== "function") continue
-
-				wrappedService[key] = (
-					...args: unknown[]
-				): Promise<Handle<unknown, TServices>> => {
-					const invocation = new InvocationController<unknown, TServices>(
-						() => {
-							if (activeInvocation === invocation) {
-								activeInvocation = null
-							}
-						},
-					)
+			harness[entry.name] = createHarnessServiceProxy<TServices>(
+				instance,
+				(run) => {
+					const invocation = new InvocationController<unknown, TServices>(() => {
+						if (activeInvocation === invocation) {
+							activeInvocation = null
+						}
+					})
 
 					activeInvocation = invocation
-					invocation.start(() => method.apply(instance, args))
+					invocation.start(run)
 					return invocation.observe()
 				}
-			}
-
-			harness[entry.name] = wrappedService
+			)
 		}
 
 		return harness as any

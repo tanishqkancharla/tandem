@@ -134,6 +134,46 @@ describe("Gatekeeper", () => {
 			expect(result.unwrapValue()).toBe(2)
 		})
 
+		test("intercepts async methods defined as instance properties", async () => {
+			class FieldServer {
+				callCount = 0
+
+				addOne = async (value: number): Promise<number> => {
+					this.callCount += 1
+					return value + 1
+				}
+			}
+
+			class FieldClient {
+				constructor(private readonly server: FieldServer) {}
+
+				addOneThroughServer = async (value: number): Promise<number> => {
+					return await this.server.addOne(value)
+				}
+			}
+
+			const server = new FieldServer()
+			const harness = new Gatekeeper()
+				.add("server", () => server)
+				.add("client", ({ server }) => new FieldClient(server))
+				.build()
+
+			const handle = await harness.client.addOneThroughServer(1)
+
+			expect(handle.resolved).toBe(false)
+			handle.expectRequest({ to: "server", method: "addOne", args: [1] })
+			expect(server.callCount).toBe(0)
+
+			const result = await handle.allowRequest({
+				to: "server",
+				method: "addOne",
+				args: [1],
+			})
+
+			expect(server.callCount).toBe(1)
+			expect(result.unwrapValue()).toBe(2)
+		})
+
 			test("keeps the request blocked after a mismatched allowRequest() so the test can recover", async () => {
 				const { harness, server } = buildHarness()
 				const handle = await harness.client.addOneThroughServer(1)
