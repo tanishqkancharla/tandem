@@ -66,6 +66,9 @@ importers:
       '@tandem/gatekeeper':
         specifier: workspace:*
         version: link:../gatekeeper
+      '@tandem/testing':
+        specifier: workspace:*
+        version: link:../testing
       typescript:
         specifier: ^5.7.2
         version: 5.8.3

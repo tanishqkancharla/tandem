@@ -1,17 +1,9 @@
 import { Gatekeeper } from "@tandem/gatekeeper"
-import type {
-	ClientApi,
-	ClientId,
-	Cookie,
-	MutationId,
-	Patch,
-	RemoteApi,
-	RngApi,
-} from "@tandem/types"
+import { TestRemote } from "@tandem/testing"
+import type { ClientId, Cookie, Mutation, MutationId, RngApi } from "@tandem/types"
 import { describe, expect, test as base, vi } from "vitest"
 import { TandemClient } from "./TandemClient"
 import type { LoggerApi } from "./utils/Logger"
-import type { AsyncUnsubscribe } from "./utils/typeUtils"
 
 type Todo = {
 	id: string
@@ -25,7 +17,10 @@ type TodosSchema = {
 
 const CLIENT_ID = "client-1" as ClientId
 const MUTATION_1 = "mutation-1" as MutationId
-const MUTATION_2 = "mutation-2" as MutationId
+const SERVER_CLIENT_1 = "server-client-1" as ClientId
+const SERVER_CLIENT_2 = "server-client-2" as ClientId
+const SERVER_MUTATION_1 = "server-mutation-1" as MutationId
+const SERVER_MUTATION_2 = "server-mutation-2" as MutationId
 const SYNC_INTERVAL = 5
 const TODOS_QUERY = { collection: "todos", select: "*" } as const
 
@@ -60,140 +55,27 @@ class SequenceRng implements RngApi {
 	}
 }
 
-type PullResponse = Awaited<ReturnType<RemoteApi<TodosSchema>["pull"]>>
-
-class ScriptedRemote implements RemoteApi<TodosSchema> {
-	readonly pushCalls: Array<Parameters<RemoteApi<TodosSchema>["push"]>[0]> = []
-	readonly pullCalls: Array<Parameters<RemoteApi<TodosSchema>["pull"]>[0]> = []
-	readonly connectedClientIds: ClientId[] = []
-
-	private readonly clients = new Map<ClientId, ClientApi>()
-	private readonly pullResponses: PullResponse[] = []
-
-	enqueuePullResponse(response: PullResponse): void {
-		this.pullResponses.push(response)
-	}
-
-	pokeAll(): void {
-		for (const client of this.clients.values()) {
-			client.poke()
-		}
-	}
-
-	async connect(api: ClientApi): Promise<AsyncUnsubscribe> {
-		this.connectedClientIds.push(api.clientId)
-		this.clients.set(api.clientId, api)
-
-		return async () => {
-			this.clients.delete(api.clientId)
-		}
-	}
-
-	async push(
-		args: Parameters<RemoteApi<TodosSchema>["push"]>[0],
-	): Promise<void> {
-		this.pushCalls.push(args)
-	}
-
-	async pull(
-		args: Parameters<RemoteApi<TodosSchema>["pull"]>[0],
-	): Promise<PullResponse> {
-		this.pullCalls.push(args)
-
-		const next = this.pullResponses.shift()
-		if (!next) {
-			throw new Error("No scripted pull response available")
-		}
-
-		return next
-	}
-}
-
-class TandemAppService {
-	private readonly client: TandemClient<TodosSchema>
-	private subscription?: { destroy: () => void }
-
-	constructor(args: {
-		remote: RemoteApi<TodosSchema>
-		rng: RngApi
-	}) {
-		this.client = new TandemClient<TodosSchema>({
-			remote: args.remote,
-			rng: args.rng,
-			logger: new SilentLogger(),
-			autoConnect: false,
-			syncInterval: SYNC_INTERVAL,
-		})
-	}
-
-	async connectWithTodosSubscription(): Promise<Todo[]> {
-		await this.client.ready
-		this.subscription = this.client.subscribe(
-			"todos",
-			(query) => query.select("*"),
-			() => {},
-		)
-
-		await this.client.connect()
-		return await this.readTodos()
-	}
-
-	async commitTodo(todo: Todo): Promise<Todo[]> {
-		await this.client.ready
-
-		const tx = this.client.transact()
-		tx.set("todos", todo)
-
-		await this.client.commit(tx)
-
-		return await this.readTodos()
-	}
-
-	async pullAndRead(): Promise<Todo[]> {
-		await this.client.ready
-
-		await this.client.pullFromRemote()
-
-		return await this.readTodos()
-	}
-
-	async readTodos(): Promise<Todo[]> {
-		await this.client.ready
-		return this.client.run("todos", (query) => query.select("*"))
-	}
-
-	cleanup(): void {
-		this.subscription?.destroy()
-		this.subscription = undefined
-	}
+async function readTodos(client: TandemClient<TodosSchema>): Promise<Todo[]> {
+	await client.ready
+	return client.run("todos", (query) => query.select("*"))
 }
 
 function cookie(value: number): Cookie {
 	return value as Cookie
 }
 
-function pullResponse(args: {
-	cookie: number
-	patch?: Patch<TodosSchema>
-	lastMutationId?: MutationId
-}): PullResponse {
+function todoMutation(mutationId: MutationId, todo: Todo): Mutation<TodosSchema> {
 	return {
-		cookie: cookie(args.cookie),
-		patch: args.patch ?? { set: [], remove: [] },
-		lastMutationId: args.lastMutationId,
+		id: mutationId,
+		ops: [{ type: "set", collection: "todos", value: todo }],
 	}
 }
 
 function pushRequest(mutationId: MutationId, todo: Todo) {
-	const args: Parameters<RemoteApi<TodosSchema>["push"]> = [
+	const args: Parameters<TestRemote<TodosSchema>["push"]> = [
 		{
 			clientId: CLIENT_ID,
-			mutations: [
-				{
-					id: mutationId,
-					ops: [{ type: "set", collection: "todos", value: todo }],
-				},
-			],
+			mutations: [todoMutation(mutationId, todo)],
 		},
 	]
 
@@ -205,7 +87,7 @@ function pushRequest(mutationId: MutationId, todo: Todo) {
 }
 
 function pullRequest(currentCookie: Cookie | undefined) {
-	const args: Parameters<RemoteApi<TodosSchema>["pull"]> = [
+	const args: Parameters<TestRemote<TodosSchema>["pull"]> = [
 		{
 			clientId: CLIENT_ID,
 			cookie: currentCookie,
@@ -220,27 +102,81 @@ function pullRequest(currentCookie: Cookie | undefined) {
 	}
 }
 
-function createTandemFixture() {
-	const remote = new ScriptedRemote()
-	const rng = new SequenceRng([
-		CLIENT_ID,
-		MUTATION_1,
-		MUTATION_2,
-		"mutation-3",
-		"mutation-4",
-	])
+async function seedRemoteMutations(
+	remote: TestRemote<TodosSchema>,
+	clientId: ClientId,
+	mutations: Mutation<TodosSchema>[]
+) {
+	const disconnect = await remote.connect({ clientId, poke: () => {} })
 
-	let app!: TandemAppService
+	try {
+		await remote.push({ clientId, mutations })
+	} finally {
+		await disconnect()
+	}
+}
+
+function createTandemFixture() {
+	const remote = new TestRemote<TodosSchema>({ logger: new SilentLogger() })
+	const rng = new SequenceRng([CLIENT_ID, MUTATION_1, "mutation-2", "mutation-3"])
+
+	let client!: TandemClient<TodosSchema>
+	let destroySubscription: (() => void) | undefined
 
 	const harness = new Gatekeeper()
 		.add("remote", () => remote)
-		.add("app", ({ remote }) => {
-			app = new TandemAppService({ remote, rng })
-			return app
+		.add("flows", ({ remote }) => {
+			client = new TandemClient<TodosSchema>({
+				remote,
+				rng,
+				logger: new SilentLogger(),
+				autoConnect: false,
+				syncInterval: SYNC_INTERVAL,
+			})
+
+			return {
+				async connectWithTodosSubscription(): Promise<Todo[]> {
+					await client.ready
+
+					const subscription = client.subscribe(
+						"todos",
+						(query) => query.select("*"),
+						() => {},
+					)
+					destroySubscription = subscription.destroy
+
+					await client.connect()
+					return await readTodos(client)
+				},
+
+				async commitTodo(todo: Todo): Promise<Todo[]> {
+					await client.ready
+
+					const tx = client.transact()
+					tx.set("todos", todo)
+
+					await client.commit(tx)
+					return await readTodos(client)
+				},
+
+				async pullAndRead(): Promise<Todo[]> {
+					await client.ready
+					await client.pullFromRemote()
+					return await readTodos(client)
+				},
+			}
 		})
 		.build()
 
-	return { harness, remote, app }
+	return {
+		harness,
+		remote,
+		readTodos: () => readTodos(client),
+		cleanup() {
+			destroySubscription?.()
+			destroySubscription = undefined
+		},
+	}
 }
 
 type TandemFixture = ReturnType<typeof createTandemFixture> & {
@@ -266,7 +202,7 @@ const test = base.extend<{ tandem: TandemFixture }>({
 		try {
 			await use(tandem)
 		} finally {
-			tandem.app.cleanup()
+			tandem.cleanup()
 			vi.clearAllTimers()
 			vi.useRealTimers()
 		}
@@ -279,13 +215,8 @@ async function letInvocationSchedule() {
 	await Promise.resolve()
 }
 
-async function connectAndHydrate(
-	tandem: TandemFixture,
-	response: PullResponse = pullResponse({ cookie: 0 }),
-) {
-	tandem.remote.enqueuePullResponse(response)
-
-	const connecting = await tandem.harness.app.connectWithTodosSubscription()
+async function connectAndHydrate(tandem: TandemFixture) {
+	const connecting = await tandem.harness.flows.connectWithTodosSubscription()
 	connecting.expectRequest({ to: "remote", method: "connect", args: "*" })
 
 	const pullingPromise = connecting.allowRequest({
@@ -309,19 +240,17 @@ describe("TandemClient with Gatekeeper", () => {
 			complete: false,
 		}
 
-		const done = await connectAndHydrate(
-			tandem,
-			pullResponse({
-				cookie: 0,
-				patch: {
-					set: [{ collection: "todos", value: remoteTodo }],
-				},
-			}),
-		)
+		await seedRemoteMutations(tandem.remote, SERVER_CLIENT_1, [
+			todoMutation(SERVER_MUTATION_1, remoteTodo),
+		])
+
+		const done = await connectAndHydrate(tandem)
 
 		expect(done.unwrapValue()).toEqual([remoteTodo])
-		expect(await tandem.app.readTodos()).toEqual([remoteTodo])
-		expect(tandem.remote.connectedClientIds).toEqual([CLIENT_ID])
+		expect(await tandem.readTodos()).toEqual([remoteTodo])
+		expect(tandem.remote.getMutations()).toEqual([
+			todoMutation(SERVER_MUTATION_1, remoteTodo),
+		])
 	})
 
 	test("a commit is optimistic locally and then gets pushed to the remote", async ({ tandem }) => {
@@ -331,28 +260,21 @@ describe("TandemClient with Gatekeeper", () => {
 			complete: false,
 		}
 
-		const pushingPromise = tandem.harness.app.commitTodo(todo)
+		const connected = await connectAndHydrate(tandem)
+		expect(connected.unwrapValue()).toEqual([])
+
+		const pushingPromise = tandem.harness.flows.commitTodo(todo)
 		await letInvocationSchedule()
 		await tandem.advanceTime()
 		const pushing = await pushingPromise
 		pushing.expectRequest(pushRequest(MUTATION_1, todo))
 
-		expect(await tandem.app.readTodos()).toEqual([todo])
+		expect(await tandem.readTodos()).toEqual([todo])
 
 		const done = await pushing.allowRequest(pushRequest(MUTATION_1, todo))
 
 		expect(done.unwrapValue()).toEqual([todo])
-		expect(tandem.remote.pushCalls).toEqual([
-			{
-				clientId: CLIENT_ID,
-				mutations: [
-					{
-						id: MUTATION_1,
-						ops: [{ type: "set", collection: "todos", value: todo }],
-					},
-				],
-			},
-		])
+		expect(tandem.remote.getMutations()).toEqual([todoMutation(MUTATION_1, todo)])
 	})
 
 	test("a failed push rolls back the optimistic local change", async ({ tandem }) => {
@@ -362,30 +284,28 @@ describe("TandemClient with Gatekeeper", () => {
 			complete: false,
 		}
 
-		const pushingPromise = tandem.harness.app.commitTodo(todo)
+		const connected = await connectAndHydrate(tandem)
+		expect(connected.unwrapValue()).toEqual([])
+
+		const pushingPromise = tandem.harness.flows.commitTodo(todo)
 		await letInvocationSchedule()
 		await tandem.advanceTime()
 		const pushing = await pushingPromise
 		pushing.expectRequest(pushRequest(MUTATION_1, todo))
 
-		expect(await tandem.app.readTodos()).toEqual([todo])
+		expect(await tandem.readTodos()).toEqual([todo])
 
 		const done = await pushing.fail(new Error("remote down"))
 
 		expect(done.unwrapValue()).toEqual([])
-		expect(await tandem.app.readTodos()).toEqual([])
-		expect(tandem.remote.pushCalls).toEqual([])
+		expect(await tandem.readTodos()).toEqual([])
+		expect(tandem.remote.getMutations()).toEqual([])
 	})
 
-	test("a pull rebases acknowledged server state under a still-speculative local mutation", async ({ tandem }) => {
-		const serverVersion: Todo = {
+	test("a pull acknowledges local remote state and applies changes from another client", async ({ tandem }) => {
+		const localTodo: Todo = {
 			id: "todo-1",
-			text: "from server",
-			complete: false,
-		}
-		const localVersion: Todo = {
-			id: "todo-1",
-			text: "edited locally",
+			text: "local edit",
 			complete: true,
 		}
 		const extraRemoteTodo: Todo = {
@@ -397,39 +317,18 @@ describe("TandemClient with Gatekeeper", () => {
 		const connected = await connectAndHydrate(tandem)
 		expect(connected.unwrapValue()).toEqual([])
 
-		const firstPushPromise = tandem.harness.app.commitTodo(serverVersion)
+		const pushingPromise = tandem.harness.flows.commitTodo(localTodo)
 		await letInvocationSchedule()
 		await tandem.advanceTime()
-		const firstPush = await firstPushPromise
-		const firstDone = await firstPush.allowRequest(
-			pushRequest(MUTATION_1, serverVersion),
-		)
-		expect(firstDone.unwrapValue()).toEqual([serverVersion])
+		const pushing = await pushingPromise
+		const pushed = await pushing.allowRequest(pushRequest(MUTATION_1, localTodo))
+		expect(pushed.unwrapValue()).toEqual([localTodo])
 
-		const secondPushPromise = tandem.harness.app.commitTodo(localVersion)
-		await letInvocationSchedule()
-		await tandem.advanceTime()
-		const secondPush = await secondPushPromise
-		expect(await tandem.app.readTodos()).toEqual([localVersion])
-		const secondDone = await secondPush.allowRequest(
-			pushRequest(MUTATION_2, localVersion),
-		)
-		expect(secondDone.unwrapValue()).toEqual([localVersion])
+		await seedRemoteMutations(tandem.remote, SERVER_CLIENT_2, [
+			todoMutation(SERVER_MUTATION_2, extraRemoteTodo),
+		])
 
-		tandem.remote.enqueuePullResponse(
-			pullResponse({
-				cookie: 1,
-				lastMutationId: MUTATION_1,
-				patch: {
-					set: [
-						{ collection: "todos", value: serverVersion },
-						{ collection: "todos", value: extraRemoteTodo },
-					],
-				},
-			}),
-		)
-
-		const pullingPromise = tandem.harness.app.pullAndRead()
+		const pullingPromise = tandem.harness.flows.pullAndRead()
 		await letInvocationSchedule()
 		await tandem.advanceTime()
 		const pulling = await pullingPromise
@@ -437,7 +336,11 @@ describe("TandemClient with Gatekeeper", () => {
 
 		const done = await pulling.allowRequest(pullRequest(cookie(0)))
 
-		expect(done.unwrapValue()).toEqual([localVersion, extraRemoteTodo])
-		expect(await tandem.app.readTodos()).toEqual([localVersion, extraRemoteTodo])
+		expect(done.unwrapValue()).toEqual([localTodo, extraRemoteTodo])
+		expect(await tandem.readTodos()).toEqual([localTodo, extraRemoteTodo])
+		expect(tandem.remote.getMutations()).toEqual([
+			todoMutation(MUTATION_1, localTodo),
+			todoMutation(SERVER_MUTATION_2, extraRemoteTodo),
+		])
 	})
 })
