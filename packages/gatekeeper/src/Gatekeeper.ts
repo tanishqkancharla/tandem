@@ -10,6 +10,48 @@ import { isEqual } from "lodash-es"
  * - a blocked handle if it suspended on a downstream service call
  */
 
+type AsyncMethod = (...args: any[]) => Promise<any>
+type ServiceMap = Record<string, object>
+type UnknownServices = Record<string, { [method: string]: AsyncMethod }>
+
+type AsyncMethodKeys<TService extends object> = Extract<
+	{
+		[K in keyof TService]: TService[K] extends AsyncMethod ? K : never
+	}[keyof TService],
+	string
+>
+
+type AsyncMethodArgs<
+	TService extends object,
+	TMethod extends AsyncMethodKeys<TService>,
+> = TService[TMethod] extends (...args: infer A) => Promise<any> ? A : never
+
+type ServiceNames<TServices extends ServiceMap> = Extract<keyof TServices, string>
+
+type ServiceMethodNames<TServices extends ServiceMap> = Extract<
+	{
+		[TService in ServiceNames<TServices>]: AsyncMethodKeys<TServices[TService]>
+	}[ServiceNames<TServices>],
+	string
+>
+
+type ServiceRequestMatcher<
+	TServices extends ServiceMap,
+	TServiceName extends ServiceNames<TServices>,
+> =
+	| {
+			to: TServiceName
+			method: "*"
+			args: unknown[] | "*"
+	  }
+	| {
+			[TMethod in AsyncMethodKeys<TServices[TServiceName]>]: {
+				to: TServiceName
+				method: TMethod
+				args: AsyncMethodArgs<TServices[TServiceName], TMethod> | "*"
+			}
+	  }[AsyncMethodKeys<TServices[TServiceName]>]
+
 // ---- Public interfaces ------------------------------------------------------
 
 /**
@@ -20,13 +62,20 @@ import { isEqual } from "lodash-es"
  * asserted/resumed with `expectRequest()`, `allowRequest()`,
  * `mockReturnValue()`, or `fail()`.
  */
-export type RequestMatcher = {
-	to: string | "*"
-	method: string | "*"
-	args: unknown[] | "*"
-}
+export type RequestMatcher<TServices extends ServiceMap = UnknownServices> =
+	| {
+			to: "*"
+			method: ServiceMethodNames<TServices> | "*"
+			args: unknown[] | "*"
+	  }
+	| {
+			[TServiceName in ServiceNames<TServices>]: ServiceRequestMatcher<
+				TServices,
+				TServiceName
+			>
+	  }[ServiceNames<TServices>]
 
-export interface Handle<T> {
+export interface Handle<T, TServices extends ServiceMap = UnknownServices> {
 	/** Whether the invocation has already resolved to a final value. */
 	readonly resolved: boolean
 
@@ -34,18 +83,16 @@ export interface Handle<T> {
 	unwrapValue(): T
 
 	/** Assert the currently blocked downstream request without unblocking it. */
-	expectRequest(matcher: RequestMatcher): void
+	expectRequest(matcher: RequestMatcher<TServices>): void
 	/** Forward the blocked downstream call to the real implementation. */
-	allowRequest(matcher: RequestMatcher): Promise<Handle<T>>
+	allowRequest(matcher: RequestMatcher<TServices>): Promise<Handle<T, TServices>>
 	/** Resolve the blocked downstream call with a mocked value. */
-	mockReturnValue(value: unknown): Promise<Handle<T>>
+	mockReturnValue(value: unknown): Promise<Handle<T, TServices>>
 	/** Reject the blocked downstream call with the supplied error. */
-	fail(error: Error): Promise<Handle<T>>
+	fail(error: Error): Promise<Handle<T, TServices>>
 }
 
 // ---- Internal helpers -------------------------------------------------------
-
-type AsyncMethod = (...args: any[]) => Promise<any>
 
 type Deferred<T> = {
 	promise: Promise<T>
@@ -57,6 +104,12 @@ type BlockedRequest = {
 	to: string
 	method: string
 	args: unknown[]
+}
+
+type LooseRequestMatcher = {
+	to: string | "*"
+	method: string | "*"
+	args: unknown[] | "*"
 }
 
 const CONCURRENT_BLOCKED_CALLS_ERROR =
@@ -76,7 +129,7 @@ function createDeferred<T>(): Deferred<T> {
 
 function matchesRequest(
 	request: BlockedRequest,
-	matcher: RequestMatcher
+	matcher: LooseRequestMatcher
 ): boolean {
 	return (
 		(matcher.to === "*" || matcher.to === request.to) &&
@@ -95,7 +148,7 @@ function stringifyForError(value: unknown): string {
 
 function assertRequestMatches(
 	request: BlockedRequest,
-	matcher: RequestMatcher
+	matcher: LooseRequestMatcher
 ): void {
 	if (matchesRequest(request, matcher)) {
 		return
@@ -109,7 +162,9 @@ function assertRequestMatches(
 }
 
 /** Concrete handle for a completed invocation. */
-class ResolvedHandle<T> implements Handle<T> {
+class ResolvedHandle<T, TServices extends ServiceMap>
+	implements Handle<T, TServices>
+{
 	readonly resolved = true
 
 	constructor(private readonly value: T) {}
@@ -118,33 +173,33 @@ class ResolvedHandle<T> implements Handle<T> {
 		return this.value
 	}
 
-	expectRequest(_matcher: RequestMatcher): void {
+	expectRequest(_matcher: RequestMatcher<TServices>): void {
 		throw new Error("Invocation is already resolved")
 	}
 
-	allowRequest(_matcher: RequestMatcher): Promise<Handle<T>> {
+	allowRequest(_matcher: RequestMatcher<TServices>): Promise<Handle<T, TServices>> {
 		return Promise.reject(new Error("Invocation is already resolved"))
 	}
 
-	mockReturnValue(_value: unknown): Promise<Handle<T>> {
+	mockReturnValue(_value: unknown): Promise<Handle<T, TServices>> {
 		return Promise.reject(new Error("Invocation is already resolved"))
 	}
 
-	fail(_error: Error): Promise<Handle<T>> {
+	fail(_error: Error): Promise<Handle<T, TServices>> {
 		return Promise.reject(new Error("Invocation is already resolved"))
 	}
 }
 
-class InvocationController<T> {
-	private nextHandle = createDeferred<Handle<T>>()
-	private activeBlockedHandle: BlockedHandle<T> | null = null
+class InvocationController<T, TServices extends ServiceMap> {
+	private nextHandle = createDeferred<Handle<T, TServices>>()
+	private activeBlockedHandle: BlockedHandle<T, TServices> | null = null
 	private blockedWhileSettledReason: unknown = null
 
 	constructor(private readonly onSettled: () => void) {
 		this.nextHandle.promise.catch(() => {})
 	}
 
-	observe(): Promise<Handle<T>> {
+	observe(): Promise<Handle<T, TServices>> {
 		return this.nextHandle.promise
 	}
 
@@ -153,7 +208,7 @@ class InvocationController<T> {
 			.then(run)
 			.then(
 				(value) => {
-					this.nextHandle.resolve(new ResolvedHandle(value))
+					this.nextHandle.resolve(new ResolvedHandle<T, TServices>(value))
 					this.onSettled()
 				},
 				(error) => {
@@ -195,7 +250,9 @@ class InvocationController<T> {
 		})
 	}
 
-	prepareForResume(blockedHandle: BlockedHandle<T>): Promise<Handle<T>> {
+	prepareForResume(
+		blockedHandle: BlockedHandle<T, TServices>
+	): Promise<Handle<T, TServices>> {
 		if (this.activeBlockedHandle !== blockedHandle) {
 			throw new Error("Blocked call is already resolved")
 		}
@@ -208,20 +265,22 @@ class InvocationController<T> {
 		}
 
 		this.activeBlockedHandle = null
-		this.nextHandle = createDeferred<Handle<T>>()
+		this.nextHandle = createDeferred<Handle<T, TServices>>()
 		this.nextHandle.promise.catch(() => {})
 		return this.nextHandle.promise
 	}
 }
 
 /** Concrete handle for an invocation blocked on a downstream call. */
-class BlockedHandle<T> implements Handle<T> {
+class BlockedHandle<T, TServices extends ServiceMap>
+	implements Handle<T, TServices>
+{
 	readonly resolved = false
 
 	private alreadyResolved = false
 
 	constructor(
-		private readonly invocation: InvocationController<T>,
+		private readonly invocation: InvocationController<T, TServices>,
 		private readonly request: BlockedRequest,
 		private readonly callRealImplementation: () => Promise<unknown>,
 		private readonly resolveBlockedCall: (value: unknown) => void,
@@ -232,11 +291,13 @@ class BlockedHandle<T> implements Handle<T> {
 		throw new Error("Invocation is blocked on a downstream call")
 	}
 
-	expectRequest(matcher: RequestMatcher): void {
+	expectRequest(matcher: RequestMatcher<TServices>): void {
 		assertRequestMatches(this.request, matcher)
 	}
 
-	async allowRequest(matcher: RequestMatcher): Promise<Handle<T>> {
+	async allowRequest(
+		matcher: RequestMatcher<TServices>
+	): Promise<Handle<T, TServices>> {
 		assertRequestMatches(this.request, matcher)
 
 		return await this.runOnce(async () => {
@@ -252,7 +313,7 @@ class BlockedHandle<T> implements Handle<T> {
 		})
 	}
 
-	mockReturnValue(value: unknown): Promise<Handle<T>> {
+	mockReturnValue(value: unknown): Promise<Handle<T, TServices>> {
 		return this.runOnce(async () => {
 			const nextHandle = this.invocation.prepareForResume(this)
 			this.resolveBlockedCall(value)
@@ -260,7 +321,7 @@ class BlockedHandle<T> implements Handle<T> {
 		})
 	}
 
-	fail(error: Error): Promise<Handle<T>> {
+	fail(error: Error): Promise<Handle<T, TServices>> {
 		return this.runOnce(async () => {
 			const nextHandle = this.invocation.prepareForResume(this)
 			this.rejectBlockedCall(error)
@@ -268,7 +329,9 @@ class BlockedHandle<T> implements Handle<T> {
 		})
 	}
 
-	private runOnce(action: () => Promise<Handle<T>>): Promise<Handle<T>> {
+	private runOnce(
+		action: () => Promise<Handle<T, TServices>>,
+	): Promise<Handle<T, TServices>> {
 		if (this.alreadyResolved) {
 			return Promise.reject(new Error("Blocked call is already resolved"))
 		}
@@ -284,10 +347,10 @@ class BlockedHandle<T> implements Handle<T> {
  * Create a proxy object for a service that intercepts method calls and routes
  * them through the currently active top-level invocation.
  */
-function createDependencyProxy(
+function createDependencyProxy<TServices extends ServiceMap>(
 	serviceName: string,
 	realInstance: object,
-	getActiveInvocation: () => InvocationController<unknown> | null
+	getActiveInvocation: () => InvocationController<unknown, TServices> | null
 ): object {
 	const proxy: Record<string, unknown> = {}
 	const prototype = Object.getPrototypeOf(realInstance)
@@ -316,9 +379,9 @@ function createDependencyProxy(
 // ---- Service type utilities -------------------------------------------------
 
 /** Maps every async method of a service to return a handle promise. */
-type HandleWrapped<S> = {
+type HandleWrapped<TServices extends ServiceMap, S> = {
 	[K in keyof S]: S[K] extends (...args: infer A) => Promise<infer R>
-		? (...args: A) => Promise<Handle<R>>
+		? (...args: A) => Promise<Handle<R, TServices>>
 		: never
 }
 
@@ -360,16 +423,16 @@ export class Gatekeeper<TServices extends Record<string, object> = {}> {
 	 * Harness methods resolve to a handle when the invocation either completes or
 	 * blocks on the next intercepted downstream call.
 	 */
-	build(): { [K in keyof TServices]: HandleWrapped<TServices[K]> } {
+	build(): { [K in keyof TServices]: HandleWrapped<TServices, TServices[K]> } {
 		const proxiedDependencies: Record<string, object> = {}
 		const harness: Record<string, Record<string, unknown>> = {}
 
-		let activeInvocation: InvocationController<unknown> | null = null
+		let activeInvocation: InvocationController<unknown, TServices> | null = null
 
 		for (const entry of this.entries) {
 			const instance = entry.factory({ ...proxiedDependencies })
 
-			proxiedDependencies[entry.name] = createDependencyProxy(
+			proxiedDependencies[entry.name] = createDependencyProxy<TServices>(
 				entry.name,
 				instance,
 				() => activeInvocation
@@ -384,12 +447,16 @@ export class Gatekeeper<TServices extends Record<string, object> = {}> {
 				const method = (instance as Record<string, AsyncMethod>)[key]
 				if (typeof method !== "function") continue
 
-				wrappedService[key] = (...args: unknown[]): Promise<Handle<unknown>> => {
-					const invocation = new InvocationController<unknown>(() => {
-						if (activeInvocation === invocation) {
-							activeInvocation = null
-						}
-					})
+				wrappedService[key] = (
+					...args: unknown[]
+				): Promise<Handle<unknown, TServices>> => {
+					const invocation = new InvocationController<unknown, TServices>(
+						() => {
+							if (activeInvocation === invocation) {
+								activeInvocation = null
+							}
+						},
+					)
 
 					activeInvocation = invocation
 					invocation.start(() => method.apply(instance, args))

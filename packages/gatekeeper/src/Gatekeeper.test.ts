@@ -1,5 +1,64 @@
 import { describe, expect, test } from "vitest"
 import { Gatekeeper } from "./Gatekeeper.js"
+import type { Handle, RequestMatcher } from "./Gatekeeper.js"
+
+function compileTimeTypeAssertions(): void {
+	type Services = {
+		server: {
+			callCount: number
+			addOne(value: number): Promise<number>
+		}
+		client: {
+			addOneThroughServer(value: number): Promise<number>
+		}
+	}
+
+	const _serviceMatcher: RequestMatcher<Services> = {
+		to: "server",
+		method: "addOne",
+		args: [1],
+	}
+
+	const _serviceWildcardMatcher: RequestMatcher<Services> = {
+		to: "server",
+		method: "*",
+		args: [1],
+	}
+
+	const _globalWildcardMatcher: RequestMatcher<Services> = {
+		to: "*",
+		method: "addOne",
+		args: [1],
+	}
+
+	const handle = null as unknown as Handle<number, Services>
+	handle.expectRequest({ to: "server", method: "addOne", args: [1] })
+
+	const _badServiceMatcher: RequestMatcher<Services> = {
+		// @ts-expect-error invalid service name
+		to: "missing",
+		method: "addOne",
+		args: [1],
+	}
+
+	const _badMethodMatcher: RequestMatcher<Services> = {
+		to: "server",
+		// @ts-expect-error invalid method for the selected service
+		method: "subtractOne",
+		args: [1],
+	}
+
+	// @ts-expect-error invalid argument tuple for the selected method
+	handle.expectRequest({ to: "server", method: "addOne", args: ["1"] })
+
+	void _serviceMatcher
+	void _serviceWildcardMatcher
+	void _globalWildcardMatcher
+	void _badServiceMatcher
+	void _badMethodMatcher
+}
+
+void compileTimeTypeAssertions
 
 describe("Gatekeeper", () => {
 	describe("when a service call finishes without touching another service", () => {
@@ -47,7 +106,7 @@ describe("Gatekeeper", () => {
 
 			const harness = new Gatekeeper()
 				.add("server", () => server)
-				.add("client", ({ server }: { server: Server }) => new Client(server))
+				.add("client", ({ server }) => new Client(server))
 				.build()
 
 			return { harness, server }
@@ -75,13 +134,17 @@ describe("Gatekeeper", () => {
 			expect(result.unwrapValue()).toBe(2)
 		})
 
-		test("keeps the request blocked after a mismatched allowRequest() so the test can recover", async () => {
-			const { harness, server } = buildHarness()
-			const handle = await harness.client.addOneThroughServer(1)
+			test("keeps the request blocked after a mismatched allowRequest() so the test can recover", async () => {
+				const { harness, server } = buildHarness()
+				const handle = await harness.client.addOneThroughServer(1)
 
-			await expect(
-				handle.allowRequest({ to: "server", method: "subtractOne", args: [1] }),
-			).rejects.toThrow("did not match")
+				await expect(
+					handle.allowRequest({
+						to: "server",
+						method: "subtractOne",
+						args: [1],
+					} as any),
+				).rejects.toThrow("did not match")
 			expect(server.callCount).toBe(0)
 
 			const result = await handle.allowRequest({
