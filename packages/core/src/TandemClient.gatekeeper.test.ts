@@ -413,6 +413,93 @@ describe("TandemClient with Gatekeeper", () => {
 		}
 	})
 
+	test("two concurrent commits from different clients can block and resolve independently", async ({
+		harness,
+		advanceTime,
+	}) => {
+		const client1Id = "client-1" as ClientId
+		const client2Id = "client-2" as ClientId
+		const mutation1Id = "mutation-1" as MutationId
+		const client2Mutation1Id = "client-2-mutation-1" as MutationId
+		const todo1: Todo = { id: "todo-1", text: "from client1", complete: false }
+		const todo2: Todo = { id: "todo-2", text: "from client2", complete: true }
+		const mutation1: Mutation<TodosSchema> = {
+			id: mutation1Id,
+			ops: [{ type: "set", collection: "todos", value: todo1 }],
+		}
+		const mutation2: Mutation<TodosSchema> = {
+			id: client2Mutation1Id,
+			ops: [{ type: "set", collection: "todos", value: todo2 }],
+		}
+
+		const sub1 = harness.client1.subscribe(
+			"todos",
+			(query) => query.select("*"),
+			() => {},
+		)
+		const sub2 = harness.client2.subscribe(
+			"todos",
+			(query) => query.select("*"),
+			() => {},
+		)
+
+		try {
+			await flushInvocationMicrotasks()
+			await advanceTime()
+
+			// Both clients commit concurrently
+			const tx1 = harness.client1.transact()
+			tx1.set("todos", todo1)
+			const commit1Promise = harness.client1.commit(tx1)
+
+			const tx2 = harness.client2.transact()
+			tx2.set("todos", todo2)
+			const commit2Promise = harness.client2.commit(tx2)
+
+			await flushInvocationMicrotasks()
+			await advanceTime()
+
+			// Both commits should produce blocked handles on their push calls
+			const [pushing1, pushing2] = await Promise.all([
+				commit1Promise,
+				commit2Promise,
+			])
+
+			const push1Request = {
+				to: "remote" as const,
+				method: "push" as const,
+				args: [{ clientId: client1Id, mutations: [mutation1] }] as Parameters<
+					TestRemote<TodosSchema>["push"]
+				>,
+			}
+			const push2Request = {
+				to: "remote" as const,
+				method: "push" as const,
+				args: [{ clientId: client2Id, mutations: [mutation2] }] as Parameters<
+					TestRemote<TodosSchema>["push"]
+				>,
+			}
+
+			// Assert both are blocked on their respective push
+			pushing1.expectRequest(push1Request)
+			pushing2.expectRequest(push2Request)
+
+			// Resolve client2 first (out of order)
+			const committed2 = await pushing2.allowRequest(push2Request)
+			expect(committed2.unwrapValue()).toBeUndefined()
+
+			// Then resolve client1
+			const committed1 = await pushing1.allowRequest(push1Request)
+			expect(committed1.unwrapValue()).toBeUndefined()
+
+			// Both mutations should be on the remote
+			expect(harness.remote.getMutations()).toEqual([mutation2, mutation1])
+		} finally {
+			sub1.destroy()
+			sub2.destroy()
+		}
+	})
+
 	test("a pull acknowledges local remote state and applies changes from another client", async ({
 		harness,
 		advanceTime,
