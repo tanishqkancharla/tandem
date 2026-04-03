@@ -276,6 +276,7 @@ class InvocationController<T, TServices extends ServiceMap> {
 		method: string,
 		args: unknown[],
 		callRealImplementation: () => Promise<unknown>,
+		getInvocation: () => InvocationController<T, TServices>,
 	): Promise<unknown> {
 		let blockedCallPromise: Promise<unknown> | null = null
 
@@ -298,7 +299,7 @@ class InvocationController<T, TServices extends ServiceMap> {
 			deferred.promise.catch(() => {})
 
 			const blockedHandle = new BlockedHandle(
-				this,
+				getInvocation,
 				{ to: service, method, args },
 				callRealImplementation,
 				deferred.resolve,
@@ -350,7 +351,7 @@ class BlockedHandle<T, TServices extends ServiceMap>
 	private alreadyResolved = false
 
 	constructor(
-		private readonly invocation: InvocationController<T, TServices>,
+		private readonly getInvocation: () => InvocationController<T, TServices>,
 		private readonly request: BlockedRequest,
 		private readonly callRealImplementation: () => Promise<unknown>,
 		private readonly resolveBlockedCall: (value: unknown) => void,
@@ -371,7 +372,8 @@ class BlockedHandle<T, TServices extends ServiceMap>
 		assertRequestMatches(this.request, matcher)
 
 		return await this.runOnce(async () => {
-			const nextHandle = this.invocation.prepareForResume(this)
+			const invocation = this.getInvocation()
+			const nextHandle = invocation.prepareForResume(this)
 
 			try {
 				this.resolveBlockedCall(await this.callRealImplementation())
@@ -385,7 +387,8 @@ class BlockedHandle<T, TServices extends ServiceMap>
 
 	mockReturnValue(value: unknown): Promise<Handle<T, TServices>> {
 		return this.runOnce(async () => {
-			const nextHandle = this.invocation.prepareForResume(this)
+			const invocation = this.getInvocation()
+			const nextHandle = invocation.prepareForResume(this)
 			this.resolveBlockedCall(value)
 			return await nextHandle
 		})
@@ -393,7 +396,8 @@ class BlockedHandle<T, TServices extends ServiceMap>
 
 	fail(error: Error): Promise<Handle<T, TServices>> {
 		return this.runOnce(async () => {
-			const nextHandle = this.invocation.prepareForResume(this)
+			const invocation = this.getInvocation()
+			const nextHandle = invocation.prepareForResume(this)
 			this.rejectBlockedCall(error)
 			return await nextHandle
 		})
@@ -474,6 +478,10 @@ function createDependencyProxy<TServices extends ServiceMap>(
 	serviceName: string,
 	realInstance: object,
 	getCurrentInvocation: () => InvocationController<unknown, TServices> | null,
+	createBoundInvocationLookup: () => () => InvocationController<
+		unknown,
+		TServices
+	>,
 	shouldBypassInterception: () => boolean,
 	path: readonly string[] = [],
 	cache: PathProxyCache = new WeakMap(),
@@ -509,6 +517,7 @@ function createDependencyProxy<TServices extends ServiceMap>(
 						methodPath.join("."),
 						args,
 						() => Promise.resolve(method.apply(target, args)),
+						createBoundInvocationLookup(),
 					)
 				}
 			}
@@ -518,6 +527,7 @@ function createDependencyProxy<TServices extends ServiceMap>(
 					serviceName,
 					value,
 					getCurrentInvocation,
+					createBoundInvocationLookup,
 					shouldBypassInterception,
 					[...path, property],
 					cache,
@@ -661,21 +671,38 @@ export class GatekeeperBuilder<TServices extends Record<string, object> = {}> {
 		>()
 		let nextInvocationId = 1
 
+		function getInvocationById(
+			invocationId: InvocationId,
+		): InvocationController<unknown, TServices> {
+			const invocation = invocations.get(invocationId)
+			if (!invocation) {
+				throw new Error(
+					`Gatekeeper invariant: invocation ${invocationId} is no longer live`,
+				)
+			}
+			return invocation
+		}
+
 		function getCurrentInvocation(): InvocationController<
 			unknown,
 			TServices
 		> | null {
 			const invocationId = invocationContext.getStore()
 			if (invocationId === undefined) return null
+			return getInvocationById(invocationId)
+		}
 
-			const invocation = invocations.get(invocationId)
-			if (!invocation) {
+		function createBoundInvocationLookup(): () => InvocationController<
+			unknown,
+			TServices
+		> {
+			const invocationId = invocationContext.getStore()
+			if (invocationId === undefined) {
 				throw new Error(
-					`Gatekeeper invariant: async context contains invocation ${invocationId} but no live controller exists`,
+					"Gatekeeper invariant: cannot create bound invocation lookup outside invocation context",
 				)
 			}
-
-			return invocation
+			return () => getInvocationById(invocationId)
 		}
 
 		const rawServices: Record<string, object> = {}
@@ -694,6 +721,7 @@ export class GatekeeperBuilder<TServices extends Record<string, object> = {}> {
 				entry.name,
 				instance,
 				getCurrentInvocation,
+				createBoundInvocationLookup,
 				shouldBypassInterception,
 			)
 

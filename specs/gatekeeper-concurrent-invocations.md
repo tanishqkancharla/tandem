@@ -268,11 +268,11 @@ class BlockedHandle<T> {
 }
 ```
 
-- [ ] Refactor `BlockedHandle` so it stores `invocationId` and resolves the live controller through the invocation map when a gate action runs.
-- [ ] Ensure stale handle actions fail deterministically once the invocation has been removed from the map.
-- [ ] Add a focused regression in `packages/gatekeeper/src/Gatekeeper.test.ts` where two top-level invocations block simultaneously and the test allows them in reverse order.
-- [ ] Add a regression test where two blocked invocations expose identical matcher shapes and still resolve independently because handle identity, not matcher shape, chooses the invocation.
-- [ ] Verify `pnpm --filter @tandem/gatekeeper test` passes.
+- [x] Refactor `BlockedHandle` so it stores `invocationId` and resolves the live controller through the invocation map when a gate action runs.
+- [x] Ensure stale handle actions fail deterministically once the invocation has been removed from the map.
+- [x] Add a focused regression in `packages/gatekeeper/src/Gatekeeper.test.ts` where two top-level invocations block simultaneously and the test allows them in reverse order.
+- [x] Add a regression test where two blocked invocations expose identical matcher shapes and still resolve independently because handle identity, not matcher shape, chooses the invocation.
+- [x] Verify `pnpm --filter @tandem/gatekeeper test` passes.
 
 ### Phase 3: Resume blocked invocations inside their original async context
 
