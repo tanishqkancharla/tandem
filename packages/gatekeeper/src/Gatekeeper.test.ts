@@ -98,7 +98,11 @@ function compileTimeTypeAssertions(): void {
 	// @ts-expect-error invalid argument tuple for the selected method
 	handle.expectRequest({ to: "server", method: "addOne", args: ["1"] })
 	// @ts-expect-error invalid argument tuple for the selected nested method
-	handle.expectRequest({ to: "server", method: "nested.increment", args: ["1"] })
+	handle.expectRequest({
+		to: "server",
+		method: "nested.increment",
+		args: ["1"],
+	})
 
 	void harness
 	void _ready
@@ -175,6 +179,10 @@ class WorkflowServer {
 
 class WorkflowClient {
 	constructor(private readonly server: WorkflowServer) {}
+
+	format(value: number): number {
+		return value + 1
+	}
 
 	async doTwoCalls(value: number): Promise<number> {
 		const first = await this.server.stepOne(value)
@@ -309,123 +317,126 @@ describe("Gatekeeper", () => {
 		blockingTest(
 			"lets the test inspect the request before allowing it through",
 			async ({ fixture: { harness, server } }) => {
-			const handle = await harness.client.addOneThroughServer(1)
+				const handle = await harness.client.addOneThroughServer(1)
 
-			expect(handle.resolved).toBe(false)
-			expect(() => handle.unwrapValue()).toThrow()
-			expect(() =>
-				handle.expectRequest({ to: "server", method: "addOne", args: [1] }),
-			).not.toThrow()
-			expect(server.callCount).toBe(0)
+				expect(handle.resolved).toBe(false)
+				expect(() => handle.unwrapValue()).toThrow()
+				expect(() =>
+					handle.expectRequest({ to: "server", method: "addOne", args: [1] }),
+				).not.toThrow()
+				expect(server.callCount).toBe(0)
 
-			const result = await handle.allowRequest({
-				to: "server",
-				method: "addOne",
-				args: [1],
-			})
+				const result = await handle.allowRequest({
+					to: "server",
+					method: "addOne",
+					args: [1],
+				})
 
-			expect(server.callCount).toBe(1)
-			expect(result.resolved).toBe(true)
-			expect(result.unwrapValue()).toBe(2)
+				expect(server.callCount).toBe(1)
+				expect(result.resolved).toBe(true)
+				expect(result.unwrapValue()).toBe(2)
 			},
 		)
 
-		base("intercepts async methods defined as instance properties", async () => {
-			const server = new FieldServer()
-			const harness = new GatekeeperBuilder()
-				.add("server", () => server)
-				.add("client", ({ server }) => new FieldClient(server))
-				.build()
+		base(
+			"intercepts async methods defined as instance properties",
+			async () => {
+				const server = new FieldServer()
+				const harness = new GatekeeperBuilder()
+					.add("server", () => server)
+					.add("client", ({ server }) => new FieldClient(server))
+					.build()
 
-			const handle = await harness.client.addOneThroughServer(1)
+				const handle = await harness.client.addOneThroughServer(1)
 
-			expect(handle.resolved).toBe(false)
-			handle.expectRequest({ to: "server", method: "addOne", args: [1] })
-			expect(server.callCount).toBe(0)
+				expect(handle.resolved).toBe(false)
+				handle.expectRequest({ to: "server", method: "addOne", args: [1] })
+				expect(server.callCount).toBe(0)
 
-			const result = await handle.allowRequest({
-				to: "server",
-				method: "addOne",
-				args: [1],
-			})
+				const result = await handle.allowRequest({
+					to: "server",
+					method: "addOne",
+					args: [1],
+				})
 
-			expect(server.callCount).toBe(1)
-			expect(result.unwrapValue()).toBe(2)
-		})
+				expect(server.callCount).toBe(1)
+				expect(result.unwrapValue()).toBe(2)
+			},
+		)
 
 		blockingTest(
 			"keeps the request blocked after a mismatched allowRequest() so the test can recover",
 			async ({ fixture: { harness, server } }) => {
-			const handle = await harness.client.addOneThroughServer(1)
+				const handle = await harness.client.addOneThroughServer(1)
 
-			await expect(
-				handle.allowRequest({
+				await expect(
+					handle.allowRequest({
+						to: "server",
+						method: "subtractOne",
+						args: [1],
+					} as any),
+				).rejects.toThrow("did not match")
+				expect(server.callCount).toBe(0)
+
+				const result = await handle.allowRequest({
 					to: "server",
-					method: "subtractOne",
+					method: "addOne",
 					args: [1],
-				} as any),
-			).rejects.toThrow("did not match")
-			expect(server.callCount).toBe(0)
-
-			const result = await handle.allowRequest({
-				to: "server",
-				method: "addOne",
-				args: [1],
-			})
-			expect(server.callCount).toBe(1)
-			expect(result.unwrapValue()).toBe(2)
+				})
+				expect(server.callCount).toBe(1)
+				expect(result.unwrapValue()).toBe(2)
 			},
 		)
 
 		blockingTest(
 			"supports wildcard request assertions for destination, method, and arguments",
 			async ({ fixture: { harness, server } }) => {
-			const handle = await harness.client.addOneThroughServer(1)
+				const handle = await harness.client.addOneThroughServer(1)
 
-			expect(() =>
-				handle.expectRequest({ to: "*", method: "addOne", args: [1] }),
-			).not.toThrow()
-			expect(() =>
-				handle.expectRequest({ to: "server", method: "*", args: [1] }),
-			).not.toThrow()
-			expect(() =>
-				handle.expectRequest({ to: "server", method: "addOne", args: "*" }),
-			).not.toThrow()
-			expect(server.callCount).toBe(0)
+				expect(() =>
+					handle.expectRequest({ to: "*", method: "addOne", args: [1] }),
+				).not.toThrow()
+				expect(() =>
+					handle.expectRequest({ to: "server", method: "*", args: [1] }),
+				).not.toThrow()
+				expect(() =>
+					handle.expectRequest({ to: "server", method: "addOne", args: "*" }),
+				).not.toThrow()
+				expect(server.callCount).toBe(0)
 
-			const result = await handle.allowRequest({
-				to: "server",
-				method: "addOne",
-				args: [1],
-			})
+				const result = await handle.allowRequest({
+					to: "server",
+					method: "addOne",
+					args: [1],
+				})
 
-			expect(server.callCount).toBe(1)
-			expect(result.unwrapValue()).toBe(2)
+				expect(server.callCount).toBe(1)
+				expect(result.unwrapValue()).toBe(2)
 			},
 		)
 
 		blockingTest(
 			"can return a mocked value instead of calling the real dependency",
 			async ({ fixture: { harness, server } }) => {
-			const handle = await harness.client.addOneThroughServer(1)
+				const handle = await harness.client.addOneThroughServer(1)
 
-			const result = await handle.mockReturnValue(42)
-			expect(server.callCount).toBe(0)
-			expect(result.resolved).toBe(true)
-			expect(result.unwrapValue()).toBe(42)
-			await expect(
-				handle.allowRequest({ to: "server", method: "addOne", args: [1] }),
-			).rejects.toThrow("already")
+				const result = await handle.mockReturnValue(42)
+				expect(server.callCount).toBe(0)
+				expect(result.resolved).toBe(true)
+				expect(result.unwrapValue()).toBe(42)
+				await expect(
+					handle.allowRequest({ to: "server", method: "addOne", args: [1] }),
+				).rejects.toThrow("already")
 			},
 		)
 
 		blockingTest(
 			"can fail the blocked request with a supplied error",
 			async ({ fixture: { harness, server } }) => {
-			const handle = await harness.client.addOneThroughServer(1)
+				const handle = await harness.client.addOneThroughServer(1)
 
-			await expect(handle.fail(new Error("boom"))).rejects.toThrow("boom")
-			expect(server.callCount).toBe(0)
+				await expect(handle.fail(new Error("boom"))).rejects.toThrow("boom")
+				expect(server.callCount).toBe(0)
 			},
 		)
 	})
@@ -535,45 +546,81 @@ describe("Gatekeeper", () => {
 		workflowTest(
 			"hands the test from the first blocked request to the next one and then finishes with a resolved handle",
 			async ({ fixture: { harness, server } }) => {
-			const first = await harness.client.doTwoCalls(1)
+				const first = await harness.client.doTwoCalls(1)
 
-			first.expectRequest({ to: "server", method: "stepOne", args: [1] })
+				first.expectRequest({ to: "server", method: "stepOne", args: [1] })
 
-			const second = await first.allowRequest({
-				to: "server",
-				method: "stepOne",
-				args: [1],
-			})
+				const second = await first.allowRequest({
+					to: "server",
+					method: "stepOne",
+					args: [1],
+				})
 
-			expect(server.callLog).toEqual(["stepOne:1"])
-			expect(second.resolved).toBe(false)
-			expect(() =>
-				second.expectRequest({ to: "server", method: "stepTwo", args: [2] }),
-			).not.toThrow()
+				expect(server.callLog).toEqual(["stepOne:1"])
+				expect(second.resolved).toBe(false)
+				expect(() =>
+					second.expectRequest({ to: "server", method: "stepTwo", args: [2] }),
+				).not.toThrow()
 
-			const done = await second.allowRequest({
-				to: "server",
-				method: "stepTwo",
-				args: [2],
-			})
+				const done = await second.allowRequest({
+					to: "server",
+					method: "stepTwo",
+					args: [2],
+				})
 
-			expect(server.callLog).toEqual(["stepOne:1", "stepTwo:2"])
-			expect(done.resolved).toBe(true)
-			expect(done.unwrapValue()).toBe(3)
+				expect(server.callLog).toEqual(["stepOne:1", "stepTwo:2"])
+				expect(done.resolved).toBe(true)
+				expect(done.unwrapValue()).toBe(3)
+			},
+		)
+
+		workflowTest(
+			"does not clobber a blocked invocation when an unrelated sync harness method runs",
+			async ({ fixture: { harness, server } }) => {
+				// Start an async invocation that blocks on its first downstream call
+				const first = await harness.client.doTwoCalls(1)
+
+				first.expectRequest({ to: "server", method: "stepOne", args: [1] })
+
+				// Call a sync method on the same harness service — this must not
+				// clobber the blocked invocation's identity
+				expect(harness.client.format(10)).toBe(11)
+
+				// Resume the blocked invocation: it should still be gated and
+				// produce a second blocked handle for the continuation
+				const second = await first.allowRequest({
+					to: "server",
+					method: "stepOne",
+					args: [1],
+				})
+
+				expect(server.callLog).toEqual(["stepOne:1"])
+				expect(second.resolved).toBe(false)
+				second.expectRequest({ to: "server", method: "stepTwo", args: [2] })
+
+				const done = await second.allowRequest({
+					to: "server",
+					method: "stepTwo",
+					args: [2],
+				})
+
+				expect(server.callLog).toEqual(["stepOne:1", "stepTwo:2"])
+				expect(done.resolved).toBe(true)
+				expect(done.unwrapValue()).toBe(3)
 			},
 		)
 
 		workflowTest(
 			"fails fast when a workflow fans out to multiple blocked downstream calls at once",
 			async ({ fixture: { harness, server } }) => {
-			const handle = await harness.client.fanOut(1)
+				const handle = await harness.client.fanOut(1)
 
-			handle.expectRequest({ to: "server", method: "stepOne", args: [1] })
+				handle.expectRequest({ to: "server", method: "stepOne", args: [1] })
 
-			await expect(
-				handle.allowRequest({ to: "server", method: "stepOne", args: [1] }),
-			).rejects.toThrow("Gatekeeper v1 only supports serial downstream calls")
-			expect(server.callLog).toEqual([])
+				await expect(
+					handle.allowRequest({ to: "server", method: "stepOne", args: [1] }),
+				).rejects.toThrow("Gatekeeper v1 only supports serial downstream calls")
+				expect(server.callLog).toEqual([])
 			},
 		)
 	})
@@ -582,54 +629,57 @@ describe("Gatekeeper", () => {
 		nestedTest(
 			"preserves sync properties and sync methods on nested objects",
 			async ({ fixture: { harness } }) => {
-
-			expect(harness.client.label).toBe("client")
-			expect(harness.client.format(1)).toBe(2)
-			expect(harness.client.sync.label).toBe("sync-layer")
-			expect(harness.client.sync.format(1)).toBe(101)
-			await expect(harness.client.ready).resolves.toBeUndefined()
+				expect(harness.client.label).toBe("client")
+				expect(harness.client.format(1)).toBe(2)
+				expect(harness.client.sync.label).toBe("sync-layer")
+				expect(harness.client.sync.format(1)).toBe(101)
+				await expect(harness.client.ready).resolves.toBeUndefined()
 			},
 		)
 
 		nestedTest(
 			"supports direct nested async access from the harness",
 			async ({ fixture: { harness } }) => {
-			const handle = await harness.client.sync.advanceCursor(1)
+				const handle = await harness.client.sync.advanceCursor(1)
 
-			handle.expectRequest({ to: "remote", method: "advanceCursor", args: [1] })
-			expect(harness.remote.callLog).toEqual([])
+				handle.expectRequest({
+					to: "remote",
+					method: "advanceCursor",
+					args: [1],
+				})
+				expect(harness.remote.callLog).toEqual([])
 
-			const done = await handle.allowRequest({
-				to: "remote",
-				method: "advanceCursor",
-				args: [1],
-			})
+				const done = await handle.allowRequest({
+					to: "remote",
+					method: "advanceCursor",
+					args: [1],
+				})
 
-			expect(harness.remote.callLog).toEqual(["advanceCursor:1"])
-			expect(done.unwrapValue()).toBe(2)
+				expect(harness.remote.callLog).toEqual(["advanceCursor:1"])
+				expect(done.unwrapValue()).toBe(2)
 			},
 		)
 
 		nestedTest(
 			"intercepts nested downstream method paths transitively",
 			async ({ fixture: { harness } }) => {
-			const handle = await harness.client.sync.doubleViaRemoteMath(3)
+				const handle = await harness.client.sync.doubleViaRemoteMath(3)
 
-			handle.expectRequest({
-				to: "remote",
-				method: "math.double",
-				args: [3],
-			})
-			expect(harness.remote.callLog).toEqual([])
+				handle.expectRequest({
+					to: "remote",
+					method: "math.double",
+					args: [3],
+				})
+				expect(harness.remote.callLog).toEqual([])
 
-			const done = await handle.allowRequest({
-				to: "remote",
-				method: "math.double",
-				args: [3],
-			})
+				const done = await handle.allowRequest({
+					to: "remote",
+					method: "math.double",
+					args: [3],
+				})
 
-			expect(harness.remote.callLog).toEqual(["double:3"])
-			expect(done.unwrapValue()).toBe(6)
+				expect(harness.remote.callLog).toEqual(["double:3"])
+				expect(done.unwrapValue()).toBe(6)
 			},
 		)
 	})

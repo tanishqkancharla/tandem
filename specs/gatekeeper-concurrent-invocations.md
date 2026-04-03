@@ -142,7 +142,11 @@ Both invocations may be blocked simultaneously. The test may resume them in eith
 const a = await harness.client.doTwoSteps("a")
 const b = await harness.client.doTwoSteps("b")
 
-const a2 = await a.allowRequest({ to: "server", method: "stepOne", args: ["a"] })
+const a2 = await a.allowRequest({
+	to: "server",
+	method: "stepOne",
+	args: ["a"],
+})
 
 a2.expectRequest({ to: "server", method: "stepTwo", args: ["a:1"] })
 b.expectRequest({ to: "server", method: "stepOne", args: ["b"] })
@@ -221,25 +225,29 @@ Replace the shared `activeInvocation` routing path with `InvocationId` plus asyn
 type InvocationId = number
 
 const invocationContext = new AsyncLocalStorage<InvocationId>()
-const invocations = new Map<InvocationId, InvocationController<any, TServices>>()
+const invocations = new Map<
+	InvocationId,
+	InvocationController<any, TServices>
+>()
 
 function getCurrentInvocationOrThrow() {
 	const invocationId = invocationContext.getStore()
 	if (invocationId === undefined) return null
 
 	const invocation = invocations.get(invocationId)
-	if (!invocation) throw new Error(`Missing live invocation for context ${invocationId}`)
+	if (!invocation)
+		throw new Error(`Missing live invocation for context ${invocationId}`)
 
 	return invocation
 }
 ```
 
-- [ ] Add an internal `InvocationId` type, live invocation map, and invariant-aware lookup helper that throws when `AsyncLocalStorage` contains an id that is missing from the live invocation map.
-- [ ] Run top-level harness method execution inside `AsyncLocalStorage<InvocationId>.run(...)` instead of assigning to `activeInvocation`.
-- [ ] Make dependency proxies resolve the current invocation through the invariant-aware async-context lookup helper.
-- [ ] Remove the old `activeInvocation` state from the builder once the new routing path is in place.
-- [ ] Add a focused regression in `packages/gatekeeper/src/Gatekeeper.test.ts` where an invocation blocks, an unrelated top-level sync harness method runs, and the resumed invocation still blocks on its next downstream request.
-- [ ] Verify `pnpm --filter @tandem/gatekeeper test` passes.
+- [x] Add an internal `InvocationId` type, live invocation map, and invariant-aware lookup helper that throws when `AsyncLocalStorage` contains an id that is missing from the live invocation map.
+- [x] Run top-level harness method execution inside `AsyncLocalStorage<InvocationId>.run(...)` instead of assigning to `activeInvocation`.
+- [x] Make dependency proxies resolve the current invocation through the invariant-aware async-context lookup helper.
+- [x] Remove the old `activeInvocation` state from the builder once the new routing path is in place.
+- [x] Add a focused regression in `packages/gatekeeper/src/Gatekeeper.test.ts` where an invocation blocks, an unrelated top-level sync harness method runs, and the resumed invocation still blocks on its next downstream request.
+- [x] Verify `pnpm --filter @tandem/gatekeeper test` passes.
 
 ### Phase 2: Move blocked handles to `invocationId` lookup and prove concurrent out-of-order control
 
@@ -249,7 +257,9 @@ Make handle routing depend on live invocation identity rather than a permanently
 class BlockedHandle<T> {
 	constructor(
 		private readonly invocationId: InvocationId,
-		private readonly getInvocation: (id: InvocationId) => InvocationController<T>,
+		private readonly getInvocation: (
+			id: InvocationId,
+		) => InvocationController<T>,
 	) {}
 
 	private lookupInvocation() {
@@ -294,7 +304,8 @@ class InvocationController<T> {
 	}
 
 	prepareForResume(handle: BlockedHandle<T>) {
-		if (this.activeBlockedHandle !== handle) throw new Error("Blocked call is already resolved")
+		if (this.activeBlockedHandle !== handle)
+			throw new Error("Blocked call is already resolved")
 		this.activeBlockedHandle = null
 		if (this.settled) this.onFullySettled()
 	}
@@ -315,7 +326,10 @@ Once invocation routing is fixed, preserve the convenience APIs that existing te
 
 ```ts
 function withUnlockedGates<R>(fn: (services: TServices) => R | Promise<R>) {
-	return unlockedGateContext.run(true, async () => await fn(rawServices as TServices))
+	return unlockedGateContext.run(
+		true,
+		async () => await fn(rawServices as TServices),
+	)
 }
 ```
 

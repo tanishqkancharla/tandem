@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks"
 import { isEqual } from "lodash-es"
 
 /**
@@ -40,10 +41,13 @@ type AsyncMethodPaths<TService extends object> = Extract<
 				? never
 				: TService[K] extends object
 					? {
-							[NestedKey in Extract<keyof TService[K], string>]: TService[K][NestedKey] extends AsyncMethod
+							[NestedKey in Extract<
+								keyof TService[K],
+								string
+							>]: TService[K][NestedKey] extends AsyncMethod
 								? `${K}.${NestedKey}`
 								: never
-					  }[Extract<keyof TService[K], string>]
+						}[Extract<keyof TService[K], string>]
 					: never
 	}[Extract<keyof TService, string>],
 	string
@@ -93,7 +97,7 @@ type ServiceRequestMatcher<
 				method: TMethod
 				args: AsyncMethodArgsByPath<TServices[TServiceName], TMethod> | "*"
 			}
-		  }[AsyncMethodPaths<TServices[TServiceName]>]
+	  }[AsyncMethodPaths<TServices[TServiceName]>]
 
 // ---- Public interfaces ------------------------------------------------------
 
@@ -469,7 +473,7 @@ function setPathCachedProxy(
 function createDependencyProxy<TServices extends ServiceMap>(
 	serviceName: string,
 	realInstance: object,
-	getActiveInvocation: () => InvocationController<unknown, TServices> | null,
+	getCurrentInvocation: () => InvocationController<unknown, TServices> | null,
 	shouldBypassInterception: () => boolean,
 	path: readonly string[] = [],
 	cache: PathProxyCache = new WeakMap(),
@@ -495,12 +499,12 @@ function createDependencyProxy<TServices extends ServiceMap>(
 						return method.apply(target, args)
 					}
 
-					const activeInvocation = getActiveInvocation()
-					if (!activeInvocation) {
+					const currentInvocation = getCurrentInvocation()
+					if (!currentInvocation) {
 						return method.apply(target, args)
 					}
 
-					return activeInvocation.blockOnCall(
+					return currentInvocation.blockOnCall(
 						serviceName,
 						methodPath.join("."),
 						args,
@@ -513,7 +517,7 @@ function createDependencyProxy<TServices extends ServiceMap>(
 				return createDependencyProxy<TServices>(
 					serviceName,
 					value,
-					getActiveInvocation,
+					getCurrentInvocation,
 					shouldBypassInterception,
 					[...path, property],
 					cache,
@@ -586,7 +590,7 @@ type GatekeeperValue<TServices extends ServiceMap, TValue> = TValue extends (
 			: TValue extends object
 				? {
 						[K in keyof TValue]: GatekeeperValue<TServices, TValue[K]>
-				  }
+					}
 				: TValue
 
 /** Maps every promise-returning method of a service to a handle promise. */
@@ -625,9 +629,7 @@ export type Gatekeeper<TServices extends Record<string, object> = {}> = {
  *   .build()
  * ```
  */
-export class GatekeeperBuilder<
-	TServices extends Record<string, object> = {},
-> {
+export class GatekeeperBuilder<TServices extends Record<string, object> = {}> {
 	private entries: ServiceEntry[] = []
 
 	/**
@@ -638,9 +640,7 @@ export class GatekeeperBuilder<
 		name: Name,
 		factory: (deps: TServices) => S,
 	): GatekeeperBuilder<Prettify<TServices & Record<Name, S>>> {
-		const next = new GatekeeperBuilder<
-			Prettify<TServices & Record<Name, S>>
-		>()
+		const next = new GatekeeperBuilder<Prettify<TServices & Record<Name, S>>>()
 		next.entries = [
 			...this.entries,
 			{ name, factory: factory as ServiceEntry["factory"] },
@@ -652,12 +652,36 @@ export class GatekeeperBuilder<
 	 * Build all registered services in order.
 	 */
 	build(): Gatekeeper<TServices> {
+		type InvocationId = number
+
+		const invocationContext = new AsyncLocalStorage<InvocationId>()
+		const invocations = new Map<
+			InvocationId,
+			InvocationController<unknown, TServices>
+		>()
+		let nextInvocationId = 1
+
+		function getCurrentInvocation(): InvocationController<
+			unknown,
+			TServices
+		> | null {
+			const invocationId = invocationContext.getStore()
+			if (invocationId === undefined) return null
+
+			const invocation = invocations.get(invocationId)
+			if (!invocation) {
+				throw new Error(
+					`Gatekeeper invariant: async context contains invocation ${invocationId} but no live controller exists`,
+				)
+			}
+
+			return invocation
+		}
+
 		const rawServices: Record<string, object> = {}
 		const proxiedDependencies: Record<string, object> = {}
 		const harness: Record<string, object> = {}
 
-		let activeInvocation: InvocationController<unknown, TServices> | null =
-			null
 		let unlockedGateDepth = 0
 
 		const shouldBypassInterception = (): boolean => unlockedGateDepth > 0
@@ -669,37 +693,32 @@ export class GatekeeperBuilder<
 			proxiedDependencies[entry.name] = createDependencyProxy<TServices>(
 				entry.name,
 				instance,
-				() => activeInvocation,
+				getCurrentInvocation,
 				shouldBypassInterception,
 			)
 
 			harness[entry.name] = createHarnessServiceProxy<TServices>(
 				instance,
 				(run) => {
+					const invocationId = nextInvocationId++
 					const invocation = new InvocationController<unknown, TServices>(
 						() => {
-							if (activeInvocation === invocation) {
-								activeInvocation = null
-							}
+							invocations.delete(invocationId)
 						},
 					)
 
-					activeInvocation = invocation
+					invocations.set(invocationId, invocation)
 
 					let result: unknown
 					try {
-						result = run()
+						result = invocationContext.run(invocationId, run)
 					} catch (error) {
-						if (activeInvocation === invocation) {
-							activeInvocation = null
-						}
+						invocations.delete(invocationId)
 						throw error
 					}
 
 					if (!isPromiseLike(result)) {
-						if (activeInvocation === invocation) {
-							activeInvocation = null
-						}
+						invocations.delete(invocationId)
 						return result
 					}
 
