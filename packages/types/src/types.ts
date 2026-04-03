@@ -342,7 +342,6 @@ export namespace PatchApi {
 	}
 }
 
-export type Thenable = { then: (callback: () => void) => Thenable }
 export type SchemaToTupleSchema<Schema extends AnySchema> = {
 	[C in CollectionName<Schema>]: {
 		key: ["record", collection: C, id: Schema[C]["id"]]

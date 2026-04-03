@@ -37,6 +37,8 @@ A sync engine and database for building collaborative apps.
   - [ ] Manual tests
   - [ ] Automated randomized testing — do a bunch of reads and writes, inject random failures
   - [ ] Step-by-step debugger (with ability to query any db at any point)
+  - [ ] Timer
+- [ ] Pull should not return early if scan window is empty. Because pull still returns useful information with the `waitForAcknowledgement`
 - [ ] Create a server module
 - [ ] Think about backwards compatibility -- how does mounting from a persisted storage work with new versions?
   - [ ] New database versions

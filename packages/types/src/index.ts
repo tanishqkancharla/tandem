@@ -24,7 +24,6 @@ export {
 	MutationApi,
 	WriteOpsApi,
 	PatchApi,
-	type Thenable,
 	type SchemaToTupleSchema,
 	type Json,
 	type PatchSetOp,

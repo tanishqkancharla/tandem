@@ -3,34 +3,77 @@ import { isEqual } from "lodash-es"
 /**
  * Gatekeeper — a testing harness for intercepting service-to-service async calls.
  *
- * Builds an ordered, acyclic harness of async-method-only services.
- * When a harness method is awaited, it resolves with a handle for the first
- * observable state transition of that invocation:
+ * Builds an ordered, acyclic harness of services.
+ * Promise-returning methods are intercepted and surface handles, while sync
+ * methods and non-function properties stay usable as-is.
+ *
+ * When a harness async method is awaited, it resolves with a handle for the
+ * first observable state transition of that invocation:
  * - a resolved handle if the invocation completed without blocking downstream
  * - a blocked handle if it suspended on a downstream service call
  */
 
 type AsyncMethod = (...args: any[]) => Promise<any>
 type ServiceMap = Record<string, object>
-type UnknownServices = Record<string, { [method: string]: AsyncMethod }>
+type UnknownServices = Record<string, object>
 
-type AsyncMethodKeys<TService extends object> = Extract<
+type Primitive = string | number | boolean | bigint | symbol | null | undefined
+type OpaqueValue =
+	| Primitive
+	| Promise<any>
+	| readonly any[]
+	| Date
+	| RegExp
+	| Error
+	| Map<any, any>
+	| ReadonlyMap<any, any>
+	| Set<any>
+	| ReadonlySet<any>
+	| WeakMap<object, any>
+	| WeakSet<object>
+
+type AsyncMethodPaths<TService extends object> = Extract<
 	{
-		[K in keyof TService]: TService[K] extends AsyncMethod ? K : never
-	}[keyof TService],
+		[K in Extract<keyof TService, string>]: TService[K] extends AsyncMethod
+			? K
+			: TService[K] extends OpaqueValue
+				? never
+				: TService[K] extends object
+					? {
+							[NestedKey in Extract<keyof TService[K], string>]: TService[K][NestedKey] extends AsyncMethod
+								? `${K}.${NestedKey}`
+								: never
+					  }[Extract<keyof TService[K], string>]
+					: never
+	}[Extract<keyof TService, string>],
 	string
 >
 
-type AsyncMethodArgs<
+type AsyncMethodArgsByPath<
 	TService extends object,
-	TMethod extends AsyncMethodKeys<TService>,
-> = TService[TMethod] extends (...args: infer A) => Promise<any> ? A : never
+	TPath extends AsyncMethodPaths<TService>,
+> = TPath extends `${infer TParent}.${infer TMethod}`
+	? TParent extends keyof TService
+		? TMethod extends keyof TService[TParent]
+			? TService[TParent][TMethod] extends (...args: infer A) => Promise<any>
+				? A
+				: never
+			: never
+		: never
+	: TPath extends keyof TService
+		? TService[TPath] extends (...args: infer A) => Promise<any>
+			? A
+			: never
+		: never
 
-type ServiceNames<TServices extends ServiceMap> = Extract<keyof TServices, string>
+type ServiceNames<TServices extends ServiceMap> = Extract<
+	keyof TServices,
+	string
+>
 
 type ServiceMethodNames<TServices extends ServiceMap> = Extract<
 	{
-		[TService in ServiceNames<TServices>]: AsyncMethodKeys<TServices[TService]>
+		[TService in ServiceNames<TServices>]: AsyncMethodPaths<TServices[TService]>
 	}[ServiceNames<TServices>],
 	string
 >
@@ -45,12 +88,12 @@ type ServiceRequestMatcher<
 			args: unknown[] | "*"
 	  }
 	| {
-			[TMethod in AsyncMethodKeys<TServices[TServiceName]>]: {
+			[TMethod in AsyncMethodPaths<TServices[TServiceName]>]: {
 				to: TServiceName
 				method: TMethod
-				args: AsyncMethodArgs<TServices[TServiceName], TMethod> | "*"
+				args: AsyncMethodArgsByPath<TServices[TServiceName], TMethod> | "*"
 			}
-	  }[AsyncMethodKeys<TServices[TServiceName]>]
+		  }[AsyncMethodPaths<TServices[TServiceName]>]
 
 // ---- Public interfaces ------------------------------------------------------
 
@@ -85,7 +128,9 @@ export interface Handle<T, TServices extends ServiceMap = UnknownServices> {
 	/** Assert the currently blocked downstream request without unblocking it. */
 	expectRequest(matcher: RequestMatcher<TServices>): void
 	/** Forward the blocked downstream call to the real implementation. */
-	allowRequest(matcher: RequestMatcher<TServices>): Promise<Handle<T, TServices>>
+	allowRequest(
+		matcher: RequestMatcher<TServices>,
+	): Promise<Handle<T, TServices>>
 	/** Resolve the blocked downstream call with a mocked value. */
 	mockReturnValue(value: unknown): Promise<Handle<T, TServices>>
 	/** Reject the blocked downstream call with the supplied error. */
@@ -129,7 +174,7 @@ function createDeferred<T>(): Deferred<T> {
 
 function matchesRequest(
 	request: BlockedRequest,
-	matcher: LooseRequestMatcher
+	matcher: LooseRequestMatcher,
 ): boolean {
 	return (
 		(matcher.to === "*" || matcher.to === request.to) &&
@@ -148,7 +193,7 @@ function stringifyForError(value: unknown): string {
 
 function assertRequestMatches(
 	request: BlockedRequest,
-	matcher: LooseRequestMatcher
+	matcher: LooseRequestMatcher,
 ): void {
 	if (matchesRequest(request, matcher)) {
 		return
@@ -156,8 +201,8 @@ function assertRequestMatches(
 
 	throw new Error(
 		`Blocked request did not match matcher. Expected ${stringifyForError(
-			matcher
-		)}, received ${stringifyForError(request)}`
+			matcher,
+		)}, received ${stringifyForError(request)}`,
 	)
 }
 
@@ -177,7 +222,9 @@ class ResolvedHandle<T, TServices extends ServiceMap>
 		throw new Error("Invocation is already resolved")
 	}
 
-	allowRequest(_matcher: RequestMatcher<TServices>): Promise<Handle<T, TServices>> {
+	allowRequest(
+		_matcher: RequestMatcher<TServices>,
+	): Promise<Handle<T, TServices>> {
 		return Promise.reject(new Error("Invocation is already resolved"))
 	}
 
@@ -203,55 +250,74 @@ class InvocationController<T, TServices extends ServiceMap> {
 		return this.nextHandle.promise
 	}
 
-	start(run: () => Promise<T>): void {
-		Promise.resolve()
-			.then(run)
-			.then(
-				(value) => {
-					this.nextHandle.resolve(new ResolvedHandle<T, TServices>(value))
-					this.onSettled()
-				},
-				(error) => {
-					if (this.activeBlockedHandle) {
-						this.blockedWhileSettledReason = error
-					} else {
-						this.nextHandle.reject(error)
-					}
-					this.onSettled()
+	track(result: PromiseLike<T>): void {
+		Promise.resolve(result).then(
+			(value) => {
+				this.nextHandle.resolve(new ResolvedHandle<T, TServices>(value))
+				this.onSettled()
+			},
+			(error) => {
+				if (this.activeBlockedHandle) {
+					this.blockedWhileSettledReason = error
+				} else {
+					this.nextHandle.reject(error)
 				}
-			)
+				this.onSettled()
+			},
+		)
 	}
 
 	blockOnCall(
 		service: string,
 		method: string,
 		args: unknown[],
-		callRealImplementation: () => Promise<unknown>
+		callRealImplementation: () => Promise<unknown>,
 	): Promise<unknown> {
-		if (this.activeBlockedHandle) {
-			this.blockedWhileSettledReason ??= new Error(CONCURRENT_BLOCKED_CALLS_ERROR)
+		let blockedCallPromise: Promise<unknown> | null = null
 
-			return Promise.reject(
-				this.blockedWhileSettledReason
-			)
-		}
+		const ensureBlocked = (): Promise<unknown> => {
+			if (blockedCallPromise) {
+				return blockedCallPromise
+			}
 
-		return new Promise<unknown>((resolve, reject) => {
+			if (this.activeBlockedHandle) {
+				this.blockedWhileSettledReason ??= new Error(
+					CONCURRENT_BLOCKED_CALLS_ERROR,
+				)
+
+				blockedCallPromise = Promise.reject(this.blockedWhileSettledReason)
+				blockedCallPromise.catch(() => {})
+				return blockedCallPromise
+			}
+
+			const deferred = createDeferred<unknown>()
+			deferred.promise.catch(() => {})
+
 			const blockedHandle = new BlockedHandle(
 				this,
 				{ to: service, method, args },
 				callRealImplementation,
-				resolve,
-				reject
+				deferred.resolve,
+				deferred.reject,
 			)
 
 			this.activeBlockedHandle = blockedHandle
 			this.nextHandle.resolve(blockedHandle)
-		})
+			blockedCallPromise = deferred.promise
+			return blockedCallPromise
+		}
+
+		return {
+			then: (onFulfilled, onRejected) =>
+				ensureBlocked().then(onFulfilled, onRejected),
+			catch: (onRejected) => ensureBlocked().catch(onRejected),
+			finally: (onFinally) => ensureBlocked().finally(onFinally),
+			[Symbol.toStringTag]: "Promise",
+		} as Promise<unknown>
 	}
 
 	prepareForResume(
-		blockedHandle: BlockedHandle<T, TServices>
+		blockedHandle: BlockedHandle<T, TServices>,
 	): Promise<Handle<T, TServices>> {
 		if (this.activeBlockedHandle !== blockedHandle) {
 			throw new Error("Blocked call is already resolved")
@@ -284,7 +350,7 @@ class BlockedHandle<T, TServices extends ServiceMap>
 		private readonly request: BlockedRequest,
 		private readonly callRealImplementation: () => Promise<unknown>,
 		private readonly resolveBlockedCall: (value: unknown) => void,
-		private readonly rejectBlockedCall: (reason: unknown) => void
+		private readonly rejectBlockedCall: (reason: unknown) => void,
 	) {}
 
 	unwrapValue(): T {
@@ -296,7 +362,7 @@ class BlockedHandle<T, TServices extends ServiceMap>
 	}
 
 	async allowRequest(
-		matcher: RequestMatcher<TServices>
+		matcher: RequestMatcher<TServices>,
 	): Promise<Handle<T, TServices>> {
 		assertRequestMatches(this.request, matcher)
 
@@ -341,25 +407,59 @@ class BlockedHandle<T, TServices extends ServiceMap>
 	}
 }
 
-// ---- Dependency proxy -------------------------------------------------------
+// ---- Proxy helpers ----------------------------------------------------------
 
-/**
- * Resolve a service property to an interceptable function call when possible.
- */
-function getInterceptableMethod(
-	realInstance: object,
-	property: PropertyKey
-): { name: string; method: AsyncMethod } | null {
-	if (typeof property !== "string" || property === "constructor") {
-		return null
+type SyncMethod = (...args: any[]) => any
+type ObjectProxyCache = WeakMap<object, object>
+type PathProxyCache = WeakMap<object, Map<string, object>>
+
+function isPromiseLike<T = unknown>(value: unknown): value is PromiseLike<T> {
+	return (
+		(typeof value === "object" || typeof value === "function") &&
+		value !== null &&
+		typeof (value as PromiseLike<T>).then === "function"
+	)
+}
+
+function shouldProxyObject(value: unknown): value is object {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		!isPromiseLike(value) &&
+		!Array.isArray(value) &&
+		!(value instanceof Date) &&
+		!(value instanceof RegExp) &&
+		!(value instanceof Error) &&
+		!(value instanceof Map) &&
+		!(value instanceof Set) &&
+		!(value instanceof WeakMap) &&
+		!(value instanceof WeakSet)
+	)
+}
+
+function getPathCachedProxy(
+	cache: PathProxyCache,
+	target: object,
+	path: readonly string[],
+): object | undefined {
+	return cache.get(target)?.get(path.join("."))
+}
+
+function setPathCachedProxy(
+	cache: PathProxyCache,
+	target: object,
+	path: readonly string[],
+	proxy: object,
+): object {
+	const pathKey = path.join(".")
+	const existing = cache.get(target)
+	if (existing) {
+		existing.set(pathKey, proxy)
+		return proxy
 	}
 
-	const value = Reflect.get(realInstance, property, realInstance)
-	if (typeof value !== "function") {
-		return null
-	}
-
-	return { name: property, method: value as AsyncMethod }
+	cache.set(target, new Map([[pathKey, proxy]]))
+	return proxy
 }
 
 /**
@@ -369,62 +469,149 @@ function getInterceptableMethod(
 function createDependencyProxy<TServices extends ServiceMap>(
 	serviceName: string,
 	realInstance: object,
-	getActiveInvocation: () => InvocationController<unknown, TServices> | null
+	getActiveInvocation: () => InvocationController<unknown, TServices> | null,
+	shouldBypassInterception: () => boolean,
+	path: readonly string[] = [],
+	cache: PathProxyCache = new WeakMap(),
 ): object {
-	return new Proxy(realInstance, {
+	const existing = getPathCachedProxy(cache, realInstance, path)
+	if (existing) {
+		return existing
+	}
+
+	const proxy = new Proxy(realInstance, {
 		get(target, property) {
-			const interceptable = getInterceptableMethod(target, property)
-			if (!interceptable) {
+			if (typeof property !== "string" || property === "constructor") {
 				return Reflect.get(target, property, target)
 			}
 
-			return (...args: unknown[]): Promise<unknown> => {
-				const activeInvocation = getActiveInvocation()
-				if (!activeInvocation) {
-					return interceptable.method.apply(target, args)
-				}
+			const value = Reflect.get(target, property, target)
+			if (typeof value === "function") {
+				const method = value as SyncMethod
+				const methodPath = [...path, property]
 
-				return activeInvocation.blockOnCall(
+				return (...args: unknown[]): Promise<unknown> => {
+					if (shouldBypassInterception()) {
+						return method.apply(target, args)
+					}
+
+					const activeInvocation = getActiveInvocation()
+					if (!activeInvocation) {
+						return method.apply(target, args)
+					}
+
+					return activeInvocation.blockOnCall(
+						serviceName,
+						methodPath.join("."),
+						args,
+						() => Promise.resolve(method.apply(target, args)),
+					)
+				}
+			}
+
+			if (shouldProxyObject(value)) {
+				return createDependencyProxy<TServices>(
 					serviceName,
-					interceptable.name,
-					args,
-					() => interceptable.method.apply(target, args)
+					value,
+					getActiveInvocation,
+					shouldBypassInterception,
+					[...path, property],
+					cache,
 				)
 			}
+
+			return value
 		},
 	})
+
+	return setPathCachedProxy(cache, realInstance, path, proxy)
 }
 
 function createHarnessServiceProxy<TServices extends ServiceMap>(
 	realInstance: object,
-	startInvocation: (run: () => Promise<unknown>) => Promise<Handle<unknown, TServices>>
+	startInvocation: (run: () => unknown) => unknown,
+	shouldBypassInterception: () => boolean,
+	cache: ObjectProxyCache = new WeakMap(),
 ): object {
-	return new Proxy(realInstance, {
+	const existing = cache.get(realInstance)
+	if (existing) {
+		return existing
+	}
+
+	const proxy = new Proxy(realInstance, {
 		get(target, property) {
-			const interceptable = getInterceptableMethod(target, property)
-			if (!interceptable) {
+			if (typeof property !== "string" || property === "constructor") {
 				return Reflect.get(target, property, target)
 			}
 
-			return (...args: unknown[]): Promise<Handle<unknown, TServices>> =>
-				startInvocation(() => interceptable.method.apply(target, args))
+			const value = Reflect.get(target, property, target)
+			if (typeof value === "function") {
+				const method = value as SyncMethod
+				return (...args: unknown[]): unknown => {
+					if (shouldBypassInterception()) {
+						return method.apply(target, args)
+					}
+
+					return startInvocation(() => method.apply(target, args))
+				}
+			}
+
+			if (shouldProxyObject(value)) {
+				return createHarnessServiceProxy<TServices>(
+					value,
+					startInvocation,
+					shouldBypassInterception,
+					cache,
+				)
+			}
+
+			return value
 		},
 	})
+
+	cache.set(realInstance, proxy)
+	return proxy
 }
 
 // ---- Service type utilities -------------------------------------------------
 
-/** Maps every async method of a service to return a handle promise. */
-type HandleWrapped<TServices extends ServiceMap, S> = {
-	[K in keyof S]: S[K] extends (...args: infer A) => Promise<infer R>
-		? (...args: A) => Promise<Handle<R, TServices>>
-		: never
-}
+type GatekeeperValue<TServices extends ServiceMap, TValue> = TValue extends (
+	...args: infer A
+) => Promise<infer R>
+	? (...args: A) => Promise<Handle<R, TServices>>
+	: TValue extends (...args: infer A) => infer R
+		? (...args: A) => R
+		: TValue extends OpaqueValue
+			? TValue
+			: TValue extends object
+				? {
+						[K in keyof TValue]: GatekeeperValue<TServices, TValue[K]>
+				  }
+				: TValue
+
+/** Maps every promise-returning method of a service to a handle promise. */
+export type GatekeeperProxy<TServices extends ServiceMap, S> = GatekeeperValue<
+	TServices,
+	S
+>
 
 type ServiceEntry = {
 	name: string
 	factory: (deps: Record<string, any>) => object
 }
+
+type Prettify<T> = { [K in keyof T]: T[K] } & {}
+
+type GatekeeperControls<TServices extends ServiceMap> = {
+	withUnlockedGates<R>(fn: (services: TServices) => R | Promise<R>): Promise<R>
+}
+
+// ---- Gatekeeper (built harness) ---------------------------------------------
+
+/** The built harness: each service's async methods return handle promises. */
+export type Gatekeeper<TServices extends Record<string, object> = {}> = {
+	[K in keyof TServices]: GatekeeperProxy<TServices, TServices[K]>
+} & GatekeeperControls<TServices>
 
 // ---- Builder ----------------------------------------------------------------
 
@@ -432,13 +619,15 @@ type ServiceEntry = {
  * Builder for an ordered, acyclic service harness.
  *
  * ```ts
- * const harness = new Gatekeeper()
+ * const gatekeeper = new GatekeeperBuilder()
  *   .add("server", () => new Server())
  *   .add("client", ({ server }) => new Client(server))
  *   .build()
  * ```
  */
-export class Gatekeeper<TServices extends Record<string, object> = {}> {
+export class GatekeeperBuilder<
+	TServices extends Record<string, object> = {},
+> {
 	private entries: ServiceEntry[] = []
 
 	/**
@@ -447,49 +636,94 @@ export class Gatekeeper<TServices extends Record<string, object> = {}> {
 	 */
 	add<Name extends string, S extends object>(
 		name: Name,
-		factory: (deps: TServices) => S
-	): Gatekeeper<TServices & Record<Name, S>> {
-		const next = new Gatekeeper<TServices & Record<Name, S>>()
-		next.entries = [...this.entries, { name, factory: factory as ServiceEntry["factory"] }]
+		factory: (deps: TServices) => S,
+	): GatekeeperBuilder<Prettify<TServices & Record<Name, S>>> {
+		const next = new GatekeeperBuilder<
+			Prettify<TServices & Record<Name, S>>
+		>()
+		next.entries = [
+			...this.entries,
+			{ name, factory: factory as ServiceEntry["factory"] },
+		]
 		return next
 	}
 
 	/**
 	 * Build all registered services in order.
-	 * Harness methods resolve to a handle when the invocation either completes or
-	 * blocks on the next intercepted downstream call.
 	 */
-	build(): { [K in keyof TServices]: HandleWrapped<TServices, TServices[K]> } {
+	build(): Gatekeeper<TServices> {
+		const rawServices: Record<string, object> = {}
 		const proxiedDependencies: Record<string, object> = {}
 		const harness: Record<string, object> = {}
 
-		let activeInvocation: InvocationController<unknown, TServices> | null = null
+		let activeInvocation: InvocationController<unknown, TServices> | null =
+			null
+		let unlockedGateDepth = 0
+
+		const shouldBypassInterception = (): boolean => unlockedGateDepth > 0
 
 		for (const entry of this.entries) {
 			const instance = entry.factory({ ...proxiedDependencies })
+			rawServices[entry.name] = instance
 
 			proxiedDependencies[entry.name] = createDependencyProxy<TServices>(
 				entry.name,
 				instance,
-				() => activeInvocation
+				() => activeInvocation,
+				shouldBypassInterception,
 			)
 
 			harness[entry.name] = createHarnessServiceProxy<TServices>(
 				instance,
 				(run) => {
-					const invocation = new InvocationController<unknown, TServices>(() => {
+					const invocation = new InvocationController<unknown, TServices>(
+						() => {
+							if (activeInvocation === invocation) {
+								activeInvocation = null
+							}
+						},
+					)
+
+					activeInvocation = invocation
+
+					let result: unknown
+					try {
+						result = run()
+					} catch (error) {
 						if (activeInvocation === invocation) {
 							activeInvocation = null
 						}
-					})
+						throw error
+					}
 
-					activeInvocation = invocation
-					invocation.start(run)
+					if (!isPromiseLike(result)) {
+						if (activeInvocation === invocation) {
+							activeInvocation = null
+						}
+						return result
+					}
+
+					invocation.track(result)
 					return invocation.observe()
-				}
+				},
+				shouldBypassInterception,
 			)
 		}
 
-		return harness as any
+		Object.defineProperty(harness, "withUnlockedGates", {
+			value: async <R>(
+				fn: (services: TServices) => R | Promise<R>,
+			): Promise<R> => {
+				unlockedGateDepth += 1
+
+				try {
+					return await fn(rawServices as TServices)
+				} finally {
+					unlockedGateDepth -= 1
+				}
+			},
+		})
+
+		return harness as Gatekeeper<TServices>
 	}
 }

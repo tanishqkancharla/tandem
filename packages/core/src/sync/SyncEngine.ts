@@ -11,7 +11,6 @@ import {
 	PatchApi,
 	RemoteApi,
 	ScanWindow,
-	Thenable,
 } from "@tandem/types"
 import { LoggerApi } from "../utils/Logger"
 import { ThrottleQueue } from "../utils/ThrottleQueue"
@@ -80,19 +79,11 @@ export class SyncEngine<Schema extends AnySchema> {
 
 		this.pullQueue = new ThrottleQueue(
 			() => this.pull(),
-			(error) => {
-				// TODO: fatal error. This shouldn't happen since pull handles its own errors
-				this.logger.error("Error pulling from remote", error)
-			},
 			args.syncInterval,
 		)
 
 		this.pushQueue = new ThrottleQueue(
 			() => this.push(),
-			(error) => {
-				// TODO: fatal error. This shouldn't happen since push handles its own errors
-				this.logger.error("Error pushing to remote", error)
-			},
 			args.syncInterval,
 		)
 
@@ -110,9 +101,12 @@ export class SyncEngine<Schema extends AnySchema> {
 			clientId: this.clientId,
 			poke: () => {
 				this.logger.info("Received poke from remote")
-				this.queuePull()
+				void this.queuePull().catch((error) => {
+					this.logger.error("Error pulling from remote", error)
+				})
 			},
 		})
+		this.disconnectFromRemote = unsubscribe
 
 		this.logger.info("Connected to remote")
 
@@ -130,7 +124,9 @@ export class SyncEngine<Schema extends AnySchema> {
 	subscribe(query: EncodedQuery<Schema>): Unsubscribe {
 		this.logger.info("Subscribing to query", query)
 		this.scanWindow.push(query)
-		this.queuePull()
+		void this.queuePull().catch((error) => {
+			this.logger.error("Error pulling from remote", error)
+		})
 
 		return () => {
 			this.logger.info("Unsubscribing from query", query)
@@ -138,7 +134,7 @@ export class SyncEngine<Schema extends AnySchema> {
 		}
 	}
 
-	queuePull(): Thenable {
+	queuePull(): Promise<void> {
 		this.logger.info("Queueing pull...")
 		return this.pullQueue.enqueue().then(() => {
 			this.logger.info("Pull finished")
@@ -168,7 +164,7 @@ export class SyncEngine<Schema extends AnySchema> {
 		this.applyPatchAt({ patch, lastMutationId })
 	}
 
-	queuePush(mutation: InvertibleMutation<Schema>): Thenable {
+	queuePush(mutation: InvertibleMutation<Schema>): Promise<void> {
 		this.logger.info("Queueing push...")
 		this.pendingMutations.push(mutation)
 		return this.pushQueue.enqueue()
@@ -177,22 +173,23 @@ export class SyncEngine<Schema extends AnySchema> {
 	private async push() {
 		if (this.pendingMutations.length === 0) return
 
-		const mutationsToPush = this.pendingMutations
+		const mutations = this.pendingMutations
 		this.pendingMutations = []
 
 		try {
 			// Convert invertible mutations to regular mutations before pushing
-			const mutations = mutationsToPush.map(invertibleMutationToMutation)
+			const serializedMutations = mutations.map(invertibleMutationToMutation)
 
 			// Then apply to remote if available
 			await this.remote.push({
-				mutations,
+				mutations: serializedMutations,
 				clientId: this.clientId,
 			})
 		} catch (error) {
 			this.logger.error("Error applying mutation", error)
 
-			this.handleRollback(mutationsToPush)
+			this.handleRollback(mutations)
+			throw error
 		}
 	}
 }

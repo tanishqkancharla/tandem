@@ -1,2 +1,2 @@
-export { Gatekeeper } from "./Gatekeeper.js"
-export type { Handle, RequestMatcher } from "./Gatekeeper.js"
+export { GatekeeperBuilder } from "./Gatekeeper.js"
+export type { Gatekeeper, Handle, RequestMatcher, GatekeeperProxy } from "./Gatekeeper.js"

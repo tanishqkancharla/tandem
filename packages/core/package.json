@@ -16,7 +16,7 @@
 		"build": "tsc",
 		"type-check": "tsc --noEmit",
 		"lint": "eslint src --fix && tsc --noEmit",
-		"test": "vitest"
+		"test": "vitest run"
 	},
 	"dependencies": {
 		"@tandem/types": "workspace:*",

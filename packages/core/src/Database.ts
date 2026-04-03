@@ -94,10 +94,6 @@ export class Database<Schema extends AnySchema> {
 					writeOpsQueue = copy
 				}
 			},
-			(error) => {
-				// TODO: fatal error
-				this.logger.error("Error committing to storage", error)
-			},
 			120,
 		)
 
