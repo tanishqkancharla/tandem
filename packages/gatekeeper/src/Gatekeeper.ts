@@ -735,9 +735,10 @@ export class GatekeeperBuilder<TServices extends Record<string, object> = {}> {
 		const proxiedDependencies: Record<string, object> = {}
 		const harness: Record<string, object> = {}
 
-		let unlockedGateDepth = 0
+		const unlockedGateContext = new AsyncLocalStorage<boolean>()
 
-		const shouldBypassInterception = (): boolean => unlockedGateDepth > 0
+		const shouldBypassInterception = (): boolean =>
+			unlockedGateContext.getStore() === true
 
 		for (const entry of this.entries) {
 			const instance = entry.factory({ ...proxiedDependencies })
@@ -787,13 +788,9 @@ export class GatekeeperBuilder<TServices extends Record<string, object> = {}> {
 			value: async <R>(
 				fn: (services: TServices) => R | Promise<R>,
 			): Promise<R> => {
-				unlockedGateDepth += 1
-
-				try {
-					return await fn(rawServices as TServices)
-				} finally {
-					unlockedGateDepth -= 1
-				}
+				return await unlockedGateContext.run(true, () =>
+					fn(rawServices as TServices),
+				)
 			},
 		})
 

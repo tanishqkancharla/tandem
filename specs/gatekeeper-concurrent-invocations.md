@@ -333,11 +333,11 @@ function withUnlockedGates<R>(fn: (services: TServices) => R | Promise<R>) {
 }
 ```
 
-- [ ] Keep `withUnlockedGates(...)` callback semantics unchanged from the caller's perspective.
-- [ ] Scope gate bypass to the callback's async work so concurrent invocations do not see accidental global bypass.
-- [ ] Add a Gatekeeper test that holds a `withUnlockedGates(...)` callback open while an unrelated blocked invocation resumes, and assert the resumed invocation still blocks on its next downstream request.
-- [ ] Re-run and adjust existing nested sync property/method passthrough tests only where the internal routing change requires it; do not change the public contract.
-- [ ] Verify `pnpm --filter @tandem/gatekeeper test` passes.
+- [x] Keep `withUnlockedGates(...)` callback semantics unchanged from the caller's perspective.
+- [x] Scope gate bypass to the callback's async work so concurrent invocations do not see accidental global bypass.
+- [x] Add a Gatekeeper test that holds a `withUnlockedGates(...)` callback open while an unrelated blocked invocation resumes, and assert the resumed invocation still blocks on its next downstream request.
+- [x] Re-run and adjust existing nested sync property/method passthrough tests only where the internal routing change requires it; do not change the public contract.
+- [x] Verify `pnpm --filter @tandem/gatekeeper test` passes.
 
 ### Phase 6: Document the new concurrency model and validate it in downstream Tandem flows
 

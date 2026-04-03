@@ -449,6 +449,157 @@ describe("Gatekeeper", () => {
 				expect(harness.server.callCount).toBe(4)
 			},
 		)
+
+		base(
+			"does not bypass gating for a concurrent blocked invocation that resumes while the callback is open",
+			async () => {
+				class StepServer {
+					callLog: string[] = []
+
+					stepOne(value: number): Promise<number> {
+						this.callLog.push(`stepOne:${value}`)
+						return Promise.resolve(value + 1)
+					}
+
+					stepTwo(value: number): Promise<number> {
+						this.callLog.push(`stepTwo:${value}`)
+						return Promise.resolve(value + 1)
+					}
+				}
+
+				class StepClient {
+					constructor(private readonly server: StepServer) {}
+
+					async doTwoCalls(value: number): Promise<number> {
+						const first = await this.server.stepOne(value)
+						return await this.server.stepTwo(first)
+					}
+				}
+
+				const harness = new GatekeeperBuilder()
+					.add("server", () => new StepServer())
+					.add("client", ({ server }) => new StepClient(server))
+					.build()
+
+				// Start a multi-step gated invocation that blocks on its first call
+				const first = await harness.client.doTwoCalls(1)
+				first.expectRequest({ to: "server", method: "stepOne", args: [1] })
+
+				// Hold withUnlockedGates open with a long-lived callback
+				let resolveUnlocked!: () => void
+				const unlockedDone = harness.withUnlockedGates(async () => {
+					await new Promise<void>((r) => {
+						resolveUnlocked = r
+					})
+				})
+
+				// While withUnlockedGates is still open, resume the gated invocation.
+				// Its continuation must still be gated — the unlock must not leak.
+				const second = await first.allowRequest({
+					to: "server",
+					method: "stepOne",
+					args: [1],
+				})
+
+				// The second downstream call is blocked, not passed through
+				expect(second.resolved).toBe(false)
+				second.expectRequest({ to: "server", method: "stepTwo", args: [2] })
+
+				const done = await second.allowRequest({
+					to: "server",
+					method: "stepTwo",
+					args: [2],
+				})
+
+				expect(done.resolved).toBe(true)
+				expect(done.unwrapValue()).toBe(3)
+				expect(harness.server.callLog).toEqual(["stepOne:1", "stepTwo:2"])
+
+				// Clean up the held callback
+				resolveUnlocked()
+				await unlockedDone
+			},
+		)
+
+		base(
+			"does not bypass gating for a multi-step invocation resuming during an open withUnlockedGates callback",
+			async () => {
+				class StepServer {
+					callLog: string[] = []
+
+					stepOne(value: number): Promise<number> {
+						this.callLog.push(`stepOne:${value}`)
+						return Promise.resolve(value + 1)
+					}
+
+					stepTwo(value: number): Promise<number> {
+						this.callLog.push(`stepTwo:${value}`)
+						return Promise.resolve(value + 1)
+					}
+				}
+
+				class StepClient {
+					constructor(private readonly server: StepServer) {}
+
+					async doTwoCalls(value: number): Promise<number> {
+						const first = await this.server.stepOne(value)
+						return await this.server.stepTwo(first)
+					}
+
+					async addOne(value: number): Promise<number> {
+						return await this.server.stepOne(value)
+					}
+				}
+
+				const harness = new GatekeeperBuilder()
+					.add("server", () => new StepServer())
+					.add("client", ({ server }) => new StepClient(server))
+					.build()
+
+				// Start a multi-step gated invocation
+				const first = await harness.client.doTwoCalls(1)
+				first.expectRequest({ to: "server", method: "stepOne", args: [1] })
+
+				// Hold withUnlockedGates open
+				let resolveUnlocked!: () => void
+				const unlockedDone = harness.withUnlockedGates(async ({ client }) => {
+					// Bypassed call
+					expect(await client.addOne(100)).toBe(101)
+					await new Promise<void>((r) => {
+						resolveUnlocked = r
+					})
+				})
+
+				// Resume the gated invocation while unlock is still open
+				const second = await first.allowRequest({
+					to: "server",
+					method: "stepOne",
+					args: [1],
+				})
+
+				// The resumed invocation must STILL be gated — its second
+				// downstream call should block, not pass through
+				expect(second.resolved).toBe(false)
+				second.expectRequest({ to: "server", method: "stepTwo", args: [2] })
+
+				const done = await second.allowRequest({
+					to: "server",
+					method: "stepTwo",
+					args: [2],
+				})
+
+				expect(done.resolved).toBe(true)
+				expect(done.unwrapValue()).toBe(3)
+				expect(harness.server.callLog).toEqual([
+					"stepOne:100",
+					"stepOne:1",
+					"stepTwo:2",
+				])
+
+				resolveUnlocked()
+				await unlockedDone
+			},
+		)
 	})
 
 	describe("when a workflow makes multiple downstream requests", () => {
