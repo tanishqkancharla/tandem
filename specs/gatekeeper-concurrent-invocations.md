@@ -312,13 +312,13 @@ class InvocationController<T> {
 }
 ```
 
-- [ ] Define explicit controller cleanup rules for sync return, sync throw, async resolve, async reject, and settle-while-blocked cases.
-- [ ] Ensure stale handle actions fail with a deterministic settled-invocation error once the invocation has been removed from the map.
-- [ ] Preserve the existing behavior where a blocked invocation that ultimately rejects still surfaces that rejection through the blocked handle path.
-- [ ] Add a Gatekeeper test that forces an invocation to settle with an error while a blocked handle is still active, then asserts the next gate action surfaces that error and cleans up the invocation.
-- [ ] Add a focused test or purpose-built fixture showing that stale async context throws the invariant error instead of falling back to a direct dependency call.
-- [ ] Verify `pnpm --filter @tandem/gatekeeper test` passes.
-- [ ] Verify `pnpm --filter @tandem/gatekeeper type-check` passes.
+- [x] Define explicit controller cleanup rules for sync return, sync throw, async resolve, async reject, and settle-while-blocked cases.
+- [x] Ensure stale handle actions fail with a deterministic settled-invocation error once the invocation has been removed from the map.
+- [x] Preserve the existing behavior where a blocked invocation that ultimately rejects still surfaces that rejection through the blocked handle path.
+- [x] Add a Gatekeeper test that forces an invocation to settle with an error while a blocked handle is still active, then asserts the next gate action surfaces that error and cleans up the invocation.
+- [x] Add a focused test or purpose-built fixture showing that stale async context throws the invariant error instead of falling back to a direct dependency call.
+- [x] Verify `pnpm --filter @tandem/gatekeeper test` passes.
+- [x] Verify `pnpm --filter @tandem/gatekeeper type-check` passes.
 
 ### Phase 5: Keep `withUnlockedGates(...)`, sync passthrough, and nested proxies correct under concurrency
 

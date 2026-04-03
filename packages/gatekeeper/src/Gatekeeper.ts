@@ -245,6 +245,7 @@ class InvocationController<T, TServices extends ServiceMap> {
 	private nextHandle = createDeferred<Handle<T, TServices>>()
 	private activeBlockedHandle: BlockedHandle<T, TServices> | null = null
 	private blockedWhileSettledReason: unknown = null
+	private settled = false
 
 	constructor(private readonly onSettled: () => void) {
 		this.nextHandle.promise.catch(() => {})
@@ -254,11 +255,23 @@ class InvocationController<T, TServices extends ServiceMap> {
 		return this.nextHandle.promise
 	}
 
+	/**
+	 * Mark the invocation as settled. If no blocked handle is active, clean up
+	 * immediately. Otherwise defer cleanup until the blocked handle is resolved
+	 * via prepareForResume().
+	 */
+	private markSettled(): void {
+		this.settled = true
+		if (!this.activeBlockedHandle) {
+			this.onSettled()
+		}
+	}
+
 	track(result: PromiseLike<T>): void {
 		Promise.resolve(result).then(
 			(value) => {
 				this.nextHandle.resolve(new ResolvedHandle<T, TServices>(value))
-				this.onSettled()
+				this.markSettled()
 			},
 			(error) => {
 				if (this.activeBlockedHandle) {
@@ -266,7 +279,7 @@ class InvocationController<T, TServices extends ServiceMap> {
 				} else {
 					this.nextHandle.reject(error)
 				}
-				this.onSettled()
+				this.markSettled()
 			},
 		)
 	}
@@ -334,10 +347,12 @@ class InvocationController<T, TServices extends ServiceMap> {
 			const reason = this.blockedWhileSettledReason
 			this.blockedWhileSettledReason = null
 			this.activeBlockedHandle = null
+			if (this.settled) this.onSettled()
 			throw reason
 		}
 
 		this.activeBlockedHandle = null
+		if (this.settled) this.onSettled()
 		this.nextHandle = createDeferred<Handle<T, TServices>>()
 		this.nextHandle.promise.catch(() => {})
 		return this.nextHandle.promise

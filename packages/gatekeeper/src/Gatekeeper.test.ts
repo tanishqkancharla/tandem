@@ -891,4 +891,135 @@ describe("Gatekeeper", () => {
 			},
 		)
 	})
+
+	describe("when an invocation settles while a blocked handle is still active", () => {
+		// Models a client operation that validates preconditions after initiating
+		// a downstream request — e.g. a push that starts sending mutations to the
+		// server, then discovers a local constraint violation and aborts before
+		// the server responds.  The downstream call is still blocked when the
+		// invocation rejects; the test must be able to observe that rejection
+		// through the blocked handle rather than accidentally forwarding the call.
+
+		base(
+			"surfaces the invocation error through the blocked handle instead of forwarding the call",
+			async () => {
+				class Remote {
+					pushCount = 0
+
+					push(mutations: unknown[]): Promise<{ cursor: number }> {
+						this.pushCount += 1
+						return Promise.resolve({ cursor: mutations.length })
+					}
+				}
+
+				class SyncEngine {
+					constructor(private readonly remote: Remote) {}
+
+					async pushMutations(
+						mutations: unknown[],
+					): Promise<{ cursor: number }> {
+						// Initiate the push — this creates the blocked handle
+						const inflight = this.remote.push(mutations)
+						void inflight.then(
+							() => {},
+							() => {},
+						)
+
+						// Discover a constraint violation after the push is in flight
+						if (mutations.some((m) => m === null)) {
+							throw new Error("null mutation: aborting push")
+						}
+
+						return await inflight
+					}
+				}
+
+				const harness = new GatekeeperBuilder()
+					.add("remote", () => new Remote())
+					.add("engine", ({ remote }) => new SyncEngine(remote))
+					.build()
+
+				// Push with a null mutation — the engine will abort after starting the push
+				const handle = await harness.engine.pushMutations(["ok", null])
+
+				expect(handle.resolved).toBe(false)
+				handle.expectRequest({
+					to: "remote",
+					method: "push",
+					args: [["ok", null]],
+				})
+
+				// The invocation already rejected — allowRequest surfaces that error
+				await expect(
+					handle.allowRequest({
+						to: "remote",
+						method: "push",
+						args: [["ok", null]],
+					}),
+				).rejects.toThrow("null mutation: aborting push")
+
+				// The remote was never actually called
+				expect(harness.remote.pushCount).toBe(0)
+			},
+		)
+	})
+
+	describe("when detached background work outlives its invocation", () => {
+		// Models a sync engine that kicks off background cache pre-warming during
+		// a pull.  The pull completes and the invocation is cleaned up, but the
+		// detached pre-warm work later tries to call a gated dependency.  Without
+		// the invariant check the call would bypass gating entirely (no invocation
+		// in the map → direct passthrough), silently producing an ungated side
+		// effect.  The invariant ensures this is caught as a bug.
+
+		base("throws the invariant error instead of bypassing gating", async () => {
+			class Remote {
+				callCount = 0
+
+				fetchUpdates(): Promise<string[]> {
+					this.callCount += 1
+					return Promise.resolve(["update-1"])
+				}
+			}
+
+			let triggerPreWarm!: () => void
+			let preWarmResult!: Promise<unknown>
+
+			class SyncEngine {
+				constructor(private readonly remote: Remote) {}
+
+				async pull(): Promise<string> {
+					const trigger = new Promise<void>((r) => {
+						triggerPreWarm = r
+					})
+
+					// Kick off background cache pre-warming that will fire later.
+					// The .then() inherits the current invocation's ALS context.
+					preWarmResult = trigger.then(async () => {
+						return await this.remote.fetchUpdates()
+					})
+					preWarmResult.catch(() => {})
+
+					return "pull complete"
+				}
+			}
+
+			const harness = new GatekeeperBuilder()
+				.add("remote", () => new Remote())
+				.add("engine", ({ remote }) => new SyncEngine(remote))
+				.build()
+
+			const handle = await harness.engine.pull()
+			expect(handle.resolved).toBe(true)
+			expect(handle.unwrapValue()).toBe("pull complete")
+
+			// The pull invocation is done and cleaned up.
+			// Now the detached pre-warm fires — it should fail, not bypass gating.
+			triggerPreWarm()
+			await expect(preWarmResult).rejects.toThrow("no longer live")
+
+			// The remote was never called — the invariant prevented an ungated call
+			expect(harness.remote.callCount).toBe(0)
+		})
+	})
 })
