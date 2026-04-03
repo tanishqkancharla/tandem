@@ -277,6 +277,7 @@ class InvocationController<T, TServices extends ServiceMap> {
 		args: unknown[],
 		callRealImplementation: () => Promise<unknown>,
 		getInvocation: () => InvocationController<T, TServices>,
+		resumeInContext: <R>(fn: () => R) => R,
 	): Promise<unknown> {
 		let blockedCallPromise: Promise<unknown> | null = null
 
@@ -300,6 +301,7 @@ class InvocationController<T, TServices extends ServiceMap> {
 
 			const blockedHandle = new BlockedHandle(
 				getInvocation,
+				resumeInContext,
 				{ to: service, method, args },
 				callRealImplementation,
 				deferred.resolve,
@@ -352,6 +354,7 @@ class BlockedHandle<T, TServices extends ServiceMap>
 
 	constructor(
 		private readonly getInvocation: () => InvocationController<T, TServices>,
+		private readonly resumeInContext: <R>(fn: () => R) => R,
 		private readonly request: BlockedRequest,
 		private readonly callRealImplementation: () => Promise<unknown>,
 		private readonly resolveBlockedCall: (value: unknown) => void,
@@ -375,11 +378,13 @@ class BlockedHandle<T, TServices extends ServiceMap>
 			const invocation = this.getInvocation()
 			const nextHandle = invocation.prepareForResume(this)
 
-			try {
-				this.resolveBlockedCall(await this.callRealImplementation())
-			} catch (error) {
-				this.rejectBlockedCall(error)
-			}
+			await this.resumeInContext(async () => {
+				try {
+					this.resolveBlockedCall(await this.callRealImplementation())
+				} catch (error) {
+					this.rejectBlockedCall(error)
+				}
+			})
 
 			return await nextHandle
 		})
@@ -389,7 +394,7 @@ class BlockedHandle<T, TServices extends ServiceMap>
 		return this.runOnce(async () => {
 			const invocation = this.getInvocation()
 			const nextHandle = invocation.prepareForResume(this)
-			this.resolveBlockedCall(value)
+			this.resumeInContext(() => this.resolveBlockedCall(value))
 			return await nextHandle
 		})
 	}
@@ -398,7 +403,7 @@ class BlockedHandle<T, TServices extends ServiceMap>
 		return this.runOnce(async () => {
 			const invocation = this.getInvocation()
 			const nextHandle = invocation.prepareForResume(this)
-			this.rejectBlockedCall(error)
+			this.resumeInContext(() => this.rejectBlockedCall(error))
 			return await nextHandle
 		})
 	}
@@ -478,10 +483,10 @@ function createDependencyProxy<TServices extends ServiceMap>(
 	serviceName: string,
 	realInstance: object,
 	getCurrentInvocation: () => InvocationController<unknown, TServices> | null,
-	createBoundInvocationLookup: () => () => InvocationController<
-		unknown,
-		TServices
-	>,
+	createBoundInvocationLookup: () => {
+		getInvocation: () => InvocationController<unknown, TServices>
+		resumeInContext: <R>(fn: () => R) => R
+	},
 	shouldBypassInterception: () => boolean,
 	path: readonly string[] = [],
 	cache: PathProxyCache = new WeakMap(),
@@ -512,12 +517,14 @@ function createDependencyProxy<TServices extends ServiceMap>(
 						return method.apply(target, args)
 					}
 
+					const bound = createBoundInvocationLookup()
 					return currentInvocation.blockOnCall(
 						serviceName,
 						methodPath.join("."),
 						args,
 						() => Promise.resolve(method.apply(target, args)),
-						createBoundInvocationLookup(),
+						bound.getInvocation,
+						bound.resumeInContext,
 					)
 				}
 			}
@@ -692,17 +699,21 @@ export class GatekeeperBuilder<TServices extends Record<string, object> = {}> {
 			return getInvocationById(invocationId)
 		}
 
-		function createBoundInvocationLookup(): () => InvocationController<
-			unknown,
-			TServices
-		> {
+		function createBoundInvocationLookup(): {
+			getInvocation: () => InvocationController<unknown, TServices>
+			resumeInContext: <R>(fn: () => R) => R
+		} {
 			const invocationId = invocationContext.getStore()
 			if (invocationId === undefined) {
 				throw new Error(
 					"Gatekeeper invariant: cannot create bound invocation lookup outside invocation context",
 				)
 			}
-			return () => getInvocationById(invocationId)
+			return {
+				getInvocation: () => getInvocationById(invocationId),
+				resumeInContext: <R>(fn: () => R): R =>
+					invocationContext.run(invocationId, fn),
+			}
 		}
 
 		const rawServices: Record<string, object> = {}

@@ -287,10 +287,10 @@ async function resumeInInvocation<T>(
 }
 ```
 
-- [ ] Wrap `allowRequest()`, `mockReturnValue()`, and `fail()` in `AsyncLocalStorage.run(invocationId, ...)` before they release the blocked await.
-- [ ] Keep the existing one-shot blocked-handle guard so each blocked request can only be resolved once.
-- [ ] Add a Gatekeeper workflow regression test where invocation `A` blocks, invocation `B` blocks, `A` resumes first, and `A`'s continuation produces the next blocked handle for `A` rather than for `B`.
-- [ ] Verify `pnpm --filter @tandem/gatekeeper test` passes.
+- [x] Wrap `allowRequest()`, `mockReturnValue()`, and `fail()` in `AsyncLocalStorage.run(invocationId, ...)` before they release the blocked await.
+- [x] Keep the existing one-shot blocked-handle guard so each blocked request can only be resolved once.
+- [x] Add a Gatekeeper workflow regression test where invocation `A` blocks, invocation `B` blocks, `A` resumes first, and `A`'s continuation produces the next blocked handle for `A` rather than for `B`.
+- [x] Verify `pnpm --filter @tandem/gatekeeper test` passes.
 
 ### Phase 4: Make cleanup deterministic and preserve error propagation
 

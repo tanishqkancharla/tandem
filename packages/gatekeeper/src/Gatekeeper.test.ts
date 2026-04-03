@@ -803,5 +803,92 @@ describe("Gatekeeper", () => {
 				expect(harness.server.callCount).toBe(1)
 			},
 		)
+
+		base(
+			"preserves transitive downstream attribution when A resumes before B",
+			async () => {
+				class StepServer {
+					callLog: string[] = []
+
+					stepOne(tag: string): Promise<string> {
+						this.callLog.push(`stepOne:${tag}`)
+						return Promise.resolve(`${tag}:1`)
+					}
+
+					stepTwo(tag: string): Promise<string> {
+						this.callLog.push(`stepTwo:${tag}`)
+						return Promise.resolve(`${tag}:2`)
+					}
+				}
+
+				class StepClient {
+					constructor(private readonly server: StepServer) {}
+
+					async doTwoSteps(tag: string): Promise<string> {
+						const first = await this.server.stepOne(tag)
+						return await this.server.stepTwo(first)
+					}
+				}
+
+				const harness = new GatekeeperBuilder()
+					.add("server", () => new StepServer())
+					.add("client", ({ server }) => new StepClient(server))
+					.build()
+
+				// Both A and B block on their first downstream call
+				const aPromise = harness.client.doTwoSteps("a")
+				const bPromise = harness.client.doTwoSteps("b")
+
+				const [a, b] = await Promise.all([aPromise, bPromise])
+
+				a.expectRequest({ to: "server", method: "stepOne", args: ["a"] })
+				b.expectRequest({ to: "server", method: "stepOne", args: ["b"] })
+
+				// Resume A first — its continuation must produce A's next handle, not B's
+				const a2 = await a.allowRequest({
+					to: "server",
+					method: "stepOne",
+					args: ["a"],
+				})
+
+				expect(a2.resolved).toBe(false)
+				a2.expectRequest({ to: "server", method: "stepTwo", args: ["a:1"] })
+
+				// B is still blocked on stepOne
+				b.expectRequest({ to: "server", method: "stepOne", args: ["b"] })
+
+				// Finish both
+				const doneA = await a2.allowRequest({
+					to: "server",
+					method: "stepTwo",
+					args: ["a:1"],
+				})
+				expect(doneA.resolved).toBe(true)
+				expect(doneA.unwrapValue()).toBe("a:1:2")
+
+				const b2 = await b.allowRequest({
+					to: "server",
+					method: "stepOne",
+					args: ["b"],
+				})
+				expect(b2.resolved).toBe(false)
+				b2.expectRequest({ to: "server", method: "stepTwo", args: ["b:1"] })
+
+				const doneB = await b2.allowRequest({
+					to: "server",
+					method: "stepTwo",
+					args: ["b:1"],
+				})
+				expect(doneB.resolved).toBe(true)
+				expect(doneB.unwrapValue()).toBe("b:1:2")
+
+				expect(harness.server.callLog).toEqual([
+					"stepOne:a",
+					"stepTwo:a:1",
+					"stepOne:b",
+					"stepTwo:b:1",
+				])
+			},
+		)
 	})
 })
