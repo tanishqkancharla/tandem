@@ -16,7 +16,7 @@
 		"build": "tsc",
 		"type-check": "tsc --noEmit",
 		"lint": "eslint src --fix && tsc --noEmit",
-		"test": "vitest"
+		"test": "vitest run"
 	},
 	"dependencies": {
 		"@tandem/types": "workspace:*",
@@ -27,6 +27,8 @@
 		"tuple-database": "^2.2.4"
 	},
 	"devDependencies": {
+		"@tandem/gatekeeper": "workspace:*",
+		"@tandem/testing": "workspace:*",
 		"typescript": "^5.7.2",
 		"vitest": "^1.1.0"
 	}

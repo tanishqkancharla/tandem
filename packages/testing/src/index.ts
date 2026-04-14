@@ -1,1 +1,1 @@
-export { TestRemote } from "./TestRemote"
+export { TestRemote } from "./TestRemote.js"

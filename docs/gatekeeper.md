@@ -99,11 +99,32 @@ const second = await first.allowRequest({
 second.expectRequest({ to: "server", method: "stepTwo", args: [2] })
 ```
 
+## Concurrent invocations
+
+Gatekeeper supports multiple concurrent blocked top-level invocations. You can start several harness calls, let them each block on a downstream request, and resume them in any order.
+
+```ts
+const aPromise = harness.client.doA()
+const bPromise = harness.client.doB()
+
+const [a, b] = await Promise.all([aPromise, bPromise])
+
+a.expectRequest({ to: "server", method: "stepA", args: [1] })
+b.expectRequest({ to: "server", method: "stepB", args: [2] })
+
+// Resume in any order — each handle routes to its own invocation
+const doneB = await b.allowRequest({ to: "server", method: "stepB", args: [2] })
+await a.allowRequest({ to: "server", method: "stepA", args: [1] })
+```
+
+When a blocked invocation resumes, its continuation is still attributed to the original invocation. If invocation `A` makes a second downstream call after being resumed, the resulting handle belongs to `A` even if invocation `B` is still blocked.
+
+Two blocked invocations may expose identical request matcher shapes. Handle identity — not matcher shape — determines which invocation resumes.
+
 ## Current limits
 
 - Services must expose async methods.
 - Services must be registered in dependency order.
-- Gatekeeper currently supports serial downstream blocking within one invocation.
-- Concurrent blocked fan-out in one invocation is rejected.
+- Each invocation supports serial downstream blocking only. Concurrent blocked fan-out within a single invocation is rejected.
 
 This document is intentionally minimal. Extend it once the API settles further.

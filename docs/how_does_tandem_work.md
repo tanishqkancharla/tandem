@@ -83,8 +83,9 @@ When you make a change:
 // Example: Adding a todo
 const tx = db.transact()
 tx.set("todos", { id: "123", text: "Learn Tandem", complete: false })
-await db.commit(tx)
+const commit = db.commit(tx)
 // UI updates immediately, sync happens in background
+await commit
 ```
 
 ### 2. Push (Upstream Sync)

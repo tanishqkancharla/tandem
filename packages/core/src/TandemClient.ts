@@ -14,16 +14,18 @@ import {
 	RemoteApi,
 	RngApi,
 	StorageApi,
-	Thenable,
+	type TimerApi,
 } from "@tandem/types"
 import { ConsoleLogger, LoggerApi } from "./utils/Logger"
 import { randomId } from "./utils/randomId"
+import { Timer } from "./utils/Timer"
 
 type TandemClientArgs<Schema extends AnySchema> = {
 	storage?: StorageApi
 	remote?: RemoteApi<Schema>
 	logger?: LoggerApi
 	rng?: RngApi
+	timer?: TimerApi
 	autoConnect?: boolean
 	/**
 	 * @default 150
@@ -53,11 +55,14 @@ export class TandemClient<Schema extends AnySchema> {
 		autoConnect = true,
 		syncInterval = 150,
 		rng,
+		timer,
 	}: TandemClientArgs<Schema>) {
 		this.logger = logger ?? new ConsoleLogger(["tandem-client"])
 
 		this.rng = rng ?? { randomId }
 		this.clientId = this.rng.randomId() as ClientId
+
+		const timerImpl = timer ?? new Timer()
 
 		this.syncEngine = remote
 			? new SyncEngine({
@@ -70,6 +75,7 @@ export class TandemClient<Schema extends AnySchema> {
 					autoConnect,
 					logger: this.logger.scope("sync-engine"),
 					syncInterval,
+					timer: timerImpl,
 				})
 			: undefined
 
@@ -82,9 +88,13 @@ export class TandemClient<Schema extends AnySchema> {
 		this.ready = this.db.ready
 	}
 
-	pullFromRemote(): Thenable | undefined {
+	pullFromRemote(): Promise<void> {
+		if (!this.syncEngine) {
+			return Promise.resolve()
+		}
+
 		this.logger.info("Pulling from remote")
-		return this.syncEngine?.queuePull()
+		return this.syncEngine.queuePull()
 	}
 
 	private applyPatchAt({
@@ -92,7 +102,7 @@ export class TandemClient<Schema extends AnySchema> {
 		lastMutationId,
 	}: {
 		patch: Patch<Schema>
-		lastMutationId?: string
+		lastMutationId?: MutationId
 	}) {
 		this.logger.info("Applying patch...")
 
@@ -181,12 +191,12 @@ export class TandemClient<Schema extends AnySchema> {
 		return this.db.transact()
 	}
 
-	commit(transaction: Transaction<Schema>): Thenable | undefined {
+	commit(transaction: Transaction<Schema>): Promise<void> {
 		if (transaction.ops.length === 0) {
 			this.logger.info(
 				"Attempted to commit transaction with no ops -- bailing.",
 			)
-			return
+			return Promise.resolve()
 		}
 
 		this.logger.info("Committing transaction")
@@ -197,8 +207,12 @@ export class TandemClient<Schema extends AnySchema> {
 		this.db.commit(transaction)
 		this.speculativeMutations.push(mutation)
 
-		// TODO: return the promise for when it's applied at the remote
-		return this.syncEngine?.queuePush(mutation)
+		const commitPromise = this.syncEngine?.queuePush(mutation) ?? Promise.resolve()
+
+		// Ignored commit promises should not surface unhandled rejections.
+		commitPromise.catch(() => {})
+
+		return commitPromise
 	}
 
 	async connect() {

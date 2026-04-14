@@ -112,7 +112,8 @@ const sub = db.subscribe(q.User.select(), (users) => {
 ```typescript
 const tx = db.transact()
 tx.set("collection", { id: "123", data: "value" })
-await db.commit(tx)
+const commit = db.commit(tx)
+await commit
 ```
 
 ### Remote API Implementation
