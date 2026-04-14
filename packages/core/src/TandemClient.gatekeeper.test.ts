@@ -7,8 +7,9 @@ import type {
 	MutationId,
 	RngApi,
 } from "@tandem/types"
-import { describe, expect, test as base, vi } from "vitest"
+import { describe, expect, test as base } from "vitest"
 import { TandemClient } from "./TandemClient"
+import { Timer } from "./utils/Timer"
 import type { LoggerApi } from "./utils/Logger"
 
 type Todo = {
@@ -23,6 +24,7 @@ type TodosSchema = {
 
 type Services = {
 	remote: TestRemote<TodosSchema>
+	timer: Timer
 	client1: TandemClient<TodosSchema>
 	client2: TandemClient<TodosSchema>
 }
@@ -30,17 +32,12 @@ type Services = {
 type TestHarness = Gatekeeper<Services>
 
 const SYNC_INTERVAL = 1
-const TODOS_QUERY = { collection: "todos", select: "*" } as const
 
 class SilentLogger implements LoggerApi {
 	log(_message: string, ..._args: any[]): void {}
-
 	error(_message: string, ..._args: any[]): void {}
-
 	warn(_message: string, ..._args: any[]): void {}
-
 	info(_message: string, ..._args: any[]): void {}
-
 	scope(_name: string): LoggerApi {
 		return this
 	}
@@ -48,42 +45,27 @@ class SilentLogger implements LoggerApi {
 
 class SequenceRng implements RngApi {
 	private readonly values: string[]
-
 	constructor(values: string[]) {
 		this.values = [...values]
 	}
-
 	randomId(): string {
 		const next = this.values.shift()
 		if (!next) {
 			throw new Error("Test RNG ran out of ids")
 		}
-
 		return next
 	}
 }
 
+const timerDelay = (ms: number) => ({
+	to: "timer" as const,
+	method: "delay" as const,
+	args: [ms] as [number],
+})
+
 const test = base.extend<{
-	advanceTime: (ms?: number) => Promise<void>
 	harness: TestHarness
 }>({
-	advanceTime: async ({}, use) => {
-		vi.useFakeTimers()
-
-		const advanceTime = async (ms = SYNC_INTERVAL + 1): Promise<void> => {
-			vi.advanceTimersByTime(ms)
-			await Promise.resolve()
-			await Promise.resolve()
-			await Promise.resolve()
-		}
-
-		try {
-			await use(advanceTime)
-		} finally {
-			vi.clearAllTimers()
-			vi.useRealTimers()
-		}
-	},
 	harness: async ({}, use) => {
 		const client1Rng = new SequenceRng([
 			"client-1",
@@ -105,18 +87,21 @@ const test = base.extend<{
 				"remote",
 				() => new TestRemote<TodosSchema>({ logger: new SilentLogger() }),
 			)
-			.add("client1", ({ remote }) => {
+			.add("timer", () => new Timer())
+			.add("client1", ({ remote, timer }) => {
 				return new TandemClient<TodosSchema>({
 					remote,
+					timer,
 					rng: client1Rng,
 					logger: new SilentLogger(),
 					autoConnect: true,
 					syncInterval: SYNC_INTERVAL,
 				})
 			})
-			.add("client2", ({ remote }) => {
+			.add("client2", ({ remote, timer }) => {
 				return new TandemClient<TodosSchema>({
 					remote,
+					timer,
 					rng: client2Rng,
 					logger: new SilentLogger(),
 					autoConnect: true,
@@ -139,16 +124,9 @@ const test = base.extend<{
 	},
 })
 
-async function flushInvocationMicrotasks() {
-	await Promise.resolve()
-	await Promise.resolve()
-	await Promise.resolve()
-}
-
 describe("TandemClient with Gatekeeper", () => {
 	test("a subscribed client connects and hydrates from remote state", async ({
 		harness,
-		advanceTime,
 	}) => {
 		const client2MutationId = "client-2-mutation-1" as MutationId
 		const remoteTodo: Todo = {
@@ -161,24 +139,25 @@ describe("TandemClient with Gatekeeper", () => {
 			ops: [{ type: "set", collection: "todos", value: remoteTodo }],
 		}
 
-		const client2CommitPromise = harness.withUnlockedGates(({ client2 }) => {
+		await harness.withUnlockedGates(async ({ client2 }) => {
 			const tx = client2.transact()
 			tx.set("todos", remoteTodo)
-			return client2.commit(tx)
+			await client2.commit(tx)
 		})
-		await flushInvocationMicrotasks()
-		await advanceTime()
-		await client2CommitPromise
 
-		const subscription = harness.client1.subscribe(
-			"todos",
-			(query) => query.select("*"),
-			() => {},
+		// subscribe() is sync but fires a background pull — run it with
+		// unlocked gates so the pull completes without gatekeeper interference.
+		const subscription = await harness.withUnlockedGates(({ client1 }) =>
+			client1.subscribe(
+				"todos",
+				(query) => query.select("*"),
+				() => {},
+			),
 		)
 
 		try {
-			await flushInvocationMicrotasks()
-			await advanceTime()
+			// Ensure the background pull triggered by subscribe completes.
+			await harness.withUnlockedGates(({ client1 }) => client1.pullFromRemote())
 
 			expect(
 				await harness.withUnlockedGates(({ client1 }) => {
@@ -193,7 +172,6 @@ describe("TandemClient with Gatekeeper", () => {
 
 	test("a commit is optimistic locally and then gets pushed to the remote", async ({
 		harness,
-		advanceTime,
 	}) => {
 		const clientId = "client-1" as ClientId
 		const mutationId = "mutation-1" as MutationId
@@ -207,16 +185,15 @@ describe("TandemClient with Gatekeeper", () => {
 			ops: [{ type: "set", collection: "todos", value: todo }],
 		}
 
-		const subscription = harness.client1.subscribe(
-			"todos",
-			(query) => query.select("*"),
-			() => {},
+		const subscription = await harness.withUnlockedGates(({ client1 }) =>
+			client1.subscribe(
+				"todos",
+				(query) => query.select("*"),
+				() => {},
+			),
 		)
 
 		try {
-			await flushInvocationMicrotasks()
-			await advanceTime()
-
 			expect(
 				await harness.withUnlockedGates(({ client1 }) => {
 					return client1.run("todos", (query) => query.select("*"))
@@ -225,7 +202,7 @@ describe("TandemClient with Gatekeeper", () => {
 
 			const tx = harness.client1.transact()
 			tx.set("todos", todo)
-			const commitPromise = harness.client1.commit(tx)
+			const handle = await harness.client1.commit(tx)
 
 			expect(
 				await harness.withUnlockedGates(({ client1 }) => {
@@ -233,22 +210,15 @@ describe("TandemClient with Gatekeeper", () => {
 				}),
 			).toEqual([todo])
 
-			await flushInvocationMicrotasks()
-			await advanceTime()
-			const pushing = await commitPromise
+			// commit() enqueues a push, which first blocks on timer.delay()
+			const afterDelay = await handle.allowRequest(timerDelay(SYNC_INTERVAL))
 
-			const pushArgs: Parameters<TestRemote<TodosSchema>["push"]> = [
-				{ clientId, mutations: [pushedMutation] },
-			]
-
-			const pushRequest = {
-				to: "remote" as const,
-				method: "push" as const,
-				args: pushArgs,
-			}
-
-			pushing.expectRequest(pushRequest)
-			const committed = await pushing.allowRequest(pushRequest)
+			// After the delay, it blocks on remote.push()
+			const committed = await afterDelay.allowRequest({
+				to: "remote",
+				method: "push",
+				args: [{ clientId, mutations: [pushedMutation] }],
+			})
 
 			expect(committed.unwrapValue()).toBeUndefined()
 			expect(
@@ -264,30 +234,22 @@ describe("TandemClient with Gatekeeper", () => {
 
 	test("a failed push rolls back the optimistic local change", async ({
 		harness,
-		advanceTime,
 	}) => {
-		const clientId = "client-1" as ClientId
-		const mutationId = "mutation-1" as MutationId
 		const todo: Todo = {
 			id: "todo-1",
 			text: "rollback me",
 			complete: false,
 		}
-		const pushedMutation: Mutation<TodosSchema> = {
-			id: mutationId,
-			ops: [{ type: "set", collection: "todos", value: todo }],
-		}
 
-		const subscription = harness.client1.subscribe(
-			"todos",
-			(query) => query.select("*"),
-			() => {},
+		const subscription = await harness.withUnlockedGates(({ client1 }) =>
+			client1.subscribe(
+				"todos",
+				(query) => query.select("*"),
+				() => {},
+			),
 		)
 
 		try {
-			await flushInvocationMicrotasks()
-			await advanceTime()
-
 			expect(
 				await harness.withUnlockedGates(({ client1 }) => {
 					return client1.run("todos", (query) => query.select("*"))
@@ -296,7 +258,7 @@ describe("TandemClient with Gatekeeper", () => {
 
 			const tx = harness.client1.transact()
 			tx.set("todos", todo)
-			const commitPromise = harness.client1.commit(tx)
+			const handle = await harness.client1.commit(tx)
 
 			expect(
 				await harness.withUnlockedGates(({ client1 }) => {
@@ -304,23 +266,11 @@ describe("TandemClient with Gatekeeper", () => {
 				}),
 			).toEqual([todo])
 
-			await flushInvocationMicrotasks()
-			await advanceTime()
-			const pushing = await commitPromise
+			// commit() enqueues a push, which first blocks on timer.delay()
+			const afterDelay = await handle.allowRequest(timerDelay(SYNC_INTERVAL))
 
-			const pushArgs: Parameters<TestRemote<TodosSchema>["push"]> = [
-				{ clientId, mutations: [pushedMutation] },
-			]
-
-			const pushRequest = {
-				to: "remote" as const,
-				method: "push" as const,
-				args: pushArgs,
-			}
-
-			pushing.expectRequest(pushRequest)
-
-			await expect(pushing.fail(new Error("remote down"))).rejects.toThrow(
+			// After the delay, it blocks on remote.push() — fail it
+			await expect(afterDelay.fail(new Error("remote down"))).rejects.toThrow(
 				"remote down",
 			)
 
@@ -337,7 +287,6 @@ describe("TandemClient with Gatekeeper", () => {
 
 	test("two optimistic commits can share one push and both commits resolve", async ({
 		harness,
-		advanceTime,
 	}) => {
 		const clientId = "client-1" as ClientId
 		const firstMutationId = "mutation-1" as MutationId
@@ -361,23 +310,24 @@ describe("TandemClient with Gatekeeper", () => {
 			ops: [{ type: "set", collection: "todos", value: secondTodo }],
 		}
 
-		const subscription = harness.client1.subscribe(
-			"todos",
-			(query) => query.select("*"),
-			() => {},
+		const subscription = await harness.withUnlockedGates(({ client1 }) =>
+			client1.subscribe(
+				"todos",
+				(query) => query.select("*"),
+				() => {},
+			),
 		)
 
 		try {
-			await flushInvocationMicrotasks()
-			await advanceTime()
-
 			const firstTx = harness.client1.transact()
 			firstTx.set("todos", firstTodo)
-			const firstCommitPromise = harness.client1.commit(firstTx)
+			const firstHandle = await harness.client1.commit(firstTx)
 
 			const secondTx = harness.client1.transact()
 			secondTx.set("todos", secondTodo)
-			const secondCommitPromise = harness.client1.commit(secondTx)
+			// Don't await — the second commit shares the first's ThrottleQueue
+			// batch, so its handle won't resolve until the batch completes.
+			const secondCommit = harness.client1.commit(secondTx)
 
 			expect(
 				await harness.withUnlockedGates(({ client1 }) => {
@@ -385,25 +335,23 @@ describe("TandemClient with Gatekeeper", () => {
 				}),
 			).toEqual([firstTodo, secondTodo])
 
-			await flushInvocationMicrotasks()
-			await advanceTime()
-			const pushing = await secondCommitPromise
+			// Both commits share the same ThrottleQueue batch. The first commit
+			// owns the async chain (timer.delay → remote.push), so we drive it
+			// through the first handle.
+			const afterDelay = await firstHandle.allowRequest(
+				timerDelay(SYNC_INTERVAL),
+			)
 
-			const pushArgs: Parameters<TestRemote<TodosSchema>["push"]> = [
-				{ clientId, mutations: [firstMutation, secondMutation] },
-			]
+			const firstCommit = await afterDelay.allowRequest({
+				to: "remote",
+				method: "push",
+				args: [{ clientId, mutations: [firstMutation, secondMutation] }],
+			})
 
-			const pushRequest = {
-				to: "remote" as const,
-				method: "push" as const,
-				args: pushArgs,
-			}
-
-			pushing.expectRequest(pushRequest)
-			const secondCommit = await pushing.allowRequest(pushRequest)
-
-			expect(secondCommit.unwrapValue()).toBeUndefined()
-			expect((await firstCommitPromise).unwrapValue()).toBeUndefined()
+			expect(firstCommit.unwrapValue()).toBeUndefined()
+			// The second commit shares the same underlying promise and resolves
+			// once the batch completes.
+			expect((await secondCommit).unwrapValue()).toBeUndefined()
 			expect(harness.remote.getMutations()).toEqual([
 				firstMutation,
 				secondMutation,
@@ -415,7 +363,6 @@ describe("TandemClient with Gatekeeper", () => {
 
 	test("two concurrent commits from different clients can block and resolve independently", async ({
 		harness,
-		advanceTime,
 	}) => {
 		const client1Id = "client-1" as ClientId
 		const client2Id = "client-2" as ClientId
@@ -432,37 +379,35 @@ describe("TandemClient with Gatekeeper", () => {
 			ops: [{ type: "set", collection: "todos", value: todo2 }],
 		}
 
-		const sub1 = harness.client1.subscribe(
-			"todos",
-			(query) => query.select("*"),
-			() => {},
-		)
-		const sub2 = harness.client2.subscribe(
-			"todos",
-			(query) => query.select("*"),
-			() => {},
+		const [sub1, sub2] = await harness.withUnlockedGates(
+			({ client1, client2 }) => [
+				client1.subscribe(
+					"todos",
+					(query) => query.select("*"),
+					() => {},
+				),
+				client2.subscribe(
+					"todos",
+					(query) => query.select("*"),
+					() => {},
+				),
+			],
 		)
 
 		try {
-			await flushInvocationMicrotasks()
-			await advanceTime()
-
 			// Both clients commit concurrently
 			const tx1 = harness.client1.transact()
 			tx1.set("todos", todo1)
-			const commit1Promise = harness.client1.commit(tx1)
+			const handle1 = await harness.client1.commit(tx1)
 
 			const tx2 = harness.client2.transact()
 			tx2.set("todos", todo2)
-			const commit2Promise = harness.client2.commit(tx2)
+			const handle2 = await harness.client2.commit(tx2)
 
-			await flushInvocationMicrotasks()
-			await advanceTime()
-
-			// Both commits should produce blocked handles on their push calls
-			const [pushing1, pushing2] = await Promise.all([
-				commit1Promise,
-				commit2Promise,
+			// Each client has its own pushQueue, so each blocks on its own timer.delay()
+			const [afterDelay1, afterDelay2] = await Promise.all([
+				handle1.allowRequest(timerDelay(SYNC_INTERVAL)),
+				handle2.allowRequest(timerDelay(SYNC_INTERVAL)),
 			])
 
 			const push1Request = {
@@ -480,16 +425,12 @@ describe("TandemClient with Gatekeeper", () => {
 				>,
 			}
 
-			// Assert both are blocked on their respective push
-			pushing1.expectRequest(push1Request)
-			pushing2.expectRequest(push2Request)
-
 			// Resolve client2 first (out of order)
-			const committed2 = await pushing2.allowRequest(push2Request)
+			const committed2 = await afterDelay2.allowRequest(push2Request)
 			expect(committed2.unwrapValue()).toBeUndefined()
 
 			// Then resolve client1
-			const committed1 = await pushing1.allowRequest(push1Request)
+			const committed1 = await afterDelay1.allowRequest(push1Request)
 			expect(committed1.unwrapValue()).toBeUndefined()
 
 			// Both mutations should be on the remote
@@ -502,7 +443,6 @@ describe("TandemClient with Gatekeeper", () => {
 
 	test("a pull acknowledges local remote state and applies changes from another client", async ({
 		harness,
-		advanceTime,
 	}) => {
 		const clientId = "client-1" as ClientId
 		const localMutationId = "mutation-1" as MutationId
@@ -526,16 +466,15 @@ describe("TandemClient with Gatekeeper", () => {
 			ops: [{ type: "set", collection: "todos", value: extraRemoteTodo }],
 		}
 
-		const subscription = harness.client1.subscribe(
-			"todos",
-			(query) => query.select("*"),
-			() => {},
+		const subscription = await harness.withUnlockedGates(({ client1 }) =>
+			client1.subscribe(
+				"todos",
+				(query) => query.select("*"),
+				() => {},
+			),
 		)
 
 		try {
-			await flushInvocationMicrotasks()
-			await advanceTime()
-
 			expect(
 				await harness.withUnlockedGates(({ client1 }) => {
 					return client1.run("todos", (query) => query.select("*"))
@@ -544,7 +483,7 @@ describe("TandemClient with Gatekeeper", () => {
 
 			const tx = harness.client1.transact()
 			tx.set("todos", localTodo)
-			const commitPromise = harness.client1.commit(tx)
+			const handle = await harness.client1.commit(tx)
 
 			expect(
 				await harness.withUnlockedGates(({ client1 }) => {
@@ -552,52 +491,26 @@ describe("TandemClient with Gatekeeper", () => {
 				}),
 			).toEqual([localTodo])
 
-			await flushInvocationMicrotasks()
-			await advanceTime()
-			const pushing = await commitPromise
+			// Allow timer delay, then push
+			const afterDelay = await handle.allowRequest(timerDelay(SYNC_INTERVAL))
+			await afterDelay.allowRequest({
+				to: "remote",
+				method: "push",
+				args: [{ clientId, mutations: [localMutation] }],
+			})
 
-			const pushArgs: Parameters<TestRemote<TodosSchema>["push"]> = [
-				{ clientId, mutations: [localMutation] },
-			]
-
-			const pushRequest = {
-				to: "remote" as const,
-				method: "push" as const,
-				args: pushArgs,
-			}
-
-			await pushing.allowRequest(pushRequest)
-
-			const client2CommitPromise = harness.withUnlockedGates(({ client2 }) => {
+			// Client2 commits via unlocked gates. The push triggers a poke to
+			// client1, which fires a background pull through the (real-timer)
+			// pull queue.
+			await harness.withUnlockedGates(async ({ client2 }) => {
 				const tx = client2.transact()
 				tx.set("todos", extraRemoteTodo)
-				return client2.commit(tx)
+				await client2.commit(tx)
 			})
-			await flushInvocationMicrotasks()
-			await advanceTime()
-			await client2CommitPromise
 
-			const pullingPromise = harness.client1.pullFromRemote()
-			await flushInvocationMicrotasks()
-			await advanceTime()
-			const pulling = await pullingPromise
-
-			const pullArgs: Parameters<TestRemote<TodosSchema>["pull"]> = [
-				{
-					clientId,
-					cookie: 2 as Cookie,
-					scanWindow: [TODOS_QUERY],
-				},
-			]
-
-			const pullRequest = {
-				to: "remote" as const,
-				method: "pull" as const,
-				args: pullArgs,
-			}
-
-			pulling.expectRequest(pullRequest)
-			await pulling.allowRequest(pullRequest)
+			// Drain any poke-triggered background pulls so client1 is fully
+			// synced before we assert.
+			await harness.withUnlockedGates(({ client1 }) => client1.pullFromRemote())
 
 			expect(
 				await harness.withUnlockedGates(({ client1 }) => {

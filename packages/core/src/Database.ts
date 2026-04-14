@@ -20,6 +20,7 @@ import {
 import { LoggerApi } from "./utils/Logger"
 import { isArray, isEqual, pick, sortBy } from "./utils/objectUtils"
 import { ThrottleQueue } from "./utils/ThrottleQueue"
+import { Timer } from "./utils/Timer"
 import { unreachable } from "./utils/typeUtils"
 
 type DatabaseArgs = {
@@ -95,6 +96,7 @@ export class Database<Schema extends AnySchema> {
 				}
 			},
 			120,
+			new Timer(),
 		)
 
 		this.tupleDb.subscribe({}, (writeOps) => {

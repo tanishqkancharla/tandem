@@ -11,9 +11,11 @@ import {
 	PatchApi,
 	RemoteApi,
 	ScanWindow,
+	type TimerApi,
 } from "@tandem/types"
 import { LoggerApi } from "../utils/Logger"
 import { ThrottleQueue } from "../utils/ThrottleQueue"
+import { Timer } from "../utils/Timer"
 import { AsyncUnsubscribe, Unsubscribe } from "../utils/typeUtils"
 
 function invertibleMutationToMutation<Schema extends AnySchema>(
@@ -48,6 +50,7 @@ type SyncEngineArgs<Schema extends AnySchema> = {
 	autoConnect?: boolean
 	syncInterval: number
 	logger: SyncEngine<Schema>["logger"]
+	timer: TimerApi
 }
 
 export class SyncEngine<Schema extends AnySchema> {
@@ -77,14 +80,18 @@ export class SyncEngine<Schema extends AnySchema> {
 		this.applyPatchAt = args.applyPatchAt
 		this.clientId = args.clientId
 
+		// The pull queue uses a plain Timer so poke-triggered pulls don't
+		// interfere with gatekeeper invocations tracking push timers.
 		this.pullQueue = new ThrottleQueue(
 			() => this.pull(),
 			args.syncInterval,
+			new Timer(),
 		)
 
 		this.pushQueue = new ThrottleQueue(
 			() => this.push(),
 			args.syncInterval,
+			args.timer,
 		)
 
 		if (args.autoConnect) {

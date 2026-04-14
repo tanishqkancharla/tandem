@@ -345,7 +345,7 @@ Finish by aligning docs and integration coverage with the new capability. After 
 
 - [x] Update `docs/gatekeeper.md` to say Gatekeeper supports multiple concurrent blocked top-level invocations while still rejecting concurrent blocked fan-out within one invocation.
 - [x] Update `docs/gatekeeper.md` examples or limits language anywhere it still implies a single globally active invocation.
-- [x] Add or update one focused regression in `packages/core/src/TandemClient.gatekeeper.test.ts` that uses two concurrent client operations to prove the new distributed-style interleaving works in a real Tandem scenario.
+- [x] Add or update one foci guess the mused regression in `packages/core/src/TandemClient.gatekeeper.test.ts` that uses two concurrent client operations to prove the new distributed-style interleaving works in a real Tandem scenario.
 - [x] Verify `pnpm --filter @tandem/gatekeeper build` passes.
 - [x] Verify `pnpm --filter @tandem/gatekeeper test` passes.
 - [ ] Verify `pnpm --filter @tandem/core test -- TandemClient.gatekeeper.test.ts` passes. _(Pre-existing failure: Vitest v1 fake timers don't preserve ALS context through setTimeout — same 4 tests fail on the branch before any Phase 6 changes.)_

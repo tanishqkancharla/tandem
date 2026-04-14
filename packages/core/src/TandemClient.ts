@@ -14,15 +14,18 @@ import {
 	RemoteApi,
 	RngApi,
 	StorageApi,
+	type TimerApi,
 } from "@tandem/types"
 import { ConsoleLogger, LoggerApi } from "./utils/Logger"
 import { randomId } from "./utils/randomId"
+import { Timer } from "./utils/Timer"
 
 type TandemClientArgs<Schema extends AnySchema> = {
 	storage?: StorageApi
 	remote?: RemoteApi<Schema>
 	logger?: LoggerApi
 	rng?: RngApi
+	timer?: TimerApi
 	autoConnect?: boolean
 	/**
 	 * @default 150
@@ -52,11 +55,14 @@ export class TandemClient<Schema extends AnySchema> {
 		autoConnect = true,
 		syncInterval = 150,
 		rng,
+		timer,
 	}: TandemClientArgs<Schema>) {
 		this.logger = logger ?? new ConsoleLogger(["tandem-client"])
 
 		this.rng = rng ?? { randomId }
 		this.clientId = this.rng.randomId() as ClientId
+
+		const timerImpl = timer ?? new Timer()
 
 		this.syncEngine = remote
 			? new SyncEngine({
@@ -69,6 +75,7 @@ export class TandemClient<Schema extends AnySchema> {
 					autoConnect,
 					logger: this.logger.scope("sync-engine"),
 					syncInterval,
+					timer: timerImpl,
 				})
 			: undefined
 

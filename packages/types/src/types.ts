@@ -53,6 +53,10 @@ export type RngApi = {
 	randomId: () => string
 }
 
+export type TimerApi = {
+	delay: (ms: number) => Promise<void>
+}
+
 export type InveribleSetMutationOp<Schema extends AnySchema> = {
 	type: "set"
 } & {

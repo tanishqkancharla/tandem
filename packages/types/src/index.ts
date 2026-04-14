@@ -10,6 +10,7 @@ export {
 	type ScanWindow,
 	type RemoteApi,
 	type RngApi,
+	type TimerApi,
 	type InveribleSetMutationOp,
 	type InveribleRemoveMutationOp,
 	type SetMutationOp,
