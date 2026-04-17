@@ -200,7 +200,7 @@ export const test = base.extend<Fixtures>({
 				? new IndexedDbTupleStorage<DemoSchema>({ dbName: storageDbName })
 				: undefined
 
-			if (storage) {
+			if (storage && storageDbName) {
 				storages.push({ dbName: storageDbName, storage })
 			}
 
