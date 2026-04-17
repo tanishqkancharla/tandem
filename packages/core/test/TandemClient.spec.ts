@@ -314,9 +314,7 @@ describe("TandemClient", () => {
 		const pendingCommit = client2.commit(localEditTx)
 
 		await vi.waitFor(() => {
-			const delayedPushHasStarted = delayedPushStarted
-
-			expect(delayedPushHasStarted).toBe(true)
+			expect(delayedPushStarted).toBe(true)
 		})
 
 		// While client2's push is in-flight, client1 lands a competing edit
@@ -355,14 +353,12 @@ describe("TandemClient", () => {
 
 	test("reloads persisted records after recreating the app", async ({
 		makeClient,
-		rng,
 	}) => {
 		// Commit records with the first client
-		const dbName = rng.next("indexeddb")
 		const firstClient = await makeClient({
 			label: "persistent-client-1",
 			remote: false,
-			storageDbName: dbName,
+			storageDbName: "persisted-todos",
 		})
 
 		const tx = firstClient.transact()
@@ -372,14 +368,13 @@ describe("TandemClient", () => {
 		)
 		tx.set("todos", todo("todo-3", { text: "Fix the sync bug", priority: 3 }))
 		await firstClient.commit(tx)
-
-		await new Promise((resolve) => setTimeout(resolve, 200))
+		await firstClient.flushStorage()
 
 		// A new client backed by the same storage sees the persisted records
 		const secondClient = await makeClient({
 			label: "persistent-client-2",
 			remote: false,
-			storageDbName: dbName,
+			storageDbName: "persisted-todos",
 		})
 
 		const persistedTodosOnReload = secondClient.run("todos", (q) =>

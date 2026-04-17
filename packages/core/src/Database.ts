@@ -37,6 +37,7 @@ export class Database<Schema extends AnySchema> {
 	private readonly storage?: Storage
 	private readonly logger: LoggerApi
 	private readonly rng: RngApi
+	private storageWriteQueue?: ThrottleQueue
 	readonly ready: Promise<void>
 
 	constructor({ logger, storage: storageAdapter, rng }: DatabaseArgs) {
@@ -99,10 +100,19 @@ export class Database<Schema extends AnySchema> {
 			new Timer(),
 		)
 
+		this.storageWriteQueue = storageWriteQueue
+
 		this.tupleDb.subscribe({}, (writeOps) => {
 			writeOpsQueue = WriteOpsApi.merge(writeOpsQueue, writeOps)
 			void storageWriteQueue.enqueue()
 		})
+	}
+
+	/**
+	 * Flush any pending writes to storage immediately.
+	 */
+	async flushStorage(): Promise<void> {
+		await this.storageWriteQueue?.flush()
 	}
 
 	makeTupleDbTransaction(): TupleRootTransactionApi {

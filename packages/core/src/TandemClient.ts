@@ -230,6 +230,13 @@ export class TandemClient<Schema extends AnySchema> {
 		return await this.syncEngine.disconnect()
 	}
 
+	/**
+	 * Flush any pending writes to storage immediately.
+	 */
+	async flushStorage(): Promise<void> {
+		await this.db.flushStorage()
+	}
+
 	async clear() {
 		this.logger.info("Clearing database")
 

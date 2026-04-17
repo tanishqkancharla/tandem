@@ -33,12 +33,8 @@ A sync engine and database for building collaborative apps.
 - [x] Make repo public
 - [x] Add docs
 - [x] Switch to pnpm monorepo
-- [ ] Build testing framework
-  - [ ] Manual tests
-  - [ ] Automated randomized testing — do a bunch of reads and writes, inject random failures
-  - [ ] Step-by-step debugger (with ability to query any db at any point)
-  - [ ] Timer
 - [ ] Pull should not return early if scan window is empty. Because pull still returns useful information with the `waitForAcknowledgement`
+- [ ] Relational queries v2 https://www.notion.so/Relational-tandem-258ac9fb35f1801e88eaf858b5401317?source=copy_link
 - [ ] Create a server module
 - [ ] Think about backwards compatibility -- how does mounting from a persisted storage work with new versions?
   - [ ] New database versions
@@ -48,7 +44,6 @@ A sync engine and database for building collaborative apps.
     pure function: record ⇒ value
     access via index directly
     allows for compound/cross-table indexes
-- [ ] Relational queries v2
 - [ ] Database updates
   - [ ] Keep codec translating between query language and tuple storage args
 - [ ] Clear storage when user schema or database storage protocol changes

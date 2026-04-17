@@ -27,4 +27,15 @@ export class ThrottleQueue {
 
 		return this.taskPromise
 	}
+
+	/**
+	 * If a batch is queued, immediately execute it without waiting for the
+	 * throttle delay. No-op when nothing is pending.
+	 */
+	async flush(): Promise<void> {
+		if (this.taskPromise) {
+			this.taskPromise = undefined
+			await this.task()
+		}
+	}
 }
