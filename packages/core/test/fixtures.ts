@@ -1,6 +1,12 @@
 import "fake-indexeddb/auto"
 
-import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+	appendFileSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs"
 import { dirname, resolve } from "node:path"
 import { test as base } from "vitest"
 import { TandemClient } from "../src/TandemClient"
@@ -10,21 +16,21 @@ import { TestRemote } from "@tandem/testing"
 import type { RemoteApi, RngApi } from "@tandem/types"
 import type { Task } from "vitest"
 
-export type DemoTodo = {
+export type TestsTodo = {
 	id: string
 	text: string
 	done: boolean
 	priority: number
 }
 
-export type DemoSchema = {
-	todos: DemoTodo
+export type TestsSchema = {
+	todos: TestsTodo
 }
 
 export function todo(
 	id: string,
-	overrides: Partial<DemoTodo> = {},
-): DemoTodo {
+	overrides: Partial<TestsTodo> = {},
+): TestsTodo {
 	return {
 		id,
 		text: `Todo ${id}`,
@@ -75,8 +81,15 @@ function serializeLogValue(value: unknown): unknown {
 	}
 }
 
-function createLogger(logFilePath: string, scopeNames: string[] = []): LoggerApi {
-	function write(level: "log" | "info" | "warn" | "error", message: string, args: unknown[]) {
+function createLogger(
+	logFilePath: string,
+	scopeNames: string[] = [],
+): LoggerApi {
+	function write(
+		level: "log" | "info" | "warn" | "error",
+		message: string,
+		args: unknown[],
+	) {
 		appendFileSync(
 			logFilePath,
 			`${JSON.stringify({
@@ -127,7 +140,7 @@ function createRng(): DemoRng {
 
 type ClientOptions = {
 	label?: string
-	remote?: RemoteApi<DemoSchema> | false
+	remote?: RemoteApi<TestsSchema> | false
 	storageDbName?: string
 	syncInterval?: number
 	autoConnect?: boolean
@@ -136,10 +149,10 @@ type ClientOptions = {
 type Fixtures = {
 	logger: LoggerApi
 	rng: DemoRng
-	server: TestRemote<DemoSchema>
-	client1: TandemClient<DemoSchema>
-	client2: TandemClient<DemoSchema>
-	makeClient: (options?: ClientOptions) => Promise<TandemClient<DemoSchema>>
+	server: TestRemote<TestsSchema>
+	client1: TandemClient<TestsSchema>
+	client2: TandemClient<TestsSchema>
+	makeClient: (options?: ClientOptions) => Promise<TandemClient<TestsSchema>>
 }
 
 export const test = base.extend<Fixtures>({
@@ -169,12 +182,16 @@ export const test = base.extend<Fixtures>({
 	},
 
 	server: async ({ logger }, use) => {
-		await use(new TestRemote<DemoSchema>({ logger }))
+		await use(new TestRemote<TestsSchema>({ logger }))
 	},
 
 	makeClient: async ({ logger, rng, server }, use) => {
-		const clients: { client: TandemClient<DemoSchema>; hasRemote: boolean }[] = []
-		const storages: { dbName: string; storage: IndexedDbTupleStorage<DemoSchema> }[] = []
+		const clients: { client: TandemClient<TestsSchema>; hasRemote: boolean }[] =
+			[]
+		const storages: {
+			dbName: string
+			storage: IndexedDbTupleStorage<TestsSchema>
+		}[] = []
 
 		await use(async (options = {}) => {
 			const {
@@ -187,14 +204,14 @@ export const test = base.extend<Fixtures>({
 
 			const resolvedRemote = remote === undefined ? server : remote || undefined
 			const storage = storageDbName
-				? new IndexedDbTupleStorage<DemoSchema>({ dbName: storageDbName })
+				? new IndexedDbTupleStorage<TestsSchema>({ dbName: storageDbName })
 				: undefined
 
 			if (storage && storageDbName) {
 				storages.push({ dbName: storageDbName, storage })
 			}
 
-			const client = new TandemClient<DemoSchema>({
+			const client = new TandemClient<TestsSchema>({
 				autoConnect,
 				logger,
 				rng: rng.create(label),
@@ -220,16 +237,20 @@ export const test = base.extend<Fixtures>({
 		}
 
 		for (const dbName of new Set(storages.map(({ dbName }) => dbName))) {
-			const storage = new IndexedDbTupleStorage<DemoSchema>({ dbName })
+			const storage = new IndexedDbTupleStorage<TestsSchema>({ dbName })
 			await storage.clear()
 		}
 	},
 
 	client1: async ({ makeClient }, use) => {
-		await use(await makeClient({ label: "client1", remote: false }))
+		const client = await makeClient({ label: "client1" })
+		await client.connect()
+		await use(client)
 	},
 
 	client2: async ({ makeClient }, use) => {
-		await use(await makeClient({ label: "client2", remote: false }))
+		const client = await makeClient({ label: "client2" })
+		await client.connect()
+		await use(client)
 	},
 })

@@ -1,5 +1,6 @@
 import { describe, expect, vi } from "vitest"
-import { test, todo, type DemoTodo } from "./fixtures"
+import { test, TestsSchema, todo, type TestsTodo } from "./fixtures"
+import { RemoteApi } from "@tandem/types"
 
 describe("TandemClient", () => {
 	test("creates, queries, updates, and deletes records locally", async ({
@@ -66,7 +67,7 @@ describe("TandemClient", () => {
 		)
 		await client1.commit(seedTx)
 
-		let latestResult: DemoTodo[] | undefined
+		let latestResult: TestsTodo[] | undefined
 		const subscription = client1.subscribe(
 			"todos",
 			(q) => q.where("done", "=", false).order("priority", "desc"),
@@ -161,13 +162,10 @@ describe("TandemClient", () => {
 	})
 
 	test("syncs a committed change from one client to another subscribed client", async ({
-		makeClient,
-		server,
+		client1,
+		client2,
 	}) => {
-		const client1 = await makeClient({ label: "client1", remote: server })
-		const client2 = await makeClient({ label: "client2", remote: server })
-
-		const seenByClient2: DemoTodo[][] = []
+		const seenByClient2: TestsTodo[][] = []
 		client2.subscribe(
 			"todos",
 			(q) => q,
@@ -175,8 +173,6 @@ describe("TandemClient", () => {
 				seenByClient2.push(result)
 			},
 		)
-
-		await Promise.all([client1.connect(), client2.connect()])
 
 		// A commit on client1 is synced to client2's subscription
 		const tx = client1.transact()
@@ -187,9 +183,7 @@ describe("TandemClient", () => {
 		await client1.commit(tx)
 
 		await vi.waitFor(() => {
-			const todosSeenByClient2 = seenByClient2
-
-			expect(todosSeenByClient2).toEqual([
+			expect(seenByClient2).toEqual([
 				[todo("todo-1", { text: "Write the sync spec", priority: 2 })],
 			])
 		})
@@ -219,7 +213,7 @@ describe("TandemClient", () => {
 			priority: 1,
 		})
 
-		let latestResult: DemoTodo[] | undefined
+		let latestResult: TestsTodo[] | undefined
 		client.subscribe(
 			"todos",
 			(q) => q,
@@ -257,11 +251,10 @@ describe("TandemClient", () => {
 		let delayedClientId = ""
 		let delayedPushStarted = false
 
-		const delayedServer = {
-			connect: (args: Parameters<typeof server.connect>[0]) =>
-				server.connect(args),
-			pull: (args: Parameters<typeof server.pull>[0]) => server.pull(args),
-			push: async (args: Parameters<typeof server.push>[0]) => {
+		const delayedServer: RemoteApi<TestsSchema> = {
+			connect: (client) => server.connect(client),
+			pull: (args) => server.pull(args),
+			push: async (args) => {
 				if (args.clientId === delayedClientId) {
 					delayedPushStarted = true
 					await gate.promise
