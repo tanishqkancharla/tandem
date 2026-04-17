@@ -34,16 +34,6 @@ export function todo(
 	}
 }
 
-export const demoTodos = {
-	writeSpec: todo("todo-1", { text: "Write the sync spec", priority: 2 }),
-	shipDocs: todo("todo-2", {
-		text: "Ship the docs",
-		done: true,
-		priority: 1,
-	}),
-	fixSync: todo("todo-3", { text: "Fix the sync bug", priority: 3 }),
-}
-
 export type DemoRng = {
 	next(prefix?: string): string
 	create(prefix?: string): RngApi

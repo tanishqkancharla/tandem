@@ -1,12 +1,12 @@
 import { describe, expect, vi } from "vitest"
-import { test, demoTodos, todo, type DemoTodo } from "./fixtures"
+import { test, todo, type DemoTodo } from "./fixtures"
 
 describe("TandemClient", () => {
 	test("creates, queries, updates, and deletes records locally", async ({ client1 }) => {
 		const tx = client1.transact()
-		tx.set("todos", demoTodos.writeSpec)
-		tx.set("todos", demoTodos.shipDocs)
-		tx.set("todos", demoTodos.fixSync)
+		tx.set("todos", todo("todo-1", { text: "Write the sync spec", priority: 2 }))
+		tx.set("todos", todo("todo-2", { text: "Ship the docs", done: true, priority: 1 }))
+		tx.set("todos", todo("todo-3", { text: "Fix the sync bug", priority: 3 }))
 		await client1.commit(tx)
 
 		const highestPriorityOpenTodoSummaries = client1.run("todos", (q) =>
@@ -22,29 +22,29 @@ describe("TandemClient", () => {
 			{ id: "todo-1", text: "Write the sync spec" },
 		])
 
-		const update = client1.transact()
-		update.update("todos", "todo-1", (record) => ({
+		const updateTx = client1.transact()
+		updateTx.update("todos", "todo-1", (record) => ({
 			...record,
 			done: true,
 			priority: 5,
 		}))
-		update.remove("todos", "todo-2")
-		await client1.commit(update)
+		updateTx.remove("todos", "todo-2")
+		await client1.commit(updateTx)
 
 		const remainingOpenTodos = client1.run("todos", (q) =>
 			q.where("done", "=", false).order("priority", "desc"),
 		)
 		const deletedTodo = client1.run("todos", (q) => q.id("todo-2"))
 
-		expect(remainingOpenTodos).toEqual([demoTodos.fixSync])
+		expect(remainingOpenTodos).toEqual([todo("todo-3", { text: "Fix the sync bug", priority: 3 })])
 		expect(deletedTodo).toEqual([])
 	})
 
 	test("keeps subscribed query results live until the caller unsubscribes", async ({ client1 }) => {
-		const seed = client1.transact()
-		seed.set("todos", demoTodos.writeSpec)
-		seed.set("todos", demoTodos.shipDocs)
-		await client1.commit(seed)
+		const seedTx = client1.transact()
+		seedTx.set("todos", todo("todo-1", { text: "Write the sync spec", priority: 2 }))
+		seedTx.set("todos", todo("todo-2", { text: "Ship the docs", done: true, priority: 1 }))
+		await client1.commit(seedTx)
 
 		const seen: DemoTodo[][] = []
 		const subscription = client1.subscribe(
@@ -57,62 +57,62 @@ describe("TandemClient", () => {
 
 		const initialSubscriptionResult = subscription.result
 
-		expect(initialSubscriptionResult).toEqual([demoTodos.writeSpec])
+		expect(initialSubscriptionResult).toEqual([todo("todo-1", { text: "Write the sync spec", priority: 2 })])
 		expect(seen).toEqual([])
 
-		const addOpenTodo = client1.transact()
-		addOpenTodo.set("todos", demoTodos.fixSync)
-		await client1.commit(addOpenTodo)
+		const addOpenTodoTx = client1.transact()
+		addOpenTodoTx.set("todos", todo("todo-3", { text: "Fix the sync bug", priority: 3 }))
+		await client1.commit(addOpenTodoTx)
 
-		const completeOpenTodo = client1.transact()
-		completeOpenTodo.update("todos", "todo-1", (record) => ({
+		const completeOpenTodoTx = client1.transact()
+		completeOpenTodoTx.update("todos", "todo-1", (record) => ({
 			...record,
 			done: true,
 		}))
-		await client1.commit(completeOpenTodo)
+		await client1.commit(completeOpenTodoTx)
 
 		expect(seen).toEqual([
-			[demoTodos.fixSync, demoTodos.writeSpec],
-			[demoTodos.fixSync],
+			[todo("todo-3", { text: "Fix the sync bug", priority: 3 }), todo("todo-1", { text: "Write the sync spec", priority: 2 })],
+			[todo("todo-3", { text: "Fix the sync bug", priority: 3 })],
 		])
 
 		subscription.destroy()
 
-		const anotherOpenTodo = client1.transact()
-		anotherOpenTodo.set(
+		const anotherOpenTodoTx = client1.transact()
+		anotherOpenTodoTx.set(
 			"todos",
 			todo("todo-4", { text: "This update should stay quiet", priority: 4 }),
 		)
-		await client1.commit(anotherOpenTodo)
+		await client1.commit(anotherOpenTodoTx)
 
 		expect(seen).toEqual([
-			[demoTodos.fixSync, demoTodos.writeSpec],
-			[demoTodos.fixSync],
+			[todo("todo-3", { text: "Fix the sync bug", priority: 3 }), todo("todo-1", { text: "Write the sync spec", priority: 2 })],
+			[todo("todo-3", { text: "Fix the sync bug", priority: 3 })],
 		])
 	})
 
 	test("lets a caller inspect draft changes and cancel them before commit", async ({ client1 }) => {
-		const draft = client1.transact()
-		draft.set("todos", demoTodos.writeSpec)
+		const draftTx = client1.transact()
+		draftTx.set("todos", todo("todo-1", { text: "Write the sync spec", priority: 2 }))
 
-		const draftTodo = draft.get("todos", "todo-1")
-		const draftTodoList = draft.list("todos")
+		const draftTodo = draftTx.get("todos", "todo-1")
+		const draftTodoList = draftTx.list("todos")
 		const todosBeforeCommit = client1.run("todos", (q) => q)
 
-		expect(draftTodo).toEqual(demoTodos.writeSpec)
-		expect(draftTodoList).toEqual([demoTodos.writeSpec])
+		expect(draftTodo).toEqual(todo("todo-1", { text: "Write the sync spec", priority: 2 }))
+		expect(draftTodoList).toEqual([todo("todo-1", { text: "Write the sync spec", priority: 2 })])
 		expect(todosBeforeCommit).toEqual([])
 
-		draft.cancel()
+		draftTx.cancel()
 
 		const todosAfterCancel = client1.run("todos", (q) => q)
 
 		expect(todosAfterCancel).toEqual([])
 
-		const noop = client1.transact()
-		noop.update("todos", "missing", (record) => ({ ...record, done: true }))
-		noop.remove("todos", "missing")
-		await client1.commit(noop)
+		const noopTx = client1.transact()
+		noopTx.update("todos", "missing", (record) => ({ ...record, done: true }))
+		noopTx.remove("todos", "missing")
+		await client1.commit(noopTx)
 
 		const todosAfterNoopCommit = client1.run("todos", (q) => q)
 
@@ -131,18 +131,18 @@ describe("TandemClient", () => {
 		await Promise.all([client1.connect(), client2.connect()])
 
 		const tx = client1.transact()
-		tx.set("todos", demoTodos.writeSpec)
+		tx.set("todos", todo("todo-1", { text: "Write the sync spec", priority: 2 }))
 		await client1.commit(tx)
 
 		await vi.waitFor(() => {
 			const todosSeenByClient2 = seenByClient2
 
-			expect(todosSeenByClient2).toEqual([[demoTodos.writeSpec]])
+			expect(todosSeenByClient2).toEqual([[todo("todo-1", { text: "Write the sync spec", priority: 2 })]])
 		})
 
 		const syncedTodoOnClient2 = client2.run("todos", (q) => q.id("todo-1"))
 
-		expect(syncedTodoOnClient2).toEqual([demoTodos.writeSpec])
+		expect(syncedTodoOnClient2).toEqual([todo("todo-1", { text: "Write the sync spec", priority: 2 })])
 	})
 
 	test("rolls back an optimistic write when the server rejects the push", async ({ makeClient }) => {
@@ -210,24 +210,24 @@ describe("TandemClient", () => {
 
 		await Promise.all([client1.connect(), client2.connect()])
 
-		const seed = client1.transact()
-		seed.set("todos", demoTodos.writeSpec)
-		await client1.commit(seed)
+		const seedTx = client1.transact()
+		seedTx.set("todos", todo("todo-1", { text: "Write the sync spec", priority: 2 }))
+		await client1.commit(seedTx)
 
 		await vi.waitFor(() => {
 			const syncedSeedTodoOnClient2 = client2.run("todos", (q) =>
 				q.id("todo-1"),
 			)
 
-			expect(syncedSeedTodoOnClient2).toEqual([demoTodos.writeSpec])
+			expect(syncedSeedTodoOnClient2).toEqual([todo("todo-1", { text: "Write the sync spec", priority: 2 })])
 		})
 
-		const localEdit = client2.transact()
-		localEdit.set(
+		const localEditTx = client2.transact()
+		localEditTx.set(
 			"todos",
 			todo("todo-1", { text: "Local edit on client 2", priority: 2 }),
 		)
-		const pendingCommit = client2.commit(localEdit)
+		const pendingCommit = client2.commit(localEditTx)
 
 		await vi.waitFor(() => {
 			const delayedPushHasStarted = delayedPushStarted
@@ -235,8 +235,8 @@ describe("TandemClient", () => {
 			expect(delayedPushHasStarted).toBe(true)
 		})
 
-		const remoteEdit = client1.transact()
-		remoteEdit.set(
+		const remoteEditTx = client1.transact()
+		remoteEditTx.set(
 			"todos",
 			todo("todo-1", {
 				text: "Remote edit on client 1",
@@ -244,7 +244,7 @@ describe("TandemClient", () => {
 				priority: 5,
 			}),
 		)
-		await client1.commit(remoteEdit)
+		await client1.commit(remoteEditTx)
 
 		await vi.waitFor(() => {
 			const rebasedTodoOnClient2 = client2.run("todos", (q) => q.id("todo-1"))
@@ -275,8 +275,8 @@ describe("TandemClient", () => {
 		})
 
 		const tx = firstClient.transact()
-		tx.set("todos", demoTodos.writeSpec)
-		tx.set("todos", demoTodos.fixSync)
+		tx.set("todos", todo("todo-1", { text: "Write the sync spec", priority: 2 }))
+		tx.set("todos", todo("todo-3", { text: "Fix the sync bug", priority: 3 }))
 		await firstClient.commit(tx)
 
 		await new Promise((resolve) => setTimeout(resolve, 200))
@@ -292,8 +292,8 @@ describe("TandemClient", () => {
 		)
 
 		expect(persistedTodosOnReload).toEqual([
-			demoTodos.writeSpec,
-			demoTodos.fixSync,
+			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
+			todo("todo-3", { text: "Fix the sync bug", priority: 3 }),
 		])
 	})
 })
