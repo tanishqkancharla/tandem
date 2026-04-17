@@ -101,7 +101,7 @@ export class Database<Schema extends AnySchema> {
 
 		this.tupleDb.subscribe({}, (writeOps) => {
 			writeOpsQueue = WriteOpsApi.merge(writeOpsQueue, writeOps)
-			storageWriteQueue.enqueue()
+			void storageWriteQueue.enqueue()
 		})
 	}
 

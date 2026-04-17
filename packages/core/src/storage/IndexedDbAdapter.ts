@@ -51,7 +51,6 @@ export class IndexedDbTupleStorage<
 	}
 
 	async scan(args?: ScanStorageArgs) {
-		console.log("scan", args)
 		const db = await this.db
 		const tx = db.transaction(storeName, "readonly")
 		const index = tx.store // primary key

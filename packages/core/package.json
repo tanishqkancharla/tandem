@@ -27,8 +27,8 @@
 		"tuple-database": "^2.2.4"
 	},
 	"devDependencies": {
-		"@tandem/gatekeeper": "workspace:*",
 		"@tandem/testing": "workspace:*",
+		"fake-indexeddb": "^6.2.5",
 		"typescript": "^5.7.2",
 		"vitest": "^1.1.0"
 	}
