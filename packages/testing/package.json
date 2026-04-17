@@ -19,8 +19,7 @@
 		"lint": "eslint src --fix && tsc --noEmit"
 	},
 	"dependencies": {
-		"@tandem/types": "workspace:*",
-		"@tandem/core": "workspace:*"
+		"@tandem/types": "workspace:*"
 	},
 	"devDependencies": {
 		"typescript": "^5.7.2"

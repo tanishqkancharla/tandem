@@ -1,4 +1,3 @@
-import { LoggerApi, untag } from "@tandem/core"
 import {
 	AnySchema,
 	ClientId,
@@ -12,7 +11,16 @@ import {
 	PatchSetOp,
 	RemoteApi,
 	ScanWindow,
+	untag,
 } from "@tandem/types"
+
+type LoggerApi = {
+	log: (message: string, ...args: any[]) => void
+	error: (message: string, ...args: any[]) => void
+	warn: (message: string, ...args: any[]) => void
+	info: (message: string, ...args: any[]) => void
+	scope: (name: string) => LoggerApi
+}
 
 function mutationOpToPatch<Schema extends AnySchema>(
 	op: MutationOp<Schema>,

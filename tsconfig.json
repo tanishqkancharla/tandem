@@ -27,9 +27,6 @@
 		},
 		{
 			"path": "./packages/testing"
-		},
-		{
-			"path": "./packages/gatekeeper"
 		}
 	]
 }

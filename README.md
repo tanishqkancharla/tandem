@@ -33,7 +33,7 @@ A sync engine and database for building collaborative apps.
 - [x] Make repo public
 - [x] Add docs
 - [x] Switch to pnpm monorepo
-- [ ] Build testing framework, gatekeeper
+- [ ] Build testing framework
   - [ ] Manual tests
   - [ ] Automated randomized testing — do a bunch of reads and writes, inject random failures
   - [ ] Step-by-step debugger (with ability to query any db at any point)

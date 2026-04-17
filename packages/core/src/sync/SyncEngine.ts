@@ -81,7 +81,7 @@ export class SyncEngine<Schema extends AnySchema> {
 		this.clientId = args.clientId
 
 		// The pull queue uses a plain Timer so poke-triggered pulls don't
-		// interfere with gatekeeper invocations tracking push timers.
+		// interfere with invocations tracking push timers.
 		this.pullQueue = new ThrottleQueue(
 			() => this.pull(),
 			args.syncInterval,
