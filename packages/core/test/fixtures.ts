@@ -1,11 +1,14 @@
 import "fake-indexeddb/auto"
 
+import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { dirname, resolve } from "node:path"
 import { test as base } from "vitest"
 import { TandemClient } from "../src/TandemClient"
 import { IndexedDbTupleStorage } from "../src/storage/IndexedDbAdapter"
 import type { LoggerApi } from "../src/utils/Logger"
 import { TestRemote } from "@tandem/testing"
 import type { RemoteApi, RngApi } from "@tandem/types"
+import type { Task } from "vitest"
 
 export type DemoTodo = {
 	id: string
@@ -46,16 +49,71 @@ export type DemoRng = {
 	create(prefix?: string): RngApi
 }
 
-function createLogger(): LoggerApi {
-	const logger: LoggerApi = {
-		log: () => {},
-		info: () => {},
-		warn: () => {},
-		error: () => {},
-		scope: () => logger,
+function sanitizePathSegment(value: string): string {
+	return value
+		.replace(/[^a-zA-Z0-9.-]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.toLowerCase()
+}
+
+function getTestLogFilePath(task: Readonly<Task>): string {
+	const names: string[] = [task.name]
+	let currentSuite = task.suite
+
+	while (currentSuite) {
+		names.unshift(currentSuite.name)
+		currentSuite = currentSuite.suite
 	}
 
-	return logger
+	const fileName = `${names.map(sanitizePathSegment).join("__")}.jsonl`
+	return resolve(process.cwd(), "test", "logs", fileName)
+}
+
+function serializeLogValue(value: unknown): unknown {
+	if (value instanceof Error) {
+		return {
+			name: value.name,
+			message: value.message,
+			stack: value.stack,
+		}
+	}
+
+	try {
+		return JSON.parse(JSON.stringify(value))
+	} catch {
+		return String(value)
+	}
+}
+
+function createLogger(logFilePath: string, scopeNames: string[] = []): LoggerApi {
+	function write(level: "log" | "info" | "warn" | "error", message: string, args: unknown[]) {
+		appendFileSync(
+			logFilePath,
+			`${JSON.stringify({
+				ts: new Date().toISOString(),
+				level,
+				scope: scopeNames,
+				message,
+				args: args.map(serializeLogValue),
+			})}\n`,
+		)
+	}
+
+	return {
+		log: (message, ...args) => {
+			write("log", message, args)
+		},
+		info: (message, ...args) => {
+			write("info", message, args)
+		},
+		warn: (message, ...args) => {
+			write("warn", message, args)
+		},
+		error: (message, ...args) => {
+			write("error", message, args)
+		},
+		scope: (name) => createLogger(logFilePath, [...scopeNames, name]),
+	}
 }
 
 function createRng(): DemoRng {
@@ -95,8 +153,25 @@ type Fixtures = {
 }
 
 export const test = base.extend<Fixtures>({
-	logger: async ({}, use) => {
-		await use(createLogger())
+	logger: async ({ task, onTestFinished }, use) => {
+		const logFilePath = getTestLogFilePath(task)
+		mkdirSync(dirname(logFilePath), { recursive: true })
+		writeFileSync(logFilePath, "")
+
+		onTestFinished((result) => {
+			if (result.state === "fail") {
+				const logContents = readFileSync(logFilePath, "utf8")
+				console.error(`\n--- Tandem test logs: ${task.name} ---`)
+				console.error(`log file: ${logFilePath}`)
+				console.error(logContents || "(no logs captured)")
+				console.error("--- End Tandem test logs ---\n")
+				return
+			}
+
+			rmSync(logFilePath, { force: true })
+		})
+
+		await use(createLogger(logFilePath))
 	},
 
 	rng: async ({}, use) => {
