@@ -149,7 +149,6 @@ export class SyncEngine<Schema extends AnySchema> {
 	}
 
 	private async pull() {
-		if (this.scanWindow.length === 0) return
 		this.logger.info("Pulling from remote...")
 		const { cookie, patch, lastMutationId } = await this.remote.pull({
 			clientId: this.clientId,
