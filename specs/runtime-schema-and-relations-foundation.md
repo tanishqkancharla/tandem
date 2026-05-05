@@ -49,14 +49,20 @@ Introduce the smallest public runtime schema surface first so later phases can a
 ```ts
 const todos = collection<Todo>()
 
+const users = collection({
+	id: t.id(),
+	name: t.string(),
+})
+
 const appSchema = defineSchema({
-	users: collection<User>(),
+	users,
 	todos,
 })
 ```
 
 - [x] Add runtime types for collection definitions and schema definitions in `packages/types/src/types.ts`
 - [x] Add public `collection(...)` and `defineSchema(...)` helpers in a new schema-focused module and export them from `packages/core/src/index.ts`
+- [x] Add field builders like `t.id()` and `t.string()` so runtime collection shapes can carry record field metadata
 - [x] Reuse the existing codec type from `packages/core/src/utils/Codec.ts` so collection metadata can optionally carry a codec
 - [x] Keep `TandemClient<Schema>` construction without a runtime schema fully supported
 - [x] Verify `npm run tsc` passes after the new public API is exported
@@ -65,8 +71,21 @@ const appSchema = defineSchema({
 ### Phase 2: Add relation registration, normalization, and fail-fast validation
 
 Layer relation metadata on top of the runtime schema, but keep it declarative only. By the end of this phase, Tandem can describe relations precisely and reject invalid configs before any query work starts.
+Runtime field definitions supplied through `collection({ id: t.id(), name: t.string() })` are used as the startup-time source of truth for validating relation join fields and relation-name collisions.
 
 ```ts
+const appSchema = defineSchema({
+	users: collection({
+		id: t.id(),
+		name: t.string(),
+	}),
+	posts: collection({
+		id: t.id(),
+		authorId: t.string(),
+		title: t.string(),
+	}),
+})
+
 const relationalSchema = defineRelations(appSchema, ({ one, many }) => ({
 	posts: {
 		author: one("users", { from: "authorId", to: "id" }),
@@ -77,12 +96,12 @@ const relationalSchema = defineRelations(appSchema, ({ one, many }) => ({
 }))
 ```
 
-- [ ] Add normalized runtime relation types for `one` and `many`
-- [ ] Add `defineRelations(...)` that augments a runtime schema with relation metadata
-- [ ] Validate unknown target collections, missing source fields, duplicate relation names, and relation-name collisions with record fields
-- [ ] Restrict this first version to joins targeting the related record `id`
-- [ ] Add tests for one valid `one` relation and one valid `many` relation
-- [ ] Add tests that invalid relation definitions throw descriptive startup-time errors instead of failing later during query execution
+- [x] Add normalized runtime relation types for `one` and `many`
+- [x] Add `defineRelations(...)` that augments a runtime schema with relation metadata
+- [x] Validate unknown target collections, missing source fields, duplicate relation names, and relation-name collisions with record fields
+- [x] Restrict this first version to joins targeting the related record `id`
+- [x] Add tests for one valid `one` relation and one valid `many` relation
+- [x] Add tests that invalid relation definitions throw descriptive startup-time errors instead of failing later during query execution
 
 ### Phase 3: Thread runtime schema through the client and database without changing behavior
 
@@ -108,9 +127,13 @@ const client = new TandemClient<AppSchema>({
 Use the new schema for one concrete behavior change: making collection codecs a schema concern instead of a separate parallel map. This keeps the spec grounded in a real end-to-end use case without pulling in relational query execution.
 
 ```ts
-const events = collection<Event>({
-	codec: codec("event", encodeEvent, decodeEvent),
-})
+const events = collection(
+	{
+		id: t.id(),
+		startAt: t.string(),
+	},
+	{ codec: codec("event", encodeEvent, decodeEvent) },
+)
 
 const schema = defineSchema({ events })
 const storage = new IndexedDbTupleStorage({ dbName: "app", schema })
