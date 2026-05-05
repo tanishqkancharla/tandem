@@ -13,6 +13,41 @@ export interface StorageApi extends AsyncTupleStorageApi {
 
 export type AnyCollectionSchema = Record<string, any> & { id: string | number }
 
+declare const collectionRecord: unique symbol
+
+export type CollectionDefinition<
+	Record extends AnyCollectionSchema = AnyCollectionSchema,
+	CollectionCodec = unknown,
+> = {
+	readonly kind: "collection"
+	readonly name?: string
+	readonly codec?: CollectionCodec
+	readonly [collectionRecord]?: Record
+}
+
+export type NamedCollectionDefinition<
+	Record extends AnyCollectionSchema = AnyCollectionSchema,
+	Name extends string = string,
+	CollectionCodec = unknown,
+> = CollectionDefinition<Record, CollectionCodec> & {
+	readonly name: Name
+}
+
+export type AnyCollectionDefinition = CollectionDefinition<
+	AnyCollectionSchema,
+	unknown
+>
+
+export type RuntimeSchemaDefinition<Schema extends AnySchema = AnySchema> = {
+	readonly collections: {
+		readonly [Collection in CollectionName<Schema>]: NamedCollectionDefinition<
+			Schema[Collection],
+			Collection,
+			unknown
+		>
+	}
+}
+
 export type Attribute<Schema extends AnySchema> = {
 	[K in keyof Schema]: keyof Schema[K]
 }[keyof Schema] &

@@ -1,6 +1,10 @@
 export {
 	type StorageApi,
 	type AnyCollectionSchema,
+	type CollectionDefinition,
+	type NamedCollectionDefinition,
+	type AnyCollectionDefinition,
+	type RuntimeSchemaDefinition,
 	type Attribute,
 	type AnySchema,
 	type CollectionName,
