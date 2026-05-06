@@ -139,9 +139,9 @@ const schema = defineSchema({ events })
 const storage = new IndexedDbTupleStorage({ dbName: "app", schema })
 ```
 
-- [ ] Add an optional `schema` argument to `IndexedDbTupleStorage`
-- [ ] Derive per-collection codecs from the runtime schema when available
-- [ ] Preserve the existing explicit `codecs` option during this spec so current callers do not break
-- [ ] Add a persistence round-trip test that stores a record through a schema-owned codec and reads the decoded value back after recreating storage/client
-- [ ] Verify `npm run test -- packages/core/test/TandemClient.spec.ts` and any new schema/storage test file both pass
-- [ ] Add a short README note showing that runtime schema is foundation work only; relational object-style queries remain deferred to later specs
+- [x] Add an optional `schema` argument to `IndexedDbTupleStorage`
+- [x] Derive per-collection codecs from the runtime schema when available
+- [x] Preserve the existing explicit `codecs` option during this spec so current callers do not break
+- [x] Add a persistence round-trip test that stores a record through a schema-owned codec and reads the decoded value back after recreating storage/client
+- [x] Verify `npm run test -- packages/core/test/TandemClient.spec.ts` and any new schema/storage test file both pass
+- [x] Add a short README note showing that runtime schema is foundation work only; relational object-style queries remain deferred to later specs
