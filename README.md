@@ -35,6 +35,7 @@ A sync engine and database for building collaborative apps.
 - [x] Switch to pnpm monorepo
 - [ ] Pull should not return early if scan window is empty. Because pull still returns useful information with the `waitForAcknowledgement`
 - [ ] Relational queries v2 https://www.notion.so/Relational-tandem-258ac9fb35f1801e88eaf858b5401317?source=copy_link
+  - Runtime schemas and schema-owned codecs are foundation work only; relational object-style queries are deferred to later specs.
 - [ ] Create a server module
 - [ ] Think about backwards compatibility -- how does mounting from a persisted storage work with new versions?
   - [ ] New database versions

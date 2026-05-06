@@ -13,6 +13,113 @@ export interface StorageApi extends AsyncTupleStorageApi {
 
 export type AnyCollectionSchema = Record<string, any> & { id: string | number }
 
+declare const collectionRecord: unique symbol
+declare const fieldValue: unique symbol
+
+export type RuntimeFieldDefinition<Value = unknown> = {
+	readonly kind: "field"
+	readonly type: string
+	readonly [fieldValue]?: Value
+}
+
+export type AnyRuntimeFieldDefinition = RuntimeFieldDefinition<any>
+
+export type CollectionDefinition<
+	CollectionRecord extends AnyCollectionSchema = AnyCollectionSchema,
+	CollectionCodec = unknown,
+> = {
+	readonly kind: "collection"
+	readonly name?: string
+	readonly codec?: CollectionCodec
+	readonly shape?: globalThis.Record<string, AnyRuntimeFieldDefinition>
+	readonly fields?: readonly (keyof CollectionRecord & string)[]
+	readonly [collectionRecord]?: CollectionRecord
+}
+
+export type NamedCollectionDefinition<
+	Record extends AnyCollectionSchema = AnyCollectionSchema,
+	Name extends string = string,
+	CollectionCodec = unknown,
+> = CollectionDefinition<Record, CollectionCodec> & {
+	readonly name: Name
+}
+
+export type AnyCollectionDefinition = CollectionDefinition<
+	AnyCollectionSchema,
+	unknown
+>
+
+export type RuntimeSchemaDefinition<Schema extends AnySchema = AnySchema> = {
+	readonly collections: {
+		readonly [Collection in CollectionName<Schema>]: NamedCollectionDefinition<
+			Schema[Collection],
+			Collection,
+			unknown
+		>
+	}
+	readonly relations?: RuntimeRelationsDefinition<Schema>
+}
+
+export type RelationKind = "one" | "many"
+
+export type NormalizedOneRelationDefinition<
+	Schema extends AnySchema = AnySchema,
+	SourceCollection extends CollectionName<Schema> = CollectionName<Schema>,
+	TargetCollection extends CollectionName<Schema> = CollectionName<Schema>,
+	RelationName extends string = string,
+> = {
+	readonly kind: "one"
+	readonly name: RelationName
+	readonly sourceCollection: SourceCollection
+	readonly targetCollection: TargetCollection
+	readonly from: keyof Schema[SourceCollection] & string
+	readonly to: "id"
+}
+
+export type NormalizedManyRelationDefinition<
+	Schema extends AnySchema = AnySchema,
+	SourceCollection extends CollectionName<Schema> = CollectionName<Schema>,
+	TargetCollection extends CollectionName<Schema> = CollectionName<Schema>,
+	RelationName extends string = string,
+> = {
+	readonly kind: "many"
+	readonly name: RelationName
+	readonly sourceCollection: SourceCollection
+	readonly targetCollection: TargetCollection
+	readonly from: "id"
+	readonly to: keyof Schema[TargetCollection] & string
+}
+
+export type NormalizedRelationDefinition<
+	Schema extends AnySchema = AnySchema,
+	SourceCollection extends CollectionName<Schema> = CollectionName<Schema>,
+	TargetCollection extends CollectionName<Schema> = CollectionName<Schema>,
+	RelationName extends string = string,
+> =
+	| NormalizedOneRelationDefinition<
+			Schema,
+			SourceCollection,
+			TargetCollection,
+			RelationName
+		>
+	| NormalizedManyRelationDefinition<
+			Schema,
+			SourceCollection,
+			TargetCollection,
+			RelationName
+		>
+
+export type RuntimeRelationsDefinition<Schema extends AnySchema = AnySchema> = {
+	readonly [SourceCollection in CollectionName<Schema>]?: {
+		readonly [RelationName in string]?: NormalizedRelationDefinition<
+			Schema,
+			SourceCollection,
+			CollectionName<Schema>,
+			RelationName
+		>
+	}
+}
+
 export type Attribute<Schema extends AnySchema> = {
 	[K in keyof Schema]: keyof Schema[K]
 }[keyof Schema] &

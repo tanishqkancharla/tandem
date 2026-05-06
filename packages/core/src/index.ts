@@ -4,6 +4,22 @@ export { QueryBuilder, type QueryResults, q } from "./query/Query"
 export { SyncEngine } from "./sync/SyncEngine"
 export { Transaction } from "./transaction/Transaction"
 export { Storage } from "./storage/Storage"
+export { collection, defineSchema, defineRelations, t } from "./schema/Schema"
+export { codec, string, literal, date, object, oneOf } from "./utils/Codec"
+export type { Codec, AnyCodec, Encoded, Decoded } from "./utils/Codec"
+export type {
+	CollectionDefinition,
+	RuntimeFieldDefinition,
+	AnyRuntimeFieldDefinition,
+	NamedCollectionDefinition,
+	AnyCollectionDefinition,
+	RuntimeSchemaDefinition,
+	RelationKind,
+	NormalizedOneRelationDefinition,
+	NormalizedManyRelationDefinition,
+	NormalizedRelationDefinition,
+	RuntimeRelationsDefinition,
+} from "@tandem/types"
 export { type LoggerApi, ConsoleLogger, rootLogger } from "./utils/Logger"
 export {
 	type Json,

@@ -10,10 +10,11 @@ import {
 import { dirname, resolve } from "node:path"
 import { test as base } from "vitest"
 import { TandemClient } from "../src/TandemClient"
+import { collection, defineSchema, t } from "../src/schema/Schema"
 import { IndexedDbTupleStorage } from "../src/storage/IndexedDbAdapter"
 import type { LoggerApi } from "../src/utils/Logger"
 import { TestRemote } from "@tandem/testing"
-import type { RemoteApi, RngApi } from "@tandem/types"
+import type { RemoteApi, RngApi, RuntimeSchemaDefinition } from "@tandem/types"
 import type { Task } from "vitest"
 
 export type TestsTodo = {
@@ -26,6 +27,15 @@ export type TestsTodo = {
 export type TestsSchema = {
 	todos: TestsTodo
 }
+
+export const testsRuntimeSchema = defineSchema({
+	todos: collection({
+		id: t.id(),
+		text: t.string(),
+		done: t.boolean(),
+		priority: t.number(),
+	}),
+}) satisfies RuntimeSchemaDefinition<TestsSchema>
 
 export function todo(
 	id: string,
@@ -140,6 +150,7 @@ function createRng(): DemoRng {
 
 type ClientOptions = {
 	label?: string
+	schema?: RuntimeSchemaDefinition<TestsSchema>
 	remote?: RemoteApi<TestsSchema> | false
 	storageDbName?: string
 	syncInterval?: number
@@ -198,6 +209,7 @@ export const test = base.extend<Fixtures>({
 				autoConnect = false,
 				label = "client",
 				remote,
+				schema,
 				storageDbName,
 				syncInterval = 0,
 			} = options
@@ -216,6 +228,7 @@ export const test = base.extend<Fixtures>({
 				logger,
 				rng: rng.create(label),
 				remote: resolvedRemote,
+				schema,
 				storage,
 				syncInterval,
 			})

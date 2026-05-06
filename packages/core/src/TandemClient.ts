@@ -13,6 +13,7 @@ import {
 	PatchApi,
 	RemoteApi,
 	RngApi,
+	RuntimeSchemaDefinition,
 	StorageApi,
 	type TimerApi,
 } from "@tandem/types"
@@ -21,6 +22,7 @@ import { randomId } from "./utils/randomId"
 import { Timer } from "./utils/Timer"
 
 type TandemClientArgs<Schema extends AnySchema> = {
+	schema?: RuntimeSchemaDefinition<Schema>
 	storage?: StorageApi
 	remote?: RemoteApi<Schema>
 	logger?: LoggerApi
@@ -49,6 +51,7 @@ export class TandemClient<Schema extends AnySchema> {
 
 	private speculativeMutations: InvertibleMutation<Schema>[] = []
 	constructor({
+		schema,
 		storage: storageAdapter,
 		remote,
 		logger,
@@ -80,6 +83,7 @@ export class TandemClient<Schema extends AnySchema> {
 			: undefined
 
 		this.db = new Database({
+			schema,
 			logger: this.logger.scope("db"),
 			storage: storageAdapter,
 			rng: this.rng,
@@ -207,7 +211,8 @@ export class TandemClient<Schema extends AnySchema> {
 		this.db.commit(transaction)
 		this.speculativeMutations.push(mutation)
 
-		const commitPromise = this.syncEngine?.queuePush(mutation) ?? Promise.resolve()
+		const commitPromise =
+			this.syncEngine?.queuePush(mutation) ?? Promise.resolve()
 
 		// Ignored commit promises should not surface unhandled rejections.
 		commitPromise.catch(() => {})

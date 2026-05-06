@@ -1,6 +1,65 @@
 import { describe, expect, vi } from "vitest"
-import { test, TestsSchema, todo, type TestsTodo } from "./fixtures"
+import {
+	test,
+	TestsSchema,
+	testsRuntimeSchema,
+	todo,
+	type TestsTodo,
+} from "./fixtures"
 import { RemoteApi } from "@tandem/types"
+import { TandemClient } from "../src/TandemClient"
+import { collection, defineSchema } from "../src/schema/Schema"
+import { IndexedDbTupleStorage } from "../src/storage/IndexedDbAdapter"
+import { codec } from "../src/utils/Codec"
+
+class EventStart {
+	constructor(readonly iso: string) {}
+}
+
+type TestsEvent = {
+	id: string
+	title: string
+	startAt: EventStart
+}
+
+type TestsEventStorageValue = {
+	id: string
+	title: string
+	startAt: string
+}
+
+type TestsEventSchema = {
+	events: TestsEvent
+}
+
+type TestsEventStorageSchema = {
+	events: TestsEventStorageValue
+}
+
+const eventCodec = codec<TestsEvent, TestsEventStorageValue>(
+	"event",
+	(input) => {
+		const event = input as TestsEvent
+		return {
+			...event,
+			startAt: event.startAt.iso,
+		}
+	},
+	(input) => {
+		const event = input as TestsEventStorageValue
+		return {
+			...event,
+			startAt: new EventStart(event.startAt),
+		}
+	},
+)
+
+const testsEventRuntimeSchema = defineSchema({
+	events: collection<TestsEvent, TestsEventStorageValue>({
+		fields: ["id", "title", "startAt"],
+		codec: eventCodec,
+	}),
+})
 
 describe("TandemClient", () => {
 	test("creates, queries, updates, and deletes records locally", async ({
@@ -51,6 +110,43 @@ describe("TandemClient", () => {
 			todo("todo-3", { text: "Fix the sync bug", priority: 3 }),
 		])
 		expect(deletedTodo).toEqual([])
+	})
+
+	test("runs flat queries unchanged when constructed with a runtime schema", async ({
+		makeClient,
+	}) => {
+		const client = await makeClient({
+			label: "schema-client",
+			remote: false,
+			schema: testsRuntimeSchema,
+		})
+
+		// Seed records through the normal flat transaction API
+		const tx = client.transact()
+		tx.set(
+			"todos",
+			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
+		)
+		tx.set(
+			"todos",
+			todo("todo-2", { text: "Ship the docs", done: true, priority: 1 }),
+		)
+		tx.set("todos", todo("todo-3", { text: "Fix the sync bug", priority: 3 }))
+		await client.commit(tx)
+
+		// Existing flat query operators still produce the same projected results
+		const highestPriorityOpenTodoSummaries = client.run("todos", (q) =>
+			q
+				.where("done", "=", false)
+				.order("priority", "desc")
+				.limit(2)
+				.select(["id", "text"]),
+		)
+
+		expect(highestPriorityOpenTodoSummaries).toEqual([
+			{ id: "todo-3", text: "Fix the sync bug" },
+			{ id: "todo-1", text: "Write the sync spec" },
+		])
 	})
 
 	test("keeps subscribed query results live until the caller unsubscribes", async ({
@@ -190,6 +286,52 @@ describe("TandemClient", () => {
 
 		// The synced record is also queryable directly on client2
 		const syncedTodoOnClient2 = client2.run("todos", (q) => q.id("todo-1"))
+
+		expect(syncedTodoOnClient2).toEqual([
+			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
+		])
+	})
+
+	test("syncs flat subscription updates unchanged when constructed with a runtime schema", async ({
+		makeClient,
+	}) => {
+		const schemaClient1 = await makeClient({
+			label: "schema-client1",
+			schema: testsRuntimeSchema,
+		})
+		const schemaClient2 = await makeClient({
+			label: "schema-client2",
+			schema: testsRuntimeSchema,
+		})
+		await Promise.all([schemaClient1.connect(), schemaClient2.connect()])
+
+		const seenByClient2: TestsTodo[][] = []
+		schemaClient2.subscribe(
+			"todos",
+			(q) => q,
+			(result) => {
+				seenByClient2.push(result)
+			},
+		)
+
+		// A flat commit on one schema-enabled client still reaches another flat subscription
+		const tx = schemaClient1.transact()
+		tx.set(
+			"todos",
+			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
+		)
+		await schemaClient1.commit(tx)
+
+		await vi.waitFor(() => {
+			expect(seenByClient2).toEqual([
+				[todo("todo-1", { text: "Write the sync spec", priority: 2 })],
+			])
+		})
+
+		// The synced record remains queryable through the existing flat run API
+		const syncedTodoOnClient2 = schemaClient2.run("todos", (q) =>
+			q.id("todo-1"),
+		)
 
 		expect(syncedTodoOnClient2).toEqual([
 			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
@@ -385,5 +527,149 @@ describe("TandemClient", () => {
 			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
 			todo("todo-3", { text: "Fix the sync bug", priority: 3 }),
 		])
+	})
+
+	test("reloads persisted records through schema-owned codecs", async ({
+		logger,
+		rng,
+	}) => {
+		const dbName = rng.next("schema-codec-events")
+		const storages: IndexedDbTupleStorage<
+			TestsEventSchema,
+			TestsEventStorageSchema
+		>[] = []
+
+		try {
+			const firstStorage = new IndexedDbTupleStorage<
+				TestsEventSchema,
+				TestsEventStorageSchema
+			>({
+				dbName,
+				schema: testsEventRuntimeSchema,
+			})
+			storages.push(firstStorage)
+			const firstClient = new TandemClient<TestsEventSchema>({
+				logger,
+				rng: rng.create("schema-codec-client-1"),
+				schema: testsEventRuntimeSchema,
+				storage: firstStorage,
+			})
+			await firstClient.ready
+
+			// Commit an event whose runtime value relies on the schema-owned codec
+			const event = {
+				id: "event-1",
+				title: "Planning",
+				startAt: new EventStart("2026-05-04T12:00:00.000Z"),
+			}
+			const tx = firstClient.transact()
+			tx.set("events", event)
+			await firstClient.commit(tx)
+			await firstClient.flushStorage()
+			await firstStorage.close()
+
+			const secondStorage = new IndexedDbTupleStorage<
+				TestsEventSchema,
+				TestsEventStorageSchema
+			>({
+				dbName,
+				schema: testsEventRuntimeSchema,
+			})
+			storages.push(secondStorage)
+			const secondClient = new TandemClient<TestsEventSchema>({
+				logger,
+				rng: rng.create("schema-codec-client-2"),
+				schema: testsEventRuntimeSchema,
+				storage: secondStorage,
+			})
+			await secondClient.ready
+
+			// Recreated storage decodes the persisted value back to the runtime shape
+			const persistedEvents = secondClient.run("events", (q) => q)
+
+			expect(persistedEvents).toEqual([event])
+			expect(persistedEvents[0]?.startAt).toBeInstanceOf(EventStart)
+		} finally {
+			for (const storage of storages) {
+				await storage.close()
+			}
+
+			const cleanupStorage = new IndexedDbTupleStorage<TestsEventSchema>({
+				dbName,
+			})
+			await cleanupStorage.clear()
+			await cleanupStorage.close()
+		}
+	})
+
+	test("keeps explicit IndexedDB codec support without a runtime schema", async ({
+		logger,
+		rng,
+	}) => {
+		const dbName = rng.next("explicit-codec-events")
+		const storages: IndexedDbTupleStorage<
+			TestsEventSchema,
+			TestsEventStorageSchema
+		>[] = []
+
+		try {
+			const firstStorage = new IndexedDbTupleStorage<
+				TestsEventSchema,
+				TestsEventStorageSchema
+			>({
+				dbName,
+				codecs: { events: eventCodec },
+			})
+			storages.push(firstStorage)
+			const firstClient = new TandemClient<TestsEventSchema>({
+				logger,
+				rng: rng.create("explicit-codec-client-1"),
+				storage: firstStorage,
+			})
+			await firstClient.ready
+
+			// Existing explicit storage codecs still encode persisted writes
+			const event = {
+				id: "event-1",
+				title: "Planning",
+				startAt: new EventStart("2026-05-04T12:00:00.000Z"),
+			}
+			const tx = firstClient.transact()
+			tx.set("events", event)
+			await firstClient.commit(tx)
+			await firstClient.flushStorage()
+			await firstStorage.close()
+
+			const secondStorage = new IndexedDbTupleStorage<
+				TestsEventSchema,
+				TestsEventStorageSchema
+			>({
+				dbName,
+				codecs: { events: eventCodec },
+			})
+			storages.push(secondStorage)
+			const secondClient = new TandemClient<TestsEventSchema>({
+				logger,
+				rng: rng.create("explicit-codec-client-2"),
+				storage: secondStorage,
+			})
+			await secondClient.ready
+
+			// Recreated storage decodes through the explicit codec as before
+			const persistedEvents = secondClient.run("events", (q) => q)
+
+			expect(persistedEvents).toEqual([event])
+			expect(persistedEvents[0]?.startAt).toBeInstanceOf(EventStart)
+		} finally {
+			for (const storage of storages) {
+				await storage.close()
+			}
+
+			const cleanupStorage = new IndexedDbTupleStorage<TestsEventSchema>({
+				dbName,
+			})
+			await cleanupStorage.clear()
+			await cleanupStorage.close()
+		}
 	})
 })

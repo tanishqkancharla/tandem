@@ -3,7 +3,12 @@
 import { deleteDB, IDBPDatabase, openDB } from "idb"
 import { KeyValuePair, ScanStorageArgs, WriteOps } from "tuple-database"
 import { decodeTuple, encodeTuple } from "tuple-database/helpers/codec"
-import { AnySchema, Json, StorageApi } from "@tandem/types"
+import {
+	AnySchema,
+	Json,
+	RuntimeSchemaDefinition,
+	StorageApi,
+} from "@tandem/types"
 import { Codec } from "../utils/Codec"
 
 const version = 1
@@ -19,7 +24,29 @@ type IndexedDbTupleStorageArgs<
 	StorageSchema extends AnyStorageSchema<Schema> = AnyStorageSchema<Schema>,
 > = {
 	dbName: string
+	schema?: RuntimeSchemaDefinition<Schema>
 	codecs?: {
+		[K in keyof Schema]?: Codec<Schema[K], StorageSchema[K]>
+	}
+}
+
+function getSchemaCodecs<
+	Schema extends AnySchema,
+	StorageSchema extends AnyStorageSchema<Schema>,
+>(
+	schema?: RuntimeSchemaDefinition<Schema>,
+):
+	| {
+			[K in keyof Schema]?: Codec<Schema[K], StorageSchema[K]>
+	  }
+	| undefined {
+	if (!schema) return undefined
+
+	return Object.fromEntries(
+		Object.entries(schema.collections)
+			.filter(([, collection]) => collection.codec)
+			.map(([name, collection]) => [name, collection.codec]),
+	) as {
 		[K in keyof Schema]?: Codec<Schema[K], StorageSchema[K]>
 	}
 }
@@ -39,9 +66,15 @@ export class IndexedDbTupleStorage<
 
 	constructor({
 		dbName,
+		schema,
 		codecs,
 	}: IndexedDbTupleStorageArgs<Schema, StorageSchema>) {
-		this.codecs = codecs
+		this.codecs = {
+			...getSchemaCodecs(schema),
+			...codecs,
+		} as {
+			[K in keyof Schema]?: Codec<Schema[K], StorageSchema[K]>
+		}
 		this.dbName = dbName
 		this.db = openDB(dbName, version, {
 			upgrade(db: IDBPDatabase) {
