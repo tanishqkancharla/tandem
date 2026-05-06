@@ -1,5 +1,11 @@
 import { describe, expect, vi } from "vitest"
-import { test, TestsSchema, todo, type TestsTodo } from "./fixtures"
+import {
+	test,
+	TestsSchema,
+	testsRuntimeSchema,
+	todo,
+	type TestsTodo,
+} from "./fixtures"
 import { RemoteApi } from "@tandem/types"
 
 describe("TandemClient", () => {
@@ -51,6 +57,43 @@ describe("TandemClient", () => {
 			todo("todo-3", { text: "Fix the sync bug", priority: 3 }),
 		])
 		expect(deletedTodo).toEqual([])
+	})
+
+	test("runs flat queries unchanged when constructed with a runtime schema", async ({
+		makeClient,
+	}) => {
+		const client = await makeClient({
+			label: "schema-client",
+			remote: false,
+			schema: testsRuntimeSchema,
+		})
+
+		// Seed records through the normal flat transaction API
+		const tx = client.transact()
+		tx.set(
+			"todos",
+			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
+		)
+		tx.set(
+			"todos",
+			todo("todo-2", { text: "Ship the docs", done: true, priority: 1 }),
+		)
+		tx.set("todos", todo("todo-3", { text: "Fix the sync bug", priority: 3 }))
+		await client.commit(tx)
+
+		// Existing flat query operators still produce the same projected results
+		const highestPriorityOpenTodoSummaries = client.run("todos", (q) =>
+			q
+				.where("done", "=", false)
+				.order("priority", "desc")
+				.limit(2)
+				.select(["id", "text"]),
+		)
+
+		expect(highestPriorityOpenTodoSummaries).toEqual([
+			{ id: "todo-3", text: "Fix the sync bug" },
+			{ id: "todo-1", text: "Write the sync spec" },
+		])
 	})
 
 	test("keeps subscribed query results live until the caller unsubscribes", async ({
@@ -190,6 +233,52 @@ describe("TandemClient", () => {
 
 		// The synced record is also queryable directly on client2
 		const syncedTodoOnClient2 = client2.run("todos", (q) => q.id("todo-1"))
+
+		expect(syncedTodoOnClient2).toEqual([
+			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
+		])
+	})
+
+	test("syncs flat subscription updates unchanged when constructed with a runtime schema", async ({
+		makeClient,
+	}) => {
+		const schemaClient1 = await makeClient({
+			label: "schema-client1",
+			schema: testsRuntimeSchema,
+		})
+		const schemaClient2 = await makeClient({
+			label: "schema-client2",
+			schema: testsRuntimeSchema,
+		})
+		await Promise.all([schemaClient1.connect(), schemaClient2.connect()])
+
+		const seenByClient2: TestsTodo[][] = []
+		schemaClient2.subscribe(
+			"todos",
+			(q) => q,
+			(result) => {
+				seenByClient2.push(result)
+			},
+		)
+
+		// A flat commit on one schema-enabled client still reaches another flat subscription
+		const tx = schemaClient1.transact()
+		tx.set(
+			"todos",
+			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
+		)
+		await schemaClient1.commit(tx)
+
+		await vi.waitFor(() => {
+			expect(seenByClient2).toEqual([
+				[todo("todo-1", { text: "Write the sync spec", priority: 2 })],
+			])
+		})
+
+		// The synced record remains queryable through the existing flat run API
+		const syncedTodoOnClient2 = schemaClient2.run("todos", (q) =>
+			q.id("todo-1"),
+		)
 
 		expect(syncedTodoOnClient2).toEqual([
 			todo("todo-1", { text: "Write the sync spec", priority: 2 }),

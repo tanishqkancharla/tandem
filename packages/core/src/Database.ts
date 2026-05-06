@@ -14,6 +14,7 @@ import {
 	AnySchema,
 	CollectionName,
 	RngApi,
+	RuntimeSchemaDefinition,
 	StorageApi,
 	WriteOpsApi,
 } from "@tandem/types"
@@ -23,7 +24,8 @@ import { ThrottleQueue } from "./utils/ThrottleQueue"
 import { Timer } from "./utils/Timer"
 import { unreachable } from "./utils/typeUtils"
 
-type DatabaseArgs = {
+type DatabaseArgs<Schema extends AnySchema> = {
+	schema?: RuntimeSchemaDefinition<Schema>
 	storage?: StorageApi
 	logger: LoggerApi
 	rng: RngApi
@@ -37,11 +39,18 @@ export class Database<Schema extends AnySchema> {
 	private readonly storage?: Storage
 	private readonly logger: LoggerApi
 	private readonly rng: RngApi
+	readonly schema?: RuntimeSchemaDefinition<Schema>
 	private storageWriteQueue?: ThrottleQueue
 	readonly ready: Promise<void>
 
-	constructor({ logger, storage: storageAdapter, rng }: DatabaseArgs) {
+	constructor({
+		logger,
+		schema,
+		storage: storageAdapter,
+		rng,
+	}: DatabaseArgs<Schema>) {
 		this.logger = logger
+		this.schema = schema
 		this.storage = storageAdapter
 			? new Storage(storageAdapter, (error) => {
 					// TODO: clean up? What should we do when storage fails?

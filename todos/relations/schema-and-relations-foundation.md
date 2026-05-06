@@ -115,12 +115,12 @@ const client = new TandemClient<AppSchema>({
 })
 ```
 
-- [ ] Add optional `schema` support to `TandemClient` constructor args
-- [ ] Thread the schema into `Database` and any internal helpers that will need it later
-- [ ] Keep `QueryBuilder`, `EncodedQuery`, `Database.runQuery(...)`, `SyncEngine`, and `TestRemote` behavior unchanged in this spec
-- [ ] Add a regression test that a schema-enabled client still supports today's flat `run(...)` queries unchanged
-- [ ] Add a regression test that a schema-enabled synced client still receives flat subscription updates unchanged
-- [ ] Run `npm run test -- packages/core/test/TandemClient.spec.ts` and confirm existing flat-query and sync coverage still passes
+- [x] Add optional `schema` support to `TandemClient` constructor args
+- [x] Thread the schema into `Database` and any internal helpers that will need it later
+- [x] Keep `QueryBuilder`, `EncodedQuery`, `Database.runQuery(...)`, `SyncEngine`, and `TestRemote` behavior unchanged in this spec
+- [x] Add a regression test that a schema-enabled client still supports today's flat `run(...)` queries unchanged
+- [x] Add a regression test that a schema-enabled synced client still receives flat subscription updates unchanged
+- [x] Run `npm run test -- packages/core/test/TandemClient.spec.ts` and confirm existing flat-query and sync coverage still passes
 
 ### Phase 4: Let IndexedDB storage read codecs from the runtime schema
 
