@@ -16,13 +16,13 @@ function makeSchema() {
 describe("runtime schema relations", () => {
 	test("registers and normalizes a one relation", () => {
 		// Defining a valid one relation returns normalized relation metadata
-		const schema = defineRelations(makeSchema(), ({ one }) => ({
+		const relations = defineRelations(makeSchema(), ({ one }) => ({
 			posts: {
 				author: one("users", { from: "authorId", to: "id" }),
 			},
 		}))
 
-		expect(schema.relations.posts?.author).toEqual({
+		expect(relations.posts?.author).toEqual({
 			kind: "one",
 			name: "author",
 			sourceCollection: "posts",
@@ -34,13 +34,13 @@ describe("runtime schema relations", () => {
 
 	test("registers and normalizes a many relation", () => {
 		// Defining a valid many relation returns normalized relation metadata
-		const schema = defineRelations(makeSchema(), ({ many }) => ({
+		const relations = defineRelations(makeSchema(), ({ many }) => ({
 			users: {
 				posts: many("posts", { from: "id", to: "authorId" }),
 			},
 		}))
 
-		expect(schema.relations.users?.posts).toEqual({
+		expect(relations.users?.posts).toEqual({
 			kind: "many",
 			name: "posts",
 			sourceCollection: "users",
@@ -81,21 +81,6 @@ describe("runtime schema relations", () => {
 		).toThrow(
 			'Relation "posts.title" collides with field "title" on collection "posts"',
 		)
-
-		// Existing relation names cannot be registered again
-		const schemaWithAuthor = defineRelations(makeSchema(), ({ one }) => ({
-			posts: {
-				author: one("users", { from: "authorId", to: "id" }),
-			},
-		}))
-
-		expect(() =>
-			defineRelations(schemaWithAuthor, ({ one }) => ({
-				posts: {
-					author: one("users", { from: "authorId", to: "id" }),
-				},
-			})),
-		).toThrow('Duplicate relation "posts.author"')
 
 		// One relations must join to the related record id
 		expect(() =>

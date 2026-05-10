@@ -14,6 +14,7 @@ import {
 	AnySchema,
 	CollectionName,
 	RngApi,
+	RuntimeRelationsDefinition,
 	RuntimeSchemaDefinition,
 	StorageApi,
 	WriteOpsApi,
@@ -26,6 +27,7 @@ import { unreachable } from "./utils/typeUtils"
 
 type DatabaseArgs<Schema extends AnySchema> = {
 	schema?: RuntimeSchemaDefinition<Schema>
+	relations?: RuntimeRelationsDefinition<Schema>
 	storage?: StorageApi
 	logger: LoggerApi
 	rng: RngApi
@@ -40,17 +42,20 @@ export class Database<Schema extends AnySchema> {
 	private readonly logger: LoggerApi
 	private readonly rng: RngApi
 	readonly schema?: RuntimeSchemaDefinition<Schema>
+	readonly relations?: RuntimeRelationsDefinition<Schema>
 	private storageWriteQueue?: ThrottleQueue
 	readonly ready: Promise<void>
 
 	constructor({
 		logger,
 		schema,
+		relations,
 		storage: storageAdapter,
 		rng,
 	}: DatabaseArgs<Schema>) {
 		this.logger = logger
 		this.schema = schema
+		this.relations = relations
 		this.storage = storageAdapter
 			? new Storage(storageAdapter, (error) => {
 					// TODO: clean up? What should we do when storage fails?

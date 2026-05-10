@@ -191,13 +191,6 @@ type RelationBuilderApi<Schema extends AnySchema> = {
 	) => RelationRegistration<"many", TargetCollection, "id", To>
 }
 
-type SchemaWithRelations<
-	Schema extends AnySchema,
-	RuntimeSchema extends RuntimeSchemaDefinition<Schema>,
-> = RuntimeSchema & {
-	readonly relations: RuntimeRelationsDefinition<Schema>
-}
-
 type MutableRuntimeRelationsDefinition<Schema extends AnySchema> = {
 	[SourceCollection in CollectionName<Schema>]?: Record<
 		string,
@@ -221,12 +214,11 @@ function requireRuntimeFields<Schema extends AnySchema>(
 
 export function defineRelations<
 	Schema extends AnySchema,
-	RuntimeSchema extends RuntimeSchemaDefinition<Schema>,
 	const Relations extends RelationRegistrations<Schema>,
 >(
-	schema: RuntimeSchema,
+	schema: RuntimeSchemaDefinition<Schema>,
 	define: (builders: RelationBuilderApi<Schema>) => Relations,
-): SchemaWithRelations<Schema, RuntimeSchema> {
+): RuntimeRelationsDefinition<Schema> {
 	const rawRelations = define({
 		one: (targetCollection, join) => ({
 			kind: "one",
@@ -242,12 +234,7 @@ export function defineRelations<
 		}),
 	})
 
-	const normalized: MutableRuntimeRelationsDefinition<Schema> = Object.fromEntries(
-		Object.entries(schema.relations ?? {}).map(([sourceCollection, relations]) => [
-			sourceCollection,
-			{ ...(relations ?? {}) },
-		]),
-	) as MutableRuntimeRelationsDefinition<Schema>
+	const normalized: MutableRuntimeRelationsDefinition<Schema> = {}
 
 	for (const [sourceCollectionName, relations] of Object.entries(
 		rawRelations,
@@ -322,8 +309,5 @@ export function defineRelations<
 		normalized[sourceCollection] = normalizedForSource
 	}
 
-	return {
-		...schema,
-		relations: normalized,
-	}
+	return normalized
 }

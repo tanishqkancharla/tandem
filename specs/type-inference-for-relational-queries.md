@@ -64,12 +64,12 @@ const relations = defineRelations(schema, ({ one, many }) => ({
 new TandemClient({ schema, relations })
 ```
 
-- [ ] Add a separate `relations?: ...` option anywhere runtime schema relations are currently read from `schema.relations`, starting with `TandemClientArgs`/`Database` construction if needed for existing behavior.
-- [ ] Change `defineRelations(schema, define)` to return the normalized relation metadata object directly instead of `{ ...schema, relations }`.
-- [ ] Keep `defineSchema(...)` responsible only for collection definitions.
-- [ ] Update relation runtime tests to assert the new returned object shape, e.g. `relations.posts.author`, not `schema.relations.posts.author`.
-- [ ] Verify existing runtime relation validation behavior still throws the same descriptive startup errors.
-- [ ] Verify `pnpm --filter @tandem/core test` passes.
+- [x] Add a separate `relations?: ...` option anywhere runtime schema relations are currently read from `schema.relations`, starting with `TandemClientArgs`/`Database` construction if needed for existing behavior.
+- [x] Change `defineRelations(schema, define)` to return the normalized relation metadata object directly instead of `{ ...schema, relations }`.
+- [x] Keep `defineSchema(...)` responsible only for collection definitions.
+- [x] Update relation runtime tests to assert the new returned object shape, e.g. `relations.posts.author`, not `schema.relations.posts.author`.
+- [x] Verify existing runtime relation validation behavior still throws the same descriptive startup errors.
+- [x] Verify `pnpm --filter @tandem/core test` passes.
 
 ### Phase 2: Preserve literal relation metadata from `defineRelations`
 

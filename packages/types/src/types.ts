@@ -57,7 +57,6 @@ export type RuntimeSchemaDefinition<Schema extends AnySchema = AnySchema> = {
 			unknown
 		>
 	}
-	readonly relations?: RuntimeRelationsDefinition<Schema>
 }
 
 export type RelationKind = "one" | "many"

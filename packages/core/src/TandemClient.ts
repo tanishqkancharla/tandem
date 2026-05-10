@@ -13,6 +13,7 @@ import {
 	PatchApi,
 	RemoteApi,
 	RngApi,
+	RuntimeRelationsDefinition,
 	RuntimeSchemaDefinition,
 	StorageApi,
 	type TimerApi,
@@ -23,6 +24,7 @@ import { Timer } from "./utils/Timer"
 
 type TandemClientArgs<Schema extends AnySchema> = {
 	schema?: RuntimeSchemaDefinition<Schema>
+	relations?: RuntimeRelationsDefinition<Schema>
 	storage?: StorageApi
 	remote?: RemoteApi<Schema>
 	logger?: LoggerApi
@@ -52,6 +54,7 @@ export class TandemClient<Schema extends AnySchema> {
 	private speculativeMutations: InvertibleMutation<Schema>[] = []
 	constructor({
 		schema,
+		relations,
 		storage: storageAdapter,
 		remote,
 		logger,
@@ -84,6 +87,7 @@ export class TandemClient<Schema extends AnySchema> {
 
 		this.db = new Database({
 			schema,
+			relations,
 			logger: this.logger.scope("db"),
 			storage: storageAdapter,
 			rng: this.rng,
