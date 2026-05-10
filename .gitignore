@@ -4,3 +4,4 @@ dist/
 /.kosho**
 **/*.turbo
 packages/core/test/logs/
+tmp/
