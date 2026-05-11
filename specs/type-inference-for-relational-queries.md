@@ -159,12 +159,12 @@ type ThreadRows = RelationalQueryResult<
 // Array<{ id: string; title: string; owner: { name: string } | null; messages: { body: string }[] }>
 ```
 
-- [ ] Infer `with: { relation: true }` as all scalar fields from the target collection.
-- [ ] Infer `with: { relation: { select, where, with, orderBy, limit, offset } }` recursively using the target collection.
-- [ ] Preserve `many-to-one` cardinality as `NestedRow | null`.
-- [ ] Preserve `one-to-many` cardinality as `NestedRow[]`, including when `limit: 1` is specified.
-- [ ] Add nested `Assert<TestIsEqual<...>>` coverage for many-to-one relation, one-to-many relation, and at least one two-level nested `with` query.
-- [ ] Add `@ts-expect-error` coverage for selecting target-collection fields from the wrong nested scope and for unknown nested relation names.
+- [x] Infer `with: { relation: true }` as all scalar fields from the target collection.
+- [x] Infer `with: { relation: { select, where, with, orderBy, limit, offset } }` recursively using the target collection.
+- [x] Preserve `many-to-one` cardinality as `NestedRow | null`.
+- [x] Preserve `one-to-many` cardinality as `NestedRow[]`, including when `limit: 1` is specified.
+- [x] Add nested `Assert<TestIsEqual<...>>` coverage for many-to-one relation, one-to-many relation, and at least one two-level nested `with` query.
+- [x] Add `@ts-expect-error` coverage for selecting target-collection fields from the wrong nested scope and for unknown nested relation names.
 
 ### Phase 6: Thread types through public client/query surfaces without changing runtime behavior
 

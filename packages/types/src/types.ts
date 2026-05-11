@@ -165,6 +165,12 @@ type RelationTargetCollection<Relation> = Relation extends {
 	? TargetCollection
 	: never
 
+type RelationTypeForResult<Relation> = Relation extends {
+	readonly type: infer Type
+}
+	? Type
+	: never
+
 export type RelationalWithOptions<
 	Schema extends AnySchema,
 	Relations extends RuntimeRelationsDefinition<Schema>,
@@ -215,12 +221,81 @@ export type RelationalQueryRow<
 	Relations extends RuntimeRelationsDefinition<Schema>,
 	Collection extends CollectionName<Schema>,
 	Options extends RelationalQueryOptions<Schema, Relations, Collection> = {},
+> = RelationalQueryScalars<Schema, Collection, Options> &
+	RelationalQueryIncludedRelations<Schema, Relations, Collection, Options>
+
+type RelationalQueryScalars<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+	Options extends { readonly select?: RelationalSelectOptions<Schema, Collection> },
 > = Options extends { readonly select: infer Select }
 	? Pick<
 			Schema[Collection],
 			SelectedScalarKeys<Schema, Collection, Select> & keyof Schema[Collection]
 		>
 	: Schema[Collection]
+
+type RelationalQueryIncludedRelations<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+	Collection extends CollectionName<Schema>,
+	Options extends RelationalQueryOptions<Schema, Relations, Collection>,
+> = Options extends { readonly with: infer With }
+	? {
+			readonly [RelationName in keyof With &
+				keyof NonNullable<Relations[Collection]> &
+				string]: RelationalIncludedRelationResult<
+				Schema,
+				Relations,
+				NonNullable<Relations[Collection]>[RelationName],
+				With[RelationName]
+			>
+		}
+	: {}
+
+type RelationalIncludedRelationResult<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+	Relation,
+	Include,
+> = RelationTargetCollection<Relation> extends CollectionName<Schema>
+	? RelationTypeForResult<Relation> extends "many-to-one"
+		? RelationalQueryRow<
+				Schema,
+				Relations,
+				RelationTargetCollection<Relation> & CollectionName<Schema>,
+				RelationalIncludedRelationOptions<
+					Schema,
+					Relations,
+					RelationTargetCollection<Relation> & CollectionName<Schema>,
+					Include
+				>
+			> | null
+		: RelationTypeForResult<Relation> extends "one-to-many"
+			? RelationalQueryRow<
+					Schema,
+					Relations,
+					RelationTargetCollection<Relation> & CollectionName<Schema>,
+					RelationalIncludedRelationOptions<
+						Schema,
+						Relations,
+						RelationTargetCollection<Relation> & CollectionName<Schema>,
+						Include
+					>
+				>[]
+			: never
+	: never
+
+type RelationalIncludedRelationOptions<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+	Collection extends CollectionName<Schema>,
+	Include,
+> = Include extends true
+	? {}
+	: Include extends RelationalQueryOptions<Schema, Relations, Collection>
+		? Include
+		: never
 
 export type RelationalQueryResult<
 	Schema extends AnySchema,
@@ -233,6 +308,7 @@ type _RelationalQueryTestSchema = {
 	users: { id: string; name: string }
 	threads: { id: string; ownerId: string; title: string; status: string }
 	messages: { id: string; threadId: string; body: string; createdAt: number }
+	profiles: { id: string; userId: string; displayName: string }
 }
 
 type _RelationalQueryTestRelations = {
@@ -256,6 +332,14 @@ type _RelationalQueryTestRelations = {
 			"messages",
 			"threads",
 			"thread"
+		>
+	}
+	users: {
+		profile: NormalizedManyToOneRelationDefinition<
+			_RelationalQueryTestSchema,
+			"users",
+			"profiles",
+			"profile"
 		>
 	}
 }
@@ -373,6 +457,85 @@ type _TestRelationalMultiSelectResult = Assert<
 
 // @ts-expect-error Select values must be true
 type _TestRelationalInvalidSelectValue = RelationalQueryResult<_RelationalQueryTestSchema, _RelationalQueryTestRelations, "threads", { select: { id: false } }>
+
+type _TestRelationalManyToOneResult = Assert<
+	TestIsEqual<
+		RelationalQueryResult<
+			_RelationalQueryTestSchema,
+			_RelationalQueryTestRelations,
+			"threads",
+			{ select: { id: true }; with: { owner: { select: { name: true } } } }
+		>,
+		{ id: string; readonly owner: { name: string } | null }[]
+	>
+>
+type _TestRelationalOneToManyResult = Assert<
+	TestIsEqual<
+		RelationalQueryResult<
+			_RelationalQueryTestSchema,
+			_RelationalQueryTestRelations,
+			"threads",
+			{ select: { id: true }; with: { messages: { select: { body: true } } } }
+		>,
+		{ id: string; readonly messages: { body: string }[] }[]
+	>
+>
+type _TestRelationalOneToManyLimitOneResult = Assert<
+	TestIsEqual<
+		RelationalQueryResult<
+			_RelationalQueryTestSchema,
+			_RelationalQueryTestRelations,
+			"threads",
+			{
+				select: { id: true }
+				with: { messages: { select: { body: true }; limit: 1 } }
+			}
+		>,
+		{ id: string; readonly messages: { body: string }[] }[]
+	>
+>
+type _TestRelationalTrueIncludeResult = Assert<
+	TestIsEqual<
+		RelationalQueryResult<
+			_RelationalQueryTestSchema,
+			_RelationalQueryTestRelations,
+			"threads",
+			{ select: { id: true }; with: { owner: true } }
+		>,
+		{ id: string; readonly owner: _RelationalQueryTestSchema["users"] | null }[]
+	>
+>
+type _TestRelationalNestedWithResult = Assert<
+	TestIsEqual<
+		RelationalQueryResult<
+			_RelationalQueryTestSchema,
+			_RelationalQueryTestRelations,
+			"threads",
+			{
+				select: { id: true }
+				with: {
+					owner: {
+						select: { name: true }
+						with: { profile: { select: { displayName: true } } }
+					}
+				}
+			}
+		>,
+		{
+			id: string
+			readonly owner: {
+				name: string
+				readonly profile: { displayName: string } | null
+			} | null
+		}[]
+	>
+>
+
+// @ts-expect-error Nested selected fields must exist on the relation target collection
+type _TestRelationalInvalidNestedResultSelect = RelationalQueryResult<_RelationalQueryTestSchema, _RelationalQueryTestRelations, "threads", { with: { owner: { select: { title: true } } } }>
+
+// @ts-expect-error Nested relation names must exist on the relation target collection
+type _TestRelationalInvalidNestedResultRelation = RelationalQueryResult<_RelationalQueryTestSchema, _RelationalQueryTestRelations, "threads", { with: { owner: { with: { messages: true } } } }>
 
 export type ClientId = Tagged<"ClientId", string>
 export type Cookie = Tagged<"Cookie", number | string>
