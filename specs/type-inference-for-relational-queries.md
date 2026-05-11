@@ -133,11 +133,11 @@ type ThreadTitleRows = RelationalQueryResult<
 // Array<{ id: string; title: string }>
 ```
 
-- [ ] Export a result type that takes schema, relation metadata, collection name, and query options.
-- [ ] Infer omitted `select` as `Schema[Collection]` scalar fields.
-- [ ] Infer explicit `select` as `Pick<Schema[Collection], SelectedKeys>`.
-- [ ] Reject non-`true` select values at compile time.
-- [ ] Add `Assert<TestIsEqual<...>>` coverage for omitted select, single-field select, and multi-field select.
+- [x] Export a result type that takes schema, relation metadata, collection name, and query options.
+- [x] Infer omitted `select` as `Schema[Collection]` scalar fields.
+- [x] Infer explicit `select` as `Pick<Schema[Collection], SelectedKeys>`.
+- [x] Reject non-`true` select values at compile time.
+- [x] Add `Assert<TestIsEqual<...>>` coverage for omitted select, single-field select, and multi-field select.
 
 ### Phase 5: Add nested relation result inference and cardinality
 

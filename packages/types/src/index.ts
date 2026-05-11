@@ -18,6 +18,8 @@ export {
 	type RelationalOrderByOptions,
 	type RelationalWithOptions,
 	type RelationalQueryOptions,
+	type RelationalQueryRow,
+	type RelationalQueryResult,
 	type Attribute,
 	type AnySchema,
 	type CollectionName,

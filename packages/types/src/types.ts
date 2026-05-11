@@ -198,6 +198,37 @@ export type RelationalQueryOptions<
 	readonly offset?: number
 }
 
+type SelectedScalarKeys<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+	Select,
+> = keyof {
+	readonly [Field in keyof Schema[Collection] & string as Select extends {
+		readonly [Key in Field]?: true
+	}
+		? Field
+		: never]: true
+}
+
+export type RelationalQueryRow<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+	Collection extends CollectionName<Schema>,
+	Options extends RelationalQueryOptions<Schema, Relations, Collection> = {},
+> = Options extends { readonly select: infer Select }
+	? Pick<
+			Schema[Collection],
+			SelectedScalarKeys<Schema, Collection, Select> & keyof Schema[Collection]
+		>
+	: Schema[Collection]
+
+export type RelationalQueryResult<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+	Collection extends CollectionName<Schema>,
+	Options extends RelationalQueryOptions<Schema, Relations, Collection> = {},
+> = RelationalQueryRow<Schema, Relations, Collection, Options>[]
+
 type _RelationalQueryTestSchema = {
 	users: { id: string; name: string }
 	threads: { id: string; ownerId: string; title: string; status: string }
@@ -205,22 +236,22 @@ type _RelationalQueryTestSchema = {
 }
 
 type _RelationalQueryTestRelations = {
-	readonly threads: {
-		readonly owner: NormalizedManyToOneRelationDefinition<
+	threads: {
+		owner: NormalizedManyToOneRelationDefinition<
 			_RelationalQueryTestSchema,
 			"threads",
 			"users",
 			"owner"
 		>
-		readonly messages: NormalizedOneToManyRelationDefinition<
+		messages: NormalizedOneToManyRelationDefinition<
 			_RelationalQueryTestSchema,
 			"threads",
 			"messages",
 			"messages"
 		>
 	}
-	readonly messages: {
-		readonly thread: NormalizedManyToOneRelationDefinition<
+	messages: {
+		thread: NormalizedManyToOneRelationDefinition<
 			_RelationalQueryTestSchema,
 			"messages",
 			"threads",
@@ -306,6 +337,42 @@ type _TestRelationalInvalidRelation = NonNullable<_ThreadQueryOptions["with"]>["
 
 // @ts-expect-error Nested relation options are scoped to the target collection
 type _TestRelationalInvalidNestedSelect = NonNullable<_OwnerQueryOptions["select"]>["title"]
+
+type _TestRelationalOmittedSelectResult = Assert<
+	TestIsEqual<
+		RelationalQueryResult<
+			_RelationalQueryTestSchema,
+			_RelationalQueryTestRelations,
+			"threads"
+		>,
+		_RelationalQueryTestSchema["threads"][]
+	>
+>
+type _TestRelationalSingleSelectResult = Assert<
+	TestIsEqual<
+		RelationalQueryResult<
+			_RelationalQueryTestSchema,
+			_RelationalQueryTestRelations,
+			"threads",
+			{ select: { id: true } }
+		>,
+		{ id: string }[]
+	>
+>
+type _TestRelationalMultiSelectResult = Assert<
+	TestIsEqual<
+		RelationalQueryResult<
+			_RelationalQueryTestSchema,
+			_RelationalQueryTestRelations,
+			"threads",
+			{ select: { id: true; title: true } }
+		>,
+		{ id: string; title: string }[]
+	>
+>
+
+// @ts-expect-error Select values must be true
+type _TestRelationalInvalidSelectValue = RelationalQueryResult<_RelationalQueryTestSchema, _RelationalQueryTestRelations, "threads", { select: { id: false } }>
 
 export type ClientId = Tagged<"ClientId", string>
 export type Cookie = Tagged<"Cookie", number | string>
