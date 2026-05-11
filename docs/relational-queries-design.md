@@ -35,9 +35,9 @@ Omitted options are equivalent to `{}`.
 ## Design goals
 
 - Query a collection with `useQuery("collection", { select, where, with, orderBy, limit, offset })`.
-- Include `one` and `many` relations through `with` using the same nested options shape as the root query.
+- Include `many-to-one` and `one-to-many` relations through `with` using the same nested options shape as the root query.
 - Keep the public query shape JSON-serializable so it can be encoded for scan windows and remote sync.
-- Preserve relation cardinality in results: `one` returns object/null, `many` returns array.
+- Preserve relation cardinality in results: `many-to-one` returns object/null, `one-to-many` returns array.
 - Make the final API type-safe against schema fields, relation names, relation targets, and selected result shape.
 
 ## Non-goals for the first relational design
@@ -120,8 +120,8 @@ Rules:
 - Omitted `offset` means `0`.
 - `limit: 0` is valid and returns no rows.
 - Negative, fractional, `NaN`, and infinite values are invalid.
-- On `many` relation includes, `limit` and `offset` apply per parent.
-- On `one` relation includes, `limit` and `offset` are invalid because the relation result is already at most one object.
+- On `one-to-many` relation includes, `limit` and `offset` apply per parent.
+- On `many-to-one` relation includes, `limit` and `offset` are invalid because the relation result is already at most one object.
 
 ### `with`
 
@@ -155,7 +155,7 @@ Rules:
 
 Included relations are embedded under their relation name on each parent row.
 
-`one` relation result:
+`many-to-one` relation result:
 
 ```ts
 type PostWithAuthor = Post & {
@@ -168,9 +168,9 @@ Rules:
 - The key is present when requested.
 - The value is the selected related object when a matching record exists.
 - The value is `null` when the parent join field is missing, the target record is missing, or relation-level `where` filters the target out.
-- A `one` relation never returns an array.
+- A `many-to-one` relation never returns an array.
 
-`many` relation result:
+`one-to-many` relation result:
 
 ```ts
 type ThreadWithMessages = Thread & {
@@ -227,7 +227,7 @@ useQuery("threads", { orderBy: { missingField: "asc" } })
 useQuery("threads", { with: { missingRelation: true } })
 ```
 
-Implementation detail: `defineRelations` must preserve literal relation names, target collections, and `one`/`many` relation kinds. If relation metadata widens too early to `RuntimeRelationsDefinition<Schema>`, `with` and nested result inference will be weakly typed.
+Implementation detail: `defineRelations` must preserve literal relation names, target collections, and `many-to-one`/`one-to-many` relation types. If relation metadata widens too early to `RuntimeRelationsDefinition<Schema>`, `with` and nested result inference will be weakly typed.
 
 ## Server authorization model
 
@@ -262,7 +262,7 @@ With this model, named query registries are optional ergonomics rather than requ
 
 ### Drizzle Relations v2
 
-Drizzle is the closest syntactic inspiration. Its relational reads use an object include tree under `with`, relation keys are embedded on the parent row, `one` relations produce an object or nullable object, and `many` relations produce arrays.
+Drizzle is the closest syntactic inspiration. Its relational reads use an object include tree under `with`, relation keys are embedded on the parent row, many-to-one relations produce an object or nullable object, and one-to-many relations produce arrays.
 
 Drizzle-style query:
 
@@ -384,7 +384,7 @@ This design resolves the README group `Finalize public relational query shape`:
 
 - Object-style query API: `useQuery("threads", { select, where, with, orderBy, limit })`
 - Exact `select`, `where`, `orderBy`, `limit`, and `offset` syntax
-- Relation result shape for `one` vs `many`
+- Relation result shape for `many-to-one` vs `one-to-many`
 
 The next README groups should be specified and implemented separately:
 

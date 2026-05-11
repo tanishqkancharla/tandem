@@ -14,9 +14,9 @@ export type {
 	NamedCollectionDefinition,
 	AnyCollectionDefinition,
 	RuntimeSchemaDefinition,
-	RelationKind,
-	NormalizedOneRelationDefinition,
-	NormalizedManyRelationDefinition,
+	RelationType,
+	NormalizedManyToOneRelationDefinition,
+	NormalizedOneToManyRelationDefinition,
 	NormalizedRelationDefinition,
 	RuntimeRelationsDefinition,
 } from "@tandem/types"

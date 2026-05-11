@@ -5,10 +5,11 @@ import type {
 	AnySchema,
 	CollectionName,
 	CollectionDefinition,
+	NormalizedManyToOneRelationDefinition,
+	NormalizedOneToManyRelationDefinition,
 	NormalizedRelationDefinition,
-	RelationKind,
+	RelationType,
 	RuntimeFieldDefinition,
-	RuntimeRelationsDefinition,
 	RuntimeSchemaDefinition,
 } from "@tandem/types"
 import type { Codec } from "../utils/Codec"
@@ -145,12 +146,12 @@ export function defineSchema<
 }
 
 type RelationRegistration<
-	Kind extends RelationKind = RelationKind,
+	Type extends RelationType = RelationType,
 	TargetCollection extends string = string,
 	From extends string = string,
 	To extends string = string,
 > = {
-	readonly kind: Kind
+	readonly type: Type
 	readonly targetCollection: TargetCollection
 	readonly from: From
 	readonly to: To
@@ -160,13 +161,13 @@ type RelationRegistrations<Schema extends AnySchema> = {
 	readonly [SourceCollection in CollectionName<Schema>]?: {
 		readonly [RelationName in string]?:
 			| RelationRegistration<
-					"one",
+					"many-to-one",
 					CollectionName<Schema>,
 					keyof Schema[SourceCollection] & string,
 					"id"
 				>
 			| RelationRegistration<
-					"many",
+					"one-to-many",
 					CollectionName<Schema>,
 					"id",
 					{
@@ -184,14 +185,63 @@ type RelationBuilderApi<Schema extends AnySchema> = {
 	>(
 		targetCollection: TargetCollection,
 		join: { readonly from: From; readonly to: "id" },
-	) => RelationRegistration<"one", TargetCollection, From, "id">
+	) => RelationRegistration<"many-to-one", TargetCollection, From, "id">
 	many: <
 		const TargetCollection extends CollectionName<Schema>,
 		const To extends keyof Schema[TargetCollection] & string,
 	>(
 		targetCollection: TargetCollection,
 		join: { readonly from: "id"; readonly to: To },
-	) => RelationRegistration<"many", TargetCollection, "id", To>
+	) => RelationRegistration<"one-to-many", TargetCollection, "id", To>
+}
+
+type NormalizeRelationRegistration<
+	Schema extends AnySchema,
+	SourceCollection extends CollectionName<Schema>,
+	RelationName extends string,
+	Relation extends RelationRegistration,
+> = Relation extends RelationRegistration<
+	infer Type,
+	infer TargetCollection,
+	any,
+	any
+>
+	? TargetCollection extends CollectionName<Schema>
+		? Type extends "many-to-one"
+			? NormalizedManyToOneRelationDefinition<
+					Schema,
+					SourceCollection,
+					TargetCollection,
+					RelationName
+				>
+			: Type extends "one-to-many"
+				? NormalizedOneToManyRelationDefinition<
+						Schema,
+						SourceCollection,
+						TargetCollection,
+						RelationName
+					>
+				: never
+		: never
+	: never
+
+type NormalizedRelationsDefinition<
+	Schema extends AnySchema,
+	Relations extends RelationRegistrations<Schema>,
+> = {
+	readonly [SourceCollection in keyof Relations & CollectionName<Schema>]: {
+		readonly [RelationName in keyof NonNullable<
+			Relations[SourceCollection]
+		> &
+			string]: NonNullable<Relations[SourceCollection]>[RelationName] extends RelationRegistration
+			? NormalizeRelationRegistration<
+					Schema,
+					SourceCollection,
+					RelationName,
+					NonNullable<Relations[SourceCollection]>[RelationName]
+				>
+			: never
+	}
 }
 
 type MutableRuntimeRelationsDefinition<Schema extends AnySchema> = {
@@ -221,16 +271,16 @@ export function defineRelations<
 >(
 	schema: RuntimeSchemaDefinition<Schema>,
 	define: (builders: RelationBuilderApi<Schema>) => Relations,
-): RuntimeRelationsDefinition<Schema> {
+): NormalizedRelationsDefinition<Schema, Relations> {
 	const rawRelations = define({
 		one: (targetCollection, join) => ({
-			kind: "one",
+			type: "many-to-one",
 			targetCollection,
 			from: join.from,
 			to: join.to,
 		}),
 		many: (targetCollection, join) => ({
-			kind: "many",
+			type: "one-to-many",
 			targetCollection,
 			from: join.from,
 			to: join.to,
@@ -281,13 +331,13 @@ export function defineRelations<
 				)
 			}
 
-			if (relation.kind === "one" && relation.to !== "id") {
+			if (relation.type === "many-to-one" && relation.to !== "id") {
 				throw new Error(
 					`Relation "${relationPath}" must target the related record id; expected to="id", got to="${relation.to}"`,
 				)
 			}
 
-			if (relation.kind === "many" && relation.from !== "id") {
+			if (relation.type === "one-to-many" && relation.from !== "id") {
 				throw new Error(
 					`Relation "${relationPath}" must start from the source record id; expected from="id", got from="${relation.from}"`,
 				)
@@ -300,7 +350,7 @@ export function defineRelations<
 			}
 
 			normalizedForSource[relationName] = {
-				kind: relation.kind,
+				type: relation.type,
 				name: relationName,
 				sourceCollection,
 				targetCollection: relation.targetCollection,
@@ -312,5 +362,5 @@ export function defineRelations<
 		normalized[sourceCollection] = normalizedForSource
 	}
 
-	return normalized
+	return normalized as NormalizedRelationsDefinition<Schema, Relations>
 }

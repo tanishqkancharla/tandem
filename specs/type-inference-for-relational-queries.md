@@ -12,9 +12,9 @@ Add public TypeScript types for relational query options and result inference, d
 
 - Infer scalar result fields from `select`, with omitted `select` returning all scalar fields.
 - Infer nested `with` results using the same query option shape scoped to each relation target collection.
-- Preserve relation cardinality in result types: `one` relations are selected objects or `null`, and `many` relations are arrays.
+- Preserve relation cardinality in result types: `many-to-one` relations are selected objects or `null`, and `one-to-many` relations are arrays.
 - Reject invalid collection names, selected fields, `where` fields/value types, `orderBy` fields/directions, and relation names at compile time.
-- Make `defineRelations` return first-class relation metadata, not a second schema object, while preserving literal relation names, target collections, and relation kinds strongly enough for nested inference.
+- Make `defineRelations` return first-class relation metadata, not a second schema object, while preserving literal relation names, target collections, and relation types strongly enough for nested inference.
 
 ## Non-goals
 
@@ -45,7 +45,7 @@ Add public TypeScript types for relational query options and result inference, d
 
 ### Phase 1: Split relation metadata from schema values
 
-Change `defineRelations` to return a first-class relations object, following Drizzle's v2 shape conceptually: schema definitions stay as one schema value, and relation metadata is passed alongside the schema instead of producing a second schema-with-relations value. The returned relation metadata must still be the normalized runtime relation map, but its type must preserve each relation name, target collection, and `one`/`many` kind from the caller's object literal.
+Change `defineRelations` to return a first-class relations object, following Drizzle's v2 shape conceptually: schema definitions stay as one schema value, and relation metadata is passed alongside the schema instead of producing a second schema-with-relations value. The returned relation metadata must still be the normalized runtime relation map, but its type must preserve each relation name, target collection, and `many-to-one`/`one-to-many` type from the caller's object literal.
 
 ```ts
 const schema = defineSchema({
@@ -73,7 +73,7 @@ new TandemClient({ schema, relations })
 
 ### Phase 2: Preserve literal relation metadata from `defineRelations`
 
-Type the new standalone relation metadata so each relation keeps its literal `name`, `targetCollection`, and `kind`. This gives query inference a precise relation map without coupling relations to a schema-returning helper.
+Type the new standalone relation metadata so each relation keeps its literal `name`, `targetCollection`, and `type`. This gives query inference a precise relation map without coupling relations to a schema-returning helper.
 
 ```ts
 const relations = defineRelations(schema, ({ one, many }) => ({
@@ -84,13 +84,13 @@ const relations = defineRelations(schema, ({ one, many }) => ({
 }))
 
 type OwnerTarget = typeof relations.threads.owner.targetCollection // "users"
-type MessagesKind = typeof relations.threads.messages.kind // "many"
+type MessagesType = typeof relations.threads.messages.type // "one-to-many"
 ```
 
-- [ ] Introduce or adjust relation helper types so `typeof relations.threads.owner` preserves `name: "owner"`, `targetCollection: "users"`, and `kind: "one"`.
-- [ ] Keep runtime normalization unchanged: relation values still include `kind`, `name`, `sourceCollection`, `targetCollection`, `from`, and `to`.
-- [ ] Add compile-time assertions that relation names and relation kinds are not widened to `string`/`RelationKind`.
-- [ ] Verify `pnpm --filter @tandem/types type-check` and `pnpm --filter @tandem/core type-check` pass.
+- [x] Introduce or adjust relation helper types so `typeof relations.threads.owner` preserves `name: "owner"`, `targetCollection: "users"`, and `type: "many-to-one"`.
+- [x] Keep runtime normalization unchanged except for renaming relation `kind` to `type`: relation values still include `type`, `name`, `sourceCollection`, `targetCollection`, `from`, and `to`.
+- [x] Add compile-time assertions that relation names and relation types are not widened to `string`/`RelationType`.
+- [x] Verify `pnpm --filter @tandem/types type-check` and `pnpm --filter @tandem/core type-check` pass.
 
 ### Phase 3: Add schema-scoped relational query option types
 
@@ -141,7 +141,7 @@ type ThreadTitleRows = RelationalQueryResult<
 
 ### Phase 5: Add nested relation result inference and cardinality
 
-Merge requested `with` keys into each parent row using the nested relation result type. A `one` relation returns the selected target object or `null`; a `many` relation returns an array of selected target objects, even when `limit: 1` is present.
+Merge requested `with` keys into each parent row using the nested relation result type. A `many-to-one` relation returns the selected target object or `null`; a `one-to-many` relation returns an array of selected target objects, even when `limit: 1` is present.
 
 ```ts
 type ThreadRows = RelationalQueryResult<
@@ -161,9 +161,9 @@ type ThreadRows = RelationalQueryResult<
 
 - [ ] Infer `with: { relation: true }` as all scalar fields from the target collection.
 - [ ] Infer `with: { relation: { select, where, with, orderBy, limit, offset } }` recursively using the target collection.
-- [ ] Preserve `one` cardinality as `NestedRow | null`.
-- [ ] Preserve `many` cardinality as `NestedRow[]`, including when `limit: 1` is specified.
-- [ ] Add nested `Assert<TestIsEqual<...>>` coverage for one relation, many relation, and at least one two-level nested `with` query.
+- [ ] Preserve `many-to-one` cardinality as `NestedRow | null`.
+- [ ] Preserve `one-to-many` cardinality as `NestedRow[]`, including when `limit: 1` is specified.
+- [ ] Add nested `Assert<TestIsEqual<...>>` coverage for many-to-one relation, one-to-many relation, and at least one two-level nested `with` query.
 - [ ] Add `@ts-expect-error` coverage for selecting target-collection fields from the wrong nested scope and for unknown nested relation names.
 
 ### Phase 6: Thread types through public client/query surfaces without changing runtime behavior

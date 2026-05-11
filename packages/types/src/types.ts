@@ -59,15 +59,15 @@ export type RuntimeSchemaDefinition<Schema extends AnySchema = AnySchema> = {
 	}
 }
 
-export type RelationKind = "one" | "many"
+export type RelationType = "many-to-one" | "one-to-many"
 
-export type NormalizedOneRelationDefinition<
+export type NormalizedManyToOneRelationDefinition<
 	Schema extends AnySchema = AnySchema,
 	SourceCollection extends CollectionName<Schema> = CollectionName<Schema>,
 	TargetCollection extends CollectionName<Schema> = CollectionName<Schema>,
 	RelationName extends string = string,
 > = {
-	readonly kind: "one"
+	readonly type: "many-to-one"
 	readonly name: RelationName
 	readonly sourceCollection: SourceCollection
 	readonly targetCollection: TargetCollection
@@ -75,13 +75,13 @@ export type NormalizedOneRelationDefinition<
 	readonly to: "id"
 }
 
-export type NormalizedManyRelationDefinition<
+export type NormalizedOneToManyRelationDefinition<
 	Schema extends AnySchema = AnySchema,
 	SourceCollection extends CollectionName<Schema> = CollectionName<Schema>,
 	TargetCollection extends CollectionName<Schema> = CollectionName<Schema>,
 	RelationName extends string = string,
 > = {
-	readonly kind: "many"
+	readonly type: "one-to-many"
 	readonly name: RelationName
 	readonly sourceCollection: SourceCollection
 	readonly targetCollection: TargetCollection
@@ -95,13 +95,13 @@ export type NormalizedRelationDefinition<
 	TargetCollection extends CollectionName<Schema> = CollectionName<Schema>,
 	RelationName extends string = string,
 > =
-	| NormalizedOneRelationDefinition<
+	| NormalizedManyToOneRelationDefinition<
 			Schema,
 			SourceCollection,
 			TargetCollection,
 			RelationName
 		>
-	| NormalizedManyRelationDefinition<
+	| NormalizedOneToManyRelationDefinition<
 			Schema,
 			SourceCollection,
 			TargetCollection,

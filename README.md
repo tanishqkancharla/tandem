@@ -44,19 +44,19 @@ A sync engine and database for building collaborative apps.
     - Design: `docs/relational-queries-design.md`
     - [ ] Object-style query API: `useQuery("threads", { select, where, with, orderBy, limit })`
     - [ ] Decide exact `select`, `where`, `orderBy`, `limit`, and `offset` syntax
-    - [ ] Decide relation result shape for `one` vs `many`
+    - [ ] Decide relation result shape for `many-to-one` vs `one-to-many`
   - [ ] Type inference for relational queries
     - Spec: `specs/type-inference-for-relational-queries.md`
     - [ ] Infer selected scalar fields
     - [ ] Infer nested `with` results
-    - [ ] Preserve relation cardinality: `one` as object/null, `many` as array/collection
+    - [ ] Preserve relation cardinality: `many-to-one` as object/null, `one-to-many` as array/collection
     - [ ] Validate relation names and selected fields at compile time
   - [ ] Encode relational queries
     - [ ] Extend `EncodedQuery` with an include/with tree
     - [ ] Encode nested relation options: `select`, `where`, `order`, and `limit`
     - [ ] Keep flat query encoding compatible with the current query execution path, or replace it cleanly
   - [ ] Execute relational queries locally
-    - [ ] Teach `Database.runQuery` to resolve `one` and `many` relations from schema metadata
+    - [ ] Teach `Database.runQuery` to resolve `many-to-one` and `one-to-many` relations from schema metadata
     - [ ] Support nested includes
     - [ ] Support per-relation `where`, `orderBy`, and `limit`
     - [ ] Ensure parent `select` can omit fields needed internally for relation joins
@@ -72,8 +72,8 @@ A sync engine and database for building collaborative apps.
   - [ ] Tests and examples
     - [ ] Thread list with last message
     - [ ] Thread detail query
-    - [ ] `one` relation example, e.g. task → patient
-    - [ ] `many` relation example, e.g. thread → messages
+    - [ ] `many-to-one` relation example, e.g. task → patient
+    - [ ] `one-to-many` relation example, e.g. thread → messages
     - [ ] Nested relation example
     - [ ] Local run, local subscribe, and remote sync coverage
 - [ ] Create a server module
