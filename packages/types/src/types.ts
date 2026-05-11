@@ -128,6 +128,185 @@ export type AnySchema = Record<string, AnyCollectionSchema>
 
 export type CollectionName<Schema extends AnySchema> = keyof Schema & string
 
+export type FieldWhereOperators<Value> = {
+	readonly eq?: Value
+	readonly gt?: Value
+	readonly lt?: Value
+	readonly gte?: Value
+	readonly lte?: Value
+}
+
+export type RelationalSelectOptions<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+> = {
+	readonly [Field in keyof Schema[Collection] & string]?: true
+}
+
+export type RelationalWhereOptions<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+> = {
+	readonly [Field in keyof Schema[Collection] & string]?:
+		| Schema[Collection][Field]
+		| FieldWhereOperators<Schema[Collection][Field]>
+}
+
+export type RelationalOrderByOptions<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+> = {
+	readonly [Field in keyof Schema[Collection] & string]?: "asc" | "desc"
+}
+
+type RelationTargetCollection<Relation> = Relation extends {
+	readonly targetCollection: infer TargetCollection
+}
+	? TargetCollection
+	: never
+
+export type RelationalWithOptions<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+	Collection extends CollectionName<Schema>,
+> = {
+	readonly [RelationName in keyof NonNullable<
+		Relations[Collection]
+	> &
+		string]?:
+		| true
+		| RelationalQueryOptions<
+				Schema,
+				Relations,
+				RelationTargetCollection<
+					NonNullable<Relations[Collection]>[RelationName]
+				> &
+					CollectionName<Schema>
+			>
+}
+
+export type RelationalQueryOptions<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+	Collection extends CollectionName<Schema>,
+> = {
+	readonly select?: RelationalSelectOptions<Schema, Collection>
+	readonly where?: RelationalWhereOptions<Schema, Collection>
+	readonly with?: RelationalWithOptions<Schema, Relations, Collection>
+	readonly orderBy?: RelationalOrderByOptions<Schema, Collection>
+	readonly limit?: number
+	readonly offset?: number
+}
+
+type _RelationalQueryTestSchema = {
+	users: { id: string; name: string }
+	threads: { id: string; ownerId: string; title: string; status: string }
+	messages: { id: string; threadId: string; body: string; createdAt: number }
+}
+
+type _RelationalQueryTestRelations = {
+	readonly threads: {
+		readonly owner: NormalizedManyToOneRelationDefinition<
+			_RelationalQueryTestSchema,
+			"threads",
+			"users",
+			"owner"
+		>
+		readonly messages: NormalizedOneToManyRelationDefinition<
+			_RelationalQueryTestSchema,
+			"threads",
+			"messages",
+			"messages"
+		>
+	}
+	readonly messages: {
+		readonly thread: NormalizedManyToOneRelationDefinition<
+			_RelationalQueryTestSchema,
+			"messages",
+			"threads",
+			"thread"
+		>
+	}
+}
+
+type _ThreadQueryOptions = RelationalQueryOptions<
+	_RelationalQueryTestSchema,
+	_RelationalQueryTestRelations,
+	"threads"
+>
+
+type _AssertExtends<_A extends _B, _B> = void
+
+type _TestRelationalSelectFields = _AssertExtends<
+	keyof NonNullable<_ThreadQueryOptions["select"]>,
+	"id" | "ownerId" | "title" | "status"
+>
+type _TestRelationalSelectFieldsReverse = _AssertExtends<
+	"id" | "ownerId" | "title" | "status",
+	keyof NonNullable<_ThreadQueryOptions["select"]>
+>
+type _TestRelationalWhereValue = _AssertExtends<
+	NonNullable<_ThreadQueryOptions["where"]>["status"],
+	string | FieldWhereOperators<string> | undefined
+>
+type _TestRelationalWhereValueReverse = _AssertExtends<
+	string | FieldWhereOperators<string> | undefined,
+	NonNullable<_ThreadQueryOptions["where"]>["status"]
+>
+type _TestRelationalOrderByValue = _AssertExtends<
+	NonNullable<_ThreadQueryOptions["orderBy"]>["title"],
+	"asc" | "desc" | undefined
+>
+type _TestRelationalOrderByValueReverse = _AssertExtends<
+	"asc" | "desc" | undefined,
+	NonNullable<_ThreadQueryOptions["orderBy"]>["title"]
+>
+type _TestRelationalWithRelations = _AssertExtends<
+	keyof NonNullable<_ThreadQueryOptions["with"]>,
+	"owner" | "messages"
+>
+type _TestRelationalWithRelationsReverse = _AssertExtends<
+	"owner" | "messages",
+	keyof NonNullable<_ThreadQueryOptions["with"]>
+>
+
+type _OwnerQueryOptions = Exclude<
+	NonNullable<_ThreadQueryOptions["with"]>["owner"],
+	true | undefined
+>
+type _TestNestedWithScopesToTargetCollection = _AssertExtends<
+	keyof NonNullable<_OwnerQueryOptions["select"]>,
+	"id" | "name"
+>
+type _TestNestedWithScopesToTargetCollectionReverse = _AssertExtends<
+	"id" | "name",
+	keyof NonNullable<_OwnerQueryOptions["select"]>
+>
+
+// @ts-expect-error Root collections must exist on the schema
+type _TestRelationalInvalidCollection = RelationalQueryOptions<_RelationalQueryTestSchema, _RelationalQueryTestRelations, "missing">
+
+// @ts-expect-error Selected fields must exist on the current collection
+type _TestRelationalInvalidSelectField = NonNullable<_ThreadQueryOptions["select"]>["missingField"]
+
+// @ts-expect-error Where fields must exist on the current collection
+type _TestRelationalInvalidWhereField = NonNullable<_ThreadQueryOptions["where"]>["missingField"]
+
+// @ts-expect-error Where equality values must match the field type
+type _TestRelationalInvalidWhereValue = _AssertExtends<123, NonNullable<_ThreadQueryOptions["where"]>["status"]>
+
+// @ts-expect-error Order fields must exist on the current collection
+type _TestRelationalInvalidOrderByField = NonNullable<_ThreadQueryOptions["orderBy"]>["missingField"]
+
+// @ts-expect-error Order directions must be asc or desc
+type _TestRelationalInvalidOrderByValue = _AssertExtends<"up", NonNullable<_ThreadQueryOptions["orderBy"]>["title"]>
+
+// @ts-expect-error Relation names must exist on the current collection
+type _TestRelationalInvalidRelation = NonNullable<_ThreadQueryOptions["with"]>["missingRelation"]
+
+// @ts-expect-error Nested relation options are scoped to the target collection
+type _TestRelationalInvalidNestedSelect = NonNullable<_OwnerQueryOptions["select"]>["title"]
+
 export type ClientId = Tagged<"ClientId", string>
 export type Cookie = Tagged<"Cookie", number | string>
 

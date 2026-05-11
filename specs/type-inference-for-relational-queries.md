@@ -111,13 +111,13 @@ type RelationalQueryOptions<Schema, Relations, Collection> = {
 }
 ```
 
-- [ ] Export a query-options type from the public types package that is parameterized by schema, relation metadata, and collection name.
-- [ ] Ensure root collection names are constrained to `CollectionName<Schema>`.
-- [ ] Ensure `select`, `where`, and `orderBy` only accept scalar fields on the current collection; relation names are only valid under `with`.
-- [ ] Ensure `where` equality shorthand values are assignable to the selected field type and operator objects support `eq`, `gt`, `lt`, `gte`, and `lte`.
-- [ ] Ensure `orderBy` values are only `"asc" | "desc"`.
-- [ ] Ensure nested `with` option objects are scoped to each relation's `targetCollection`.
-- [ ] Use `@ts-expect-error` type tests for invalid collection names, fields, value types, order directions, and relation names.
+- [x] Export a query-options type from the public types package that is parameterized by schema, relation metadata, and collection name.
+- [x] Ensure root collection names are constrained to `CollectionName<Schema>`.
+- [x] Ensure `select`, `where`, and `orderBy` only accept scalar fields on the current collection; relation names are only valid under `with`.
+- [x] Ensure `where` equality shorthand values are assignable to the selected field type and operator objects support `eq`, `gt`, `lt`, `gte`, and `lte`.
+- [x] Ensure `orderBy` values are only `"asc" | "desc"`.
+- [x] Ensure nested `with` option objects are scoped to each relation's `targetCollection`.
+- [x] Use `@ts-expect-error` type tests for invalid collection names, fields, value types, order directions, and relation names.
 
 ### Phase 4: Add selected scalar result inference
 
