@@ -19,6 +19,14 @@ export type {
 	NormalizedOneToManyRelationDefinition,
 	NormalizedRelationDefinition,
 	RuntimeRelationsDefinition,
+	FieldWhereOperators,
+	RelationalSelectOptions,
+	RelationalWhereOptions,
+	RelationalOrderByOptions,
+	RelationalWithOptions,
+	RelationalQueryOptions,
+	RelationalQueryRow,
+	RelationalQueryResult,
 } from "@tandem/types"
 export { type LoggerApi, ConsoleLogger, rootLogger } from "./utils/Logger"
 export {

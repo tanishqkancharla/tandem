@@ -180,8 +180,8 @@ type ThreadsResult = RelationalQueryResult<
 >
 ```
 
-- [ ] Re-export the public option/result types from `@tandem/types` and `@tandem/core` as appropriate.
-- [ ] Avoid accepting object-style relational queries at runtime unless they intentionally throw or remain type-only; execution belongs to a later spec.
-- [ ] Keep existing flat `QueryBuilder` behavior compiling while the object query API is phased in.
-- [ ] Verify `pnpm type-check` passes.
-- [ ] Verify existing `pnpm --filter @tandem/core test` passes.
+- [x] Re-export the public option/result types from `@tandem/types` and `@tandem/core` as appropriate.
+- [x] Avoid accepting object-style relational queries at runtime unless they intentionally throw or remain type-only; execution belongs to a later spec.
+- [x] Keep existing flat `QueryBuilder` behavior compiling while the object query API is phased in.
+- [x] Verify `pnpm type-check` passes.
+- [x] Verify existing `pnpm --filter @tandem/core test` passes.

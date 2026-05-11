@@ -45,12 +45,12 @@ A sync engine and database for building collaborative apps.
     - [ ] Object-style query API: `useQuery("threads", { select, where, with, orderBy, limit })`
     - [ ] Decide exact `select`, `where`, `orderBy`, `limit`, and `offset` syntax
     - [ ] Decide relation result shape for `many-to-one` vs `one-to-many`
-  - [ ] Type inference for relational queries
+  - [x] Type inference for relational queries
     - Spec: `specs/type-inference-for-relational-queries.md`
-    - [ ] Infer selected scalar fields
-    - [ ] Infer nested `with` results
-    - [ ] Preserve relation cardinality: `many-to-one` as object/null, `one-to-many` as array/collection
-    - [ ] Validate relation names and selected fields at compile time
+    - [x] Infer selected scalar fields
+    - [x] Infer nested `with` results
+    - [x] Preserve relation cardinality: `many-to-one` as object/null, `one-to-many` as array/collection
+    - [x] Validate relation names and selected fields at compile time
   - [ ] Encode relational queries
     - [ ] Extend `EncodedQuery` with an include/with tree
     - [ ] Encode nested relation options: `select`, `where`, `order`, and `limit`
