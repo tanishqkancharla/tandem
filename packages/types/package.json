@@ -14,7 +14,7 @@
 	],
 	"scripts": {
 		"build": "tsc",
-		"type-check": "tsc --noEmit",
+		"type-check": "tsgo --noEmit",
 		"lint": "eslint src --fix && tsc --noEmit"
 	},
 	"dependencies": {

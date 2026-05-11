@@ -1,7 +1,8 @@
 {
 	"compilerOptions": {
 		"target": "esnext",
-		"moduleResolution": "node",
+		"module": "esnext",
+		"moduleResolution": "bundler",
 		"esModuleInterop": true,
 		"allowSyntheticDefaultImports": true,
 		"removeComments": false,
@@ -24,9 +25,6 @@
 		},
 		{
 			"path": "./packages/core/tsconfig.test.json"
-		},
-		{
-			"path": "./packages/client"
 		},
 		{
 			"path": "./packages/testing"

@@ -169,7 +169,10 @@ type RelationRegistrations<Schema extends AnySchema> = {
 					"many",
 					CollectionName<Schema>,
 					"id",
-					keyof Schema[CollectionName<Schema>] & string
+					{
+						[Collection in CollectionName<Schema>]: keyof Schema[Collection]
+					}[CollectionName<Schema>] &
+						string
 				>
 	}
 }

@@ -3,5 +3,6 @@ dist/
 .parcel-cache
 /.kosho**
 **/*.turbo
+*.tsbuildinfo
 packages/core/test/logs/
 tmp/

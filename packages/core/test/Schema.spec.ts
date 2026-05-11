@@ -64,6 +64,7 @@ describe("runtime schema relations", () => {
 		expect(() =>
 			defineRelations(makeSchema(), ({ one }) => ({
 				posts: {
+					// @ts-expect-error Invalid source field intentionally exercises runtime validation
 					author: one("users", { from: "missingAuthorId", to: "id" }),
 				},
 			})),
