@@ -627,16 +627,31 @@ export type InvertibleMutation<Schema extends AnySchema> = {
 	id: MutationId
 }
 
-export type EncodedQuery<Schema extends AnySchema> = {
-	collection: keyof Schema & string
-	select?: readonly (Attribute<Schema> & string)[] | "*"
-	where?: [
-		attribute: Attribute<Schema>,
+export type EncodedWhereClause<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+> = {
+	[Field in keyof Schema[Collection] & string]: [
+		attribute: Field,
 		operator: Operator,
-		operand: Attribute<Schema>,
+		value: Schema[Collection][Field],
+	]
+}[keyof Schema[Collection] & string]
+
+export type EncodedQuery<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema> = CollectionName<Schema>,
+> = {
+	collection: Collection
+	select?: readonly (keyof Schema[Collection] & string)[] | "*"
+	where?: EncodedWhereClause<Schema, Collection>[]
+	order?: [
+		attribute: keyof Schema[Collection] & string,
+		direction: "asc" | "desc",
 	][]
-	order?: [attribute: Attribute<Schema>, direction: "asc" | "desc"][]
 	limit?: number
+	offset?: number
+	with?: Record<string, EncodedQuery<Schema>>
 }
 
 export type Operator = "=" | ">" | "<" | ">=" | "<="

@@ -180,17 +180,18 @@ export class Database<Schema extends AnySchema> {
 			results = results.filter((value) => {
 				return where.every(([attribute, operator, valueToTestAgainst]) => {
 					const fieldValue = value[attribute]
+					const comparisonValue = valueToTestAgainst as any
 					switch (operator) {
 						case "=":
-							return isEqual(fieldValue, valueToTestAgainst)
+							return isEqual(fieldValue, comparisonValue)
 						case ">":
-							return fieldValue > valueToTestAgainst
+							return fieldValue > comparisonValue
 						case "<":
-							return fieldValue < valueToTestAgainst
+							return fieldValue < comparisonValue
 						case ">=":
-							return fieldValue >= valueToTestAgainst
+							return fieldValue >= comparisonValue
 						case "<=":
-							return fieldValue <= valueToTestAgainst
+							return fieldValue <= comparisonValue
 						default:
 							unreachable(operator)
 					}

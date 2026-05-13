@@ -51,10 +51,10 @@ A sync engine and database for building collaborative apps.
     - [x] Infer nested `with` results
     - [x] Preserve relation cardinality: `many-to-one` as object/null, `one-to-many` as array/collection
     - [x] Validate relation names and selected fields at compile time
-  - [ ] Encode relational queries
-    - [ ] Extend `EncodedQuery` with an include/with tree
-    - [ ] Encode nested relation options: `select`, `where`, `order`, and `limit`
-    - [ ] Keep flat query encoding compatible with the current query execution path, or replace it cleanly
+  - [x] Encode relational queries
+    - [x] Extend `EncodedQuery` with an include/with tree
+    - [x] Encode nested relation options: `select`, `where`, `order`, and `limit`
+    - [x] Keep flat query encoding compatible with the current query execution path, or replace it cleanly
   - [ ] Execute relational queries locally
     - [ ] Teach `Database.runQuery` to resolve `many-to-one` and `one-to-many` relations from schema metadata
     - [ ] Support nested includes

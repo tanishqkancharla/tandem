@@ -39,6 +39,7 @@ export {
 	type MutationId,
 	type Mutation,
 	type InvertibleMutation,
+	type EncodedWhereClause,
 	type EncodedQuery,
 	type Operator,
 	MutationApi,

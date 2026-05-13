@@ -27,6 +27,8 @@ export type {
 	RelationalQueryOptions,
 	RelationalQueryRow,
 	RelationalQueryResult,
+	EncodedWhereClause,
+	EncodedQuery,
 } from "@tandem/types"
 export { type LoggerApi, ConsoleLogger, rootLogger } from "./utils/Logger"
 export {
@@ -53,5 +55,5 @@ export {
 	tag,
 	untag,
 	type Unsubscribe,
-	type AsyncUnsubscribe
+	type AsyncUnsubscribe,
 } from "./utils/typeUtils"
