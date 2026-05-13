@@ -13,7 +13,10 @@ import { Transaction } from "./transaction/Transaction"
 import {
 	AnySchema,
 	CollectionName,
+	FieldWhereOperators,
 	RngApi,
+	RelationalQueryOptions,
+	RelationalQueryResult,
 	RuntimeRelationsDefinition,
 	RuntimeSchemaDefinition,
 	StorageApi,
@@ -25,15 +28,21 @@ import { ThrottleQueue } from "./utils/ThrottleQueue"
 import { Timer } from "./utils/Timer"
 import { unreachable } from "./utils/typeUtils"
 
-type DatabaseArgs<Schema extends AnySchema> = {
+type DatabaseArgs<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+> = {
 	schema?: RuntimeSchemaDefinition<Schema>
-	relations?: RuntimeRelationsDefinition<Schema>
+	relations?: Relations
 	storage?: StorageApi
 	logger: LoggerApi
 	rng: RngApi
 }
 
-export class Database<Schema extends AnySchema> {
+export class Database<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema> = RuntimeRelationsDefinition<Schema>,
+> {
 	private readonly tupleDb: TupleDatabaseClient = new TupleDatabaseClient(
 		new TupleDatabase(new InMemoryTupleStorage()),
 	)
@@ -42,7 +51,7 @@ export class Database<Schema extends AnySchema> {
 	private readonly logger: LoggerApi
 	private readonly rng: RngApi
 	readonly schema?: RuntimeSchemaDefinition<Schema>
-	readonly relations?: RuntimeRelationsDefinition<Schema>
+	readonly relations?: Relations
 	private storageWriteQueue?: ThrottleQueue
 	readonly ready: Promise<void>
 
@@ -52,7 +61,7 @@ export class Database<Schema extends AnySchema> {
 		relations,
 		storage: storageAdapter,
 		rng,
-	}: DatabaseArgs<Schema>) {
+	}: DatabaseArgs<Schema, Relations>) {
 		this.logger = logger
 		this.schema = schema
 		this.relations = relations
@@ -159,8 +168,175 @@ export class Database<Schema extends AnySchema> {
 	run<
 		Collection extends CollectionName<Schema>,
 		Query extends QueryBuilder<Schema, Collection>,
-	>(query: Query): QueryResults<Query> {
+	>(query: Query): QueryResults<Query>
+	run<
+		Collection extends CollectionName<Schema>,
+		Options extends RelationalQueryOptions<Schema, Relations, Collection>,
+	>(
+		collection: Collection,
+		options?: Options,
+	): RelationalQueryResult<Schema, Relations, Collection, Options>
+	run<
+		Collection extends CollectionName<Schema>,
+		Query extends QueryBuilder<Schema, Collection>,
+		Options extends RelationalQueryOptions<Schema, Relations, Collection>,
+	>(
+		queryOrCollection: Query | Collection,
+		options?: Options,
+	): QueryResults<Query> | RelationalQueryResult<Schema, Relations, Collection, Options> {
+		if (typeof queryOrCollection === "string") {
+			return this.runRelationalQuery(queryOrCollection, options ?? ({} as Options))
+		}
+
+		const query = queryOrCollection
 		return Database.runQuery(query, this.tupleDb)
+	}
+
+	private runRelationalQuery<
+		Collection extends CollectionName<Schema>,
+		Options extends RelationalQueryOptions<Schema, Relations, Collection>,
+	>(
+		collection: Collection,
+		options: Options,
+		extraFilter?: (record: Schema[Collection]) => boolean,
+	): RelationalQueryResult<Schema, Relations, Collection, Options> {
+		const rows = this.getRelationalRows(collection, options, extraFilter)
+		return rows.map((row) =>
+			this.expandRelationalRow(collection, row, options),
+		) as RelationalQueryResult<Schema, Relations, Collection, Options>
+	}
+
+	private getRelationalRows<Collection extends CollectionName<Schema>>(
+		collection: Collection,
+		options: RelationalQueryOptions<Schema, Relations, Collection>,
+		extraFilter?: (record: Schema[Collection]) => boolean,
+	): Schema[Collection][] {
+		let results = this.tupleDb
+			.scan({
+				gte: ["record", collection, null],
+				lte: ["record", collection, true],
+			})
+			.map(({ value }) => value) as Schema[Collection][]
+
+		if (extraFilter) {
+			results = results.filter(extraFilter)
+		}
+
+		if (options.where) {
+			results = results.filter((record) =>
+				Object.entries(options.where ?? {}).every(([field, condition]) =>
+					this.matchesRelationalWhere(record, field, condition),
+				),
+			)
+		}
+
+		if (options.orderBy) {
+			results = sortBy(
+				results,
+				...Object.entries(options.orderBy).flatMap(([field, direction]) =>
+					direction
+						? [[(item: any) => item[field], direction] as const]
+						: [],
+				),
+			)
+		}
+
+		if (options.offset !== undefined) {
+			results = results.slice(options.offset)
+		}
+
+		if (options.limit !== undefined) {
+			results = results.slice(0, options.limit)
+		}
+
+		return results
+	}
+
+	private matchesRelationalWhere(
+		record: Record<string, any>,
+		field: string,
+		condition: unknown,
+	): boolean {
+		const fieldValue = record[field]
+
+		if (
+			typeof condition === "object" &&
+			condition !== null &&
+			!Array.isArray(condition)
+		) {
+			return Object.entries(condition as FieldWhereOperators<unknown>).every(
+				([operator, value]) =>
+					this.compareRelationalValue(fieldValue, operator, value),
+			)
+		}
+
+		return isEqual(fieldValue, condition)
+	}
+
+	private compareRelationalValue(
+		fieldValue: any,
+		operator: string,
+		comparisonValue: any,
+	): boolean {
+		switch (operator) {
+			case "eq":
+				return isEqual(fieldValue, comparisonValue)
+			case "gt":
+				return fieldValue > comparisonValue
+			case "lt":
+				return fieldValue < comparisonValue
+			case "gte":
+				return fieldValue >= comparisonValue
+			case "lte":
+				return fieldValue <= comparisonValue
+			default:
+				throw new Error(`Unknown where operator "${operator}"`)
+		}
+	}
+
+	private expandRelationalRow<Collection extends CollectionName<Schema>>(
+		collection: Collection,
+		row: Schema[Collection],
+		options: RelationalQueryOptions<Schema, Relations, Collection>,
+	): Record<string, any> {
+		const result: Record<string, any> = options.select
+			? pick(row, Object.keys(options.select))
+			: { ...row }
+
+		if (!options.with) return result
+
+		if (!this.relations) {
+			throw new Error("Cannot execute relational query includes without relations")
+		}
+
+		for (const [relationName, includeOptions] of Object.entries(options.with)) {
+			const relation = this.relations[collection]?.[relationName]
+			if (!relation) {
+				throw new Error(`Unknown relation "${collection}.${relationName}"`)
+			}
+
+			const targetCollection = relation.targetCollection
+			const nestedOptions = includeOptions === true ? {} : (includeOptions as any)
+
+			if (relation.type === "many-to-one") {
+				const joinValue = row[relation.from]
+				result[relationName] =
+					this.runRelationalQuery(
+						targetCollection,
+						nestedOptions,
+						(target) => target[relation.to] === joinValue,
+					)[0] ?? null
+			} else {
+				const joinValue = row[relation.from]
+				result[relationName] = this.runRelationalQuery(
+					targetCollection,
+					nestedOptions,
+					(target) => target[relation.to] === joinValue,
+				)
+			}
+		}
+
+		return result
 	}
 
 	private static runQuery<Query extends QueryBuilder<any, any>>(

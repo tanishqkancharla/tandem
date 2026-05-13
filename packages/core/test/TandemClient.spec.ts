@@ -8,7 +8,7 @@ import {
 } from "./fixtures"
 import { RemoteApi } from "@tandem/types"
 import { TandemClient } from "../src/TandemClient"
-import { collection, defineSchema } from "../src/schema/Schema"
+import { collection, defineRelations, defineSchema } from "../src/schema/Schema"
 import { IndexedDbTupleStorage } from "../src/storage/IndexedDbAdapter"
 import { codec } from "../src/utils/Codec"
 
@@ -35,6 +35,51 @@ type TestsEventSchema = {
 type TestsEventStorageSchema = {
 	events: TestsEventStorageValue
 }
+
+type ThreadTestUser = {
+	id: string
+	name: string
+}
+
+type ThreadTestThread = {
+	id: string
+	ownerId: string
+	title: string
+	status: "active" | "archived"
+}
+
+type ThreadTestMessage = {
+	id: string
+	threadId: string
+	body: string
+	createdAt: number
+}
+
+type ThreadTestSchema = {
+	users: ThreadTestUser
+	threads: ThreadTestThread
+	messages: ThreadTestMessage
+}
+
+const threadTestSchema = defineSchema({
+	users: collection<ThreadTestUser>({ fields: ["id", "name"] }),
+	threads: collection<ThreadTestThread>({
+		fields: ["id", "ownerId", "title", "status"],
+	}),
+	messages: collection<ThreadTestMessage>({
+		fields: ["id", "threadId", "body", "createdAt"],
+	}),
+})
+
+const threadTestRelations = defineRelations(
+	threadTestSchema,
+	({ one, many }) => ({
+		threads: {
+			owner: one("users", { from: "ownerId", to: "id" }),
+			messages: many("messages", { from: "id", to: "threadId" }),
+		},
+	}),
+)
 
 const eventCodec = codec<TestsEvent, TestsEventStorageValue>(
 	"event",
@@ -147,6 +192,78 @@ describe("TandemClient", () => {
 			{ id: "todo-3", text: "Fix the sync bug" },
 			{ id: "todo-1", text: "Write the sync spec" },
 		])
+	})
+
+	test("runs relational object queries locally", async ({ logger, rng }) => {
+		const client = new TandemClient<ThreadTestSchema, typeof threadTestRelations>({
+			schema: threadTestSchema,
+			relations: threadTestRelations,
+			remote: undefined,
+			logger,
+			rng: rng.create("thread-client"),
+		})
+
+		// Seed users, threads, and messages related by many-to-one and one-to-many joins
+		const tx = client.transact()
+		tx.set("users", { id: "user-1", name: "Ada" })
+		tx.set("users", { id: "user-2", name: "Grace" })
+		tx.set("threads", {
+			id: "thread-1",
+			ownerId: "user-1",
+			title: "Active thread",
+			status: "active",
+		})
+		tx.set("threads", {
+			id: "thread-2",
+			ownerId: "missing-user",
+			title: "Archived thread",
+			status: "archived",
+		})
+		tx.set("messages", {
+			id: "message-1",
+			threadId: "thread-1",
+			body: "Older message",
+			createdAt: 1,
+		})
+		tx.set("messages", {
+			id: "message-2",
+			threadId: "thread-1",
+			body: "Newest message",
+			createdAt: 2,
+		})
+		await client.commit(tx)
+
+		// Query options filter/project parent rows while included relations resolve from omitted join fields
+		const activeThreads = client.run("threads", {
+			select: { id: true, title: true },
+			where: { status: "active" },
+			with: {
+				owner: { select: { name: true } },
+				messages: {
+					select: { body: true },
+					orderBy: { createdAt: "desc" },
+					limit: 1,
+				},
+			},
+		})
+
+		expect(activeThreads).toEqual([
+			{
+				id: "thread-1",
+				title: "Active thread",
+				owner: { name: "Ada" },
+				messages: [{ body: "Newest message" }],
+			},
+		])
+
+		// Missing many-to-one targets are returned as null, not arrays or omitted keys
+		const archivedThreads = client.run("threads", {
+			select: { id: true },
+			where: { status: "archived" },
+			with: { owner: { select: { name: true } } },
+		})
+
+		expect(archivedThreads).toEqual([{ id: "thread-2", owner: null }])
 	})
 
 	test("keeps subscribed query results live until the caller unsubscribes", async ({

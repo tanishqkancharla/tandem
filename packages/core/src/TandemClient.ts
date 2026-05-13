@@ -12,6 +12,8 @@ import {
 	Patch,
 	PatchApi,
 	RemoteApi,
+	RelationalQueryOptions,
+	RelationalQueryResult,
 	RngApi,
 	RuntimeRelationsDefinition,
 	RuntimeSchemaDefinition,
@@ -22,9 +24,12 @@ import { ConsoleLogger, LoggerApi } from "./utils/Logger"
 import { randomId } from "./utils/randomId"
 import { Timer } from "./utils/Timer"
 
-type TandemClientArgs<Schema extends AnySchema> = {
+type TandemClientArgs<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+> = {
 	schema?: RuntimeSchemaDefinition<Schema>
-	relations?: RuntimeRelationsDefinition<Schema>
+	relations?: Relations
 	storage?: StorageApi
 	remote?: RemoteApi<Schema>
 	logger?: LoggerApi
@@ -37,8 +42,11 @@ type TandemClientArgs<Schema extends AnySchema> = {
 	syncInterval?: number
 }
 
-export class TandemClient<Schema extends AnySchema> {
-	private readonly db: Database<Schema>
+export class TandemClient<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema> = RuntimeRelationsDefinition<Schema>,
+> {
+	private readonly db: Database<Schema, Relations>
 	/**
 	 * Resolves when initial load from storage completes
 	 */
@@ -62,7 +70,7 @@ export class TandemClient<Schema extends AnySchema> {
 		syncInterval = 150,
 		rng,
 		timer,
-	}: TandemClientArgs<Schema>) {
+	}: TandemClientArgs<Schema, Relations>) {
 		this.logger = logger ?? new ConsoleLogger(["tandem-client"])
 
 		this.rng = rng ?? { randomId }
@@ -165,7 +173,27 @@ export class TandemClient<Schema extends AnySchema> {
 	>(
 		collection: Collection,
 		queryFn: (q: QueryBuilder<Schema, Collection>) => Query,
-	): QueryResults<Query> {
+	): QueryResults<Query>
+	run<
+		Collection extends CollectionName<Schema>,
+		Options extends RelationalQueryOptions<Schema, Relations, Collection>,
+	>(
+		collection: Collection,
+		options?: Options,
+	): RelationalQueryResult<Schema, Relations, Collection, Options>
+	run<
+		Collection extends CollectionName<Schema>,
+		Query extends QueryBuilder<Schema, Collection>,
+		Options extends RelationalQueryOptions<Schema, Relations, Collection>,
+	>(
+		collection: Collection,
+		queryFnOrOptions?: ((q: QueryBuilder<Schema, Collection>) => Query) | Options,
+	): QueryResults<Query> | RelationalQueryResult<Schema, Relations, Collection, Options> {
+		if (typeof queryFnOrOptions !== "function") {
+			return this.db.run(collection, queryFnOrOptions ?? ({} as Options))
+		}
+
+		const queryFn = queryFnOrOptions
 		const query = queryFn(q(collection))
 		const result = this.db.run(query)
 
