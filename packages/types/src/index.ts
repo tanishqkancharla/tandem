@@ -18,6 +18,7 @@ export {
 	type RelationalOrderByOptions,
 	type RelationalWithOptions,
 	type RelationalQueryOptions,
+	type RelationalQuery,
 	type RelationalQueryRow,
 	type RelationalQueryResult,
 	type Attribute,

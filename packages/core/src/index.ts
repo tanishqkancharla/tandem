@@ -1,6 +1,5 @@
 export { TandemClient } from "./TandemClient"
 export { Database } from "./Database"
-export { QueryBuilder, type QueryResults, q } from "./query/Query"
 export { SyncEngine } from "./sync/SyncEngine"
 export { Transaction } from "./transaction/Transaction"
 export { Storage } from "./storage/Storage"
@@ -25,6 +24,7 @@ export type {
 	RelationalOrderByOptions,
 	RelationalWithOptions,
 	RelationalQueryOptions,
+	RelationalQuery,
 	RelationalQueryRow,
 	RelationalQueryResult,
 	EncodedWhereClause,

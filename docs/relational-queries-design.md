@@ -4,10 +4,11 @@
 
 Relational Queries v2 makes Tandem queries schema-aware and relation-aware while keeping the public API small. Runtime schemas, schema-owned codecs, and basic `defineRelations` metadata already exist; this design defines the target query shape that later type inference, encoding, execution, subscription, and sync specs should implement.
 
-The public query shape is a collection name plus an options object:
+The public query shape is a single serializable object with an explicit `collection` field:
 
 ```ts
-const threads = useQuery("threads", {
+const threads = useQuery({
+	collection: "threads",
 	select: { id: true, title: true, status: true, updatedAt: true },
 	where: { status: "active" },
 	with: {
@@ -23,18 +24,18 @@ const threads = useQuery("threads", {
 })
 ```
 
-The same `collection, options` pair should be canonical outside React:
+The same query object should be canonical outside React:
 
 ```ts
-const threads = client.run("threads", queryOptions)
-const subscription = client.subscribe("threads", queryOptions, callback)
+const threads = client.query(query)
+const subscription = client.subscribe(query, callback)
 ```
 
-Omitted options are equivalent to `{}`.
+Only `collection` is required; omitted options are equivalent to `{}`.
 
 ## Design goals
 
-- Query a collection with `useQuery("collection", { select, where, with, orderBy, limit, offset })`.
+- Query a collection with `useQuery({ collection: "collection", select, where, with, orderBy, limit, offset })`.
 - Include `many-to-one` and `one-to-many` relations through `with` using the same nested options shape as the root query.
 - Keep the public query shape JSON-serializable so it can be encoded for scan windows and remote sync.
 - Preserve relation cardinality in results: `many-to-one` returns object/null, `one-to-many` returns array.
@@ -203,7 +204,8 @@ The public API should enforce these compile-time rules:
 This should type-check:
 
 ```ts
-const threads = useQuery("threads", {
+const threads = useQuery({
+	collection: "threads",
 	select: { id: true, title: true },
 	where: { status: "active" },
 	with: {
@@ -221,10 +223,10 @@ threads[0].messages[0]?.body
 These should fail at compile time:
 
 ```ts
-useQuery("threads", { select: { missingField: true } })
-useQuery("threads", { where: { status: 123 } })
-useQuery("threads", { orderBy: { missingField: "asc" } })
-useQuery("threads", { with: { missingRelation: true } })
+useQuery({ collection: "threads", select: { missingField: true } })
+useQuery({ collection: "threads", where: { status: 123 } })
+useQuery({ collection: "threads", orderBy: { missingField: "asc" } })
+useQuery({ collection: "threads", with: { missingRelation: true } })
 ```
 
 Implementation detail: `defineRelations` must preserve literal relation names, target collections, and `many-to-one`/`one-to-many` relation types. If relation metadata widens too early to `RuntimeRelationsDefinition<Schema>`, `with` and nested result inference will be weakly typed.
@@ -283,7 +285,8 @@ const threads = await db.query.threads.findMany({
 Equivalent Tandem proposal:
 
 ```ts
-const threads = useQuery("threads", {
+const threads = useQuery({
+	collection: "threads",
 	select: { id: true, title: true, status: true },
 	where: { status: "active" },
 	with: {
@@ -296,7 +299,7 @@ const threads = useQuery("threads", {
 })
 ```
 
-Tandem follows Drizzle on `with`, relation cardinality, and embedded relation results. Tandem differs by using `select` instead of `columns`, a collection/options root API instead of `db.query.collection.findMany`, and no relation-definition options like `optional`, `alias`, `through`, or predefined relation filters in v1.
+Tandem follows Drizzle on `with`, relation cardinality, and embedded relation results. Tandem differs by using `select` instead of `columns`, a single query-object root API instead of `db.query.collection.findMany`, and no relation-definition options like `optional`, `alias`, `through`, or predefined relation filters in v1.
 
 ### TanStack DB query collections
 
@@ -323,7 +326,8 @@ const activeThreads = createLiveQueryCollection({
 Equivalent Tandem proposal:
 
 ```ts
-const activeThreads = useQuery("threads", {
+const activeThreads = useQuery({
+	collection: "threads",
 	select: { id: true, title: true, status: true },
 	where: { status: "active" },
 	orderBy: { updatedAt: "desc" },
@@ -369,7 +373,8 @@ const [threads] = useQuery(queries.threads.active({ limit: 50 }))
 Equivalent Tandem proposal:
 
 ```ts
-const threads = useQuery("threads", {
+const threads = useQuery({
+	collection: "threads",
 	where: { status: "active" },
 	orderBy: { updatedAt: "desc" },
 	limit: 50,
@@ -382,7 +387,7 @@ Zero is stronger for named, validated, server-owned query definitions. Tandem's 
 
 This design resolves the README group `Finalize public relational query shape`:
 
-- Object-style query API: `useQuery("threads", { select, where, with, orderBy, limit })`
+- Object-style query API: `useQuery({ collection: "threads", select, where, with, orderBy, limit })`
 - Exact `select`, `where`, `orderBy`, `limit`, and `offset` syntax
 - Relation result shape for `many-to-one` vs `one-to-many`
 

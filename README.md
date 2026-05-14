@@ -40,11 +40,11 @@ A sync engine and database for building collaborative apps.
     - [x] Runtime collection definitions
     - [x] Schema-owned codecs for storage/network values
     - [x] Basic relation metadata via `defineRelations`
-  - [ ] Finalize public relational query shape
+  - [x] Finalize public relational query shape
     - Design: `docs/relational-queries-design.md`
-    - [ ] Object-style query API: `useQuery("threads", { select, where, with, orderBy, limit })`
-    - [ ] Decide exact `select`, `where`, `orderBy`, `limit`, and `offset` syntax
-    - [ ] Decide relation result shape for `many-to-one` vs `one-to-many`
+    - [x] Object-style query API: `useQuery({ collection: "threads", select, where, with, orderBy, limit })`
+    - [x] Decide exact `select`, `where`, `orderBy`, `limit`, and `offset` syntax
+    - [x] Decide relation result shape for `many-to-one` vs `one-to-many`
   - [x] Type inference for relational queries
     - Spec: `specs/type-inference-for-relational-queries.md`
     - [x] Infer selected scalar fields
@@ -56,26 +56,34 @@ A sync engine and database for building collaborative apps.
     - [x] Encode nested relation options: `select`, `where`, `order`, and `limit`
     - [x] Keep flat query encoding compatible with the current query execution path, or replace it cleanly
   - [x] Execute relational queries locally
-    - [x] Teach `Database.runQuery` to resolve `many-to-one` and `one-to-many` relations from schema metadata
+    - [x] Teach `Database.query` to resolve `many-to-one` and `one-to-many` relations from schema metadata
     - [x] Support nested includes
     - [x] Support per-relation `where`, `orderBy`, and `limit`
     - [x] Ensure parent `select` can omit fields needed internally for relation joins
-  - [ ] Subscribe to relational queries locally
-    - [ ] Recompute/emit when included child records change
-    - [ ] Handle nested relation changes
-    - [ ] Define whether child changes re-emit parent rows or expose live child collections
+  - [x] Subscribe to relational queries locally
+    - [x] Recompute/emit when included child records change
+    - [x] Handle nested relation changes
+    - [x] Define whether child changes re-emit parent rows or expose live child collections
+  - [ ] Make object query API canonical
+    - [x] Use a single query object with explicit `collection`
+    - [x] Rename `run` to `query`
+    - [x] Replace fluent `QueryBuilder` call sites with object queries
+    - [x] Remove `q`/`QueryBuilder` from the public API
+    - [x] Keep internal encoding/execution helpers private
   - [ ] Sync relational subscriptions through remote
     - [ ] Include relation include-tree in scan windows
     - [ ] Remote pull returns records needed for requested relations
     - [ ] Remote poke/intersection logic accounts for child collections that affect subscribed relational queries
     - [ ] Patch application keeps optimistic replay semantics working with relation-expanded results
   - [ ] Tests and examples
-    - [ ] Thread list with last message
+    - [x] Thread list with last message
     - [ ] Thread detail query
-    - [ ] `many-to-one` relation example, e.g. task → patient
-    - [ ] `one-to-many` relation example, e.g. thread → messages
-    - [ ] Nested relation example
-    - [ ] Local run, local subscribe, and remote sync coverage
+    - [x] `many-to-one` relation example, e.g. task → patient
+    - [x] `one-to-many` relation example, e.g. thread → messages
+    - [x] Nested relation example
+    - [x] Local run coverage
+    - [x] Local subscribe coverage
+    - [ ] Remote sync coverage
 - [ ] Create a server module
 - [ ] Think about backwards compatibility -- how does mounting from a persisted storage work with new versions?
   - [ ] New database versions

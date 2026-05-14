@@ -7,7 +7,6 @@ import {
 	type TupleRootTransactionApi,
 	type WriteOps,
 } from "tuple-database"
-import { QueryBuilder, QueryResults } from "./query/Query"
 import { Storage } from "./storage/Storage"
 import { Transaction } from "./transaction/Transaction"
 import {
@@ -15,7 +14,9 @@ import {
 	CollectionName,
 	FieldWhereOperators,
 	RngApi,
+	RelationalQuery,
 	RelationalQueryOptions,
+	RelationalQueryRow,
 	RelationalQueryResult,
 	RuntimeRelationsDefinition,
 	RuntimeSchemaDefinition,
@@ -23,10 +24,9 @@ import {
 	WriteOpsApi,
 } from "@tandem/types"
 import { LoggerApi } from "./utils/Logger"
-import { isArray, isEqual, pick, sortBy } from "./utils/objectUtils"
+import { isEqual, pick, sortBy } from "./utils/objectUtils"
 import { ThrottleQueue } from "./utils/ThrottleQueue"
 import { Timer } from "./utils/Timer"
-import { unreachable } from "./utils/typeUtils"
 
 type DatabaseArgs<
 	Schema extends AnySchema,
@@ -151,45 +151,35 @@ export class Database<
 		transaction.tupleDbTx.commit()
 	}
 
-	subscribe<
-		Collection extends CollectionName<Schema>,
-		Query extends QueryBuilder<Schema, Collection>,
-	>(
+	subscribe<Query extends RelationalQuery<Schema, Relations>>(
 		query: Query,
-		callback: (result: QueryResults<Query>) => void,
-	): { result: QueryResults<Query>; destroy: () => void } {
+		callback: (
+			result: RelationalQueryResult<Schema, Relations, Query>,
+		) => void,
+	): {
+		result: RelationalQueryResult<Schema, Relations, Query>
+		destroy: () => void
+	} {
 		return subscribeQuery(
 			this.tupleDb,
-			(db) => Database.runQuery(query, db),
+			(db) =>
+				this.runRelationalQuery(
+					query.collection,
+					query,
+					undefined,
+					db,
+				) as unknown as RelationalQueryResult<Schema, Relations, Query>,
 			callback,
 		)
 	}
 
-	run<
-		Collection extends CollectionName<Schema>,
-		Query extends QueryBuilder<Schema, Collection>,
-	>(query: Query): QueryResults<Query>
-	run<
-		Collection extends CollectionName<Schema>,
-		Options extends RelationalQueryOptions<Schema, Relations, Collection>,
-	>(
-		collection: Collection,
-		options?: Options,
-	): RelationalQueryResult<Schema, Relations, Collection, Options>
-	run<
-		Collection extends CollectionName<Schema>,
-		Query extends QueryBuilder<Schema, Collection>,
-		Options extends RelationalQueryOptions<Schema, Relations, Collection>,
-	>(
-		queryOrCollection: Query | Collection,
-		options?: Options,
-	): QueryResults<Query> | RelationalQueryResult<Schema, Relations, Collection, Options> {
-		if (typeof queryOrCollection === "string") {
-			return this.runRelationalQuery(queryOrCollection, options ?? ({} as Options))
-		}
-
-		const query = queryOrCollection
-		return Database.runQuery(query, this.tupleDb)
+	query<Query extends RelationalQuery<Schema, Relations>>(
+		query: Query,
+	): RelationalQueryResult<Schema, Relations, Query> {
+		return this.runRelationalQuery(
+			query.collection,
+			query,
+		) as unknown as RelationalQueryResult<Schema, Relations, Query>
 	}
 
 	private runRelationalQuery<
@@ -199,19 +189,21 @@ export class Database<
 		collection: Collection,
 		options: Options,
 		extraFilter?: (record: Schema[Collection]) => boolean,
-	): RelationalQueryResult<Schema, Relations, Collection, Options> {
-		const rows = this.getRelationalRows(collection, options, extraFilter)
+		tupleDb: ReadOnlyTupleDatabaseClientApi = this.tupleDb,
+	): RelationalQueryRow<Schema, Relations, Collection, Options>[] {
+		const rows = this.getRelationalRows(collection, options, extraFilter, tupleDb)
 		return rows.map((row) =>
-			this.expandRelationalRow(collection, row, options),
-		) as RelationalQueryResult<Schema, Relations, Collection, Options>
+			this.expandRelationalRow(collection, row, options, tupleDb),
+		) as RelationalQueryRow<Schema, Relations, Collection, Options>[]
 	}
 
 	private getRelationalRows<Collection extends CollectionName<Schema>>(
 		collection: Collection,
 		options: RelationalQueryOptions<Schema, Relations, Collection>,
 		extraFilter?: (record: Schema[Collection]) => boolean,
+		tupleDb: ReadOnlyTupleDatabaseClientApi = this.tupleDb,
 	): Schema[Collection][] {
-		let results = this.tupleDb
+		let results = tupleDb
 			.scan({
 				gte: ["record", collection, null],
 				lte: ["record", collection, true],
@@ -298,6 +290,7 @@ export class Database<
 		collection: Collection,
 		row: Schema[Collection],
 		options: RelationalQueryOptions<Schema, Relations, Collection>,
+		tupleDb: ReadOnlyTupleDatabaseClientApi = this.tupleDb,
 	): Record<string, any> {
 		const result: Record<string, any> = options.select
 			? pick(row, Object.keys(options.select))
@@ -325,6 +318,7 @@ export class Database<
 						targetCollection,
 						nestedOptions,
 						(target) => target[relation.to] === joinValue,
+						tupleDb,
 					)[0] ?? null
 			} else {
 				const joinValue = row[relation.from]
@@ -332,6 +326,7 @@ export class Database<
 					targetCollection,
 					nestedOptions,
 					(target) => target[relation.to] === joinValue,
+					tupleDb,
 				)
 			}
 		}
@@ -339,60 +334,4 @@ export class Database<
 		return result
 	}
 
-	private static runQuery<Query extends QueryBuilder<any, any>>(
-		query: Query,
-		tupleDb: ReadOnlyTupleDatabaseClientApi,
-	): QueryResults<Query> {
-		const { collection, limit, order, select, where } = query.build()
-
-		let results = tupleDb
-			.scan({
-				gte: ["record", collection, null],
-				lte: ["record", collection, true],
-			})
-			.map(({ value }) => value) as any[]
-
-		if (where) {
-			results = results.filter((value) => {
-				return where.every(([attribute, operator, valueToTestAgainst]) => {
-					const fieldValue = value[attribute]
-					const comparisonValue = valueToTestAgainst as any
-					switch (operator) {
-						case "=":
-							return isEqual(fieldValue, comparisonValue)
-						case ">":
-							return fieldValue > comparisonValue
-						case "<":
-							return fieldValue < comparisonValue
-						case ">=":
-							return fieldValue >= comparisonValue
-						case "<=":
-							return fieldValue <= comparisonValue
-						default:
-							unreachable(operator)
-					}
-				})
-			})
-		}
-
-		if (order) {
-			results = sortBy(
-				results,
-				...order.map(
-					([attribute, direction]) =>
-						[(item: any) => item[attribute], direction] as const,
-				),
-			)
-		}
-
-		if (isArray(select)) {
-			results = results.map((value) => pick(value, select))
-		}
-
-		if (limit) {
-			results = results.slice(0, limit)
-		}
-
-		return results as QueryResults<Query>
-	}
 }

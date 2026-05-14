@@ -1,18 +1,17 @@
 import { Database } from "./Database"
-import { q, QueryBuilder, QueryResults } from "./query/Query"
+import { _encodeRelationalQuery } from "./query/Query"
 import { SyncEngine } from "./sync/SyncEngine"
 import { Transaction } from "./transaction/Transaction"
 import {
 	AnySchema,
 	ClientId,
-	CollectionName,
 	InvertibleMutation,
 	MutationApi,
 	MutationId,
 	Patch,
 	PatchApi,
 	RemoteApi,
-	RelationalQueryOptions,
+	RelationalQuery,
 	RelationalQueryResult,
 	RngApi,
 	RuntimeRelationsDefinition,
@@ -167,55 +166,28 @@ export class TandemClient<
 		tx.commit()
 	}
 
-	run<
-		Collection extends CollectionName<Schema>,
-		Query extends QueryBuilder<Schema, Collection>,
-	>(
-		collection: Collection,
-		queryFn: (q: QueryBuilder<Schema, Collection>) => Query,
-	): QueryResults<Query>
-	run<
-		Collection extends CollectionName<Schema>,
-		Options extends RelationalQueryOptions<Schema, Relations, Collection>,
-	>(
-		collection: Collection,
-		options?: Options,
-	): RelationalQueryResult<Schema, Relations, Collection, Options>
-	run<
-		Collection extends CollectionName<Schema>,
-		Query extends QueryBuilder<Schema, Collection>,
-		Options extends RelationalQueryOptions<Schema, Relations, Collection>,
-	>(
-		collection: Collection,
-		queryFnOrOptions?: ((q: QueryBuilder<Schema, Collection>) => Query) | Options,
-	): QueryResults<Query> | RelationalQueryResult<Schema, Relations, Collection, Options> {
-		if (typeof queryFnOrOptions !== "function") {
-			return this.db.run(collection, queryFnOrOptions ?? ({} as Options))
-		}
-
-		const queryFn = queryFnOrOptions
-		const query = queryFn(q(collection))
-		const result = this.db.run(query)
-
-		return result
+	query<Query extends RelationalQuery<Schema, Relations>>(
+		query: Query,
+	): RelationalQueryResult<Schema, Relations, Query> {
+		return this.db.query(query)
 	}
 
-	subscribe<
-		Collection extends CollectionName<Schema>,
-		Query extends QueryBuilder<Schema, Collection>,
-	>(
-		collection: Collection,
-		queryFn: (q: QueryBuilder<Schema, Collection>) => Query,
-		// query: Query,
-		callback: (result: QueryResults<Query>) => void,
-	): { result: QueryResults<Query>; destroy: () => void } {
-		const query = queryFn(q(collection))
+	subscribe<Query extends RelationalQuery<Schema, Relations>>(
+		query: Query,
+		callback: (
+			result: RelationalQueryResult<Schema, Relations, Query>,
+		) => void,
+	): {
+		result: RelationalQueryResult<Schema, Relations, Query>
+		destroy: () => void
+	} {
 		const { result, destroy } = this.db.subscribe(query, callback)
-
-		const unsubscribe = this.syncEngine?.subscribe(query.build())
+		const unsubscribe = this.syncEngine?.subscribe(
+			_encodeRelationalQuery(query.collection, query, this.db.relations),
+		)
 
 		return {
-			result: result,
+			result,
 			destroy: () => {
 				unsubscribe?.()
 				destroy()

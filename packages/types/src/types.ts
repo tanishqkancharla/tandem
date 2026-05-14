@@ -204,6 +204,16 @@ export type RelationalQueryOptions<
 	readonly offset?: number
 }
 
+export type RelationalQuery<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+	Collection extends CollectionName<Schema> = CollectionName<Schema>,
+> = Collection extends CollectionName<Schema>
+	? {
+			readonly collection: Collection
+		} & RelationalQueryOptions<Schema, Relations, Collection>
+	: never
+
 type SelectedScalarKeys<
 	Schema extends AnySchema,
 	Collection extends CollectionName<Schema>,
@@ -297,12 +307,23 @@ type RelationalIncludedRelationOptions<
 		? Include
 		: never
 
-export type RelationalQueryResult<
+type RelationalQueryResultForOptions<
 	Schema extends AnySchema,
 	Relations extends RuntimeRelationsDefinition<Schema>,
 	Collection extends CollectionName<Schema>,
 	Options extends RelationalQueryOptions<Schema, Relations, Collection> = {},
 > = RelationalQueryRow<Schema, Relations, Collection, Options>[]
+
+export type RelationalQueryResult<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+	Query extends RelationalQuery<Schema, Relations>,
+> = RelationalQueryResultForOptions<
+	Schema,
+	Relations,
+	Query["collection"] & CollectionName<Schema>,
+	Query
+>
 
 type _RelationalQueryTestSchema = {
 	users: { id: string; name: string }
@@ -427,7 +448,7 @@ type _TestRelationalOmittedSelectResult = Assert<
 		RelationalQueryResult<
 			_RelationalQueryTestSchema,
 			_RelationalQueryTestRelations,
-			"threads"
+			{ collection: "threads" }
 		>,
 		_RelationalQueryTestSchema["threads"][]
 	>
@@ -437,8 +458,7 @@ type _TestRelationalSingleSelectResult = Assert<
 		RelationalQueryResult<
 			_RelationalQueryTestSchema,
 			_RelationalQueryTestRelations,
-			"threads",
-			{ select: { id: true } }
+			{ collection: "threads"; select: { id: true } }
 		>,
 		{ id: string }[]
 	>
@@ -448,23 +468,25 @@ type _TestRelationalMultiSelectResult = Assert<
 		RelationalQueryResult<
 			_RelationalQueryTestSchema,
 			_RelationalQueryTestRelations,
-			"threads",
-			{ select: { id: true; title: true } }
+			{ collection: "threads"; select: { id: true; title: true } }
 		>,
 		{ id: string; title: string }[]
 	>
 >
 
 // @ts-expect-error Select values must be true
-type _TestRelationalInvalidSelectValue = RelationalQueryResult<_RelationalQueryTestSchema, _RelationalQueryTestRelations, "threads", { select: { id: false } }>
+type _TestRelationalInvalidSelectValue = RelationalQueryResult<_RelationalQueryTestSchema, _RelationalQueryTestRelations, { collection: "threads"; select: { id: false } }>
 
 type _TestRelationalManyToOneResult = Assert<
 	TestIsEqual<
 		RelationalQueryResult<
 			_RelationalQueryTestSchema,
 			_RelationalQueryTestRelations,
-			"threads",
-			{ select: { id: true }; with: { owner: { select: { name: true } } } }
+			{
+				collection: "threads"
+				select: { id: true }
+				with: { owner: { select: { name: true } } }
+			}
 		>,
 		{ id: string; readonly owner: { name: string } | null }[]
 	>
@@ -474,8 +496,11 @@ type _TestRelationalOneToManyResult = Assert<
 		RelationalQueryResult<
 			_RelationalQueryTestSchema,
 			_RelationalQueryTestRelations,
-			"threads",
-			{ select: { id: true }; with: { messages: { select: { body: true } } } }
+			{
+				collection: "threads"
+				select: { id: true }
+				with: { messages: { select: { body: true } } }
+			}
 		>,
 		{ id: string; readonly messages: { body: string }[] }[]
 	>
@@ -485,8 +510,8 @@ type _TestRelationalOneToManyLimitOneResult = Assert<
 		RelationalQueryResult<
 			_RelationalQueryTestSchema,
 			_RelationalQueryTestRelations,
-			"threads",
 			{
+				collection: "threads"
 				select: { id: true }
 				with: { messages: { select: { body: true }; limit: 1 } }
 			}
@@ -499,8 +524,7 @@ type _TestRelationalTrueIncludeResult = Assert<
 		RelationalQueryResult<
 			_RelationalQueryTestSchema,
 			_RelationalQueryTestRelations,
-			"threads",
-			{ select: { id: true }; with: { owner: true } }
+			{ collection: "threads"; select: { id: true }; with: { owner: true } }
 		>,
 		{ id: string; readonly owner: _RelationalQueryTestSchema["users"] | null }[]
 	>
@@ -510,8 +534,8 @@ type _TestRelationalNestedWithResult = Assert<
 		RelationalQueryResult<
 			_RelationalQueryTestSchema,
 			_RelationalQueryTestRelations,
-			"threads",
 			{
+				collection: "threads"
 				select: { id: true }
 				with: {
 					owner: {
@@ -532,10 +556,10 @@ type _TestRelationalNestedWithResult = Assert<
 >
 
 // @ts-expect-error Nested selected fields must exist on the relation target collection
-type _TestRelationalInvalidNestedResultSelect = RelationalQueryResult<_RelationalQueryTestSchema, _RelationalQueryTestRelations, "threads", { with: { owner: { select: { title: true } } } }>
+type _TestRelationalInvalidNestedResultSelect = RelationalQueryResult<_RelationalQueryTestSchema, _RelationalQueryTestRelations, { collection: "threads"; with: { owner: { select: { title: true } } } }>
 
 // @ts-expect-error Nested relation names must exist on the relation target collection
-type _TestRelationalInvalidNestedResultRelation = RelationalQueryResult<_RelationalQueryTestSchema, _RelationalQueryTestRelations, "threads", { with: { owner: { with: { messages: true } } } }>
+type _TestRelationalInvalidNestedResultRelation = RelationalQueryResult<_RelationalQueryTestSchema, _RelationalQueryTestRelations, { collection: "threads"; with: { owner: { with: { messages: true } } } }>
 
 export type ClientId = Tagged<"ClientId", string>
 export type Cookie = Tagged<"Cookie", number | string>
