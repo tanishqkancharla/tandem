@@ -4,6 +4,7 @@ import {
 	TestsSchema,
 	testsRuntimeSchema,
 	todo,
+	type DemoRng,
 	type TestsTodo,
 } from "./fixtures"
 import { RemoteApi } from "@tandem/types"
@@ -11,6 +12,8 @@ import { TandemClient } from "../src/TandemClient"
 import { collection, defineRelations, defineSchema } from "../src/schema/Schema"
 import { IndexedDbTupleStorage } from "../src/storage/IndexedDbAdapter"
 import { codec } from "../src/utils/Codec"
+import { TestRemote } from "@tandem/testing"
+import type { LoggerApi } from "../src/utils/Logger"
 
 class EventStart {
 	constructor(readonly iso: string) {}
@@ -116,6 +119,30 @@ const testsEventRuntimeSchema = defineSchema({
 		codec: eventCodec,
 	}),
 })
+
+function makeThreadSyncClients({ logger, rng }: { logger: LoggerApi; rng: DemoRng }) {
+	const server = new TestRemote<ThreadTestSchema>({ logger })
+	const client1 = new TandemClient<ThreadTestSchema, typeof threadTestRelations>({
+		schema: threadTestSchema,
+		relations: threadTestRelations,
+		remote: server,
+		logger,
+		rng: rng.create("relational-snapshot-client1"),
+		autoConnect: false,
+		syncInterval: 0,
+	})
+	const client2 = new TandemClient<ThreadTestSchema, typeof threadTestRelations>({
+		schema: threadTestSchema,
+		relations: threadTestRelations,
+		remote: server,
+		logger,
+		rng: rng.create("relational-snapshot-client2"),
+		autoConnect: false,
+		syncInterval: 0,
+	})
+
+	return { client1, client2 }
+}
 
 describe("TandemClient", () => {
 	test("creates, queries, updates, and deletes records locally", async ({
@@ -593,6 +620,205 @@ describe("TandemClient", () => {
 		expect(syncedTodoOnClient2).toEqual([
 			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
 		])
+	})
+
+	test("syncs remote updates that move records out of subscribed where filters", async ({
+		client1,
+		client2,
+	}) => {
+		const seenByClient2: TestsTodo[][] = []
+		client2.subscribe(
+			{ collection: "todos", where: { done: false } },
+			(result) => {
+				seenByClient2.push(result)
+			},
+		)
+
+		// A matching remote record enters the subscribed result
+		const seedTx = client1.transact()
+		seedTx.set(
+			"todos",
+			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
+		)
+		await client1.commit(seedTx)
+
+		await vi.waitFor(() => {
+			expect(seenByClient2).toEqual([
+				[todo("todo-1", { text: "Write the sync spec", priority: 2 })],
+			])
+		})
+
+		// Updating the record so it no longer matches removes it from the subscription
+		const completeTx = client1.transact()
+		completeTx.set(
+			"todos",
+			todo("todo-1", {
+				text: "Write the sync spec",
+				done: true,
+				priority: 2,
+			}),
+		)
+		await client1.commit(completeTx)
+
+		await vi.waitFor(() => {
+			expect(seenByClient2).toEqual([
+				[todo("todo-1", { text: "Write the sync spec", priority: 2 })],
+				[],
+			])
+		})
+	})
+
+	test("pulls relational snapshots after subscribing with an advanced cookie", async ({
+		logger,
+		rng,
+	}) => {
+		const { client1, client2 } = makeThreadSyncClients({ logger, rng })
+
+		try {
+			await Promise.all([client1.connect(), client2.connect()])
+
+			// Client1 seeds related records before client2 has any scan-window subscription
+			const seedTx = client1.transact()
+			seedTx.set("profiles", { id: "profile-1", displayName: "Ada Lovelace" })
+			seedTx.set("users", { id: "user-1", profileId: "profile-1", name: "Ada" })
+			seedTx.set("threads", {
+				id: "thread-1",
+				ownerId: "user-1",
+				title: "Active thread",
+				status: "active",
+			})
+			seedTx.set("messages", {
+				id: "message-1",
+				threadId: "thread-1",
+				body: "Hello",
+				createdAt: 1,
+			})
+			await client1.commit(seedTx)
+
+			// Pulling with an empty scan window advances the cookie without loading records
+			await client2.pullFromRemote()
+			expect(client2.query({ collection: "threads" })).toEqual([])
+
+			const seenByClient2: {
+				id: string
+				title: string
+				owner: { name: string; profile: { displayName: string } | null } | null
+				messages: { id: string }[]
+			}[][] = []
+			client2.subscribe(
+				{
+					collection: "threads",
+					select: { id: true, title: true },
+					with: {
+						owner: {
+							select: { name: true },
+							with: { profile: { select: { displayName: true } } },
+						},
+						messages: { select: { id: true } },
+					},
+				},
+				(result) => {
+					seenByClient2.push(result)
+				},
+			)
+
+			// Subscribing pulls a snapshot for the root and included collections despite the advanced cookie
+			await client2.pullFromRemote()
+			await vi.waitFor(() => {
+				expect(seenByClient2).toEqual([
+					[
+						{
+							id: "thread-1",
+							title: "Active thread",
+							owner: {
+								name: "Ada",
+								profile: { displayName: "Ada Lovelace" },
+							},
+							messages: [{ id: "message-1" }],
+						},
+					],
+				])
+			})
+		} finally {
+			await Promise.all([client1.disconnect(), client2.disconnect()])
+		}
+	})
+
+	test("applies snapshot where filters while storing full records", async ({
+		logger,
+		rng,
+	}) => {
+		const { client1, client2 } = makeThreadSyncClients({ logger, rng })
+
+		try {
+			await Promise.all([client1.connect(), client2.connect()])
+
+			// Client1 seeds one thread with two child messages before client2 subscribes
+			const seedTx = client1.transact()
+			seedTx.set("threads", {
+				id: "thread-1",
+				ownerId: "user-1",
+				title: "Active thread",
+				status: "active",
+			})
+			seedTx.set("messages", {
+				id: "message-1",
+				threadId: "thread-1",
+				body: "Older message",
+				createdAt: 1,
+			})
+			seedTx.set("messages", {
+				id: "message-2",
+				threadId: "thread-1",
+				body: "Newer message",
+				createdAt: 2,
+			})
+			await client1.commit(seedTx)
+
+			// Pulling with an empty scan window advances the cookie without loading records
+			await client2.pullFromRemote()
+			expect(client2.query({ collection: "messages" })).toEqual([])
+
+			const seenByClient2: {
+				id: string
+				messages: { body: string }[]
+			}[][] = []
+			client2.subscribe(
+				{
+					collection: "threads",
+					select: { id: true },
+					with: {
+						messages: {
+							select: { body: true },
+							where: { createdAt: { gt: 1 } },
+						},
+					},
+				},
+				(result) => {
+					seenByClient2.push(result)
+				},
+			)
+
+			// The snapshot applies where filters before storing full records locally
+			await client2.pullFromRemote()
+			await vi.waitFor(() => {
+				expect(seenByClient2).toEqual([
+					[{ id: "thread-1", messages: [{ body: "Newer message" }] }],
+				])
+			})
+
+			// Projection is ignored for storage so future local queries have complete records
+			expect(client2.query({ collection: "messages" })).toEqual([
+				{
+					id: "message-2",
+					threadId: "thread-1",
+					body: "Newer message",
+					createdAt: 2,
+				},
+			])
+		} finally {
+			await Promise.all([client1.disconnect(), client2.disconnect()])
+		}
 	})
 
 	test("rolls back an optimistic write when the server rejects the push", async ({

@@ -87,12 +87,12 @@ function buildSnapshotPatch(scanWindow: ScanWindow<Schema>) {
 }
 ```
 
-- [ ] Store current remote record state in `packages/testing/src/TestRemote.ts` as mutations are pushed.
-- [ ] Build pull `set` patches from current state for every root and nested included collection in the scan window.
-- [ ] Apply `where` filters for each collection when building the snapshot, but ignore `select`, `order`, `limit`, and `offset` for snapshot fetching.
-- [ ] Continue returning remove patches for removals since the caller's cookie so stale local records disappear.
-- [ ] Add a test where a client connects, advances its cookie with an empty scan window, then subscribes to a relational query and still receives pre-existing remote parent and child records.
-- [ ] Verify `pnpm --filter @tandem/core test` passes.
+- [x] Store current remote record state in `packages/testing/src/TestRemote.ts` as mutations are pushed.
+- [x] Build pull `set` patches from current state for every root and nested included collection in the scan window.
+- [x] Apply `where` filters for each collection when building the snapshot, but ignore `select`, `order`, `limit`, and `offset` for snapshot fetching.
+- [x] Continue returning remove patches for removals since the caller's cookie so stale local records disappear.
+- [x] Add a test where a client connects, advances its cookie with an empty scan window, then subscribes to a relational query and still receives pre-existing remote parent and child records.
+- [x] Verify `pnpm --filter @tandem/core test` passes.
 
 ### Phase 3: Sync remote child changes into relational subscription results
 
