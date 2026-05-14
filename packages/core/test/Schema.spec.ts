@@ -1,5 +1,6 @@
 import { describe, expect } from "vitest"
 import { collection, defineRelations, defineSchema, t } from "../src"
+import type { Assert, TestIsEqual } from "../src"
 import { test } from "./fixtures"
 
 function makeSchema() {
@@ -14,40 +15,60 @@ function makeSchema() {
 }
 
 describe("runtime schema relations", () => {
-	test("registers and normalizes a one relation", () => {
-		// Defining a valid one relation returns normalized relation metadata
-		const schema = defineRelations(makeSchema(), ({ one }) => ({
+	test("registers and normalizes a many-to-one relation", () => {
+		// Defining a valid many-to-one relation returns normalized relation metadata
+		const relations = defineRelations(makeSchema(), ({ one }) => ({
 			posts: {
 				author: one("users", { from: "authorId", to: "id" }),
 			},
 		}))
 
-		expect(schema.relations.posts?.author).toEqual({
-			kind: "one",
+		expect(relations.posts?.author).toEqual({
+			type: "many-to-one",
 			name: "author",
 			sourceCollection: "posts",
 			targetCollection: "users",
 			from: "authorId",
 			to: "id",
 		})
+
+		type _AuthorName = Assert<
+			TestIsEqual<typeof relations.posts.author.name, "author">
+		>
+		type _AuthorTarget = Assert<
+			TestIsEqual<typeof relations.posts.author.targetCollection, "users">
+		>
+		type _AuthorType = Assert<
+			TestIsEqual<typeof relations.posts.author.type, "many-to-one">
+		>
 	})
 
-	test("registers and normalizes a many relation", () => {
-		// Defining a valid many relation returns normalized relation metadata
-		const schema = defineRelations(makeSchema(), ({ many }) => ({
+	test("registers and normalizes a one-to-many relation", () => {
+		// Defining a valid one-to-many relation returns normalized relation metadata
+		const relations = defineRelations(makeSchema(), ({ many }) => ({
 			users: {
 				posts: many("posts", { from: "id", to: "authorId" }),
 			},
 		}))
 
-		expect(schema.relations.users?.posts).toEqual({
-			kind: "many",
+		expect(relations.users?.posts).toEqual({
+			type: "one-to-many",
 			name: "posts",
 			sourceCollection: "users",
 			targetCollection: "posts",
 			from: "id",
 			to: "authorId",
 		})
+
+		type _PostsName = Assert<
+			TestIsEqual<typeof relations.users.posts.name, "posts">
+		>
+		type _PostsTarget = Assert<
+			TestIsEqual<typeof relations.users.posts.targetCollection, "posts">
+		>
+		type _PostsType = Assert<
+			TestIsEqual<typeof relations.users.posts.type, "one-to-many">
+		>
 	})
 
 	test("throws descriptive startup errors for invalid relation definitions", () => {
@@ -64,6 +85,7 @@ describe("runtime schema relations", () => {
 		expect(() =>
 			defineRelations(makeSchema(), ({ one }) => ({
 				posts: {
+					// @ts-expect-error Invalid source field intentionally exercises runtime validation
 					author: one("users", { from: "missingAuthorId", to: "id" }),
 				},
 			})),
@@ -82,22 +104,7 @@ describe("runtime schema relations", () => {
 			'Relation "posts.title" collides with field "title" on collection "posts"',
 		)
 
-		// Existing relation names cannot be registered again
-		const schemaWithAuthor = defineRelations(makeSchema(), ({ one }) => ({
-			posts: {
-				author: one("users", { from: "authorId", to: "id" }),
-			},
-		}))
-
-		expect(() =>
-			defineRelations(schemaWithAuthor, ({ one }) => ({
-				posts: {
-					author: one("users", { from: "authorId", to: "id" }),
-				},
-			})),
-		).toThrow('Duplicate relation "posts.author"')
-
-		// One relations must join to the related record id
+		// Many-to-one relations must join to the related record id
 		expect(() =>
 			defineRelations(makeSchema(), ({ one }) => ({
 				posts: {
@@ -108,7 +115,7 @@ describe("runtime schema relations", () => {
 			'Relation "posts.author" must target the related record id; expected to="id", got to="name"',
 		)
 
-		// Many relations must join from the source record id
+		// One-to-many relations must join from the source record id
 		expect(() =>
 			defineRelations(makeSchema(), ({ many }) => ({
 				users: {

@@ -7,31 +7,42 @@ import {
 	type TupleRootTransactionApi,
 	type WriteOps,
 } from "tuple-database"
-import { QueryBuilder, QueryResults } from "./query/Query"
 import { Storage } from "./storage/Storage"
 import { Transaction } from "./transaction/Transaction"
 import {
 	AnySchema,
 	CollectionName,
+	FieldWhereOperators,
 	RngApi,
+	RelationalQuery,
+	RelationalQueryOptions,
+	RelationalQueryRow,
+	RelationalQueryResult,
+	RuntimeRelationsDefinition,
 	RuntimeSchemaDefinition,
 	StorageApi,
 	WriteOpsApi,
 } from "@tandem/types"
 import { LoggerApi } from "./utils/Logger"
-import { isArray, isEqual, pick, sortBy } from "./utils/objectUtils"
+import { isEqual, pick, sortBy } from "./utils/objectUtils"
 import { ThrottleQueue } from "./utils/ThrottleQueue"
 import { Timer } from "./utils/Timer"
-import { unreachable } from "./utils/typeUtils"
 
-type DatabaseArgs<Schema extends AnySchema> = {
+type DatabaseArgs<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+> = {
 	schema?: RuntimeSchemaDefinition<Schema>
+	relations?: Relations
 	storage?: StorageApi
 	logger: LoggerApi
 	rng: RngApi
 }
 
-export class Database<Schema extends AnySchema> {
+export class Database<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema> = RuntimeRelationsDefinition<Schema>,
+> {
 	private readonly tupleDb: TupleDatabaseClient = new TupleDatabaseClient(
 		new TupleDatabase(new InMemoryTupleStorage()),
 	)
@@ -40,17 +51,20 @@ export class Database<Schema extends AnySchema> {
 	private readonly logger: LoggerApi
 	private readonly rng: RngApi
 	readonly schema?: RuntimeSchemaDefinition<Schema>
+	readonly relations?: Relations
 	private storageWriteQueue?: ThrottleQueue
 	readonly ready: Promise<void>
 
 	constructor({
 		logger,
 		schema,
+		relations,
 		storage: storageAdapter,
 		rng,
-	}: DatabaseArgs<Schema>) {
+	}: DatabaseArgs<Schema, Relations>) {
 		this.logger = logger
 		this.schema = schema
+		this.relations = relations
 		this.storage = storageAdapter
 			? new Storage(storageAdapter, (error) => {
 					// TODO: clean up? What should we do when storage fails?
@@ -137,80 +151,187 @@ export class Database<Schema extends AnySchema> {
 		transaction.tupleDbTx.commit()
 	}
 
-	subscribe<
-		Collection extends CollectionName<Schema>,
-		Query extends QueryBuilder<Schema, Collection>,
-	>(
+	subscribe<Query extends RelationalQuery<Schema, Relations>>(
 		query: Query,
-		callback: (result: QueryResults<Query>) => void,
-	): { result: QueryResults<Query>; destroy: () => void } {
+		callback: (
+			result: RelationalQueryResult<Schema, Relations, Query>,
+		) => void,
+	): {
+		result: RelationalQueryResult<Schema, Relations, Query>
+		destroy: () => void
+	} {
 		return subscribeQuery(
 			this.tupleDb,
-			(db) => Database.runQuery(query, db),
+			(db) =>
+				this.runRelationalQuery(
+					query.collection,
+					query,
+					undefined,
+					db,
+				) as unknown as RelationalQueryResult<Schema, Relations, Query>,
 			callback,
 		)
 	}
 
-	run<
-		Collection extends CollectionName<Schema>,
-		Query extends QueryBuilder<Schema, Collection>,
-	>(query: Query): QueryResults<Query> {
-		return Database.runQuery(query, this.tupleDb)
+	query<Query extends RelationalQuery<Schema, Relations>>(
+		query: Query,
+	): RelationalQueryResult<Schema, Relations, Query> {
+		return this.runRelationalQuery(
+			query.collection,
+			query,
+		) as unknown as RelationalQueryResult<Schema, Relations, Query>
 	}
 
-	private static runQuery<Query extends QueryBuilder<any, any>>(
-		query: Query,
-		tupleDb: ReadOnlyTupleDatabaseClientApi,
-	): QueryResults<Query> {
-		const { collection, limit, order, select, where } = query.build()
+	private runRelationalQuery<
+		Collection extends CollectionName<Schema>,
+		Options extends RelationalQueryOptions<Schema, Relations, Collection>,
+	>(
+		collection: Collection,
+		options: Options,
+		extraFilter?: (record: Schema[Collection]) => boolean,
+		tupleDb: ReadOnlyTupleDatabaseClientApi = this.tupleDb,
+	): RelationalQueryRow<Schema, Relations, Collection, Options>[] {
+		const rows = this.getRelationalRows(collection, options, extraFilter, tupleDb)
+		return rows.map((row) =>
+			this.expandRelationalRow(collection, row, options, tupleDb),
+		) as RelationalQueryRow<Schema, Relations, Collection, Options>[]
+	}
 
+	private getRelationalRows<Collection extends CollectionName<Schema>>(
+		collection: Collection,
+		options: RelationalQueryOptions<Schema, Relations, Collection>,
+		extraFilter?: (record: Schema[Collection]) => boolean,
+		tupleDb: ReadOnlyTupleDatabaseClientApi = this.tupleDb,
+	): Schema[Collection][] {
 		let results = tupleDb
 			.scan({
 				gte: ["record", collection, null],
 				lte: ["record", collection, true],
 			})
-			.map(({ value }) => value) as any[]
+			.map(({ value }) => value) as Schema[Collection][]
 
-		if (where) {
-			results = results.filter((value) => {
-				return where.every(([attribute, operator, valueToTestAgainst]) => {
-					const fieldValue = value[attribute]
-					switch (operator) {
-						case "=":
-							return isEqual(fieldValue, valueToTestAgainst)
-						case ">":
-							return fieldValue > valueToTestAgainst
-						case "<":
-							return fieldValue < valueToTestAgainst
-						case ">=":
-							return fieldValue >= valueToTestAgainst
-						case "<=":
-							return fieldValue <= valueToTestAgainst
-						default:
-							unreachable(operator)
-					}
-				})
-			})
+		if (extraFilter) {
+			results = results.filter(extraFilter)
 		}
 
-		if (order) {
-			results = sortBy(
-				results,
-				...order.map(
-					([attribute, direction]) =>
-						[(item: any) => item[attribute], direction] as const,
+		if (options.where) {
+			results = results.filter((record) =>
+				Object.entries(options.where ?? {}).every(([field, condition]) =>
+					this.matchesRelationalWhere(record, field, condition),
 				),
 			)
 		}
 
-		if (isArray(select)) {
-			results = results.map((value) => pick(value, select))
+		if (options.orderBy) {
+			results = sortBy(
+				results,
+				...Object.entries(options.orderBy).flatMap(([field, direction]) =>
+					direction
+						? [[(item: any) => item[field], direction] as const]
+						: [],
+				),
+			)
 		}
 
-		if (limit) {
-			results = results.slice(0, limit)
+		if (options.offset !== undefined) {
+			results = results.slice(options.offset)
 		}
 
-		return results as QueryResults<Query>
+		if (options.limit !== undefined) {
+			results = results.slice(0, options.limit)
+		}
+
+		return results
 	}
+
+	private matchesRelationalWhere(
+		record: Record<string, any>,
+		field: string,
+		condition: unknown,
+	): boolean {
+		const fieldValue = record[field]
+
+		if (
+			typeof condition === "object" &&
+			condition !== null &&
+			!Array.isArray(condition)
+		) {
+			return Object.entries(condition as FieldWhereOperators<unknown>).every(
+				([operator, value]) =>
+					this.compareRelationalValue(fieldValue, operator, value),
+			)
+		}
+
+		return isEqual(fieldValue, condition)
+	}
+
+	private compareRelationalValue(
+		fieldValue: any,
+		operator: string,
+		comparisonValue: any,
+	): boolean {
+		switch (operator) {
+			case "eq":
+				return isEqual(fieldValue, comparisonValue)
+			case "gt":
+				return fieldValue > comparisonValue
+			case "lt":
+				return fieldValue < comparisonValue
+			case "gte":
+				return fieldValue >= comparisonValue
+			case "lte":
+				return fieldValue <= comparisonValue
+			default:
+				throw new Error(`Unknown where operator "${operator}"`)
+		}
+	}
+
+	private expandRelationalRow<Collection extends CollectionName<Schema>>(
+		collection: Collection,
+		row: Schema[Collection],
+		options: RelationalQueryOptions<Schema, Relations, Collection>,
+		tupleDb: ReadOnlyTupleDatabaseClientApi = this.tupleDb,
+	): Record<string, any> {
+		const result: Record<string, any> = options.select
+			? pick(row, Object.keys(options.select))
+			: { ...row }
+
+		if (!options.with) return result
+
+		if (!this.relations) {
+			throw new Error("Cannot execute relational query includes without relations")
+		}
+
+		for (const [relationName, includeOptions] of Object.entries(options.with)) {
+			const relation = this.relations[collection]?.[relationName]
+			if (!relation) {
+				throw new Error(`Unknown relation "${collection}.${relationName}"`)
+			}
+
+			const targetCollection = relation.targetCollection
+			const nestedOptions = includeOptions === true ? {} : (includeOptions as any)
+
+			if (relation.type === "many-to-one") {
+				const joinValue = row[relation.from]
+				result[relationName] =
+					this.runRelationalQuery(
+						targetCollection,
+						nestedOptions,
+						(target) => target[relation.to] === joinValue,
+						tupleDb,
+					)[0] ?? null
+			} else {
+				const joinValue = row[relation.from]
+				result[relationName] = this.runRelationalQuery(
+					targetCollection,
+					nestedOptions,
+					(target) => target[relation.to] === joinValue,
+					tupleDb,
+				)
+			}
+		}
+
+		return result
+	}
+
 }

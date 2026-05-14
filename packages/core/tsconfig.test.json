@@ -8,10 +8,10 @@
 		"declaration": false,
 		"declarationMap": false
 	},
-	"include": ["test/**/*.ts"],
+	"include": ["src/**/*.ts", "test/**/*.ts"],
 	"references": [
 		{
-			"path": "./tsconfig.json"
+			"path": "../types"
 		},
 		{
 			"path": "../testing"

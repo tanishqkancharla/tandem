@@ -33,9 +33,57 @@ A sync engine and database for building collaborative apps.
 - [x] Make repo public
 - [x] Add docs
 - [x] Switch to pnpm monorepo
-- [ ] Pull should not return early if scan window is empty. Because pull still returns useful information with the `waitForAcknowledgement`
+- [x] Pull should not return early if scan window is empty. Because pull still returns useful information with the `waitForAcknowledgement`
 - [ ] Relational queries v2 https://www.notion.so/Relational-tandem-258ac9fb35f1801e88eaf858b5401317?source=copy_link
   - Runtime schemas and schema-owned codecs are foundation work only; relational object-style queries are deferred to later specs.
+  - [x] Runtime schemas
+    - [x] Runtime collection definitions
+    - [x] Schema-owned codecs for storage/network values
+    - [x] Basic relation metadata via `defineRelations`
+  - [x] Finalize public relational query shape
+    - Design: `docs/relational-queries-design.md`
+    - [x] Object-style query API: `useQuery({ collection: "threads", select, where, with, orderBy, limit })`
+    - [x] Decide exact `select`, `where`, `orderBy`, `limit`, and `offset` syntax
+    - [x] Decide relation result shape for `many-to-one` vs `one-to-many`
+  - [x] Type inference for relational queries
+    - Spec: `specs/type-inference-for-relational-queries.md`
+    - [x] Infer selected scalar fields
+    - [x] Infer nested `with` results
+    - [x] Preserve relation cardinality: `many-to-one` as object/null, `one-to-many` as array/collection
+    - [x] Validate relation names and selected fields at compile time
+  - [x] Encode relational queries
+    - [x] Extend `EncodedQuery` with an include/with tree
+    - [x] Encode nested relation options: `select`, `where`, `order`, and `limit`
+    - [x] Keep flat query encoding compatible with the current query execution path, or replace it cleanly
+  - [x] Execute relational queries locally
+    - [x] Teach `Database.query` to resolve `many-to-one` and `one-to-many` relations from schema metadata
+    - [x] Support nested includes
+    - [x] Support per-relation `where`, `orderBy`, and `limit`
+    - [x] Ensure parent `select` can omit fields needed internally for relation joins
+  - [x] Subscribe to relational queries locally
+    - [x] Recompute/emit when included child records change
+    - [x] Handle nested relation changes
+    - [x] Define whether child changes re-emit parent rows or expose live child collections
+  - [ ] Make object query API canonical
+    - [x] Use a single query object with explicit `collection`
+    - [x] Rename `run` to `query`
+    - [x] Replace fluent `QueryBuilder` call sites with object queries
+    - [x] Remove `q`/`QueryBuilder` from the public API
+    - [x] Keep internal encoding/execution helpers private
+  - [ ] Sync relational subscriptions through remote
+    - [ ] Include relation include-tree in scan windows
+    - [ ] Remote pull returns records needed for requested relations
+    - [ ] Remote poke/intersection logic accounts for child collections that affect subscribed relational queries
+    - [ ] Patch application keeps optimistic replay semantics working with relation-expanded results
+  - [ ] Tests and examples
+    - [x] Thread list with last message
+    - [ ] Thread detail query
+    - [x] `many-to-one` relation example, e.g. task → patient
+    - [x] `one-to-many` relation example, e.g. thread → messages
+    - [x] Nested relation example
+    - [x] Local run coverage
+    - [x] Local subscribe coverage
+    - [ ] Remote sync coverage
 - [ ] Create a server module
 - [ ] Think about backwards compatibility -- how does mounting from a persisted storage work with new versions?
   - [ ] New database versions

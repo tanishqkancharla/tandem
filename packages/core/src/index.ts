@@ -1,6 +1,5 @@
 export { TandemClient } from "./TandemClient"
 export { Database } from "./Database"
-export { QueryBuilder, type QueryResults, q } from "./query/Query"
 export { SyncEngine } from "./sync/SyncEngine"
 export { Transaction } from "./transaction/Transaction"
 export { Storage } from "./storage/Storage"
@@ -14,11 +13,22 @@ export type {
 	NamedCollectionDefinition,
 	AnyCollectionDefinition,
 	RuntimeSchemaDefinition,
-	RelationKind,
-	NormalizedOneRelationDefinition,
-	NormalizedManyRelationDefinition,
+	RelationType,
+	NormalizedManyToOneRelationDefinition,
+	NormalizedOneToManyRelationDefinition,
 	NormalizedRelationDefinition,
 	RuntimeRelationsDefinition,
+	FieldWhereOperators,
+	RelationalSelectOptions,
+	RelationalWhereOptions,
+	RelationalOrderByOptions,
+	RelationalWithOptions,
+	RelationalQueryOptions,
+	RelationalQuery,
+	RelationalQueryRow,
+	RelationalQueryResult,
+	EncodedWhereClause,
+	EncodedQuery,
 } from "@tandem/types"
 export { type LoggerApi, ConsoleLogger, rootLogger } from "./utils/Logger"
 export {
@@ -45,5 +55,5 @@ export {
 	tag,
 	untag,
 	type Unsubscribe,
-	type AsyncUnsubscribe
+	type AsyncUnsubscribe,
 } from "./utils/typeUtils"

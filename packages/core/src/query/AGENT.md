@@ -2,42 +2,33 @@
 
 ## What
 
-Type-safe query builder and execution engine. Provides SQL-like operations with full TypeScript integration and subscription support.
+Serializable object query encoding for Tandem collection queries and relational includes.
 
 ## How to use
 
 ```typescript
-import { q } from "@repo/tandem";
+const users = client.query({
+	collection: "users",
+	where: { active: true },
+})
 
-// Basic queries
-const users = await db.run(q.User.select().where("active", true));
+const recent = client.query({
+	collection: "tasks",
+	where: { status: "pending", createdAt: { gt: yesterday } },
+	orderBy: { priority: "desc" },
+	limit: 10,
+})
 
-// Complex queries
-const recent = await db.run(
-	q.Task.select()
-		.where("status", "pending")
-		.where("createdAt", ">", yesterday)
-		.order("priority", "desc")
-		.limit(10),
-);
-
-// Subscriptions
-const sub = db.subscribe(q.User.select().where("active", true), (users) =>
-	console.log("Updated:", users),
-);
+const sub = client.subscribe(
+	{ collection: "users", where: { active: true } },
+	(users) => console.log("Updated:", users),
+)
 ```
-
-## How it works
-
-- **Query Builder**: Fluent API for building queries
-- **Type Safety**: Full TypeScript schema integration
-- **Tuple Translation**: Converts to tuple storage operations
-- **Subscriptions**: Real-time updates via mutation tracking
-- **Optimization**: Automatic index usage and caching
 
 ## Supported operations
 
-- `select()` - Choose fields (`"*"` or specific fields)
-- `where()` - Filter by equality/comparison (`=`, `>`, `<`, `>=`, `<=`)
-- `order()` - Sort by field (`"asc"` or `"desc"`)
-- `limit()` - Limit results count
+- `select` - Choose fields with `{ fieldName: true }`
+- `where` - Filter by equality or comparison operators (`eq`, `gt`, `lt`, `gte`, `lte`)
+- `orderBy` - Sort fields by `"asc"` or `"desc"`
+- `limit` / `offset` - Page result sets
+- `with` - Include related records through relation metadata

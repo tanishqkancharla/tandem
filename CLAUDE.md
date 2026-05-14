@@ -97,13 +97,11 @@ Tests are located alongside source files with `.test.ts` suffix. The project use
 
 ### Creating Queries
 ```typescript
-import { q } from "./query/Query"
-
 // Basic query
-const users = await db.run(q.User.select().where("active", true))
+const users = db.query({ collection: "users", where: { active: true } })
 
 // With subscriptions
-const sub = db.subscribe(q.User.select(), (users) => {
+const sub = db.subscribe({ collection: "users" }, (users) => {
   // Handle updates
 })
 ```

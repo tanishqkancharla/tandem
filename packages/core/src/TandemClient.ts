@@ -1,18 +1,20 @@
 import { Database } from "./Database"
-import { q, QueryBuilder, QueryResults } from "./query/Query"
+import { _encodeRelationalQuery } from "./query/Query"
 import { SyncEngine } from "./sync/SyncEngine"
 import { Transaction } from "./transaction/Transaction"
 import {
 	AnySchema,
 	ClientId,
-	CollectionName,
 	InvertibleMutation,
 	MutationApi,
 	MutationId,
 	Patch,
 	PatchApi,
 	RemoteApi,
+	RelationalQuery,
+	RelationalQueryResult,
 	RngApi,
+	RuntimeRelationsDefinition,
 	RuntimeSchemaDefinition,
 	StorageApi,
 	type TimerApi,
@@ -21,8 +23,12 @@ import { ConsoleLogger, LoggerApi } from "./utils/Logger"
 import { randomId } from "./utils/randomId"
 import { Timer } from "./utils/Timer"
 
-type TandemClientArgs<Schema extends AnySchema> = {
+type TandemClientArgs<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+> = {
 	schema?: RuntimeSchemaDefinition<Schema>
+	relations?: Relations
 	storage?: StorageApi
 	remote?: RemoteApi<Schema>
 	logger?: LoggerApi
@@ -35,8 +41,11 @@ type TandemClientArgs<Schema extends AnySchema> = {
 	syncInterval?: number
 }
 
-export class TandemClient<Schema extends AnySchema> {
-	private readonly db: Database<Schema>
+export class TandemClient<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema> = RuntimeRelationsDefinition<Schema>,
+> {
+	private readonly db: Database<Schema, Relations>
 	/**
 	 * Resolves when initial load from storage completes
 	 */
@@ -52,6 +61,7 @@ export class TandemClient<Schema extends AnySchema> {
 	private speculativeMutations: InvertibleMutation<Schema>[] = []
 	constructor({
 		schema,
+		relations,
 		storage: storageAdapter,
 		remote,
 		logger,
@@ -59,7 +69,7 @@ export class TandemClient<Schema extends AnySchema> {
 		syncInterval = 150,
 		rng,
 		timer,
-	}: TandemClientArgs<Schema>) {
+	}: TandemClientArgs<Schema, Relations>) {
 		this.logger = logger ?? new ConsoleLogger(["tandem-client"])
 
 		this.rng = rng ?? { randomId }
@@ -84,6 +94,7 @@ export class TandemClient<Schema extends AnySchema> {
 
 		this.db = new Database({
 			schema,
+			relations,
 			logger: this.logger.scope("db"),
 			storage: storageAdapter,
 			rng: this.rng,
@@ -155,35 +166,28 @@ export class TandemClient<Schema extends AnySchema> {
 		tx.commit()
 	}
 
-	run<
-		Collection extends CollectionName<Schema>,
-		Query extends QueryBuilder<Schema, Collection>,
-	>(
-		collection: Collection,
-		queryFn: (q: QueryBuilder<Schema, Collection>) => Query,
-	): QueryResults<Query> {
-		const query = queryFn(q(collection))
-		const result = this.db.run(query)
-
-		return result
+	query<Query extends RelationalQuery<Schema, Relations>>(
+		query: Query,
+	): RelationalQueryResult<Schema, Relations, Query> {
+		return this.db.query(query)
 	}
 
-	subscribe<
-		Collection extends CollectionName<Schema>,
-		Query extends QueryBuilder<Schema, Collection>,
-	>(
-		collection: Collection,
-		queryFn: (q: QueryBuilder<Schema, Collection>) => Query,
-		// query: Query,
-		callback: (result: QueryResults<Query>) => void,
-	): { result: QueryResults<Query>; destroy: () => void } {
-		const query = queryFn(q(collection))
+	subscribe<Query extends RelationalQuery<Schema, Relations>>(
+		query: Query,
+		callback: (
+			result: RelationalQueryResult<Schema, Relations, Query>,
+		) => void,
+	): {
+		result: RelationalQueryResult<Schema, Relations, Query>
+		destroy: () => void
+	} {
 		const { result, destroy } = this.db.subscribe(query, callback)
-
-		const unsubscribe = this.syncEngine?.subscribe(query.build())
+		const unsubscribe = this.syncEngine?.subscribe(
+			_encodeRelationalQuery(query.collection, query, this.db.relations),
+		)
 
 		return {
-			result: result,
+			result,
 			destroy: () => {
 				unsubscribe?.()
 				destroy()

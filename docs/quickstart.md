@@ -50,25 +50,25 @@ await db.ready
 
 ## 3. Reading Data
 
-Use the query builder to read data:
+Use object queries to read data:
 
 ```typescript
 // Read all todos
-const todos = db.run("todos", q => q.select("*"))
+const todos = db.query({ collection: "todos" })
 
 // Read incomplete todos
-const incompleteTodos = db.run("todos", q => 
-  q.select("*")
-   .where("complete", false)
-   .order("createdAt", "desc")
-)
+const incompleteTodos = db.query({
+  collection: "todos",
+  where: { complete: false },
+  orderBy: { createdAt: "desc" },
+})
 
 // Read a specific todo
-const todo = db.run("todos", q => 
-  q.select("*")
-   .where("id", "todo-123")
-   .limit(1)
-)
+const todo = db.query({
+  collection: "todos",
+  where: { id: "todo-123" },
+  limit: 1,
+})
 ```
 
 ## 4. Subscribing to Changes
@@ -77,7 +77,7 @@ Subscribe to get real-time updates:
 
 ```typescript
 // Subscribe to all todos
-const { result, destroy } = db.subscribe("todos", q => q.select("*"), (todos) => {
+const { result, destroy } = db.subscribe({ collection: "todos" }, (todos) => {
   console.log("Todos updated:", todos)
   // Update your UI here
 })
@@ -131,9 +131,9 @@ export function TodoList() {
   const [todos, setTodos] = useState<TodoSchema["todos"][]>([])
 
   useEffect(() => {
-    const { result, destroy } = db.subscribe("todos", q => 
-      q.select("*").order("createdAt", "desc"), 
-      setTodos
+    const { result, destroy } = db.subscribe(
+      { collection: "todos", orderBy: { createdAt: "desc" } },
+      setTodos,
     )
     setTodos(result)
     return destroy
@@ -151,7 +151,7 @@ export function TodoList() {
   }
 
   const toggleTodo = async (id: string) => {
-    const todo = db.run("todos", q => q.id(id))[0]
+    const todo = db.query({ collection: "todos", where: { id }, limit: 1 })[0]
     if (todo) {
       const tx = db.transact()
       tx.set("todos", { ...todo, complete: !todo.complete })

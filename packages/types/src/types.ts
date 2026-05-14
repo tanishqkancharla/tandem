@@ -57,18 +57,17 @@ export type RuntimeSchemaDefinition<Schema extends AnySchema = AnySchema> = {
 			unknown
 		>
 	}
-	readonly relations?: RuntimeRelationsDefinition<Schema>
 }
 
-export type RelationKind = "one" | "many"
+export type RelationType = "many-to-one" | "one-to-many"
 
-export type NormalizedOneRelationDefinition<
+export type NormalizedManyToOneRelationDefinition<
 	Schema extends AnySchema = AnySchema,
 	SourceCollection extends CollectionName<Schema> = CollectionName<Schema>,
 	TargetCollection extends CollectionName<Schema> = CollectionName<Schema>,
 	RelationName extends string = string,
 > = {
-	readonly kind: "one"
+	readonly type: "many-to-one"
 	readonly name: RelationName
 	readonly sourceCollection: SourceCollection
 	readonly targetCollection: TargetCollection
@@ -76,13 +75,13 @@ export type NormalizedOneRelationDefinition<
 	readonly to: "id"
 }
 
-export type NormalizedManyRelationDefinition<
+export type NormalizedOneToManyRelationDefinition<
 	Schema extends AnySchema = AnySchema,
 	SourceCollection extends CollectionName<Schema> = CollectionName<Schema>,
 	TargetCollection extends CollectionName<Schema> = CollectionName<Schema>,
 	RelationName extends string = string,
 > = {
-	readonly kind: "many"
+	readonly type: "one-to-many"
 	readonly name: RelationName
 	readonly sourceCollection: SourceCollection
 	readonly targetCollection: TargetCollection
@@ -96,13 +95,13 @@ export type NormalizedRelationDefinition<
 	TargetCollection extends CollectionName<Schema> = CollectionName<Schema>,
 	RelationName extends string = string,
 > =
-	| NormalizedOneRelationDefinition<
+	| NormalizedManyToOneRelationDefinition<
 			Schema,
 			SourceCollection,
 			TargetCollection,
 			RelationName
 		>
-	| NormalizedManyRelationDefinition<
+	| NormalizedOneToManyRelationDefinition<
 			Schema,
 			SourceCollection,
 			TargetCollection,
@@ -128,6 +127,439 @@ export type Attribute<Schema extends AnySchema> = {
 export type AnySchema = Record<string, AnyCollectionSchema>
 
 export type CollectionName<Schema extends AnySchema> = keyof Schema & string
+
+export type FieldWhereOperators<Value> = {
+	readonly eq?: Value
+	readonly gt?: Value
+	readonly lt?: Value
+	readonly gte?: Value
+	readonly lte?: Value
+}
+
+export type RelationalSelectOptions<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+> = {
+	readonly [Field in keyof Schema[Collection] & string]?: true
+}
+
+export type RelationalWhereOptions<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+> = {
+	readonly [Field in keyof Schema[Collection] & string]?:
+		| Schema[Collection][Field]
+		| FieldWhereOperators<Schema[Collection][Field]>
+}
+
+export type RelationalOrderByOptions<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+> = {
+	readonly [Field in keyof Schema[Collection] & string]?: "asc" | "desc"
+}
+
+type RelationTargetCollection<Relation> = Relation extends {
+	readonly targetCollection: infer TargetCollection
+}
+	? TargetCollection
+	: never
+
+type RelationTypeForResult<Relation> = Relation extends {
+	readonly type: infer Type
+}
+	? Type
+	: never
+
+export type RelationalWithOptions<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+	Collection extends CollectionName<Schema>,
+> = {
+	readonly [RelationName in keyof NonNullable<
+		Relations[Collection]
+	> &
+		string]?:
+		| true
+		| RelationalQueryOptions<
+				Schema,
+				Relations,
+				RelationTargetCollection<
+					NonNullable<Relations[Collection]>[RelationName]
+				> &
+					CollectionName<Schema>
+			>
+}
+
+export type RelationalQueryOptions<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+	Collection extends CollectionName<Schema>,
+> = {
+	readonly select?: RelationalSelectOptions<Schema, Collection>
+	readonly where?: RelationalWhereOptions<Schema, Collection>
+	readonly with?: RelationalWithOptions<Schema, Relations, Collection>
+	readonly orderBy?: RelationalOrderByOptions<Schema, Collection>
+	readonly limit?: number
+	readonly offset?: number
+}
+
+export type RelationalQuery<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+	Collection extends CollectionName<Schema> = CollectionName<Schema>,
+> = Collection extends CollectionName<Schema>
+	? {
+			readonly collection: Collection
+		} & RelationalQueryOptions<Schema, Relations, Collection>
+	: never
+
+type SelectedScalarKeys<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+	Select,
+> = keyof {
+	readonly [Field in keyof Schema[Collection] & string as Select extends {
+		readonly [Key in Field]?: true
+	}
+		? Field
+		: never]: true
+}
+
+export type RelationalQueryRow<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+	Collection extends CollectionName<Schema>,
+	Options extends RelationalQueryOptions<Schema, Relations, Collection> = {},
+> = RelationalQueryScalars<Schema, Collection, Options> &
+	RelationalQueryIncludedRelations<Schema, Relations, Collection, Options>
+
+type RelationalQueryScalars<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+	Options extends { readonly select?: RelationalSelectOptions<Schema, Collection> },
+> = Options extends { readonly select: infer Select }
+	? Pick<
+			Schema[Collection],
+			SelectedScalarKeys<Schema, Collection, Select> & keyof Schema[Collection]
+		>
+	: Schema[Collection]
+
+type RelationalQueryIncludedRelations<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+	Collection extends CollectionName<Schema>,
+	Options extends RelationalQueryOptions<Schema, Relations, Collection>,
+> = Options extends { readonly with: infer With }
+	? {
+			readonly [RelationName in keyof With &
+				keyof NonNullable<Relations[Collection]> &
+				string]: RelationalIncludedRelationResult<
+				Schema,
+				Relations,
+				NonNullable<Relations[Collection]>[RelationName],
+				With[RelationName]
+			>
+		}
+	: {}
+
+type RelationalIncludedRelationResult<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+	Relation,
+	Include,
+> = RelationTargetCollection<Relation> extends CollectionName<Schema>
+	? RelationTypeForResult<Relation> extends "many-to-one"
+		? RelationalQueryRow<
+				Schema,
+				Relations,
+				RelationTargetCollection<Relation> & CollectionName<Schema>,
+				RelationalIncludedRelationOptions<
+					Schema,
+					Relations,
+					RelationTargetCollection<Relation> & CollectionName<Schema>,
+					Include
+				>
+			> | null
+		: RelationTypeForResult<Relation> extends "one-to-many"
+			? RelationalQueryRow<
+					Schema,
+					Relations,
+					RelationTargetCollection<Relation> & CollectionName<Schema>,
+					RelationalIncludedRelationOptions<
+						Schema,
+						Relations,
+						RelationTargetCollection<Relation> & CollectionName<Schema>,
+						Include
+					>
+				>[]
+			: never
+	: never
+
+type RelationalIncludedRelationOptions<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+	Collection extends CollectionName<Schema>,
+	Include,
+> = Include extends true
+	? {}
+	: Include extends RelationalQueryOptions<Schema, Relations, Collection>
+		? Include
+		: never
+
+type RelationalQueryResultForOptions<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+	Collection extends CollectionName<Schema>,
+	Options extends RelationalQueryOptions<Schema, Relations, Collection> = {},
+> = RelationalQueryRow<Schema, Relations, Collection, Options>[]
+
+export type RelationalQueryResult<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+	Query extends RelationalQuery<Schema, Relations>,
+> = RelationalQueryResultForOptions<
+	Schema,
+	Relations,
+	Query["collection"] & CollectionName<Schema>,
+	Query
+>
+
+type _RelationalQueryTestSchema = {
+	users: { id: string; name: string }
+	threads: { id: string; ownerId: string; title: string; status: string }
+	messages: { id: string; threadId: string; body: string; createdAt: number }
+	profiles: { id: string; userId: string; displayName: string }
+}
+
+type _RelationalQueryTestRelations = {
+	threads: {
+		owner: NormalizedManyToOneRelationDefinition<
+			_RelationalQueryTestSchema,
+			"threads",
+			"users",
+			"owner"
+		>
+		messages: NormalizedOneToManyRelationDefinition<
+			_RelationalQueryTestSchema,
+			"threads",
+			"messages",
+			"messages"
+		>
+	}
+	messages: {
+		thread: NormalizedManyToOneRelationDefinition<
+			_RelationalQueryTestSchema,
+			"messages",
+			"threads",
+			"thread"
+		>
+	}
+	users: {
+		profile: NormalizedManyToOneRelationDefinition<
+			_RelationalQueryTestSchema,
+			"users",
+			"profiles",
+			"profile"
+		>
+	}
+}
+
+type _ThreadQueryOptions = RelationalQueryOptions<
+	_RelationalQueryTestSchema,
+	_RelationalQueryTestRelations,
+	"threads"
+>
+
+type _AssertExtends<_A extends _B, _B> = void
+
+type _TestRelationalSelectFields = _AssertExtends<
+	keyof NonNullable<_ThreadQueryOptions["select"]>,
+	"id" | "ownerId" | "title" | "status"
+>
+type _TestRelationalSelectFieldsReverse = _AssertExtends<
+	"id" | "ownerId" | "title" | "status",
+	keyof NonNullable<_ThreadQueryOptions["select"]>
+>
+type _TestRelationalWhereValue = _AssertExtends<
+	NonNullable<_ThreadQueryOptions["where"]>["status"],
+	string | FieldWhereOperators<string> | undefined
+>
+type _TestRelationalWhereValueReverse = _AssertExtends<
+	string | FieldWhereOperators<string> | undefined,
+	NonNullable<_ThreadQueryOptions["where"]>["status"]
+>
+type _TestRelationalOrderByValue = _AssertExtends<
+	NonNullable<_ThreadQueryOptions["orderBy"]>["title"],
+	"asc" | "desc" | undefined
+>
+type _TestRelationalOrderByValueReverse = _AssertExtends<
+	"asc" | "desc" | undefined,
+	NonNullable<_ThreadQueryOptions["orderBy"]>["title"]
+>
+type _TestRelationalWithRelations = _AssertExtends<
+	keyof NonNullable<_ThreadQueryOptions["with"]>,
+	"owner" | "messages"
+>
+type _TestRelationalWithRelationsReverse = _AssertExtends<
+	"owner" | "messages",
+	keyof NonNullable<_ThreadQueryOptions["with"]>
+>
+
+type _OwnerQueryOptions = Exclude<
+	NonNullable<_ThreadQueryOptions["with"]>["owner"],
+	true | undefined
+>
+type _TestNestedWithScopesToTargetCollection = _AssertExtends<
+	keyof NonNullable<_OwnerQueryOptions["select"]>,
+	"id" | "name"
+>
+type _TestNestedWithScopesToTargetCollectionReverse = _AssertExtends<
+	"id" | "name",
+	keyof NonNullable<_OwnerQueryOptions["select"]>
+>
+
+// @ts-expect-error Root collections must exist on the schema
+type _TestRelationalInvalidCollection = RelationalQueryOptions<_RelationalQueryTestSchema, _RelationalQueryTestRelations, "missing">
+
+// @ts-expect-error Selected fields must exist on the current collection
+type _TestRelationalInvalidSelectField = NonNullable<_ThreadQueryOptions["select"]>["missingField"]
+
+// @ts-expect-error Where fields must exist on the current collection
+type _TestRelationalInvalidWhereField = NonNullable<_ThreadQueryOptions["where"]>["missingField"]
+
+// @ts-expect-error Where equality values must match the field type
+type _TestRelationalInvalidWhereValue = _AssertExtends<123, NonNullable<_ThreadQueryOptions["where"]>["status"]>
+
+// @ts-expect-error Order fields must exist on the current collection
+type _TestRelationalInvalidOrderByField = NonNullable<_ThreadQueryOptions["orderBy"]>["missingField"]
+
+// @ts-expect-error Order directions must be asc or desc
+type _TestRelationalInvalidOrderByValue = _AssertExtends<"up", NonNullable<_ThreadQueryOptions["orderBy"]>["title"]>
+
+// @ts-expect-error Relation names must exist on the current collection
+type _TestRelationalInvalidRelation = NonNullable<_ThreadQueryOptions["with"]>["missingRelation"]
+
+// @ts-expect-error Nested relation options are scoped to the target collection
+type _TestRelationalInvalidNestedSelect = NonNullable<_OwnerQueryOptions["select"]>["title"]
+
+type _TestRelationalOmittedSelectResult = Assert<
+	TestIsEqual<
+		RelationalQueryResult<
+			_RelationalQueryTestSchema,
+			_RelationalQueryTestRelations,
+			{ collection: "threads" }
+		>,
+		_RelationalQueryTestSchema["threads"][]
+	>
+>
+type _TestRelationalSingleSelectResult = Assert<
+	TestIsEqual<
+		RelationalQueryResult<
+			_RelationalQueryTestSchema,
+			_RelationalQueryTestRelations,
+			{ collection: "threads"; select: { id: true } }
+		>,
+		{ id: string }[]
+	>
+>
+type _TestRelationalMultiSelectResult = Assert<
+	TestIsEqual<
+		RelationalQueryResult<
+			_RelationalQueryTestSchema,
+			_RelationalQueryTestRelations,
+			{ collection: "threads"; select: { id: true; title: true } }
+		>,
+		{ id: string; title: string }[]
+	>
+>
+
+// @ts-expect-error Select values must be true
+type _TestRelationalInvalidSelectValue = RelationalQueryResult<_RelationalQueryTestSchema, _RelationalQueryTestRelations, { collection: "threads"; select: { id: false } }>
+
+type _TestRelationalManyToOneResult = Assert<
+	TestIsEqual<
+		RelationalQueryResult<
+			_RelationalQueryTestSchema,
+			_RelationalQueryTestRelations,
+			{
+				collection: "threads"
+				select: { id: true }
+				with: { owner: { select: { name: true } } }
+			}
+		>,
+		{ id: string; readonly owner: { name: string } | null }[]
+	>
+>
+type _TestRelationalOneToManyResult = Assert<
+	TestIsEqual<
+		RelationalQueryResult<
+			_RelationalQueryTestSchema,
+			_RelationalQueryTestRelations,
+			{
+				collection: "threads"
+				select: { id: true }
+				with: { messages: { select: { body: true } } }
+			}
+		>,
+		{ id: string; readonly messages: { body: string }[] }[]
+	>
+>
+type _TestRelationalOneToManyLimitOneResult = Assert<
+	TestIsEqual<
+		RelationalQueryResult<
+			_RelationalQueryTestSchema,
+			_RelationalQueryTestRelations,
+			{
+				collection: "threads"
+				select: { id: true }
+				with: { messages: { select: { body: true }; limit: 1 } }
+			}
+		>,
+		{ id: string; readonly messages: { body: string }[] }[]
+	>
+>
+type _TestRelationalTrueIncludeResult = Assert<
+	TestIsEqual<
+		RelationalQueryResult<
+			_RelationalQueryTestSchema,
+			_RelationalQueryTestRelations,
+			{ collection: "threads"; select: { id: true }; with: { owner: true } }
+		>,
+		{ id: string; readonly owner: _RelationalQueryTestSchema["users"] | null }[]
+	>
+>
+type _TestRelationalNestedWithResult = Assert<
+	TestIsEqual<
+		RelationalQueryResult<
+			_RelationalQueryTestSchema,
+			_RelationalQueryTestRelations,
+			{
+				collection: "threads"
+				select: { id: true }
+				with: {
+					owner: {
+						select: { name: true }
+						with: { profile: { select: { displayName: true } } }
+					}
+				}
+			}
+		>,
+		{
+			id: string
+			readonly owner: {
+				name: string
+				readonly profile: { displayName: string } | null
+			} | null
+		}[]
+	>
+>
+
+// @ts-expect-error Nested selected fields must exist on the relation target collection
+type _TestRelationalInvalidNestedResultSelect = RelationalQueryResult<_RelationalQueryTestSchema, _RelationalQueryTestRelations, { collection: "threads"; with: { owner: { select: { title: true } } } }>
+
+// @ts-expect-error Nested relation names must exist on the relation target collection
+type _TestRelationalInvalidNestedResultRelation = RelationalQueryResult<_RelationalQueryTestSchema, _RelationalQueryTestRelations, { collection: "threads"; with: { owner: { with: { messages: true } } } }>
 
 export type ClientId = Tagged<"ClientId", string>
 export type Cookie = Tagged<"Cookie", number | string>
@@ -219,16 +651,31 @@ export type InvertibleMutation<Schema extends AnySchema> = {
 	id: MutationId
 }
 
-export type EncodedQuery<Schema extends AnySchema> = {
-	collection: keyof Schema & string
-	select?: readonly (Attribute<Schema> & string)[] | "*"
-	where?: [
-		attribute: Attribute<Schema>,
+export type EncodedWhereClause<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+> = {
+	[Field in keyof Schema[Collection] & string]: [
+		attribute: Field,
 		operator: Operator,
-		operand: Attribute<Schema>,
+		value: Schema[Collection][Field],
+	]
+}[keyof Schema[Collection] & string]
+
+export type EncodedQuery<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema> = CollectionName<Schema>,
+> = {
+	collection: Collection
+	select?: readonly (keyof Schema[Collection] & string)[] | "*"
+	where?: EncodedWhereClause<Schema, Collection>[]
+	order?: [
+		attribute: keyof Schema[Collection] & string,
+		direction: "asc" | "desc",
 	][]
-	order?: [attribute: Attribute<Schema>, direction: "asc" | "desc"][]
 	limit?: number
+	offset?: number
+	with?: Record<string, EncodedQuery<Schema>>
 }
 
 export type Operator = "=" | ">" | "<" | ">=" | "<="

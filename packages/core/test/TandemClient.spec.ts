@@ -8,7 +8,7 @@ import {
 } from "./fixtures"
 import { RemoteApi } from "@tandem/types"
 import { TandemClient } from "../src/TandemClient"
-import { collection, defineSchema } from "../src/schema/Schema"
+import { collection, defineRelations, defineSchema } from "../src/schema/Schema"
 import { IndexedDbTupleStorage } from "../src/storage/IndexedDbAdapter"
 import { codec } from "../src/utils/Codec"
 
@@ -35,6 +35,62 @@ type TestsEventSchema = {
 type TestsEventStorageSchema = {
 	events: TestsEventStorageValue
 }
+
+type ThreadTestUser = {
+	id: string
+	profileId: string
+	name: string
+}
+
+type ThreadTestProfile = {
+	id: string
+	displayName: string
+}
+
+type ThreadTestThread = {
+	id: string
+	ownerId: string
+	title: string
+	status: "active" | "archived"
+}
+
+type ThreadTestMessage = {
+	id: string
+	threadId: string
+	body: string
+	createdAt: number
+}
+
+type ThreadTestSchema = {
+	users: ThreadTestUser
+	profiles: ThreadTestProfile
+	threads: ThreadTestThread
+	messages: ThreadTestMessage
+}
+
+const threadTestSchema = defineSchema({
+	users: collection<ThreadTestUser>({ fields: ["id", "profileId", "name"] }),
+	profiles: collection<ThreadTestProfile>({ fields: ["id", "displayName"] }),
+	threads: collection<ThreadTestThread>({
+		fields: ["id", "ownerId", "title", "status"],
+	}),
+	messages: collection<ThreadTestMessage>({
+		fields: ["id", "threadId", "body", "createdAt"],
+	}),
+})
+
+const threadTestRelations = defineRelations(
+	threadTestSchema,
+	({ one, many }) => ({
+		users: {
+			profile: one("profiles", { from: "profileId", to: "id" }),
+		},
+		threads: {
+			owner: one("users", { from: "ownerId", to: "id" }),
+			messages: many("messages", { from: "id", to: "threadId" }),
+		},
+	}),
+)
 
 const eventCodec = codec<TestsEvent, TestsEventStorageValue>(
 	"event",
@@ -78,13 +134,13 @@ describe("TandemClient", () => {
 		tx.set("todos", todo("todo-3", { text: "Fix the sync bug", priority: 3 }))
 		await client1.commit(tx)
 
-		const highestPriorityOpenTodoSummaries = client1.run("todos", (q) =>
-			q
-				.where("done", "=", false)
-				.order("priority", "desc")
-				.limit(2)
-				.select(["id", "text"]),
-		)
+		const highestPriorityOpenTodoSummaries = client1.query({
+			collection: "todos",
+			where: { done: false },
+			orderBy: { priority: "desc" },
+			limit: 2,
+			select: { id: true, text: true },
+		})
 
 		expect(highestPriorityOpenTodoSummaries).toEqual([
 			{ id: "todo-3", text: "Fix the sync bug" },
@@ -101,10 +157,12 @@ describe("TandemClient", () => {
 		updateTx.remove("todos", "todo-2")
 		await client1.commit(updateTx)
 
-		const remainingOpenTodos = client1.run("todos", (q) =>
-			q.where("done", "=", false).order("priority", "desc"),
-		)
-		const deletedTodo = client1.run("todos", (q) => q.id("todo-2"))
+		const remainingOpenTodos = client1.query({
+			collection: "todos",
+			where: { done: false },
+			orderBy: { priority: "desc" },
+		})
+		const deletedTodo = client1.query({ collection: "todos", where: { id: "todo-2" }, limit: 1 })
 
 		expect(remainingOpenTodos).toEqual([
 			todo("todo-3", { text: "Fix the sync bug", priority: 3 }),
@@ -134,19 +192,219 @@ describe("TandemClient", () => {
 		tx.set("todos", todo("todo-3", { text: "Fix the sync bug", priority: 3 }))
 		await client.commit(tx)
 
-		// Existing flat query operators still produce the same projected results
-		const highestPriorityOpenTodoSummaries = client.run("todos", (q) =>
-			q
-				.where("done", "=", false)
-				.order("priority", "desc")
-				.limit(2)
-				.select(["id", "text"]),
-		)
+		// Object queries produce the same projected results
+		const highestPriorityOpenTodoSummaries = client.query({
+			collection: "todos",
+			where: { done: false },
+			orderBy: { priority: "desc" },
+			limit: 2,
+			select: { id: true, text: true },
+		})
 
 		expect(highestPriorityOpenTodoSummaries).toEqual([
 			{ id: "todo-3", text: "Fix the sync bug" },
 			{ id: "todo-1", text: "Write the sync spec" },
 		])
+	})
+
+	test("runs relational object queries locally", async ({ logger, rng }) => {
+		const client = new TandemClient<ThreadTestSchema, typeof threadTestRelations>({
+			schema: threadTestSchema,
+			relations: threadTestRelations,
+			remote: undefined,
+			logger,
+			rng: rng.create("thread-client"),
+		})
+
+		// Seed users, threads, and messages related by many-to-one and one-to-many joins
+		const tx = client.transact()
+		tx.set("profiles", { id: "profile-1", displayName: "Ada Lovelace" })
+		tx.set("profiles", { id: "profile-2", displayName: "Grace Hopper" })
+		tx.set("users", { id: "user-1", profileId: "profile-1", name: "Ada" })
+		tx.set("users", { id: "user-2", profileId: "profile-2", name: "Grace" })
+		tx.set("threads", {
+			id: "thread-1",
+			ownerId: "user-1",
+			title: "Active thread",
+			status: "active",
+		})
+		tx.set("threads", {
+			id: "thread-2",
+			ownerId: "missing-user",
+			title: "Archived thread",
+			status: "archived",
+		})
+		tx.set("messages", {
+			id: "message-1",
+			threadId: "thread-1",
+			body: "Older message",
+			createdAt: 1,
+		})
+		tx.set("messages", {
+			id: "message-2",
+			threadId: "thread-1",
+			body: "Newest message",
+			createdAt: 2,
+		})
+		await client.commit(tx)
+
+		// Query options filter/project parent rows while included relations resolve from omitted join fields
+		const activeThreads = client.query({
+			collection: "threads",
+			select: { id: true, title: true },
+			where: { status: "active" },
+			with: {
+				owner: { select: { name: true } },
+				messages: {
+					select: { body: true },
+					orderBy: { createdAt: "desc" },
+					limit: 1,
+				},
+			},
+		})
+
+		expect(activeThreads).toEqual([
+			{
+				id: "thread-1",
+				title: "Active thread",
+				owner: { name: "Ada" },
+				messages: [{ body: "Newest message" }],
+			},
+		])
+
+		// Missing many-to-one targets are returned as null, not arrays or omitted keys
+		const archivedThreads = client.query({
+			collection: "threads",
+			select: { id: true },
+			where: { status: "archived" },
+			with: { owner: { select: { name: true } } },
+		})
+
+		expect(archivedThreads).toEqual([{ id: "thread-2", owner: null }])
+	})
+
+	test("keeps relational object subscriptions live", async ({ logger, rng }) => {
+		const client = new TandemClient<ThreadTestSchema, typeof threadTestRelations>({
+			schema: threadTestSchema,
+			relations: threadTestRelations,
+			remote: undefined,
+			logger,
+			rng: rng.create("relational-subscription-client"),
+		})
+
+		// Seed a thread with a many-to-one owner, nested profile, and one-to-many messages
+		const seedTx = client.transact()
+		seedTx.set("profiles", { id: "profile-1", displayName: "Ada Lovelace" })
+		seedTx.set("users", { id: "user-1", profileId: "profile-1", name: "Ada" })
+		seedTx.set("threads", {
+			id: "thread-1",
+			ownerId: "user-1",
+			title: "Active thread",
+			status: "active",
+		})
+		seedTx.set("messages", {
+			id: "message-1",
+			threadId: "thread-1",
+			body: "First message",
+			createdAt: 1,
+		})
+		await client.commit(seedTx)
+
+		let latestResult:
+			| {
+					id: string
+					owner: { name: string; profile: { displayName: string } | null } | null
+					messages: { body: string }[]
+			  }[]
+			| undefined
+
+		const subscription = client.subscribe(
+			{
+				collection: "threads",
+				select: { id: true },
+				with: {
+					owner: {
+						select: { name: true },
+						with: { profile: { select: { displayName: true } } },
+					},
+					messages: {
+						select: { body: true },
+						orderBy: { createdAt: "asc" },
+					},
+				},
+			},
+			(result) => {
+				latestResult = result
+			},
+		)
+
+		// Initial relational subscription result is available synchronously
+		expect(subscription.result).toEqual([
+			{
+				id: "thread-1",
+				owner: {
+					name: "Ada",
+					profile: { displayName: "Ada Lovelace" },
+				},
+				messages: [{ body: "First message" }],
+			},
+		])
+		expect(latestResult).toBeUndefined()
+
+		// Updating an included child re-emits the parent row with updated embedded results
+		const addMessageTx = client.transact()
+		addMessageTx.set("messages", {
+			id: "message-2",
+			threadId: "thread-1",
+			body: "Second message",
+			createdAt: 2,
+		})
+		await client.commit(addMessageTx)
+
+		expect(latestResult).toEqual([
+			{
+				id: "thread-1",
+				owner: {
+					name: "Ada",
+					profile: { displayName: "Ada Lovelace" },
+				},
+				messages: [{ body: "First message" }, { body: "Second message" }],
+			},
+		])
+
+		// Updating a nested included relation also re-emits the parent row
+		const updateProfileTx = client.transact()
+		updateProfileTx.update("profiles", "profile-1", (profile) => ({
+			...profile,
+			displayName: "Countess Lovelace",
+		}))
+		await client.commit(updateProfileTx)
+
+		expect(latestResult).toEqual([
+			{
+				id: "thread-1",
+				owner: {
+					name: "Ada",
+					profile: { displayName: "Countess Lovelace" },
+				},
+				messages: [{ body: "First message" }, { body: "Second message" }],
+			},
+		])
+
+		// After unsubscribing, further child changes don't trigger the callback
+		subscription.destroy()
+		latestResult = undefined
+
+		const quietMessageTx = client.transact()
+		quietMessageTx.set("messages", {
+			id: "message-3",
+			threadId: "thread-1",
+			body: "Quiet message",
+			createdAt: 3,
+		})
+		await client.commit(quietMessageTx)
+
+		expect(latestResult).toBeUndefined()
 	})
 
 	test("keeps subscribed query results live until the caller unsubscribes", async ({
@@ -165,8 +423,11 @@ describe("TandemClient", () => {
 
 		let latestResult: TestsTodo[] | undefined
 		const subscription = client1.subscribe(
-			"todos",
-			(q) => q.where("done", "=", false).order("priority", "desc"),
+			{
+				collection: "todos",
+				where: { done: false },
+				orderBy: { priority: "desc" },
+			},
 			(result) => {
 				latestResult = result
 			},
@@ -229,7 +490,7 @@ describe("TandemClient", () => {
 
 		const draftTodo = draftTx.get("todos", "todo-1")
 		const draftTodoList = draftTx.list("todos")
-		const todosBeforeCommit = client1.run("todos", (q) => q)
+		const todosBeforeCommit = client1.query({ collection: "todos" })
 
 		expect(draftTodo).toEqual(
 			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
@@ -242,7 +503,7 @@ describe("TandemClient", () => {
 		// Cancelling discards the draft; the database stays empty
 		draftTx.cancel()
 
-		const todosAfterCancel = client1.run("todos", (q) => q)
+		const todosAfterCancel = client1.query({ collection: "todos" })
 
 		expect(todosAfterCancel).toEqual([])
 
@@ -252,7 +513,7 @@ describe("TandemClient", () => {
 		noopTx.remove("todos", "missing")
 		await client1.commit(noopTx)
 
-		const todosAfterNoopCommit = client1.run("todos", (q) => q)
+		const todosAfterNoopCommit = client1.query({ collection: "todos" })
 
 		expect(todosAfterNoopCommit).toEqual([])
 	})
@@ -263,8 +524,7 @@ describe("TandemClient", () => {
 	}) => {
 		const seenByClient2: TestsTodo[][] = []
 		client2.subscribe(
-			"todos",
-			(q) => q,
+			{ collection: "todos" },
 			(result) => {
 				seenByClient2.push(result)
 			},
@@ -285,7 +545,7 @@ describe("TandemClient", () => {
 		})
 
 		// The synced record is also queryable directly on client2
-		const syncedTodoOnClient2 = client2.run("todos", (q) => q.id("todo-1"))
+		const syncedTodoOnClient2 = client2.query({ collection: "todos", where: { id: "todo-1" }, limit: 1 })
 
 		expect(syncedTodoOnClient2).toEqual([
 			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
@@ -307,8 +567,7 @@ describe("TandemClient", () => {
 
 		const seenByClient2: TestsTodo[][] = []
 		schemaClient2.subscribe(
-			"todos",
-			(q) => q,
+			{ collection: "todos" },
 			(result) => {
 				seenByClient2.push(result)
 			},
@@ -328,10 +587,8 @@ describe("TandemClient", () => {
 			])
 		})
 
-		// The synced record remains queryable through the existing flat run API
-		const syncedTodoOnClient2 = schemaClient2.run("todos", (q) =>
-			q.id("todo-1"),
-		)
+		// The synced record remains queryable through the object query API
+		const syncedTodoOnClient2 = schemaClient2.query({ collection: "todos", where: { id: "todo-1" }, limit: 1 })
 
 		expect(syncedTodoOnClient2).toEqual([
 			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
@@ -357,8 +614,7 @@ describe("TandemClient", () => {
 
 		let latestResult: TestsTodo[] | undefined
 		client.subscribe(
-			"todos",
-			(q) => q,
+			{ collection: "todos" },
 			(result) => {
 				latestResult = result
 			},
@@ -371,7 +627,7 @@ describe("TandemClient", () => {
 		tx.set("todos", offlineDraft)
 
 		const commit = client.commit(tx)
-		const optimisticTodoList = client.run("todos", (q) => q)
+		const optimisticTodoList = client.query({ collection: "todos" })
 
 		expect(optimisticTodoList).toEqual([offlineDraft])
 		expect(latestResult).toEqual([offlineDraft])
@@ -379,7 +635,7 @@ describe("TandemClient", () => {
 		// After the push fails, the optimistic write is rolled back
 		await expect(commit).rejects.toThrow("offline")
 
-		const todosAfterRollback = client.run("todos", (q) => q)
+		const todosAfterRollback = client.query({ collection: "todos" })
 
 		expect(latestResult).toEqual([])
 		expect(todosAfterRollback).toEqual([])
@@ -416,16 +672,8 @@ describe("TandemClient", () => {
 		})
 		delayedClientId = client2.clientId
 
-		client1.subscribe(
-			"todos",
-			(q) => q,
-			() => {},
-		)
-		client2.subscribe(
-			"todos",
-			(q) => q,
-			() => {},
-		)
+		client1.subscribe({ collection: "todos" }, () => {})
+		client2.subscribe({ collection: "todos" }, () => {})
 
 		await Promise.all([client1.connect(), client2.connect()])
 
@@ -438,9 +686,7 @@ describe("TandemClient", () => {
 		await client1.commit(seedTx)
 
 		await vi.waitFor(() => {
-			const syncedSeedTodoOnClient2 = client2.run("todos", (q) =>
-				q.id("todo-1"),
-			)
+			const syncedSeedTodoOnClient2 = client2.query({ collection: "todos", where: { id: "todo-1" }, limit: 1 })
 
 			expect(syncedSeedTodoOnClient2).toEqual([
 				todo("todo-1", { text: "Write the sync spec", priority: 2 }),
@@ -473,7 +719,7 @@ describe("TandemClient", () => {
 
 		// Client2 rebases its pending edit on top of the remote patch
 		await vi.waitFor(() => {
-			const rebasedTodoOnClient2 = client2.run("todos", (q) => q.id("todo-1"))
+			const rebasedTodoOnClient2 = client2.query({ collection: "todos", where: { id: "todo-1" }, limit: 1 })
 
 			expect(rebasedTodoOnClient2).toEqual([
 				todo("todo-1", { text: "Local edit on client 2", priority: 2 }),
@@ -485,7 +731,7 @@ describe("TandemClient", () => {
 		await pendingCommit
 
 		await vi.waitFor(() => {
-			const finalTodoOnClient1 = client1.run("todos", (q) => q.id("todo-1"))
+			const finalTodoOnClient1 = client1.query({ collection: "todos", where: { id: "todo-1" }, limit: 1 })
 
 			expect(finalTodoOnClient1).toEqual([
 				todo("todo-1", { text: "Local edit on client 2", priority: 2 }),
@@ -519,9 +765,7 @@ describe("TandemClient", () => {
 			storageDbName: "persisted-todos",
 		})
 
-		const persistedTodosOnReload = secondClient.run("todos", (q) =>
-			q.order("priority", "asc"),
-		)
+		const persistedTodosOnReload = secondClient.query({ collection: "todos", orderBy: { priority: "asc" } })
 
 		expect(persistedTodosOnReload).toEqual([
 			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
@@ -585,7 +829,7 @@ describe("TandemClient", () => {
 			await secondClient.ready
 
 			// Recreated storage decodes the persisted value back to the runtime shape
-			const persistedEvents = secondClient.run("events", (q) => q)
+			const persistedEvents = secondClient.query({ collection: "events" })
 
 			expect(persistedEvents).toEqual([event])
 			expect(persistedEvents[0]?.startAt).toBeInstanceOf(EventStart)
@@ -656,7 +900,7 @@ describe("TandemClient", () => {
 			await secondClient.ready
 
 			// Recreated storage decodes through the explicit codec as before
-			const persistedEvents = secondClient.run("events", (q) => q)
+			const persistedEvents = secondClient.query({ collection: "events" })
 
 			expect(persistedEvents).toEqual([event])
 			expect(persistedEvents[0]?.startAt).toBeInstanceOf(EventStart)
