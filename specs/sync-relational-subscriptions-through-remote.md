@@ -46,7 +46,10 @@ Teach the remote sync path to treat an encoded relational query as a query tree.
 Make mutation intersection walk `EncodedQuery.with` recursively so a mutation in any included collection can poke subscribed clients. Keep the behavior intentionally collection-based for v1: if a query includes `messages`, any `messages` mutation intersects, even if a later server implementation can narrow this by relation joins.
 
 ```ts
-function intersectsQuery(mutation: Mutation<Schema>, query: EncodedQuery<Schema>) {
+function intersectsQuery(
+	mutation: Mutation<Schema>,
+	query: EncodedQuery<Schema>,
+) {
 	if (mutation.ops.some((op) => op.collection === query.collection)) return true
 
 	return Object.values(query.with ?? {}).some((includedQuery) =>
@@ -55,19 +58,24 @@ function intersectsQuery(mutation: Mutation<Schema>, query: EncodedQuery<Schema>
 }
 ```
 
-- [ ] Update `MutationApi.intersectsQuery` in `packages/types/src/types.ts` to recurse into `query.with`.
-- [ ] Keep root flat-query intersection behavior unchanged.
-- [ ] Add focused coverage that a mutation to an included collection intersects a scan window whose root collection is different.
-- [ ] Add focused coverage that a mutation to an unrelated collection does not intersect the same scan window.
-- [ ] Verify `pnpm --filter @tandem/types type-check` passes.
+- [x] Update `MutationApi.intersectsQuery` in `packages/types/src/types.ts` to recurse into `query.with`.
+- [x] Keep root flat-query intersection behavior unchanged.
+- [x] Add focused coverage that a mutation to an included collection intersects a scan window whose root collection is different.
+- [x] Add focused coverage that a mutation to an unrelated collection does not intersect the same scan window.
+- [x] Verify `pnpm --filter @tandem/types type-check` passes.
 
 ### Phase 2: Return a scan-window snapshot for root and included collections
 
 Update `TestRemote.pull` so pulls are not only mutation-log deltas. For every encoded query in the scan window, return current records from the root collection and recursively included collections. This v1 may overfetch included collections, but it must not apply nested `limit`, `offset`, or `order` remotely because relation limits are applied per parent locally.
 
 ```ts
-function collectSnapshotQueries(query: EncodedQuery<Schema>): EncodedQuery<Schema>[] {
-	return [query, ...Object.values(query.with ?? {}).flatMap(collectSnapshotQueries)]
+function collectSnapshotQueries(
+	query: EncodedQuery<Schema>,
+): EncodedQuery<Schema>[] {
+	return [
+		query,
+		...Object.values(query.with ?? {}).flatMap(collectSnapshotQueries),
+	]
 }
 
 function buildSnapshotPatch(scanWindow: ScanWindow<Schema>) {
@@ -95,7 +103,9 @@ client2.subscribe(
 	{
 		collection: "threads",
 		select: { id: true },
-		with: { messages: { select: { body: true }, orderBy: { createdAt: "asc" } } },
+		with: {
+			messages: { select: { body: true }, orderBy: { createdAt: "asc" } },
+		},
 	},
 	(result) => seenByClient2.push(result),
 )

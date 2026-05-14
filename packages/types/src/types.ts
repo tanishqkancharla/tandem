@@ -813,7 +813,9 @@ export namespace MutationApi {
 			return true
 		}
 
-		return false
+		return Object.values(query.with ?? {}).some((includedQuery) =>
+			intersectsQuery(mutation, includedQuery),
+		)
 	}
 
 	export function intersectsScanWindow<Schema extends AnySchema>(
