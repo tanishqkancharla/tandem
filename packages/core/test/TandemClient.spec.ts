@@ -15,7 +15,7 @@ import { TandemClient } from "../src/TandemClient"
 import { collection, defineSchema } from "../src/schema/Schema"
 import { IndexedDbTupleStorage } from "../src/storage/IndexedDbAdapter"
 import { codec } from "../src/utils/Codec"
-import { InMemoryRemote } from "@tandem/testing"
+import { InMemoryRemote } from "@tandem/server"
 
 class EventStart {
 	constructor(readonly iso: string) {}

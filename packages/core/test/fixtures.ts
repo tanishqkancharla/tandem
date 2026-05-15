@@ -19,7 +19,7 @@ import {
 } from "../src/schema/Schema"
 import { IndexedDbTupleStorage } from "../src/storage/IndexedDbAdapter"
 import type { LoggerApi } from "../src/utils/Logger"
-import { InMemoryRemote } from "@tandem/testing"
+import { InMemoryRemote } from "@tandem/server"
 import type {
 	AnySchema,
 	RelationalQuery,

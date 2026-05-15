@@ -27,7 +27,7 @@
 		"tuple-database": "^2.2.4"
 	},
 	"devDependencies": {
-		"@tandem/testing": "workspace:*",
+		"@tandem/server": "workspace:*",
 		"extendable-expect": "^1.0.5",
 		"fake-indexeddb": "^6.2.5",
 		"typescript": "^5.7.2",

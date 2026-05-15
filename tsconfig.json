@@ -27,9 +27,6 @@
 			"path": "./packages/core/tsconfig.test.json"
 		},
 		{
-			"path": "./packages/testing"
-		},
-		{
 			"path": "./packages/server"
 		}
 	]
