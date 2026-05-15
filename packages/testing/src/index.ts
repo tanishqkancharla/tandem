@@ -1,1 +1,1 @@
-export { TestRemote } from "./TestRemote.js"
+export { InMemoryRemote } from "@tandem/server"

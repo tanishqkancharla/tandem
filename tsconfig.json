@@ -28,6 +28,9 @@
 		},
 		{
 			"path": "./packages/testing"
+		},
+		{
+			"path": "./packages/server"
 		}
 	]
 }
