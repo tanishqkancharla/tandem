@@ -1,6 +1,7 @@
 import { describe, expect, vi } from "vitest"
 import {
 	tandemClientTest,
+	expectQuery,
 	type ThreadTestSchema,
 	TestsSchema,
 	threadTestRelations,
@@ -505,13 +506,11 @@ describe("TandemClient", () => {
 		})
 
 		// The synced record is also queryable directly on client2
-		const syncedTodoOnClient2 = client2.query({
+		await expectQuery(client2, {
 			collection: "todos",
 			where: { id: "todo-1" },
 			limit: 1,
-		})
-
-		expect(syncedTodoOnClient2).toEqual([
+		}).toResolveTo([
 			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
 		])
 	})
@@ -549,13 +548,11 @@ describe("TandemClient", () => {
 		})
 
 		// The synced record remains queryable through the object query API
-		const syncedTodoOnClient2 = schemaClient2.query({
+		await expectQuery(schemaClient2, {
 			collection: "todos",
 			where: { id: "todo-1" },
 			limit: 1,
-		})
-
-		expect(syncedTodoOnClient2).toEqual([
+		}).toResolveTo([
 			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
 		])
 	})
@@ -736,7 +733,7 @@ describe("TandemClient", () => {
 			})
 
 			// Projection is ignored for storage so future local queries have complete records
-			expect(client2.query({ collection: "messages" })).toEqual([
+			await expectQuery(client2, { collection: "messages" }).toResolveTo([
 				{
 					id: "message-2",
 					threadId: "thread-1",
@@ -802,7 +799,7 @@ describe("TandemClient", () => {
 			})
 
 			// The synced child record is queryable directly on the subscribed client
-			expect(client2.query({ collection: "messages" })).toEqual([
+			await expectQuery(client2, { collection: "messages" }).toResolveTo([
 				{
 					id: "message-1",
 					threadId: "thread-1",
@@ -912,7 +909,7 @@ describe("TandemClient", () => {
 			})
 
 			// The synced nested child record is queryable directly on the subscribed client
-			expect(client2.query({ collection: "profiles" })).toEqual([
+			await expectQuery(client2, { collection: "profiles" }).toResolveTo([
 				{ id: "profile-1", displayName: "Countess Lovelace" },
 			])
 		},
@@ -1005,17 +1002,13 @@ describe("TandemClient", () => {
 		)
 		await client1.commit(seedTx)
 
-		await vi.waitFor(() => {
-			const syncedSeedTodoOnClient2 = client2.query({
-				collection: "todos",
-				where: { id: "todo-1" },
-				limit: 1,
-			})
-
-			expect(syncedSeedTodoOnClient2).toEqual([
-				todo("todo-1", { text: "Write the sync spec", priority: 2 }),
-			])
-		})
+		await expectQuery(client2, {
+			collection: "todos",
+			where: { id: "todo-1" },
+			limit: 1,
+		}).toResolveTo([
+			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
+		])
 
 		// Client2 edits the todo; its push is held by the gate
 		const localEditTx = client2.transact()
@@ -1042,33 +1035,25 @@ describe("TandemClient", () => {
 		await client1.commit(remoteEditTx)
 
 		// Client2 rebases its pending edit on top of the remote patch
-		await vi.waitFor(() => {
-			const rebasedTodoOnClient2 = client2.query({
-				collection: "todos",
-				where: { id: "todo-1" },
-				limit: 1,
-			})
-
-			expect(rebasedTodoOnClient2).toEqual([
-				todo("todo-1", { text: "Local edit on client 2", priority: 2 }),
-			])
-		})
+		await expectQuery(client2, {
+			collection: "todos",
+			where: { id: "todo-1" },
+			limit: 1,
+		}).toResolveTo([
+			todo("todo-1", { text: "Local edit on client 2", priority: 2 }),
+		])
 
 		// Once the gate opens, client2's push lands and client1 converges
 		gate.resolve()
 		await pendingCommit
 
-		await vi.waitFor(() => {
-			const finalTodoOnClient1 = client1.query({
-				collection: "todos",
-				where: { id: "todo-1" },
-				limit: 1,
-			})
-
-			expect(finalTodoOnClient1).toEqual([
-				todo("todo-1", { text: "Local edit on client 2", priority: 2 }),
-			])
-		})
+		await expectQuery(client1, {
+			collection: "todos",
+			where: { id: "todo-1" },
+			limit: 1,
+		}).toResolveTo([
+			todo("todo-1", { text: "Local edit on client 2", priority: 2 }),
+		])
 	})
 
 	tandemClientTest("reloads persisted records after recreating the app", async ({

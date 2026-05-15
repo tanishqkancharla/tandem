@@ -8,7 +8,8 @@ import {
 	writeFileSync,
 } from "node:fs"
 import { dirname, resolve } from "node:path"
-import { test as base } from "vitest"
+import { expect as extendableExpect } from "extendable-expect"
+import { expect as vitestExpect, test as base, vi } from "vitest"
 import { TandemClient } from "../src/TandemClient"
 import {
 	collection,
@@ -19,7 +20,15 @@ import {
 import { IndexedDbTupleStorage } from "../src/storage/IndexedDbAdapter"
 import type { LoggerApi } from "../src/utils/Logger"
 import { TestRemote } from "@tandem/testing"
-import type { RemoteApi, RngApi, RuntimeSchemaDefinition } from "@tandem/types"
+import type {
+	AnySchema,
+	RelationalQuery,
+	RelationalQueryResult,
+	RemoteApi,
+	RngApi,
+	RuntimeRelationsDefinition,
+	RuntimeSchemaDefinition,
+} from "@tandem/types"
 import type { Task } from "vitest"
 
 export type TestsTodo = {
@@ -53,6 +62,22 @@ export function todo(
 		priority: 1,
 		...overrides,
 	}
+}
+
+const expectResolver = extendableExpect.extend({
+	async toResolveTo<Result>(resolve: () => Result, expected: Result) {
+		await vi.waitFor(() => {
+			vitestExpect(resolve()).toEqual(expected)
+		})
+	},
+})
+
+export function expectQuery<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+	Query extends RelationalQuery<Schema, Relations>,
+>(client: TandemClient<Schema, Relations>, query: Query) {
+	return expectResolver(() => client.query(query) as RelationalQueryResult<Schema, Relations, Query>)
 }
 
 export type ThreadTestUser = {
