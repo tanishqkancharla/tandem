@@ -111,11 +111,11 @@ client2.subscribe(
 )
 ```
 
-- [ ] Add a two-client test where client2 subscribes to `threads.with.messages`, client1 commits a new `messages` record, and client2's callback receives the updated embedded `messages` array.
-- [ ] Add coverage for a nested included relation, e.g. `threads.with.owner.with.profile`, where a remote `profiles` update re-emits the subscribed thread result.
-- [ ] Assert unrelated collection changes do not poke or re-emit the relational subscription.
-- [ ] Verify the synced records are queryable directly on the subscribed client after the callback fires.
-- [ ] Verify `pnpm --filter @tandem/core test` passes.
+- [x] Add a two-client test where client2 subscribes to `threads.with.messages`, client1 commits a new `messages` record, and client2's callback receives the updated embedded `messages` array.
+- [x] Add coverage for a nested included relation, e.g. `threads.with.owner.with.profile`, where a remote `profiles` update re-emits the subscribed thread result.
+- [x] Assert unrelated collection changes do not re-emit the relational subscription; Phase 1 covers the no-poke intersection behavior directly.
+- [x] Verify the synced records are queryable directly on the subscribed client after the callback fires.
+- [x] Verify `pnpm --filter @tandem/core test` passes.
 
 ### Phase 4: Preserve optimistic replay with relation-expanded results
 
