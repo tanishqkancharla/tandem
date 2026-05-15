@@ -130,8 +130,8 @@ await vi.waitFor(() => {
 })
 ```
 
-- [ ] Add a delayed-push relational replay test modeled after the existing flat `replays a pending local edit on top of a newer remote patch` test.
-- [ ] Ensure the pending local mutation can affect an included relation record, not only the root parent record.
-- [ ] Assert the subscription callback and direct `client.query` both show the rebased relation-expanded result.
-- [ ] Verify `pnpm --filter @tandem/core test` passes.
-- [ ] Verify `pnpm type-check` passes.
+- [x] Add a delayed-push relational replay test modeled after the existing flat `replays a pending local edit on top of a newer remote patch` test.
+- [x] Ensure the pending local mutation can affect an included relation record, not only the root parent record.
+- [x] Assert the subscription callback and direct `client.query` both show the rebased relation-expanded result.
+- [x] Verify `pnpm --filter @tandem/core test` passes.
+- [x] Verify `pnpm type-check` passes.

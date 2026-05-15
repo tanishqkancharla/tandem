@@ -70,12 +70,12 @@ A sync engine and database for building collaborative apps.
     - [x] Replace fluent `QueryBuilder` call sites with object queries
     - [x] Remove `q`/`QueryBuilder` from the public API
     - [x] Keep internal encoding/execution helpers private
-  - [ ] Sync relational subscriptions through remote
+  - [x] Sync relational subscriptions through remote
     - Spec: `specs/sync-relational-subscriptions-through-remote.md`
-    - [ ] Include relation include-tree in scan windows
-    - [ ] Remote pull returns records needed for requested relations
-    - [ ] Remote poke/intersection logic accounts for child collections that affect subscribed relational queries
-    - [ ] Patch application keeps optimistic replay semantics working with relation-expanded results
+    - [x] Include relation include-tree in scan windows
+    - [x] Remote pull returns records needed for requested relations
+    - [x] Remote poke/intersection logic accounts for child collections that affect subscribed relational queries
+    - [x] Patch application keeps optimistic replay semantics working with relation-expanded results
   - [ ] Tests and examples
     - [x] Thread list with last message
     - [ ] Thread detail query
@@ -84,7 +84,7 @@ A sync engine and database for building collaborative apps.
     - [x] Nested relation example
     - [x] Local run coverage
     - [x] Local subscribe coverage
-    - [ ] Remote sync coverage
+    - [x] Remote sync coverage
 - [ ] Create a server module
 - [ ] Think about backwards compatibility -- how does mounting from a persisted storage work with new versions?
   - [ ] New database versions

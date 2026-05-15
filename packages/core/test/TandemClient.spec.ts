@@ -15,6 +15,7 @@ import { TandemClient } from "../src/TandemClient"
 import { collection, defineSchema } from "../src/schema/Schema"
 import { IndexedDbTupleStorage } from "../src/storage/IndexedDbAdapter"
 import { codec } from "../src/utils/Codec"
+import { TestRemote } from "@tandem/testing"
 
 class EventStart {
 	constructor(readonly iso: string) {}
@@ -826,6 +827,60 @@ describe("TandemClient", () => {
 	)
 
 	tandemClientTest(
+		"syncs remote one-to-many relation removals into subscribed results",
+		async ({ threadClients }) => {
+			const { client1, client2 } = threadClients
+
+			const seenByClient2: { id: string; messages: { body: string }[] }[][] = []
+			client2.subscribe(
+				{
+					collection: "threads",
+					select: { id: true },
+					with: { messages: { select: { body: true } } },
+				},
+				(result) => {
+					seenByClient2.push(result)
+				},
+			)
+			await client2.pullFromRemote()
+
+			// Seed a parent and included child, then wait for client2 to sync them
+			const seedTx = client1.transact()
+			seedTx.set("threads", {
+				id: "thread-1",
+				ownerId: "user-1",
+				title: "Active thread",
+				status: "active",
+			})
+			seedTx.set("messages", {
+				id: "message-1",
+				threadId: "thread-1",
+				body: "First message",
+				createdAt: 1,
+			})
+			await client1.commit(seedTx)
+
+			await vi.waitFor(() => {
+				expect(seenByClient2).toEqual([
+					[{ id: "thread-1", messages: [{ body: "First message" }] }],
+				])
+			})
+
+			// Removing the included child should re-emit the parent with an empty relation array
+			const removeMessageTx = client1.transact()
+			removeMessageTx.remove("messages", "message-1")
+			await client1.commit(removeMessageTx)
+
+			await vi.waitFor(() => {
+				expect(seenByClient2).toEqual([
+					[{ id: "thread-1", messages: [{ body: "First message" }] }],
+					[{ id: "thread-1", messages: [] }],
+				])
+			})
+		},
+	)
+
+	tandemClientTest(
 		"syncs remote nested relation changes into subscribed results",
 		async ({ threadClients }) => {
 			const { client1, client2 } = threadClients
@@ -1054,6 +1109,131 @@ describe("TandemClient", () => {
 		}).toResolveTo([
 			todo("todo-1", { text: "Local edit on client 2", priority: 2 }),
 		])
+	})
+
+	tandemClientTest("replays a pending included relation edit on top of a newer remote patch", async ({
+		logger,
+		rng,
+	}) => {
+		const server = new TestRemote<ThreadTestSchema>({ logger })
+		const gate = Promise.withResolvers<void>()
+		let delayedClientId = ""
+		let delayedPushStarted = false
+		const delayedServer: RemoteApi<ThreadTestSchema> = {
+			connect: (client) => server.connect(client),
+			pull: (args) => server.pull(args),
+			push: async (args) => {
+				if (args.clientId === delayedClientId) {
+					delayedPushStarted = true
+					await gate.promise
+				}
+
+				return server.push(args)
+			},
+		}
+		const client1 = new TandemClient<ThreadTestSchema, typeof threadTestRelations>({
+			schema: threadTestSchema,
+			relations: threadTestRelations,
+			remote: delayedServer,
+			logger,
+			rng: rng.create("relational-replay-client1"),
+			autoConnect: false,
+			syncInterval: 0,
+		})
+		const client2 = new TandemClient<ThreadTestSchema, typeof threadTestRelations>({
+			schema: threadTestSchema,
+			relations: threadTestRelations,
+			remote: delayedServer,
+			logger,
+			rng: rng.create("relational-replay-client2"),
+			autoConnect: false,
+			syncInterval: 0,
+		})
+		delayedClientId = client2.clientId
+		const threadWithMessagesQuery = {
+			collection: "threads",
+			select: { id: true },
+			with: {
+				messages: {
+					select: { body: true },
+					orderBy: { createdAt: "asc" },
+				},
+			},
+		} as const
+
+		try {
+			await Promise.all([client1.connect(), client2.connect()])
+
+			const seenByClient2: { id: string; messages: { body: string }[] }[][] = []
+			client1.subscribe(threadWithMessagesQuery, () => {})
+			client2.subscribe(threadWithMessagesQuery, (result) => {
+				seenByClient2.push(result)
+			})
+
+			// Seed a thread and included message on client1 and wait for client2 to sync them
+			const seedTx = client1.transact()
+			seedTx.set("threads", {
+				id: "thread-1",
+				ownerId: "user-1",
+				title: "Active thread",
+				status: "active",
+			})
+			seedTx.set("messages", {
+				id: "message-1",
+				threadId: "thread-1",
+				body: "Original message",
+				createdAt: 1,
+			})
+			await client1.commit(seedTx)
+
+			await expectQuery(client2, threadWithMessagesQuery).toResolveTo([
+				{ id: "thread-1", messages: [{ body: "Original message" }] },
+			])
+
+			// Client2 edits the included child record while its push is held by the gate
+			const localEditTx = client2.transact()
+			localEditTx.set("messages", {
+				id: "message-1",
+				threadId: "thread-1",
+				body: "Local included edit",
+				createdAt: 1,
+			})
+			const pendingCommit = client2.commit(localEditTx)
+
+			await vi.waitFor(() => {
+				expect(delayedPushStarted).toBe(true)
+			})
+
+			// A newer remote patch lands for the same included child record
+			const remoteEditTx = client1.transact()
+			remoteEditTx.set("messages", {
+				id: "message-1",
+				threadId: "thread-1",
+				body: "Remote included edit",
+				createdAt: 1,
+			})
+			await client1.commit(remoteEditTx)
+
+			const expectedRebasedRows = [
+				{ id: "thread-1", messages: [{ body: "Local included edit" }] },
+			]
+
+			// Client2 rolls back, applies the remote included record, and replays its local included edit
+			await expectQuery(client2, threadWithMessagesQuery).toResolveTo(
+				expectedRebasedRows,
+			)
+			expect(seenByClient2.at(-1)).toEqual(expectedRebasedRows)
+
+			// Once the gate opens, client2's included edit lands and client1 converges
+			gate.resolve()
+			await pendingCommit
+
+			await expectQuery(client1, threadWithMessagesQuery).toResolveTo(
+				expectedRebasedRows,
+			)
+		} finally {
+			await Promise.all([client1.disconnect(), client2.disconnect()])
+		}
 	})
 
 	tandemClientTest("reloads persisted records after recreating the app", async ({
