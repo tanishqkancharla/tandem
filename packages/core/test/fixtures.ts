@@ -8,13 +8,27 @@ import {
 	writeFileSync,
 } from "node:fs"
 import { dirname, resolve } from "node:path"
-import { test as base } from "vitest"
+import { expect as extendableExpect } from "extendable-expect"
+import { expect as vitestExpect, test as base, vi } from "vitest"
 import { TandemClient } from "../src/TandemClient"
-import { collection, defineSchema, t } from "../src/schema/Schema"
+import {
+	collection,
+	defineRelations,
+	defineSchema,
+	t,
+} from "../src/schema/Schema"
 import { IndexedDbTupleStorage } from "../src/storage/IndexedDbAdapter"
 import type { LoggerApi } from "../src/utils/Logger"
 import { TestRemote } from "@tandem/testing"
-import type { RemoteApi, RngApi, RuntimeSchemaDefinition } from "@tandem/types"
+import type {
+	AnySchema,
+	RelationalQuery,
+	RelationalQueryResult,
+	RemoteApi,
+	RngApi,
+	RuntimeRelationsDefinition,
+	RuntimeSchemaDefinition,
+} from "@tandem/types"
 import type { Task } from "vitest"
 
 export type TestsTodo = {
@@ -49,6 +63,78 @@ export function todo(
 		...overrides,
 	}
 }
+
+const expectResolver = extendableExpect.extend({
+	async toResolveTo<Result>(resolve: () => Result, expected: Result) {
+		await vi.waitFor(() => {
+			vitestExpect(resolve()).toEqual(expected)
+		})
+	},
+})
+
+export function expectQuery<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema>,
+	Query extends RelationalQuery<Schema, Relations>,
+>(client: TandemClient<Schema, Relations>, query: Query) {
+	return expectResolver(() => client.query(query) as RelationalQueryResult<Schema, Relations, Query>)
+}
+
+export type ThreadTestUser = {
+	id: string
+	profileId: string
+	name: string
+}
+
+export type ThreadTestProfile = {
+	id: string
+	displayName: string
+}
+
+export type ThreadTestThread = {
+	id: string
+	ownerId: string
+	title: string
+	status: "active" | "archived"
+}
+
+export type ThreadTestMessage = {
+	id: string
+	threadId: string
+	body: string
+	createdAt: number
+}
+
+export type ThreadTestSchema = {
+	users: ThreadTestUser
+	profiles: ThreadTestProfile
+	threads: ThreadTestThread
+	messages: ThreadTestMessage
+}
+
+export const threadTestSchema = defineSchema({
+	users: collection<ThreadTestUser>({ fields: ["id", "profileId", "name"] }),
+	profiles: collection<ThreadTestProfile>({ fields: ["id", "displayName"] }),
+	threads: collection<ThreadTestThread>({
+		fields: ["id", "ownerId", "title", "status"],
+	}),
+	messages: collection<ThreadTestMessage>({
+		fields: ["id", "threadId", "body", "createdAt"],
+	}),
+})
+
+export const threadTestRelations = defineRelations(
+	threadTestSchema,
+	({ one, many }) => ({
+		users: {
+			profile: one("profiles", { from: "profileId", to: "id" }),
+		},
+		threads: {
+			owner: one("users", { from: "ownerId", to: "id" }),
+			messages: many("messages", { from: "id", to: "threadId" }),
+		},
+	}),
+)
 
 export type DemoRng = {
 	next(prefix?: string): string
@@ -166,6 +252,15 @@ type Fixtures = {
 	makeClient: (options?: ClientOptions) => Promise<TandemClient<TestsSchema>>
 }
 
+type ThreadClients = {
+	client1: TandemClient<ThreadTestSchema, typeof threadTestRelations>
+	client2: TandemClient<ThreadTestSchema, typeof threadTestRelations>
+}
+
+type TandemClientFixtures = {
+	threadClients: ThreadClients
+}
+
 export const test = base.extend<Fixtures>({
 	logger: async ({ task, onTestFinished }, use) => {
 		const logFilePath = getTestLogFilePath(task)
@@ -265,5 +360,37 @@ export const test = base.extend<Fixtures>({
 		const client = await makeClient({ label: "client2" })
 		await client.connect()
 		await use(client)
+	},
+})
+
+export const tandemClientTest = test.extend<TandemClientFixtures>({
+	threadClients: async ({ logger, rng }, use) => {
+		const server = new TestRemote<ThreadTestSchema>({ logger })
+		const client1 = new TandemClient<
+			ThreadTestSchema,
+			typeof threadTestRelations
+		>({
+			schema: threadTestSchema,
+			relations: threadTestRelations,
+			remote: server,
+			logger,
+			rng: rng.create("thread-client1"),
+			syncInterval: 0,
+		})
+		const client2 = new TandemClient<
+			ThreadTestSchema,
+			typeof threadTestRelations
+		>({
+			schema: threadTestSchema,
+			relations: threadTestRelations,
+			remote: server,
+			logger,
+			rng: rng.create("thread-client2"),
+			syncInterval: 0,
+		})
+
+		await use({ client1, client2 })
+
+		await Promise.all([client1.disconnect(), client2.disconnect()])
 	},
 })

@@ -3,10 +3,11 @@ import {
 	ClientId,
 	CollectionName,
 	Cookie,
+	EncodedQuery,
+	EncodedWhereClause,
 	Mutation,
 	MutationApi,
 	MutationId,
-	MutationOp,
 	Patch,
 	PatchSetOp,
 	RemoteApi,
@@ -22,29 +23,69 @@ type LoggerApi = {
 	scope: (name: string) => LoggerApi
 }
 
-function mutationOpToPatch<Schema extends AnySchema>(
-	op: MutationOp<Schema>,
+function mutationRemoveOpsToPatch<Schema extends AnySchema>(
+	mutation: Mutation<Schema>,
 ): Patch<Schema> {
-	if (op.type === "set") {
-		// Direct EV (Entity-Value) conversion
-		const set: PatchSetOp<Schema>[] = [
-			{
-				collection: op.collection,
-				value: op.value,
-			},
-		]
-		return { set }
-	} else if (op.type === "remove") {
-		return {
-			remove: [
-				{
-					collection: op.collection,
-					id: op.id,
-				},
-			],
-		}
+	return {
+		remove: mutation.ops.flatMap((op) => {
+			if (op.type !== "remove") return []
+			return [{ collection: op.collection, id: op.id }]
+		}),
 	}
-	throw new Error("Unknown mutation op type")
+}
+
+function mutationSetOpsToPatch<Schema extends AnySchema>(
+	mutation: Mutation<Schema>,
+	collections: Set<CollectionName<Schema>>,
+): Patch<Schema> {
+	return {
+		set: mutation.ops.flatMap((op) => {
+			if (op.type !== "set" || !collections.has(op.collection)) return []
+			return [{ collection: op.collection, value: op.value }]
+		}),
+	}
+}
+
+function collectSnapshotQueries<Schema extends AnySchema>(
+	query: EncodedQuery<Schema>,
+): EncodedQuery<Schema>[] {
+	return [
+		query,
+		...Object.values(query.with ?? {}).flatMap(collectSnapshotQueries),
+	]
+}
+
+function compareValues(
+	fieldValue: unknown,
+	operator: string,
+	comparisonValue: unknown,
+): boolean {
+	switch (operator) {
+		case "=":
+			return Object.is(fieldValue, comparisonValue)
+		case ">":
+			return (fieldValue as any) > (comparisonValue as any)
+		case "<":
+			return (fieldValue as any) < (comparisonValue as any)
+		case ">=":
+			return (fieldValue as any) >= (comparisonValue as any)
+		case "<=":
+			return (fieldValue as any) <= (comparisonValue as any)
+		default:
+			throw new Error(`Unknown where operator "${operator}"`)
+	}
+}
+
+function matchesWhere<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+>(
+	record: Schema[Collection],
+	where: EncodedWhereClause<Schema, Collection>[] | undefined,
+): boolean {
+	return (where ?? []).every(([field, operator, value]) =>
+		compareValues(record[field], operator, value),
+	)
 }
 
 function mergePatch<Schema extends AnySchema>(
@@ -98,8 +139,12 @@ type ClientState<Schema extends AnySchema> = {
 export class TestRemote<Schema extends AnySchema = AnySchema>
 	implements RemoteApi<Schema>
 {
-	private readonly appliedMutations: Mutation<Schema>[] = []
+	private readonly mutationLog: Mutation<Schema>[] = []
 	private readonly clients: Map<ClientId, ClientState<Schema>> = new Map()
+	private readonly recordsByCollection = new Map<
+		CollectionName<Schema>,
+		Map<string | number, Schema[CollectionName<Schema>]>
+	>()
 
 	private readonly logger: LoggerApi
 
@@ -127,13 +172,21 @@ export class TestRemote<Schema extends AnySchema = AnySchema>
 			this.clients.set(clientId, { ...client, lastMutationId: undefined })
 		}
 
-		const mutationsSinceCookie = this.appliedMutations.slice(
+		const mutationsSinceCookie = this.mutationLog.slice(
 			cookie ? (untag(cookie) as number) : undefined,
 		)
 
-		const patches = mutationsSinceCookie.flatMap(({ ops }) =>
-			ops.map(mutationOpToPatch),
+		const snapshotQueries = scanWindow.flatMap(collectSnapshotQueries)
+		const snapshotCollections = new Set(
+			snapshotQueries.map((query) => query.collection),
 		)
+		const patches = [
+			...mutationsSinceCookie.map((mutation) =>
+				mutationSetOpsToPatch(mutation, snapshotCollections),
+			),
+			...mutationsSinceCookie.map(mutationRemoveOpsToPatch),
+			this.buildSnapshotPatch(snapshotQueries),
+		]
 		const patch = mergePatch(patches)
 
 		this.clients.set(clientId, {
@@ -142,7 +195,7 @@ export class TestRemote<Schema extends AnySchema = AnySchema>
 		})
 
 		return await Promise.resolve({
-			cookie: this.appliedMutations.length as Cookie,
+			cookie: this.mutationLog.length as Cookie,
 			patch,
 			lastMutationId,
 		})
@@ -155,7 +208,10 @@ export class TestRemote<Schema extends AnySchema = AnySchema>
 			throw new Error(`Client ${clientId} not found`)
 		}
 
-		this.appliedMutations.push(...mutations)
+		this.mutationLog.push(...mutations)
+		for (const mutation of mutations) {
+			this.applyMutationToRecords(mutation)
+		}
 
 		// Record last mutation id for this client
 		const lastMutationId = mutations[mutations.length - 1]!.id
@@ -181,6 +237,41 @@ export class TestRemote<Schema extends AnySchema = AnySchema>
 		})
 	}
 
+	private applyMutationToRecords(mutation: Mutation<Schema>) {
+		for (const op of mutation.ops) {
+			if (op.type === "set") {
+				let collectionRecords = this.recordsByCollection.get(op.collection)
+				if (!collectionRecords) {
+					collectionRecords = new Map()
+					this.recordsByCollection.set(op.collection, collectionRecords)
+				}
+
+				collectionRecords.set(op.value.id, op.value)
+			} else {
+				this.recordsByCollection.get(op.collection)?.delete(op.id)
+			}
+		}
+	}
+
+	private buildSnapshotPatch(snapshotQueries: EncodedQuery<Schema>[]): Patch<Schema> {
+		const set: PatchSetOp<Schema>[] = []
+		for (const query of snapshotQueries) {
+			const collectionRecords = this.recordsByCollection.get(query.collection)
+			if (!collectionRecords) continue
+
+			for (const record of collectionRecords.values()) {
+				if (!matchesWhere(record, query.where)) continue
+
+				set.push({
+					collection: query.collection,
+					value: record,
+				} as PatchSetOp<Schema>)
+			}
+		}
+
+		return { set }
+	}
+
 	emitPokesForMutation(mutations: Mutation<Schema>[]) {
 		this.logger.info("Poking clients")
 		for (const client of this.clients.values()) {
@@ -195,7 +286,7 @@ export class TestRemote<Schema extends AnySchema = AnySchema>
 
 	// Test helpers
 	getMutations() {
-		return this.appliedMutations
+		return this.mutationLog
 	}
 
 	getClientCount() {

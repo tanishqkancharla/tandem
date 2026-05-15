@@ -64,17 +64,18 @@ A sync engine and database for building collaborative apps.
     - [x] Recompute/emit when included child records change
     - [x] Handle nested relation changes
     - [x] Define whether child changes re-emit parent rows or expose live child collections
-  - [ ] Make object query API canonical
+  - [x] Make object query API canonical
     - [x] Use a single query object with explicit `collection`
     - [x] Rename `run` to `query`
     - [x] Replace fluent `QueryBuilder` call sites with object queries
     - [x] Remove `q`/`QueryBuilder` from the public API
     - [x] Keep internal encoding/execution helpers private
-  - [ ] Sync relational subscriptions through remote
-    - [ ] Include relation include-tree in scan windows
-    - [ ] Remote pull returns records needed for requested relations
-    - [ ] Remote poke/intersection logic accounts for child collections that affect subscribed relational queries
-    - [ ] Patch application keeps optimistic replay semantics working with relation-expanded results
+  - [x] Sync relational subscriptions through remote
+    - Spec: `specs/sync-relational-subscriptions-through-remote.md`
+    - [x] Include relation include-tree in scan windows
+    - [x] Remote pull returns records needed for requested relations
+    - [x] Remote poke/intersection logic accounts for child collections that affect subscribed relational queries
+    - [x] Patch application keeps optimistic replay semantics working with relation-expanded results
   - [ ] Tests and examples
     - [x] Thread list with last message
     - [ ] Thread detail query
@@ -83,7 +84,7 @@ A sync engine and database for building collaborative apps.
     - [x] Nested relation example
     - [x] Local run coverage
     - [x] Local subscribe coverage
-    - [ ] Remote sync coverage
+    - [x] Remote sync coverage
 - [ ] Create a server module
 - [ ] Think about backwards compatibility -- how does mounting from a persisted storage work with new versions?
   - [ ] New database versions
@@ -93,6 +94,7 @@ A sync engine and database for building collaborative apps.
     pure function: record ⇒ value
     access via index directly
     allows for compound/cross-table indexes
+- [ ] Rebuild query engine as incremental using https://github.com/electric-sql/d2ts
 - [ ] Database updates
   - [ ] Keep codec translating between query language and tuple storage args
 - [ ] Clear storage when user schema or database storage protocol changes
