@@ -19,7 +19,7 @@ import {
 } from "../src/schema/Schema"
 import { IndexedDbTupleStorage } from "../src/storage/IndexedDbAdapter"
 import type { LoggerApi } from "../src/utils/Logger"
-import { TestRemote } from "@tandem/testing"
+import { InMemoryRemote } from "@tandem/server"
 import type {
 	AnySchema,
 	RelationalQuery,
@@ -246,7 +246,7 @@ type ClientOptions = {
 type Fixtures = {
 	logger: LoggerApi
 	rng: DemoRng
-	server: TestRemote<TestsSchema>
+	server: InMemoryRemote<TestsSchema>
 	client1: TandemClient<TestsSchema>
 	client2: TandemClient<TestsSchema>
 	makeClient: (options?: ClientOptions) => Promise<TandemClient<TestsSchema>>
@@ -287,8 +287,8 @@ export const test = base.extend<Fixtures>({
 		await use(createRng())
 	},
 
-	server: async ({ logger }, use) => {
-		await use(new TestRemote<TestsSchema>({ logger }))
+	server: async ({}, use) => {
+		await use(new InMemoryRemote<TestsSchema>())
 	},
 
 	makeClient: async ({ logger, rng, server }, use) => {
@@ -365,7 +365,7 @@ export const test = base.extend<Fixtures>({
 
 export const tandemClientTest = test.extend<TandemClientFixtures>({
 	threadClients: async ({ logger, rng }, use) => {
-		const server = new TestRemote<ThreadTestSchema>({ logger })
+		const server = new InMemoryRemote<ThreadTestSchema>()
 		const client1 = new TandemClient<
 			ThreadTestSchema,
 			typeof threadTestRelations

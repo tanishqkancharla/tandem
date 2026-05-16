@@ -1,0 +1,57 @@
+{
+	"name": "@tandem/server",
+	"version": "0.2.0",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"source": "./src/index.ts",
+	"author": "Tanishq Kancharla <tanishqkancharla3@gmail.com>",
+	"description": "Server adapters for Tandem remote APIs",
+	"license": "MIT",
+	"files": [
+		"dist",
+		"src"
+	],
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js",
+			"default": "./dist/index.js"
+		},
+		"./drizzle/pg": {
+			"types": "./dist/drizzle/pg.d.ts",
+			"import": "./dist/drizzle/pg.js",
+			"default": "./dist/drizzle/pg.js"
+		},
+		"./drizzle/mysql": {
+			"types": "./dist/drizzle/mysql.d.ts",
+			"import": "./dist/drizzle/mysql.js",
+			"default": "./dist/drizzle/mysql.js"
+		},
+		"./drizzle/sqlite": {
+			"types": "./dist/drizzle/sqlite.d.ts",
+			"import": "./dist/drizzle/sqlite.js",
+			"default": "./dist/drizzle/sqlite.js"
+		}
+	},
+	"scripts": {
+		"build": "tsc",
+		"type-check": "tsgo --noEmit",
+		"lint": "eslint src --fix && tsc --noEmit"
+	},
+	"dependencies": {
+		"@tandem/types": "workspace:*"
+	},
+	"peerDependencies": {
+		"drizzle-orm": "^0.44.0"
+	},
+	"peerDependenciesMeta": {
+		"drizzle-orm": {
+			"optional": true
+		}
+	},
+	"devDependencies": {
+		"drizzle-orm": "^0.44.0",
+		"typescript": "^5.7.2"
+	}
+}

@@ -86,6 +86,7 @@ A sync engine and database for building collaborative apps.
     - [x] Local subscribe coverage
     - [x] Remote sync coverage
 - [ ] Create a server module
+- [ ] Rebuild query engine as incremental using https://github.com/electric-sql/d2ts
 - [ ] Think about backwards compatibility -- how does mounting from a persisted storage work with new versions?
   - [ ] New database versions
   - [ ] Schema changes
@@ -94,7 +95,6 @@ A sync engine and database for building collaborative apps.
     pure function: record ⇒ value
     access via index directly
     allows for compound/cross-table indexes
-- [ ] Rebuild query engine as incremental using https://github.com/electric-sql/d2ts
 - [ ] Database updates
   - [ ] Keep codec translating between query language and tuple storage args
 - [ ] Clear storage when user schema or database storage protocol changes

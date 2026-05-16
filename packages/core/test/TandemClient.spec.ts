@@ -15,7 +15,7 @@ import { TandemClient } from "../src/TandemClient"
 import { collection, defineSchema } from "../src/schema/Schema"
 import { IndexedDbTupleStorage } from "../src/storage/IndexedDbAdapter"
 import { codec } from "../src/utils/Codec"
-import { TestRemote } from "@tandem/testing"
+import { InMemoryRemote } from "@tandem/server"
 
 class EventStart {
 	constructor(readonly iso: string) {}
@@ -1115,7 +1115,7 @@ describe("TandemClient", () => {
 		logger,
 		rng,
 	}) => {
-		const server = new TestRemote<ThreadTestSchema>({ logger })
+		const server = new InMemoryRemote<ThreadTestSchema>()
 		const gate = Promise.withResolvers<void>()
 		let delayedClientId = ""
 		let delayedPushStarted = false
