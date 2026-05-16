@@ -1,5 +1,5 @@
 import type { KeyValuePair, ScanStorageArgs, WriteOps } from "tuple-database"
-import { StorageApi } from "@tandem/types"
+import type { StorageApi } from "@tandem/types"
 
 export class Storage {
 	constructor(
@@ -12,6 +12,7 @@ export class Storage {
 			await this.adapter.commit(writeOps)
 		} catch (error) {
 			this.onFailure(error)
+			throw error
 		}
 	}
 
