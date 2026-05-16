@@ -1,22 +1,21 @@
 import {
-	AnySchema,
-	ClientId,
-	Cookie,
-	EncodedQuery,
-	InvertibleMutation,
-	Mutation,
-	MutationId,
-	MutationOp,
-	Patch,
 	PatchApi,
-	RemoteApi,
-	ScanWindow,
+	type AnySchema,
+	type ClientId,
+	type Cookie,
+	type EncodedQuery,
+	type InvertibleMutation,
+	type Mutation,
+	type MutationId,
+	type MutationOp,
+	type Patch,
+	type RemoteApi,
+	type ScanWindow,
 	type TimerApi,
 } from "@tandem/types"
-import { LoggerApi } from "../utils/Logger"
-import { ThrottleQueue } from "../utils/ThrottleQueue"
-import { Timer } from "../utils/Timer"
-import { AsyncUnsubscribe, Unsubscribe } from "../utils/typeUtils"
+import type { LoggerApi } from "../utils/Logger.js"
+import { TaskQueue } from "../utils/TaskQueue.js"
+import type { AsyncUnsubscribe, Unsubscribe } from "../utils/typeUtils.js"
 
 function invertibleMutationToMutation<Schema extends AnySchema>(
 	invertible: InvertibleMutation<Schema>,
@@ -54,8 +53,7 @@ type SyncEngineArgs<Schema extends AnySchema> = {
 }
 
 export class SyncEngine<Schema extends AnySchema> {
-	private pullQueue: ThrottleQueue
-	private pushQueue: ThrottleQueue
+	private syncQueue: TaskQueue<"pull" | "push">
 	private pendingMutations: InvertibleMutation<Schema>[] = []
 	private readonly remote: RemoteApi<Schema>
 	private readonly logger: LoggerApi
@@ -80,16 +78,11 @@ export class SyncEngine<Schema extends AnySchema> {
 		this.applyPatchAt = args.applyPatchAt
 		this.clientId = args.clientId
 
-		// The pull queue uses a plain Timer so poke-triggered pulls don't
-		// interfere with invocations tracking push timers.
-		this.pullQueue = new ThrottleQueue(
-			() => this.pull(),
-			args.syncInterval,
-			new Timer(),
-		)
-
-		this.pushQueue = new ThrottleQueue(
-			() => this.push(),
+		this.syncQueue = new TaskQueue(
+			{
+				pull: () => this.pull(),
+				push: () => this.push(),
+			},
 			args.syncInterval,
 			args.timer,
 		)
@@ -118,6 +111,9 @@ export class SyncEngine<Schema extends AnySchema> {
 		this.logger.info("Connected to remote")
 
 		await this.queuePull()
+		if (this.pendingMutations.length > 0) {
+			await this.queuePushPendingMutations()
+		}
 
 		return unsubscribe
 	}
@@ -143,12 +139,17 @@ export class SyncEngine<Schema extends AnySchema> {
 
 	queuePull(): Promise<void> {
 		this.logger.info("Queueing pull...")
-		return this.pullQueue.enqueue().then(() => {
+		return this.syncQueue.enqueue("pull").then(() => {
 			this.logger.info("Pull finished")
 		})
 	}
 
 	private async pull() {
+		if (!this.disconnectFromRemote) {
+			this.logger.info("Skipping pull while disconnected")
+			return
+		}
+
 		this.logger.info("Pulling from remote...")
 		const { cookie, patch, lastMutationId } = await this.remote.pull({
 			clientId: this.clientId,
@@ -173,11 +174,20 @@ export class SyncEngine<Schema extends AnySchema> {
 	queuePush(mutation: InvertibleMutation<Schema>): Promise<void> {
 		this.logger.info("Queueing push...")
 		this.pendingMutations.push(mutation)
-		return this.pushQueue.enqueue()
+		return this.queuePushPendingMutations()
+	}
+
+	private queuePushPendingMutations(): Promise<void> {
+		return this.syncQueue.enqueue("push")
 	}
 
 	private async push() {
 		if (this.pendingMutations.length === 0) return
+
+		if (!this.disconnectFromRemote) {
+			this.logger.info("Skipping push while disconnected")
+			return
+		}
 
 		const mutations = this.pendingMutations
 		this.pendingMutations = []
