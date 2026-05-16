@@ -86,6 +86,11 @@ A sync engine and database for building collaborative apps.
     - [x] Local subscribe coverage
     - [x] Remote sync coverage
 - [ ] Create a server module
+  - [ ] Add database-backed invalidation for remote adapters
+    - Current pokes are emitted by the in-process `RemoteServer` when mutations are pushed through that instance.
+    - Future SQL adapters should support database-originated change notifications so multi-process servers and direct database writes can poke subscribed clients.
+    - Likely shape: keep snapshot reads as the source of truth, add optional store invalidations, and use database-native mechanisms such as Postgres `LISTEN`/`NOTIFY` plus triggers to emit coarse collection/id changes.
+    - Start with collection-level invalidation for correctness, then refine query-aware matching later as an optimization.
 - [ ] Rebuild query engine as incremental using https://github.com/electric-sql/d2ts
 - [ ] Think about backwards compatibility -- how does mounting from a persisted storage work with new versions?
   - [ ] New database versions
