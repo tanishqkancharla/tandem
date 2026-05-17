@@ -113,7 +113,7 @@ Switch the public client args to `logger?: Logger`, default to a new console-bac
 ```ts
 const logger = args.logger ?? new Logger({ sinks: new ConsoleLoggerSink() })
 
-this.logger = logger.scope("tandemClient", { clientId: this.clientId })
+this.logger = logger
 this.logger.info({ message: "pulling from remote" })
 
 this.db = new Database({
