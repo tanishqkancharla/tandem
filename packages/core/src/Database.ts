@@ -23,7 +23,7 @@ import {
 	StorageApi,
 	WriteOpsApi,
 } from "@tandem/types"
-import { LoggerApi } from "./utils/Logger"
+import { Logger } from "./utils/Logger"
 import { isEqual, pick, sortBy } from "./utils/objectUtils"
 import { ThrottleQueue } from "./utils/ThrottleQueue"
 import { Timer } from "./utils/Timer"
@@ -35,20 +35,21 @@ type DatabaseArgs<
 	schema?: RuntimeSchemaDefinition<Schema>
 	relations?: Relations
 	storage?: StorageApi
-	logger: LoggerApi
+	logger: Logger
 	rng: RngApi
 }
 
 export class Database<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema> = RuntimeRelationsDefinition<Schema>,
+	Relations extends
+		RuntimeRelationsDefinition<Schema> = RuntimeRelationsDefinition<Schema>,
 > {
 	private readonly tupleDb: TupleDatabaseClient = new TupleDatabaseClient(
 		new TupleDatabase(new InMemoryTupleStorage()),
 	)
 
 	private readonly storage?: Storage
-	private readonly logger: LoggerApi
+	private readonly logger: Logger
 	private readonly rng: RngApi
 	readonly schema?: RuntimeSchemaDefinition<Schema>
 	readonly relations?: Relations
@@ -68,7 +69,7 @@ export class Database<
 		this.storage = storageAdapter
 			? new Storage(storageAdapter, (error) => {
 					// TODO: clean up? What should we do when storage fails?
-					this.logger.error("Storage error", error)
+					this.logger.error({ message: "storage error", error })
 				})
 			: undefined
 
@@ -100,7 +101,7 @@ export class Database<
 	 * What if storage too big to load all at once?
 	 */
 	private async loadFromStorage(storage: Storage) {
-		this.logger.info("Loading from storage")
+		this.logger.info({ message: "loading from storage" })
 		const results = await storage.scan()
 		this.tupleDb.commit({ set: results })
 
@@ -108,14 +109,14 @@ export class Database<
 
 		const storageWriteQueue = new ThrottleQueue(
 			async () => {
-				this.logger.info("Committing to storage...")
+				this.logger.info({ message: "committing to storage" })
 				const copy = writeOpsQueue
 				writeOpsQueue = {}
 				try {
 					await storage.commit(copy)
-					this.logger.info("Committed to storage")
+					this.logger.info({ message: "committed to storage" })
 				} catch (error) {
-					this.logger.error("Error committing to storage", error)
+					this.logger.error({ message: "error committing to storage", error })
 					writeOpsQueue = copy
 				}
 			},
@@ -153,9 +154,7 @@ export class Database<
 
 	subscribe<Query extends RelationalQuery<Schema, Relations>>(
 		query: Query,
-		callback: (
-			result: RelationalQueryResult<Schema, Relations, Query>,
-		) => void,
+		callback: (result: RelationalQueryResult<Schema, Relations, Query>) => void,
 	): {
 		result: RelationalQueryResult<Schema, Relations, Query>
 		destroy: () => void
@@ -191,7 +190,12 @@ export class Database<
 		extraFilter?: (record: Schema[Collection]) => boolean,
 		tupleDb: ReadOnlyTupleDatabaseClientApi = this.tupleDb,
 	): RelationalQueryRow<Schema, Relations, Collection, Options>[] {
-		const rows = this.getRelationalRows(collection, options, extraFilter, tupleDb)
+		const rows = this.getRelationalRows(
+			collection,
+			options,
+			extraFilter,
+			tupleDb,
+		)
 		return rows.map((row) =>
 			this.expandRelationalRow(collection, row, options, tupleDb),
 		) as RelationalQueryRow<Schema, Relations, Collection, Options>[]
@@ -226,9 +230,7 @@ export class Database<
 			results = sortBy(
 				results,
 				...Object.entries(options.orderBy).flatMap(([field, direction]) =>
-					direction
-						? [[(item: any) => item[field], direction] as const]
-						: [],
+					direction ? [[(item: any) => item[field], direction] as const] : [],
 				),
 			)
 		}
@@ -299,7 +301,9 @@ export class Database<
 		if (!options.with) return result
 
 		if (!this.relations) {
-			throw new Error("Cannot execute relational query includes without relations")
+			throw new Error(
+				"Cannot execute relational query includes without relations",
+			)
 		}
 
 		for (const [relationName, includeOptions] of Object.entries(options.with)) {
@@ -309,7 +313,8 @@ export class Database<
 			}
 
 			const targetCollection = relation.targetCollection
-			const nestedOptions = includeOptions === true ? {} : (includeOptions as any)
+			const nestedOptions =
+				includeOptions === true ? {} : (includeOptions as any)
 
 			if (relation.type === "many-to-one") {
 				const joinValue = row[relation.from]
@@ -333,5 +338,4 @@ export class Database<
 
 		return result
 	}
-
 }

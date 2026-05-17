@@ -13,7 +13,7 @@ import {
 	type ScanWindow,
 	type TimerApi,
 } from "@tandem/types"
-import type { LoggerApi } from "../utils/Logger.js"
+import type { Logger } from "../utils/Logger.js"
 import { TaskQueue } from "../utils/TaskQueue.js"
 import type { AsyncUnsubscribe, Unsubscribe } from "../utils/typeUtils.js"
 
@@ -56,7 +56,7 @@ export class SyncEngine<Schema extends AnySchema> {
 	private syncQueue: TaskQueue<"pull" | "push">
 	private pendingMutations: InvertibleMutation<Schema>[] = []
 	private readonly remote: RemoteApi<Schema>
-	private readonly logger: LoggerApi
+	private readonly logger: Logger
 	private readonly handleRollback: (
 		mutationsToRollback: readonly InvertibleMutation<Schema>[],
 	) => void
@@ -90,25 +90,25 @@ export class SyncEngine<Schema extends AnySchema> {
 		if (args.autoConnect) {
 			this.connect().catch((error) => {
 				// TODO: disconnect and operate in offline mode
-				this.logger.error("Error connecting to remote", error)
+				this.logger.error({ message: "error connecting to remote", error })
 			})
 		}
 	}
 
 	async connect() {
-		this.logger.info("Connecting to remote...")
+		this.logger.info({ message: "connecting to remote" })
 		const unsubscribe = await this.remote.connect({
 			clientId: this.clientId,
 			poke: () => {
-				this.logger.info("Received poke from remote")
+				this.logger.info({ message: "received poke from remote" })
 				void this.queuePull().catch((error) => {
-					this.logger.error("Error pulling from remote", error)
+					this.logger.error({ message: "error pulling from remote", error })
 				})
 			},
 		})
 		this.disconnectFromRemote = unsubscribe
 
-		this.logger.info("Connected to remote")
+		this.logger.info({ message: "connected to remote" })
 
 		await this.queuePull()
 		if (this.pendingMutations.length > 0) {
@@ -119,28 +119,28 @@ export class SyncEngine<Schema extends AnySchema> {
 	}
 
 	async disconnect() {
-		this.logger.info("Disconnecting from remote")
+		this.logger.info({ message: "disconnecting from remote" })
 		await this.disconnectFromRemote?.()
 		this.disconnectFromRemote = undefined
 	}
 
 	subscribe(query: EncodedQuery<Schema>): Unsubscribe {
-		this.logger.info("Subscribing to query", query)
+		this.logger.info({ message: "subscribing to query", query })
 		this.scanWindow.push(query)
 		void this.queuePull().catch((error) => {
-			this.logger.error("Error pulling from remote", error)
+			this.logger.error({ message: "error pulling from remote", error })
 		})
 
 		return () => {
-			this.logger.info("Unsubscribing from query", query)
+			this.logger.info({ message: "unsubscribing from query", query })
 			this.scanWindow.splice(this.scanWindow.indexOf(query), 1)
 		}
 	}
 
 	queuePull(): Promise<void> {
-		this.logger.info("Queueing pull...")
+		this.logger.info({ message: "queueing pull" })
 		return this.syncQueue.enqueue("pull").then(() => {
-			this.logger.info("Pull finished")
+			this.logger.info({ message: "pull finished" })
 		})
 	}
 
@@ -149,21 +149,19 @@ export class SyncEngine<Schema extends AnySchema> {
 			return
 		}
 
-		this.logger.info("Pulling from remote...")
+		this.logger.info({ message: "pulling from remote" })
 		const { cookie, patch, lastMutationId } = await this.remote.pull({
 			clientId: this.clientId,
 			cookie: this.cookie,
 			scanWindow: this.scanWindow,
 		})
 
-		this.logger.info(
-			"Pulled from remote",
-			{
-				cookie,
-				lastMutationId,
-			},
-			PatchApi.toString(patch),
-		)
+		this.logger.info({
+			message: "pulled from remote",
+			cookie,
+			lastMutationId,
+			patch: PatchApi.toString(patch),
+		})
 
 		this.cookie = cookie
 
@@ -171,7 +169,7 @@ export class SyncEngine<Schema extends AnySchema> {
 	}
 
 	queuePush(mutation: InvertibleMutation<Schema>): Promise<void> {
-		this.logger.info("Queueing push...")
+		this.logger.info({ message: "queueing push" })
 		this.pendingMutations.push(mutation)
 		return this.syncQueue.enqueue("push")
 	}
@@ -180,7 +178,7 @@ export class SyncEngine<Schema extends AnySchema> {
 		if (this.pendingMutations.length === 0) return
 
 		if (!this.disconnectFromRemote) {
-			this.logger.info("Skipping push while disconnected")
+			this.logger.info({ message: "skipping push while disconnected" })
 			return
 		}
 
@@ -197,7 +195,7 @@ export class SyncEngine<Schema extends AnySchema> {
 				clientId: this.clientId,
 			})
 		} catch (error) {
-			this.logger.error("Error applying mutation", error)
+			this.logger.error({ message: "error applying mutation", error })
 
 			this.handleRollback(mutations)
 			throw error

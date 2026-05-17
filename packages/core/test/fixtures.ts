@@ -1,12 +1,6 @@
 import "fake-indexeddb/auto"
 
-import {
-	appendFileSync,
-	mkdirSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs"
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { expect as extendableExpect } from "extendable-expect"
 import { expect as vitestExpect, test as base, vi } from "vitest"
@@ -18,7 +12,7 @@ import {
 	t,
 } from "../src/schema/Schema"
 import { IndexedDbTupleStorage } from "../src/storage/IndexedDbAdapter"
-import type { LoggerApi } from "../src/utils/Logger"
+import { JsonlLoggerSink, Logger } from "../src/utils/Logger"
 import { InMemoryRemote } from "@tandem/server"
 import type {
 	AnySchema,
@@ -77,7 +71,10 @@ export function expectQuery<
 	Relations extends RuntimeRelationsDefinition<Schema>,
 	Query extends RelationalQuery<Schema, Relations>,
 >(client: TandemClient<Schema, Relations>, query: Query) {
-	return expectResolver(() => client.query(query) as RelationalQueryResult<Schema, Relations, Query>)
+	return expectResolver(
+		() =>
+			client.query(query) as RelationalQueryResult<Schema, Relations, Query>,
+	)
 }
 
 export type ThreadTestUser = {
@@ -161,60 +158,6 @@ function getTestLogFilePath(task: Readonly<Task>): string {
 	return resolve(process.cwd(), "test", "logs", fileName)
 }
 
-function serializeLogValue(value: unknown): unknown {
-	if (value instanceof Error) {
-		return {
-			name: value.name,
-			message: value.message,
-			stack: value.stack,
-		}
-	}
-
-	try {
-		return JSON.parse(JSON.stringify(value))
-	} catch {
-		return String(value)
-	}
-}
-
-function createLogger(
-	logFilePath: string,
-	scopeNames: string[] = [],
-): LoggerApi {
-	function write(
-		level: "log" | "info" | "warn" | "error",
-		message: string,
-		args: unknown[],
-	) {
-		appendFileSync(
-			logFilePath,
-			`${JSON.stringify({
-				ts: new Date().toISOString(),
-				level,
-				scope: scopeNames,
-				message,
-				args: args.map(serializeLogValue),
-			})}\n`,
-		)
-	}
-
-	return {
-		log: (message, ...args) => {
-			write("log", message, args)
-		},
-		info: (message, ...args) => {
-			write("info", message, args)
-		},
-		warn: (message, ...args) => {
-			write("warn", message, args)
-		},
-		error: (message, ...args) => {
-			write("error", message, args)
-		},
-		scope: (name) => createLogger(logFilePath, [...scopeNames, name]),
-	}
-}
-
 function createRng(): DemoRng {
 	let counter = 0
 
@@ -244,7 +187,7 @@ type ClientOptions = {
 }
 
 type Fixtures = {
-	logger: LoggerApi
+	logger: Logger
 	rng: DemoRng
 	server: InMemoryRemote<TestsSchema>
 	client1: TandemClient<TestsSchema>
@@ -280,7 +223,9 @@ export const test = base.extend<Fixtures>({
 			rmSync(logFilePath, { force: true })
 		})
 
-		await use(createLogger(logFilePath))
+		await use(
+			new Logger({ sinks: new JsonlLoggerSink({ filePath: logFilePath }) }),
+		)
 	},
 
 	rng: async ({}, use) => {

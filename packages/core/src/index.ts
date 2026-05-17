@@ -30,7 +30,15 @@ export type {
 	EncodedWhereClause,
 	EncodedQuery,
 } from "@tandem/types"
-export { type LoggerApi, ConsoleLogger, rootLogger } from "./utils/Logger"
+export {
+	Logger,
+	ConsoleLoggerSink,
+	JsonlLoggerSink,
+	type LoggerData,
+	type LoggerEntry,
+	type LoggerSinkApi,
+	type LogLevel,
+} from "./utils/Logger"
 export {
 	type Json,
 	type AnyFunction,
