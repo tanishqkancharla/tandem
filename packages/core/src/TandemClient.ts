@@ -73,9 +73,7 @@ export class TandemClient<
 	}: TandemClientArgs<Schema, Relations>) {
 		this.rng = rng ?? { randomId }
 		this.clientId = this.rng.randomId() as ClientId
-		this.logger = (
-			logger ?? new Logger({ sinks: new ConsoleLoggerSink() })
-		).scope("tandemClient", { clientId: this.clientId })
+		this.logger = logger ?? new Logger({ sinks: new ConsoleLoggerSink() })
 
 		const timerImpl = timer ?? new Timer()
 
@@ -88,7 +86,7 @@ export class TandemClient<
 					},
 					applyPatchAt: (args) => this.applyPatchAt(args),
 					autoConnect,
-					logger: this.logger.scope("syncEngine"),
+					logger: this.logger.scope("sync-engine"),
 					syncInterval,
 					timer: timerImpl,
 				})
