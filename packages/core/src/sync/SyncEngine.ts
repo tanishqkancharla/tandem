@@ -112,7 +112,7 @@ export class SyncEngine<Schema extends AnySchema> {
 
 		await this.queuePull()
 		if (this.pendingMutations.length > 0) {
-			await this.queuePushPendingMutations()
+			await this.syncQueue.enqueue("push")
 		}
 
 		return unsubscribe
@@ -146,7 +146,6 @@ export class SyncEngine<Schema extends AnySchema> {
 
 	private async pull() {
 		if (!this.disconnectFromRemote) {
-			this.logger.info("Skipping pull while disconnected")
 			return
 		}
 
@@ -174,10 +173,6 @@ export class SyncEngine<Schema extends AnySchema> {
 	queuePush(mutation: InvertibleMutation<Schema>): Promise<void> {
 		this.logger.info("Queueing push...")
 		this.pendingMutations.push(mutation)
-		return this.queuePushPendingMutations()
-	}
-
-	private queuePushPendingMutations(): Promise<void> {
 		return this.syncQueue.enqueue("push")
 	}
 
