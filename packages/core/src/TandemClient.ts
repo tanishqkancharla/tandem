@@ -19,7 +19,7 @@ import {
 	StorageApi,
 	type TimerApi,
 } from "@tandem/types"
-import { ConsoleLogger, LoggerApi } from "./utils/Logger"
+import { ConsoleLoggerSink, Logger } from "./utils/Logger"
 import { randomId } from "./utils/randomId"
 import { Timer } from "./utils/Timer"
 
@@ -31,7 +31,7 @@ type TandemClientArgs<
 	relations?: Relations
 	storage?: StorageApi
 	remote?: RemoteApi<Schema>
-	logger?: LoggerApi
+	logger?: Logger
 	rng?: RngApi
 	timer?: TimerApi
 	autoConnect?: boolean
@@ -43,7 +43,8 @@ type TandemClientArgs<
 
 export class TandemClient<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema> = RuntimeRelationsDefinition<Schema>,
+	Relations extends
+		RuntimeRelationsDefinition<Schema> = RuntimeRelationsDefinition<Schema>,
 > {
 	private readonly db: Database<Schema, Relations>
 	/**
@@ -55,7 +56,7 @@ export class TandemClient<
 	readonly clientId: ClientId
 
 	private readonly syncEngine?: SyncEngine<Schema>
-	private readonly logger: LoggerApi
+	private readonly logger: Logger
 	private readonly rng: RngApi
 
 	private speculativeMutations: InvertibleMutation<Schema>[] = []
@@ -70,10 +71,11 @@ export class TandemClient<
 		rng,
 		timer,
 	}: TandemClientArgs<Schema, Relations>) {
-		this.logger = logger ?? new ConsoleLogger(["tandem-client"])
-
 		this.rng = rng ?? { randomId }
 		this.clientId = this.rng.randomId() as ClientId
+		this.logger = (
+			logger ?? new Logger({ sinks: new ConsoleLoggerSink() })
+		).scope("tandemClient", { clientId: this.clientId })
 
 		const timerImpl = timer ?? new Timer()
 
@@ -86,7 +88,7 @@ export class TandemClient<
 					},
 					applyPatchAt: (args) => this.applyPatchAt(args),
 					autoConnect,
-					logger: this.logger.scope("sync-engine"),
+					logger: this.logger.scope("syncEngine"),
 					syncInterval,
 					timer: timerImpl,
 				})
@@ -108,7 +110,7 @@ export class TandemClient<
 			return Promise.resolve()
 		}
 
-		this.logger.info("Pulling from remote")
+		this.logger.info({ message: "pulling from remote" })
 		return this.syncEngine.queuePull()
 	}
 
@@ -119,10 +121,10 @@ export class TandemClient<
 		patch: Patch<Schema>
 		lastMutationId?: MutationId
 	}) {
-		this.logger.info("Applying patch...")
+		this.logger.info({ message: "applying patch" })
 
 		if (patch.set?.length === 0 && patch.remove?.length === 0) {
-			this.logger.info("No ops to apply")
+			this.logger.info({ message: "no ops to apply" })
 			return
 		}
 
@@ -158,7 +160,7 @@ export class TandemClient<
 	}
 
 	private rollback(mutationsToRollback: readonly InvertibleMutation<Schema>[]) {
-		this.logger.info("Rolling back")
+		this.logger.info({ message: "rolling back" })
 		const inverted = MutationApi.getRollbackWrites(mutationsToRollback)
 
 		const tx = this.db.makeTupleDbTransaction()
@@ -174,9 +176,7 @@ export class TandemClient<
 
 	subscribe<Query extends RelationalQuery<Schema, Relations>>(
 		query: Query,
-		callback: (
-			result: RelationalQueryResult<Schema, Relations, Query>,
-		) => void,
+		callback: (result: RelationalQueryResult<Schema, Relations, Query>) => void,
 	): {
 		result: RelationalQueryResult<Schema, Relations, Query>
 		destroy: () => void
@@ -201,13 +201,13 @@ export class TandemClient<
 
 	commit(transaction: Transaction<Schema>): Promise<void> {
 		if (transaction.ops.length === 0) {
-			this.logger.info(
-				"Attempted to commit transaction with no ops -- bailing.",
-			)
+			this.logger.info({
+				message: "attempted to commit transaction with no ops",
+			})
 			return Promise.resolve()
 		}
 
-		this.logger.info("Committing transaction")
+		this.logger.info({ message: "committing transaction" })
 		const mutation: InvertibleMutation<Schema> = {
 			ops: transaction.ops,
 			id: transaction.tupleDbTx.id as MutationId,
@@ -233,7 +233,9 @@ export class TandemClient<
 
 	async disconnect() {
 		if (!this.syncEngine) {
-			console.warn("Attempted to disconnect without a remote server configured")
+			this.logger.warn({
+				message: "attempted to disconnect without a remote server configured",
+			})
 			return
 		}
 		return await this.syncEngine.disconnect()
@@ -247,7 +249,7 @@ export class TandemClient<
 	}
 
 	async clear() {
-		this.logger.info("Clearing database")
+		this.logger.info({ message: "clearing database" })
 
 		// Clear speculative mutations
 		this.speculativeMutations = []

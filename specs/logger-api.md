@@ -53,11 +53,7 @@ type LogLevel = "debug" | "info" | "warn" | "log" | "error"
 type LoggerData = Record<string, unknown>
 
 type LoggerSinkApi = {
-	log: (entry: {
-		timestamp: string
-		level: LogLevel
-		data: LoggerData
-	}) => void
+	log: (entry: { timestamp: string; level: LogLevel; data: LoggerData }) => void
 	destroy?: () => void
 }
 
@@ -67,7 +63,10 @@ class Logger {
 		this.write("info", data)
 	}
 	scope(name: string, data: LoggerData = {}) {
-		return new Logger({ sinks: this.sinks, scopes: { ...this.scopes, [name]: data } })
+		return new Logger({
+			sinks: this.sinks,
+			scopes: { ...this.scopes, [name]: data },
+		})
 	}
 }
 ```
