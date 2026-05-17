@@ -10,7 +10,7 @@ import {
 	todo,
 	type TestsTodo,
 } from "./fixtures"
-import { RemoteApi } from "@tandem/types"
+import type { RemoteApi } from "@tandem/types"
 import { TandemClient } from "../src/TandemClient"
 import { collection, defineSchema } from "../src/schema/Schema"
 import { IndexedDbTupleStorage } from "../src/storage/IndexedDbAdapter"
@@ -1011,6 +1011,38 @@ describe("TandemClient", () => {
 
 		expect(latestResult).toEqual([])
 		expect(todosAfterRollback).toEqual([])
+	})
+
+	tandemClientTest("keeps pending mutations queued while disconnected and pushes them after reconnect", async ({
+		makeClient,
+		server,
+	}) => {
+		const pushedMutationCounts: number[] = []
+		const remote: RemoteApi<TestsSchema> = {
+			connect: (client) => server.connect(client),
+			pull: (args) => server.pull(args),
+			push: async (args) => {
+				pushedMutationCounts.push(args.mutations.length)
+				return server.push(args)
+			},
+		}
+		const client = await makeClient({
+			label: "reconnect-push-client",
+			remote,
+			autoConnect: false,
+		})
+
+		// Committing while disconnected does not call remote push
+		const tx = client.transact()
+		tx.set("todos", todo("todo-1", { text: "Write while disconnected" }))
+		await client.commit(tx)
+
+		expect(pushedMutationCounts).toEqual([])
+
+		// Connecting later flushes the pending mutation
+		await client.connect()
+
+		expect(pushedMutationCounts).toEqual([1])
 	})
 
 	tandemClientTest("replays a pending local edit on top of a newer remote patch", async ({
