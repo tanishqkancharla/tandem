@@ -1,10 +1,10 @@
 import { InMemoryTupleStorage, subscribeQuery, TupleDatabase, TupleDatabaseClient, } from "tuple-database";
-import { Storage } from "./storage/Storage";
-import { Transaction } from "./transaction/Transaction";
-import { WriteOpsApi, } from "./types";
-import { isEqual, pick, sortBy } from "./utils/objectUtils";
-import { ThrottleQueue } from "./utils/ThrottleQueue";
-import { Timer } from "./utils/Timer";
+import { Storage } from "./storage/Storage.js";
+import { Transaction } from "./transaction/Transaction.js";
+import { WriteOpsApi, } from "./types.js";
+import { isEqual, pick, sortBy } from "./utils/objectUtils.js";
+import { ThrottleQueue } from "./utils/ThrottleQueue.js";
+import { Timer } from "./utils/Timer.js";
 export class Database {
     tupleDb = new TupleDatabaseClient(new TupleDatabase(new InMemoryTupleStorage()));
     storage;

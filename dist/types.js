@@ -1,5 +1,5 @@
-import { isEqual, partition, reverse } from "./utils/objectUtils";
-export { tag, untag } from "./utils/typeUtils";
+import { isEqual, partition, reverse } from "./utils/objectUtils.js";
+export { tag, untag } from "./utils/typeUtils.js";
 export var MutationApi;
 (function (MutationApi) {
     function invertMutationOp(op) {

@@ -1,4 +1,4 @@
-import { PatchApi, } from "../types";
+import { PatchApi, } from "../types.js";
 import { TaskQueue } from "../utils/TaskQueue.js";
 function invertibleMutationToMutation(invertible) {
     return {

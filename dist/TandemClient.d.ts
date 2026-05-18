@@ -1,6 +1,6 @@
-import { Transaction } from "./transaction/Transaction";
-import { AnySchema, ClientId, RemoteApi, RelationalQuery, RelationalQueryResult, RngApi, RuntimeRelationsDefinition, RuntimeSchemaDefinition, StorageApi, type TimerApi } from "./types";
-import { Logger } from "./utils/Logger";
+import { Transaction } from "./transaction/Transaction.js";
+import { AnySchema, ClientId, RemoteApi, RelationalQuery, RelationalQueryResult, RngApi, RuntimeRelationsDefinition, RuntimeSchemaDefinition, StorageApi, type TimerApi } from "./types.js";
+import { Logger } from "./utils/Logger.js";
 type TandemClientArgs<Schema extends AnySchema, Relations extends RuntimeRelationsDefinition<Schema>> = {
     schema?: RuntimeSchemaDefinition<Schema>;
     relations?: Relations;
@@ -37,7 +37,7 @@ export declare class TandemClient<Schema extends AnySchema, Relations extends Ru
     };
     transact(): Transaction<Schema>;
     commit(transaction: Transaction<Schema>): Promise<void>;
-    connect(): Promise<import(".").AsyncUnsubscribe>;
+    connect(): Promise<import("./index.js").AsyncUnsubscribe>;
     disconnect(): Promise<void>;
     /**
      * Flush any pending writes to storage immediately.

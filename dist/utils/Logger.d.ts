@@ -30,12 +30,5 @@ export declare class Logger {
 export declare class ConsoleLoggerSink implements LoggerSinkApi {
     log(entry: LoggerEntry): void;
 }
-export declare class JsonlLoggerSink implements LoggerSinkApi {
-    private readonly filePath;
-    constructor({ filePath }: {
-        filePath: string;
-    });
-    log(entry: LoggerEntry): void;
-}
 export {};
 //# sourceMappingURL=Logger.d.ts.map

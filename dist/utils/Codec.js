@@ -1,4 +1,4 @@
-import { isObject, isString, mapValues } from "./objectUtils";
+import { isObject, isString, mapValues } from "./objectUtils.js";
 class CodecImpl {
     name;
     internalEncode;

@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 import { deleteDB, openDB } from "idb";
-import { decodeTuple, encodeTuple } from "tuple-database/helpers/codec";
+import { decodeTuple, encodeTuple } from "tuple-database/helpers/codec.js";
 const version = 1;
 const storeName = "tupledb";
 function getSchemaCodecs(schema) {

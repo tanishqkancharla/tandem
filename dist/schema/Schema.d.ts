@@ -1,5 +1,5 @@
-import type { AnyCollectionDefinition, AnyCollectionSchema, AnyRuntimeFieldDefinition, AnySchema, CollectionName, CollectionDefinition, NormalizedManyToOneRelationDefinition, NormalizedOneToManyRelationDefinition, RelationType, RuntimeFieldDefinition, RuntimeSchemaDefinition } from "../types";
-import type { Codec } from "../utils/Codec";
+import type { AnyCollectionDefinition, AnyCollectionSchema, AnyRuntimeFieldDefinition, AnySchema, CollectionName, CollectionDefinition, NormalizedManyToOneRelationDefinition, NormalizedOneToManyRelationDefinition, RelationType, RuntimeFieldDefinition, RuntimeSchemaDefinition } from "../types.js";
+import type { Codec } from "../utils/Codec.js";
 type CollectionOptions<Record extends AnyCollectionSchema, StorageValue> = {
     codec?: Codec<Record, StorageValue>;
     fields?: readonly (keyof Record & string)[];

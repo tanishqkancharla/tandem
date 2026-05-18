@@ -1,4 +1,4 @@
-import { type AnySchema, type ClientId, type EncodedQuery, type InvertibleMutation, type TimerApi } from "../types";
+import { type AnySchema, type ClientId, type EncodedQuery, type InvertibleMutation, type TimerApi } from "../types.js";
 import type { AsyncUnsubscribe, Unsubscribe } from "../utils/typeUtils.js";
 type SyncEngineArgs<Schema extends AnySchema> = {
     clientId: ClientId;

@@ -1,6 +1,6 @@
 import { KeyValuePair, ScanStorageArgs, WriteOps } from "tuple-database";
-import { AnySchema, Json, RuntimeSchemaDefinition, StorageApi } from "../types";
-import { Codec } from "../utils/Codec";
+import { AnySchema, Json, RuntimeSchemaDefinition, StorageApi } from "../types.js";
+import { Codec } from "../utils/Codec.js";
 type AnyStorageSchema<Schema extends AnySchema> = {
     [K in keyof Schema]?: Json;
 };

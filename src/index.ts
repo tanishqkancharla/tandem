@@ -49,7 +49,6 @@ export { MutationApi, PatchApi, WriteOpsApi } from "./types"
 export {
 	Logger,
 	ConsoleLoggerSink,
-	JsonlLoggerSink,
 	type LoggerData,
 	type LoggerEntry,
 	type LoggerSinkApi,

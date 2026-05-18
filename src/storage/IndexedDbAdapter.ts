@@ -2,7 +2,7 @@
 
 import { deleteDB, IDBPDatabase, openDB } from "idb"
 import { KeyValuePair, ScanStorageArgs, WriteOps } from "tuple-database"
-import { decodeTuple, encodeTuple } from "tuple-database/helpers/codec"
+import { decodeTuple, encodeTuple } from "tuple-database/helpers/codec.js"
 import {
 	AnySchema,
 	Json,

@@ -1,5 +1,5 @@
 import type { KeyValuePair, ScanStorageArgs, WriteOps } from "tuple-database";
-import type { StorageApi } from "../types";
+import type { StorageApi } from "../types.js";
 export declare class Storage {
     readonly adapter: StorageApi;
     private readonly onFailure;

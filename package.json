@@ -8,6 +8,10 @@
 		".": {
 			"types": "./dist/index.d.ts",
 			"default": "./dist/index.js"
+		},
+		"./node": {
+			"types": "./dist/node.d.ts",
+			"default": "./dist/node.js"
 		}
 	},
 	"files": [
@@ -23,7 +27,7 @@
 		"url": "https://github.com/tanishqkancharla/tandem"
 	},
 	"scripts": {
-		"build": "tsc",
+		"build": "tsc && tsc-alias -p tsconfig.json --resolve-full-paths",
 		"test": "vitest run",
 		"typecheck": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit",
 		"type-check": "pnpm typecheck"
@@ -41,6 +45,7 @@
 		"fake-indexeddb": "^6.2.5",
 		"mysql2": "^3.14.1",
 		"postgres": "^3.4.5",
+		"tsc-alias": "^1.8.17",
 		"typescript": "^5.7.2",
 		"vitest": "^1.1.0"
 	},

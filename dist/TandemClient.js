@@ -1,10 +1,10 @@
-import { Database } from "./Database";
-import { _encodeRelationalQuery } from "./query/Query";
-import { SyncEngine } from "./sync/SyncEngine";
-import { MutationApi, PatchApi, } from "./types";
-import { ConsoleLoggerSink, Logger } from "./utils/Logger";
-import { randomId } from "./utils/randomId";
-import { Timer } from "./utils/Timer";
+import { Database } from "./Database.js";
+import { _encodeRelationalQuery } from "./query/Query.js";
+import { SyncEngine } from "./sync/SyncEngine.js";
+import { MutationApi, PatchApi, } from "./types.js";
+import { ConsoleLoggerSink, Logger } from "./utils/Logger.js";
+import { randomId } from "./utils/randomId.js";
+import { Timer } from "./utils/Timer.js";
 export class TandemClient {
     db;
     /**

@@ -1,5 +1,5 @@
 import type { TupleRootTransactionApi } from "tuple-database";
-import { AnySchema, CollectionName, InvertibleMutationOp } from "../types";
+import { AnySchema, CollectionName, InvertibleMutationOp } from "../types.js";
 export declare class Transaction<Schema extends AnySchema> {
     /**
      * @internal

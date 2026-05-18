@@ -1,4 +1,4 @@
-import type { TimerApi } from "../types";
+import type { TimerApi } from "../types.js";
 export declare class ThrottleQueue {
     private readonly task;
     private readonly interval;

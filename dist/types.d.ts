@@ -1,6 +1,6 @@
 import type { AsyncTupleStorageApi, WriteOps } from "tuple-database";
-import { AsyncUnsubscribe, Tagged } from "./utils/typeUtils";
-export { tag, untag } from "./utils/typeUtils";
+import { AsyncUnsubscribe, Tagged } from "./utils/typeUtils.js";
+export { tag, untag } from "./utils/typeUtils.js";
 export interface StorageApi extends AsyncTupleStorageApi {
     clear(): Promise<void>;
 }

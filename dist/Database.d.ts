@@ -1,7 +1,7 @@
 import { type TupleRootTransactionApi } from "tuple-database";
-import { Transaction } from "./transaction/Transaction";
-import { AnySchema, RngApi, RelationalQuery, RelationalQueryResult, RuntimeRelationsDefinition, RuntimeSchemaDefinition, StorageApi } from "./types";
-import { Logger } from "./utils/Logger";
+import { Transaction } from "./transaction/Transaction.js";
+import { AnySchema, RngApi, RelationalQuery, RelationalQueryResult, RuntimeRelationsDefinition, RuntimeSchemaDefinition, StorageApi } from "./types.js";
+import { Logger } from "./utils/Logger.js";
 type DatabaseArgs<Schema extends AnySchema, Relations extends RuntimeRelationsDefinition<Schema>> = {
     schema?: RuntimeSchemaDefinition<Schema>;
     relations?: Relations;

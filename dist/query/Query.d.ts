@@ -1,3 +1,3 @@
-import { AnySchema, CollectionName, EncodedQuery, RelationalQueryOptions, RuntimeRelationsDefinition } from "../types";
+import { AnySchema, CollectionName, EncodedQuery, RelationalQueryOptions, RuntimeRelationsDefinition } from "../types.js";
 export declare function _encodeRelationalQuery<Schema extends AnySchema, Relations extends RuntimeRelationsDefinition<Schema>, Collection extends CollectionName<Schema>>(collection: Collection, options?: RelationalQueryOptions<Schema, Relations, Collection>, relations?: Relations): EncodedQuery<Schema>;
 //# sourceMappingURL=Query.d.ts.map
