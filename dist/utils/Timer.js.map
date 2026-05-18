@@ -1,0 +1,1 @@
+{"version":3,"file":"Timer.js","sourceRoot":"","sources":["../../src/utils/Timer.ts"],"names":[],"mappings":"AAEA,MAAM,OAAO,KAAK;IACjB,KAAK,CAAC,EAAU;QACf,OAAO,IAAI,OAAO,CAAC,CAAC,OAAO,EAAE,EAAE,CAAC,UAAU,CAAC,OAAO,EAAE,EAAE,CAAC,CAAC,CAAA;IACzD,CAAC;CACD"}

@@ -1,38 +1,47 @@
 {
-	"name": "tandem-monorepo",
-	"private": true,
-	"type": "module",
+	"name": "@tandem/core",
 	"version": "0.2.0",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist",
+		"src",
+		"README.md"
+	],
 	"packageManager": "pnpm@10.12.4",
 	"author": "Tanishq Kancharla <tanishqkancharla3@gmail.com>",
 	"description": "A sync engine and database for building collaborative apps",
-	"keywords": [],
 	"license": "MIT",
 	"repository": {
-		"url": "https://github.com/tanishqkancharla/npm-ts-boilerplate"
+		"url": "https://github.com/tanishqkancharla/tandem"
 	},
 	"scripts": {
-		"build": "turbo build",
-		"type-check": "turbo type-check",
-		"tsgo": "tsgo",
-		"lint": "turbo lint",
-		"format": "prettier --write .",
-		"test": "turbo test",
-		"dev": "turbo dev",
-		"clean": "turbo clean"
+		"build": "tsc",
+		"test": "vitest run",
+		"typecheck": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit",
+		"type-check": "pnpm typecheck"
+	},
+	"dependencies": {
+		"idb": "^8.0.3",
+		"tuple-database": "^2.2.4"
 	},
 	"devDependencies": {
+		"@types/better-sqlite3": "^7.6.13",
 		"@types/node": "^20.14.2",
-		"@typescript/native-preview": "7.0.0-dev.20260510.1",
-		"eslint": "^9.16.0",
-		"eslint-config-prettier": "^9.1.0",
-		"eslint-plugin-prettier": "^5.2.1",
-		"jsr": "^0.13.2",
-		"prettier": "^3.0.0",
-		"tsx": "^4.19.2",
-		"turbo": "^2.0.0",
+		"better-sqlite3": "^11.10.0",
+		"drizzle-orm": "^0.44.0",
+		"extendable-expect": "^1.0.5",
+		"fake-indexeddb": "^6.2.5",
+		"mysql2": "^3.14.1",
+		"postgres": "^3.4.5",
 		"typescript": "^5.7.2",
-		"typescript-eslint": "^8.17.0",
 		"vitest": "^1.1.0"
 	},
 	"pnpm": {

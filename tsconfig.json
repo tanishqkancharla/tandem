@@ -6,28 +6,16 @@
 		"esModuleInterop": true,
 		"allowSyntheticDefaultImports": true,
 		"removeComments": false,
-		"lib": ["ESNext"],
+		"lib": ["ESNext", "DOM"],
 		"declaration": true,
 		"declarationMap": true,
 		"sourceMap": true,
+		"outDir": "./dist",
+		"rootDir": "./src",
 		"forceConsistentCasingInFileNames": true,
 		"strict": true,
-		"skipLibCheck": true,
-		"composite": true
+		"skipLibCheck": true
 	},
-	"files": [],
-	"references": [
-		{
-			"path": "./packages/types"
-		},
-		{
-			"path": "./packages/core"
-		},
-		{
-			"path": "./packages/core/tsconfig.test.json"
-		},
-		{
-			"path": "./packages/server"
-		}
-	]
+	"include": ["src/**/*.ts"],
+	"exclude": ["dist", "node_modules"]
 }

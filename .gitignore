@@ -1,8 +1,9 @@
 node_modules/
-dist/
+packages/*/dist/
 .parcel-cache
 /.kosho**
 **/*.turbo
 *.tsbuildinfo
 packages/core/test/logs/
+test/logs/
 tmp/

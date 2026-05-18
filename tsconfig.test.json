@@ -1,0 +1,15 @@
+{
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"rootDir": ".",
+		"declaration": false,
+		"declarationMap": false,
+		"types": ["node", "vitest"],
+		"paths": {
+			"@tandem/types": ["./src/types.ts"],
+			"@tandem/core": ["./src/index.ts"]
+		}
+	},
+	"include": ["src/**/*.ts", "test/**/*.ts", "packages/server/src/**/*.ts"]
+}
