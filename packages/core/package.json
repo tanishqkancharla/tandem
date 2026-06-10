@@ -14,7 +14,7 @@
 	],
 	"scripts": {
 		"build": "tsc",
-		"type-check": "tsgo -b ../types ../server && tsgo --noEmit && tsgo -p tsconfig.test.json --noEmit",
+		"type-check": "tsgo --noEmit && tsgo -p tsconfig.test.json --noEmit",
 		"lint": "eslint src --fix && tsc --noEmit",
 		"test": "vitest run"
 	},
