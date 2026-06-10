@@ -1,0 +1,33 @@
+{
+	"$schema": "./node_modules/oxlint/configuration_schema.json",
+	"plugins": ["eslint", "typescript", "unicorn", "oxc"],
+	"categories": {
+		"correctness": "error"
+	},
+	"options": {
+		"typeAware": true
+	},
+	"ignorePatterns": ["**/dist/**", "**/node_modules/**"],
+	"rules": {
+		"eslint/no-unused-vars": [
+			"warn",
+			{
+				"args": "all",
+				"argsIgnorePattern": "^_",
+				"caughtErrors": "all",
+				"caughtErrorsIgnorePattern": "^_",
+				"destructuredArrayIgnorePattern": "^_",
+				"varsIgnorePattern": "^_",
+				"ignoreRestSiblings": true
+			}
+		],
+		"typescript/no-floating-promises": "error",
+		"typescript/no-base-to-string": "off",
+		"typescript/restrict-template-expressions": "off",
+		"typescript/ban-types": "off",
+		"unicorn/no-useless-fallback-in-spread": "off",
+		"eslint/no-redeclare": "off",
+		"eslint/require-await": "warn",
+		"eslint/no-undef": "off"
+	}
+}

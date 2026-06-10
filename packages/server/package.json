@@ -37,7 +37,7 @@
 	"scripts": {
 		"build": "tsc",
 		"type-check": "tsgo --noEmit && tsgo -p tsconfig.test.json --noEmit",
-		"lint": "eslint src --fix && tsc --noEmit",
+		"lint": "oxlint src --fix && tsc --noEmit",
 		"test": "vitest run",
 		"test:docker": "sh -c 'docker compose -f docker-compose.test.yml up -d --wait && TANDEM_DOCKER_TESTS=1 vitest run; status=$?; docker compose -f docker-compose.test.yml down; exit $status'"
 	},

@@ -86,7 +86,7 @@ Tests are located alongside source files with `.test.ts` suffix. The project use
 ## Code Conventions
 
 - Use TypeScript with strict type checking
-- Follow ESLint configuration with Prettier formatting
+- Follow Oxlint configuration with Oxfmt formatting
 - Prefix unused variables with underscore (`_variable`)
 - Use named exports for public API
 - Type-safe APIs throughout - leverage TypeScript's type system
