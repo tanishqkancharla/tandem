@@ -1,24 +1,8 @@
 {
-	"name": "@tandem/core",
+	"name": "tandem",
 	"version": "0.2.0",
+	"private": true,
 	"type": "module",
-	"main": "./dist/index.js",
-	"types": "./dist/index.d.ts",
-	"exports": {
-		".": {
-			"types": "./dist/index.d.ts",
-			"default": "./dist/index.js"
-		},
-		"./node": {
-			"types": "./dist/node.d.ts",
-			"default": "./dist/node.js"
-		}
-	},
-	"files": [
-		"dist",
-		"src",
-		"README.md"
-	],
 	"packageManager": "pnpm@10.12.4",
 	"author": "Tanishq Kancharla <tanishqkancharla3@gmail.com>",
 	"description": "A sync engine and database for building collaborative apps",
@@ -27,18 +11,15 @@
 		"url": "https://github.com/tanishqkancharla/tandem"
 	},
 	"scripts": {
-		"build": "tsc && tsc-alias -p tsconfig.json --resolve-full-paths",
-		"test": "vitest run",
-		"typecheck": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit",
-		"type-check": "pnpm typecheck"
-	},
-	"dependencies": {
-		"idb": "^8.0.3",
-		"tuple-database": "^2.2.4"
+		"build": "pnpm -r build",
+		"test": "pnpm -r test",
+		"typecheck": "pnpm type-check",
+		"type-check": "pnpm -r type-check"
 	},
 	"devDependencies": {
 		"@types/better-sqlite3": "^7.6.13",
 		"@types/node": "^20.14.2",
+		"@typescript/native-preview": "7.0.0-dev.20260609.1",
 		"better-sqlite3": "^11.10.0",
 		"drizzle-orm": "^0.44.0",
 		"extendable-expect": "^1.0.5",

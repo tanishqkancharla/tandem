@@ -6,7 +6,11 @@
 		"noEmit": true,
 		"composite": false,
 		"declaration": false,
-		"declarationMap": false
+		"declarationMap": false,
+		"paths": {
+			"@tandem/core": ["../core/src/index.ts"],
+			"@tandem/types": ["../types/src/index.ts"]
+		}
 	},
 	"include": ["src/**/*.ts", "test/**/*.ts"],
 	"references": [

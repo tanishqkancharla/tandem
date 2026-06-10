@@ -7,13 +7,6 @@ settings:
 importers:
 
   .:
-    dependencies:
-      idb:
-        specifier: ^8.0.3
-        version: 8.0.3
-      tuple-database:
-        specifier: ^2.2.4
-        version: 2.2.4
     devDependencies:
       '@types/better-sqlite3':
         specifier: ^7.6.13
@@ -21,6 +14,9 @@ importers:
       '@types/node':
         specifier: ^20.14.2
         version: 20.19.9
+      '@typescript/native-preview':
+        specifier: 7.0.0-dev.20260609.1
+        version: 7.0.0-dev.20260609.1
       better-sqlite3:
         specifier: ^11.10.0
         version: 11.10.0
@@ -48,6 +44,81 @@ importers:
       vitest:
         specifier: ^1.1.0
         version: 1.6.1(@types/node@20.19.9)
+
+  packages/core:
+    dependencies:
+      '@tandem/types':
+        specifier: workspace:*
+        version: link:../types
+      '@triplit/tuple-database':
+        specifier: ^2.2.33
+        version: 2.2.33
+      '@types/lodash-es':
+        specifier: ^4.17.12
+        version: 4.17.12
+      idb:
+        specifier: ^8.0.3
+        version: 8.0.3
+      lodash-es:
+        specifier: ^4.17.21
+        version: 4.17.21
+      tuple-database:
+        specifier: ^2.2.4
+        version: 2.2.4
+    devDependencies:
+      '@tandem/server':
+        specifier: workspace:*
+        version: link:../server
+      extendable-expect:
+        specifier: ^1.0.5
+        version: 1.0.5
+      fake-indexeddb:
+        specifier: ^6.2.5
+        version: 6.2.5
+      typescript:
+        specifier: ^5.7.2
+        version: 5.8.3
+      vitest:
+        specifier: ^1.1.0
+        version: 1.6.1(@types/node@20.19.9)
+
+  packages/server:
+    dependencies:
+      '@tandem/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^7.6.13
+        version: 7.6.13
+      better-sqlite3:
+        specifier: ^11.10.0
+        version: 11.10.0
+      drizzle-orm:
+        specifier: ^0.44.0
+        version: 0.44.7(@types/better-sqlite3@7.6.13)(better-sqlite3@11.10.0)(mysql2@3.22.3(@types/node@20.19.9))(postgres@3.4.9)
+      mysql2:
+        specifier: ^3.14.1
+        version: 3.22.3(@types/node@20.19.9)
+      postgres:
+        specifier: ^3.4.5
+        version: 3.4.9
+      typescript:
+        specifier: ^5.7.2
+        version: 5.8.3
+      vitest:
+        specifier: ^1.1.0
+        version: 1.6.1(@types/node@20.19.9)
+
+  packages/types:
+    dependencies:
+      tuple-database:
+        specifier: ^2.2.4
+        version: 2.2.4
+    devDependencies:
+      typescript:
+        specifier: ^5.7.2
+        version: 5.8.3
 
 packages:
 
@@ -311,6 +382,14 @@ packages:
   '@sinclair/typebox@0.27.8':
     resolution: {integrity: sha512-+Fj43pSMwJs4KRrH/938Uf+uAELIgVBmQzg/q1YG10djyfA3TnrU8N8XzqCh/okZdszqBQTZf96idMfE5lnwTA==}
 
+  '@triplit/tuple-database@2.2.33':
+    resolution: {integrity: sha512-Qw9QwAweJpJUQLF4ZW84wW+Jy+DJF9RSpafDWbn1DzZmA5YizvgP9Qhd2bu23MsMjSudvgMUmJD4apRBNfy8+w==}
+    peerDependencies:
+      react: '*'
+    peerDependenciesMeta:
+      react:
+        optional: true
+
   '@types/better-sqlite3@7.6.13':
     resolution: {integrity: sha512-NMv9ASNARoKksWtsq/SHakpYAYnhBrQgGD8zkLYk/jaK8jUGn08CfEdTRgYhMypUQAfzSP8W6gNLe0q19/t4VA==}
 
@@ -328,6 +407,53 @@ packages:
 
   '@types/node@20.19.9':
     resolution: {integrity: sha512-cuVNgarYWZqxRJDQHEB58GEONhOK79QVR/qYx4S7kcUObQvUwvFnYxJuuHUKm2aieN9X3yZB4LZsuYNU1Qphsw==}
+
+  '@typescript/native-preview-darwin-arm64@7.0.0-dev.20260609.1':
+    resolution: {integrity: sha512-Yf/zHEadP/yUiWUdM/mZVfEVFJuGMf6nhRSFif0vp+FwtfGU4jmlpNF7BTJJdOHrrcWkwEJKzAoMCtEtyxhuyQ==}
+    engines: {node: '>=16.20.0'}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@typescript/native-preview-darwin-x64@7.0.0-dev.20260609.1':
+    resolution: {integrity: sha512-z4dYWI57CPHs0wV/FWFth8fWmqYH7iOm7THOfZ5Fv0jo/SWK6kE1kEUIqIAExqo7ueRNqSrCw0I8U1J4TJszAw==}
+    engines: {node: '>=16.20.0'}
+    cpu: [x64]
+    os: [darwin]
+
+  '@typescript/native-preview-linux-arm64@7.0.0-dev.20260609.1':
+    resolution: {integrity: sha512-OxNVWH9IhrMAzNlDyDit1dPO64GFIDPOUKoruIkJ9A1ZEONfIHXG5f+V3si9jtuNmuomiz9FjpbzOqLsgaxt+w==}
+    engines: {node: '>=16.20.0'}
+    cpu: [arm64]
+    os: [linux]
+
+  '@typescript/native-preview-linux-arm@7.0.0-dev.20260609.1':
+    resolution: {integrity: sha512-mEtN8BbAgVtBu/5MVomYquXNvgok2C0KG6V0D4SV1jfBJNtlcqbp0WuIqT0bnM9DA4TgzcHvnFMpwGSK/dqI5A==}
+    engines: {node: '>=16.20.0'}
+    cpu: [arm]
+    os: [linux]
+
+  '@typescript/native-preview-linux-x64@7.0.0-dev.20260609.1':
+    resolution: {integrity: sha512-KO8WO1gBIC09T3255RlTY42TGu8en5mEkLPQu2wkMn+dX2T8KYL64zXrCeLeUWa0NvmVdJUeyWu3pFOn3zKemw==}
+    engines: {node: '>=16.20.0'}
+    cpu: [x64]
+    os: [linux]
+
+  '@typescript/native-preview-win32-arm64@7.0.0-dev.20260609.1':
+    resolution: {integrity: sha512-+8q19LWjnMKK6SF3PLeMEalbfWDYWHs0AU8kSFCBCke/RLoDG4FjQzVtLgUo+KWhsmZMosiEyqEnZmSlED2tIQ==}
+    engines: {node: '>=16.20.0'}
+    cpu: [arm64]
+    os: [win32]
+
+  '@typescript/native-preview-win32-x64@7.0.0-dev.20260609.1':
+    resolution: {integrity: sha512-qNPcss+6yRoNFfFIKQbPwJWYxDfOZwyL8JBJh4J+yMLOad/+/AOjsO4EtZsIpv5PMCjpnD75coBoDkw+5NkItw==}
+    engines: {node: '>=16.20.0'}
+    cpu: [x64]
+    os: [win32]
+
+  '@typescript/native-preview@7.0.0-dev.20260609.1':
+    resolution: {integrity: sha512-1HOuH/u/451O3hx4Z9fesNqarpeit6UfkgwK96sCVWi5p69F0N3v+6bI969lLIjF7K9dbYQNiWUaZ6Wik87iKg==}
+    engines: {node: '>=16.20.0'}
+    hasBin: true
 
   '@vitest/expect@1.6.1':
     resolution: {integrity: sha512-jXL+9+ZNIJKruofqXuuTClf44eSpcHlgj3CiuNihUF3Ioujtmc0zIa3UJOW5RjDK1YLBJZnWBlPuqhYycLioog==}
@@ -888,6 +1014,10 @@ packages:
     resolution: {integrity: sha512-hOS089on8RduqdbhvQ5Z37A0ESjsqz6qnRcffsMU3495FuTdqSm+7bhJ29JvIOsBDEEnan5DPu9t3To9VRlMzA==}
     engines: {node: '>=8.10.0'}
 
+  remeda@2.39.0:
+    resolution: {integrity: sha512-3Ki8dU1o3OVu4dwIQ2Pj+yiuP7OnEbmWAGmJ3yDRqopily5jsj8NWzPvbS89H85d6UdONKEcUnrfuHY6jN9vyw==}
+    engines: {node: '>=18.0.0'}
+
   resolve-pkg-maps@1.0.0:
     resolution: {integrity: sha512-seS2Tj26TBVOC2NIc2rOe2y2ZO7efxITtLZcGSOnHHNOQ7CkiUBfw0Iw2ck6xkIhPwLhKNLS8BO+hEpngQlqzw==}
 
@@ -938,6 +1068,9 @@ packages:
   slash@3.0.0:
     resolution: {integrity: sha512-g9Q1haeby36OSStwb4ntCGGGaKsaVSjQ68fBxoQcutl5fS1vuY18H3wSt3jFyFtrkx+Kz0V1G85A4MyAdDMi2Q==}
     engines: {node: '>=8'}
+
+  sorted-btree@1.8.1:
+    resolution: {integrity: sha512-395+XIP+wqNn3USkFSrNz7G3Ss/MXlZEqesxvzCRFwL14h6e8LukDHdLBePn5pwbm5OQ9vGu8mDyz2lLDIqamQ==}
 
   source-map-js@1.2.1:
     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
@@ -1264,6 +1397,16 @@ snapshots:
 
   '@sinclair/typebox@0.27.8': {}
 
+  '@triplit/tuple-database@2.2.33':
+    dependencies:
+      elen: 1.0.10
+      fractional-indexing: 3.2.0
+      fs-extra: 11.3.0
+      md5: 2.3.0
+      remeda: 2.39.0
+      sorted-btree: 1.8.1
+      uuid: 9.0.1
+
   '@types/better-sqlite3@7.6.13':
     dependencies:
       '@types/node': 20.19.9
@@ -1281,6 +1424,37 @@ snapshots:
   '@types/node@20.19.9':
     dependencies:
       undici-types: 6.21.0
+
+  '@typescript/native-preview-darwin-arm64@7.0.0-dev.20260609.1':
+    optional: true
+
+  '@typescript/native-preview-darwin-x64@7.0.0-dev.20260609.1':
+    optional: true
+
+  '@typescript/native-preview-linux-arm64@7.0.0-dev.20260609.1':
+    optional: true
+
+  '@typescript/native-preview-linux-arm@7.0.0-dev.20260609.1':
+    optional: true
+
+  '@typescript/native-preview-linux-x64@7.0.0-dev.20260609.1':
+    optional: true
+
+  '@typescript/native-preview-win32-arm64@7.0.0-dev.20260609.1':
+    optional: true
+
+  '@typescript/native-preview-win32-x64@7.0.0-dev.20260609.1':
+    optional: true
+
+  '@typescript/native-preview@7.0.0-dev.20260609.1':
+    optionalDependencies:
+      '@typescript/native-preview-darwin-arm64': 7.0.0-dev.20260609.1
+      '@typescript/native-preview-darwin-x64': 7.0.0-dev.20260609.1
+      '@typescript/native-preview-linux-arm': 7.0.0-dev.20260609.1
+      '@typescript/native-preview-linux-arm64': 7.0.0-dev.20260609.1
+      '@typescript/native-preview-linux-x64': 7.0.0-dev.20260609.1
+      '@typescript/native-preview-win32-arm64': 7.0.0-dev.20260609.1
+      '@typescript/native-preview-win32-x64': 7.0.0-dev.20260609.1
 
   '@vitest/expect@1.6.1':
     dependencies:
@@ -1779,6 +1953,8 @@ snapshots:
     dependencies:
       picomatch: 2.3.2
 
+  remeda@2.39.0: {}
+
   resolve-pkg-maps@1.0.0: {}
 
   reusify@1.1.0: {}
@@ -1838,6 +2014,8 @@ snapshots:
       simple-concat: 1.0.1
 
   slash@3.0.0: {}
+
+  sorted-btree@1.8.1: {}
 
   source-map-js@1.2.1: {}
 

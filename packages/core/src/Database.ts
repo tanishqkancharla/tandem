@@ -23,7 +23,7 @@ import {
 	StorageApi,
 	WriteOpsApi,
 } from "@tandem/types"
-import { Logger } from "./utils/Logger"
+import type { LoggerApi } from "./utils/Logger"
 import { isEqual, pick, sortBy } from "./utils/objectUtils"
 import { ThrottleQueue } from "./utils/ThrottleQueue"
 import { Timer } from "./utils/Timer"
@@ -35,7 +35,7 @@ type DatabaseArgs<
 	schema?: RuntimeSchemaDefinition<Schema>
 	relations?: Relations
 	storage?: StorageApi
-	logger: Logger
+	logger: LoggerApi
 	rng: RngApi
 }
 
@@ -49,7 +49,7 @@ export class Database<
 	)
 
 	private readonly storage?: Storage
-	private readonly logger: Logger
+	private readonly logger: LoggerApi
 	private readonly rng: RngApi
 	readonly schema?: RuntimeSchemaDefinition<Schema>
 	readonly relations?: Relations

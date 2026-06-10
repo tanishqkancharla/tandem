@@ -13,7 +13,7 @@ import {
 	type ScanWindow,
 	type TimerApi,
 } from "@tandem/types"
-import type { Logger } from "../utils/Logger.js"
+import type { LoggerApi } from "../utils/Logger.js"
 import { TaskQueue } from "../utils/TaskQueue.js"
 import type { AsyncUnsubscribe, Unsubscribe } from "../utils/typeUtils.js"
 
@@ -56,7 +56,7 @@ export class SyncEngine<Schema extends AnySchema> {
 	private syncQueue: TaskQueue<"pull" | "push">
 	private pendingMutations: InvertibleMutation<Schema>[] = []
 	private readonly remote: RemoteApi<Schema>
-	private readonly logger: Logger
+	private readonly logger: LoggerApi
 	private readonly handleRollback: (
 		mutationsToRollback: readonly InvertibleMutation<Schema>[],
 	) => void

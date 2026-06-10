@@ -19,7 +19,7 @@ import {
 	StorageApi,
 	type TimerApi,
 } from "@tandem/types"
-import { ConsoleLoggerSink, Logger } from "./utils/Logger"
+import { ConsoleLoggerSink, Logger, type LoggerApi } from "./utils/Logger"
 import { randomId } from "./utils/randomId"
 import { Timer } from "./utils/Timer"
 
@@ -31,7 +31,7 @@ type TandemClientArgs<
 	relations?: Relations
 	storage?: StorageApi
 	remote?: RemoteApi<Schema>
-	logger?: Logger
+	logger?: LoggerApi
 	rng?: RngApi
 	timer?: TimerApi
 	autoConnect?: boolean
@@ -56,7 +56,7 @@ export class TandemClient<
 	readonly clientId: ClientId
 
 	private readonly syncEngine?: SyncEngine<Schema>
-	private readonly logger: Logger
+	private readonly logger: LoggerApi
 	private readonly rng: RngApi
 
 	private speculativeMutations: InvertibleMutation<Schema>[] = []

@@ -15,6 +15,15 @@ export type LoggerSinkApi = {
 	destroy?: () => void
 }
 
+export type LoggerApi = {
+	debug: (data: LoggerData) => void
+	info: (data: LoggerData) => void
+	warn: (data: LoggerData) => void
+	log: (data: LoggerData) => void
+	error: (data: LoggerData) => void
+	scope: (name: string, data?: LoggerData) => LoggerApi
+}
+
 type LoggerArgs = {
 	sinks?: LoggerSinkApi | readonly LoggerSinkApi[]
 	scopes?: LoggerData
@@ -83,7 +92,7 @@ function serializeLogValue(value: unknown, seen = new WeakSet()): unknown {
 	)
 }
 
-export class Logger {
+export class Logger implements LoggerApi {
 	private readonly sinks: readonly LoggerSinkApi[]
 	private readonly scopes: LoggerData
 

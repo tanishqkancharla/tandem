@@ -66,6 +66,7 @@ const testsRuntimeSchema = defineSchema({
 
 // The sync engine logs every push/pull; silence it so failed assertions stay readable.
 const silentLogger: LoggerApi = {
+	debug() {},
 	log() {},
 	info() {},
 	warn() {},
