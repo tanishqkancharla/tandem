@@ -4,5 +4,5 @@
 	"semi": false,
 	"printWidth": 80,
 	"sortPackageJson": false,
-	"ignorePatterns": ["packages/types/src/types.ts"]
+	"ignorePatterns": []
 }

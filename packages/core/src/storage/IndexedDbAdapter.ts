@@ -56,8 +56,7 @@ export class IndexedDbTupleStorage<
 	StorageSchema extends {
 		[K in keyof Schema]?: Json
 	} = Schema,
-> implements StorageApi
-{
+> implements StorageApi {
 	private db: Promise<IDBPDatabase<any>>
 	private codecs?: {
 		[K in keyof Schema]?: Codec<Schema[K], StorageSchema[K]>

@@ -100,13 +100,13 @@ export type NormalizedRelationDefinition<
 			SourceCollection,
 			TargetCollection,
 			RelationName
-		>
+	  >
 	| NormalizedOneToManyRelationDefinition<
 			Schema,
 			SourceCollection,
 			TargetCollection,
 			RelationName
-		>
+	  >
 
 export type RuntimeRelationsDefinition<Schema extends AnySchema = AnySchema> = {
 	readonly [SourceCollection in CollectionName<Schema>]?: {
@@ -176,9 +176,7 @@ export type RelationalWithOptions<
 	Relations extends RuntimeRelationsDefinition<Schema>,
 	Collection extends CollectionName<Schema>,
 > = {
-	readonly [RelationName in keyof NonNullable<
-		Relations[Collection]
-	> &
+	readonly [RelationName in keyof NonNullable<Relations[Collection]> &
 		string]?:
 		| true
 		| RelationalQueryOptions<
@@ -188,7 +186,7 @@ export type RelationalWithOptions<
 					NonNullable<Relations[Collection]>[RelationName]
 				> &
 					CollectionName<Schema>
-			>
+		  >
 }
 
 export type RelationalQueryOptions<
@@ -208,11 +206,12 @@ export type RelationalQuery<
 	Schema extends AnySchema,
 	Relations extends RuntimeRelationsDefinition<Schema>,
 	Collection extends CollectionName<Schema> = CollectionName<Schema>,
-> = Collection extends CollectionName<Schema>
-	? {
-			readonly collection: Collection
-		} & RelationalQueryOptions<Schema, Relations, Collection>
-	: never
+> =
+	Collection extends CollectionName<Schema>
+		? {
+				readonly collection: Collection
+			} & RelationalQueryOptions<Schema, Relations, Collection>
+		: never
 
 type SelectedScalarKeys<
 	Schema extends AnySchema,
@@ -237,7 +236,9 @@ export type RelationalQueryRow<
 type RelationalQueryScalars<
 	Schema extends AnySchema,
 	Collection extends CollectionName<Schema>,
-	Options extends { readonly select?: RelationalSelectOptions<Schema, Collection> },
+	Options extends {
+		readonly select?: RelationalSelectOptions<Schema, Collection>
+	},
 > = Options extends { readonly select: infer Select }
 	? Pick<
 			Schema[Collection],
@@ -268,20 +269,9 @@ type RelationalIncludedRelationResult<
 	Relations extends RuntimeRelationsDefinition<Schema>,
 	Relation,
 	Include,
-> = RelationTargetCollection<Relation> extends CollectionName<Schema>
-	? RelationTypeForResult<Relation> extends "many-to-one"
-		? RelationalQueryRow<
-				Schema,
-				Relations,
-				RelationTargetCollection<Relation> & CollectionName<Schema>,
-				RelationalIncludedRelationOptions<
-					Schema,
-					Relations,
-					RelationTargetCollection<Relation> & CollectionName<Schema>,
-					Include
-				>
-			> | null
-		: RelationTypeForResult<Relation> extends "one-to-many"
+> =
+	RelationTargetCollection<Relation> extends CollectionName<Schema>
+		? RelationTypeForResult<Relation> extends "many-to-one"
 			? RelationalQueryRow<
 					Schema,
 					Relations,
@@ -292,9 +282,21 @@ type RelationalIncludedRelationResult<
 						RelationTargetCollection<Relation> & CollectionName<Schema>,
 						Include
 					>
-				>[]
-			: never
-	: never
+				> | null
+			: RelationTypeForResult<Relation> extends "one-to-many"
+				? RelationalQueryRow<
+						Schema,
+						Relations,
+						RelationTargetCollection<Relation> & CollectionName<Schema>,
+						RelationalIncludedRelationOptions<
+							Schema,
+							Relations,
+							RelationTargetCollection<Relation> & CollectionName<Schema>,
+							Include
+						>
+					>[]
+				: never
+		: never
 
 type RelationalIncludedRelationOptions<
 	Schema extends AnySchema,
@@ -419,29 +421,49 @@ type _TestNestedWithScopesToTargetCollectionReverse = _AssertExtends<
 	keyof NonNullable<_OwnerQueryOptions["select"]>
 >
 
-// @ts-expect-error Root collections must exist on the schema
-type _TestRelationalInvalidCollection = RelationalQueryOptions<_RelationalQueryTestSchema, _RelationalQueryTestRelations, "missing">
+type _TestRelationalInvalidCollection = RelationalQueryOptions<
+	_RelationalQueryTestSchema,
+	_RelationalQueryTestRelations,
+	// @ts-expect-error Root collections must exist on the schema
+	"missing"
+>
 
-// @ts-expect-error Selected fields must exist on the current collection
-type _TestRelationalInvalidSelectField = NonNullable<_ThreadQueryOptions["select"]>["missingField"]
+type _TestRelationalInvalidSelectField = NonNullable<
+	_ThreadQueryOptions["select"]
+	// @ts-expect-error Selected fields must exist on the current collection
+>["missingField"]
 
-// @ts-expect-error Where fields must exist on the current collection
-type _TestRelationalInvalidWhereField = NonNullable<_ThreadQueryOptions["where"]>["missingField"]
+type _TestRelationalInvalidWhereField = NonNullable<
+	_ThreadQueryOptions["where"]
+	// @ts-expect-error Where fields must exist on the current collection
+>["missingField"]
 
-// @ts-expect-error Where equality values must match the field type
-type _TestRelationalInvalidWhereValue = _AssertExtends<123, NonNullable<_ThreadQueryOptions["where"]>["status"]>
+type _TestRelationalInvalidWhereValue = _AssertExtends<
+	// @ts-expect-error Where equality values must match the field type
+	123,
+	NonNullable<_ThreadQueryOptions["where"]>["status"]
+>
 
-// @ts-expect-error Order fields must exist on the current collection
-type _TestRelationalInvalidOrderByField = NonNullable<_ThreadQueryOptions["orderBy"]>["missingField"]
+type _TestRelationalInvalidOrderByField = NonNullable<
+	_ThreadQueryOptions["orderBy"]
+	// @ts-expect-error Order fields must exist on the current collection
+>["missingField"]
 
-// @ts-expect-error Order directions must be asc or desc
-type _TestRelationalInvalidOrderByValue = _AssertExtends<"up", NonNullable<_ThreadQueryOptions["orderBy"]>["title"]>
+type _TestRelationalInvalidOrderByValue = _AssertExtends<
+	// @ts-expect-error Order directions must be asc or desc
+	"up",
+	NonNullable<_ThreadQueryOptions["orderBy"]>["title"]
+>
 
-// @ts-expect-error Relation names must exist on the current collection
-type _TestRelationalInvalidRelation = NonNullable<_ThreadQueryOptions["with"]>["missingRelation"]
+type _TestRelationalInvalidRelation = NonNullable<
+	_ThreadQueryOptions["with"]
+	// @ts-expect-error Relation names must exist on the current collection
+>["missingRelation"]
 
-// @ts-expect-error Nested relation options are scoped to the target collection
-type _TestRelationalInvalidNestedSelect = NonNullable<_OwnerQueryOptions["select"]>["title"]
+type _TestRelationalInvalidNestedSelect = NonNullable<
+	_OwnerQueryOptions["select"]
+	// @ts-expect-error Nested relation options are scoped to the target collection
+>["title"]
 
 type _TestRelationalOmittedSelectResult = Assert<
 	TestIsEqual<
@@ -474,8 +496,17 @@ type _TestRelationalMultiSelectResult = Assert<
 	>
 >
 
-// @ts-expect-error Select values must be true
-type _TestRelationalInvalidSelectValue = RelationalQueryResult<_RelationalQueryTestSchema, _RelationalQueryTestRelations, { collection: "threads"; select: { id: false } }>
+type _TestRelationalInvalidSelectValue = RelationalQueryResult<
+	_RelationalQueryTestSchema,
+	_RelationalQueryTestRelations,
+	// @ts-expect-error Select values must be true
+	{
+		collection: "threads"
+		select: {
+			id: false
+		}
+	}
+>
 
 type _TestRelationalManyToOneResult = Assert<
 	TestIsEqual<
@@ -555,11 +586,37 @@ type _TestRelationalNestedWithResult = Assert<
 	>
 >
 
-// @ts-expect-error Nested selected fields must exist on the relation target collection
-type _TestRelationalInvalidNestedResultSelect = RelationalQueryResult<_RelationalQueryTestSchema, _RelationalQueryTestRelations, { collection: "threads"; with: { owner: { select: { title: true } } } }>
+type _TestRelationalInvalidNestedResultSelect = RelationalQueryResult<
+	_RelationalQueryTestSchema,
+	_RelationalQueryTestRelations,
+	// @ts-expect-error Nested selected fields must exist on the relation target collection
+	{
+		collection: "threads"
+		with: {
+			owner: {
+				select: {
+					title: true
+				}
+			}
+		}
+	}
+>
 
-// @ts-expect-error Nested relation names must exist on the relation target collection
-type _TestRelationalInvalidNestedResultRelation = RelationalQueryResult<_RelationalQueryTestSchema, _RelationalQueryTestRelations, { collection: "threads"; with: { owner: { with: { messages: true } } } }>
+type _TestRelationalInvalidNestedResultRelation = RelationalQueryResult<
+	_RelationalQueryTestSchema,
+	_RelationalQueryTestRelations,
+	// @ts-expect-error Nested relation names must exist on the relation target collection
+	{
+		collection: "threads"
+		with: {
+			owner: {
+				with: {
+					messages: true
+				}
+			}
+		}
+	}
+>
 
 export type ClientId = Tagged<"ClientId", string>
 export type Cookie = Tagged<"Cookie", number | string>

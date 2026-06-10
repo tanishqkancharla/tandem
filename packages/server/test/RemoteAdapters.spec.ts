@@ -389,8 +389,12 @@ function getRemoteProviders(): RemoteProvider[] {
 
 	if (requested.size === 0) return providers
 
-	const allProviderNames = new Set(allProviders.map((provider) => provider.name))
-	const enabledProviderNames = new Set(providers.map((provider) => provider.name))
+	const allProviderNames = new Set(
+		allProviders.map((provider) => provider.name),
+	)
+	const enabledProviderNames = new Set(
+		providers.map((provider) => provider.name),
+	)
 	const unknownProviders = Array.from(requested).filter(
 		(provider) => !allProviderNames.has(provider),
 	)

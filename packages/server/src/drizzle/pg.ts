@@ -1,11 +1,21 @@
 import { eq } from "drizzle-orm"
-import type { AnySchema, CollectionName, EncodedQuery, Mutation, Patch, PatchSetOp } from "@tandem/types"
+import type {
+	AnySchema,
+	CollectionName,
+	EncodedQuery,
+	Mutation,
+	Patch,
+	PatchSetOp,
+} from "@tandem/types"
 import type { AnyPgColumn, PgDatabase, PgTable } from "drizzle-orm/pg-core"
 import { RemoteServer, type RemoteStore } from "../RemoteServer"
 import { buildOrderBy, buildWhere, type DrizzleTableWithId } from "./utils"
 
 type PgTableWithId = PgTable & DrizzleTableWithId<AnyPgColumn>
-type PgExecutor = Pick<PgDatabase<any, any, any>, "select" | "insert" | "delete">
+type PgExecutor = Pick<
+	PgDatabase<any, any, any>,
+	"select" | "insert" | "delete"
+>
 
 export type PgDrizzleRemoteArgs<Schema extends AnySchema> = {
 	db: PgDatabase<any, any, any>
@@ -42,7 +52,10 @@ class PgDrizzleStore<Schema extends AnySchema> implements RemoteStore<Schema> {
 		for (const query of queries) {
 			const rows = await this.readRows(query)
 			for (const row of rows) {
-				set.push({ collection: query.collection, value: row } as PatchSetOp<Schema>)
+				set.push({
+					collection: query.collection,
+					value: row,
+				} as PatchSetOp<Schema>)
 			}
 		}
 
@@ -104,14 +117,18 @@ class PgDrizzleStore<Schema extends AnySchema> implements RemoteStore<Schema> {
 	): PgTableWithId {
 		const table = this.tables[collection]
 		if (!table) {
-			throw new Error(`No Drizzle table configured for collection "${collection}"`)
+			throw new Error(
+				`No Drizzle table configured for collection "${collection}"`,
+			)
 		}
 
 		return table
 	}
 }
 
-export class PgDrizzleRemote<Schema extends AnySchema = AnySchema> extends RemoteServer<Schema> {
+export class PgDrizzleRemote<
+	Schema extends AnySchema = AnySchema,
+> extends RemoteServer<Schema> {
 	constructor(args: PgDrizzleRemoteArgs<Schema>) {
 		super({ store: new PgDrizzleStore(args) })
 	}

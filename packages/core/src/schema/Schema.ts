@@ -91,7 +91,10 @@ export function collection<
 >(
 	shape: Shape,
 	options?: { codec?: Codec<RecordFromShape<Shape>, StorageValue> },
-): CollectionDefinition<RecordFromShape<Shape>, Codec<RecordFromShape<Shape>, StorageValue>>
+): CollectionDefinition<
+	RecordFromShape<Shape>,
+	Codec<RecordFromShape<Shape>, StorageValue>
+>
 export function collection<
 	Record extends AnyCollectionSchema,
 	StorageValue = unknown,
@@ -102,7 +105,9 @@ export function collection<
 	Record extends AnyCollectionSchema,
 	StorageValue = unknown,
 >(
-	shapeOrOptions: CollectionShape | CollectionOptions<Record, StorageValue> = {},
+	shapeOrOptions:
+		| CollectionShape
+		| CollectionOptions<Record, StorageValue> = {},
 	options: { codec?: Codec<Record, StorageValue> } = {},
 ): CollectionDefinition<Record, Codec<Record, StorageValue>> {
 	if (isCollectionShape(shapeOrOptions)) {
@@ -165,7 +170,7 @@ type RelationRegistrations<Schema extends AnySchema> = {
 					CollectionName<Schema>,
 					keyof Schema[SourceCollection] & string,
 					"id"
-				>
+			  >
 			| RelationRegistration<
 					"one-to-many",
 					CollectionName<Schema>,
@@ -174,7 +179,7 @@ type RelationRegistrations<Schema extends AnySchema> = {
 						[Collection in CollectionName<Schema>]: keyof Schema[Collection]
 					}[CollectionName<Schema>] &
 						string
-				>
+			  >
 	}
 }
 
@@ -200,40 +205,41 @@ type NormalizeRelationRegistration<
 	SourceCollection extends CollectionName<Schema>,
 	RelationName extends string,
 	Relation extends RelationRegistration,
-> = Relation extends RelationRegistration<
-	infer Type,
-	infer TargetCollection,
-	any,
-	any
->
-	? TargetCollection extends CollectionName<Schema>
-		? Type extends "many-to-one"
-			? NormalizedManyToOneRelationDefinition<
-					Schema,
-					SourceCollection,
-					TargetCollection,
-					RelationName
-				>
-			: Type extends "one-to-many"
-				? NormalizedOneToManyRelationDefinition<
+> =
+	Relation extends RelationRegistration<
+		infer Type,
+		infer TargetCollection,
+		any,
+		any
+	>
+		? TargetCollection extends CollectionName<Schema>
+			? Type extends "many-to-one"
+				? NormalizedManyToOneRelationDefinition<
 						Schema,
 						SourceCollection,
 						TargetCollection,
 						RelationName
 					>
-				: never
+				: Type extends "one-to-many"
+					? NormalizedOneToManyRelationDefinition<
+							Schema,
+							SourceCollection,
+							TargetCollection,
+							RelationName
+						>
+					: never
+			: never
 		: never
-	: never
 
 type NormalizedRelationsDefinition<
 	Schema extends AnySchema,
 	Relations extends RelationRegistrations<Schema>,
 > = {
 	readonly [SourceCollection in keyof Relations & CollectionName<Schema>]: {
-		readonly [RelationName in keyof NonNullable<
+		readonly [RelationName in keyof NonNullable<Relations[SourceCollection]> &
+			string]: NonNullable<
 			Relations[SourceCollection]
-		> &
-			string]: NonNullable<Relations[SourceCollection]>[RelationName] extends RelationRegistration
+		>[RelationName] extends RelationRegistration
 			? NormalizeRelationRegistration<
 					Schema,
 					SourceCollection,
@@ -322,7 +328,8 @@ export function defineRelations<
 					`Unknown target collection "${relation.targetCollection}" for relation "${relationPath}"`,
 				)
 			}
-			const targetCollection = relation.targetCollection as CollectionName<Schema>
+			const targetCollection =
+				relation.targetCollection as CollectionName<Schema>
 			const targetFields = requireRuntimeFields(schema, targetCollection)
 
 			if (!sourceFields.has(relation.from)) {

@@ -45,7 +45,10 @@ function matchesWhere<
 function compareByOrder<Schema extends AnySchema>(
 	order: NonNullable<EncodedQuery<Schema>["order"]>,
 ) {
-	return (left: Schema[CollectionName<Schema>], right: Schema[CollectionName<Schema>]) => {
+	return (
+		left: Schema[CollectionName<Schema>],
+		right: Schema[CollectionName<Schema>],
+	) => {
 		for (const [field, direction] of order) {
 			const leftValue = left[field]
 			const rightValue = right[field]
@@ -59,7 +62,9 @@ function compareByOrder<Schema extends AnySchema>(
 	}
 }
 
-class InMemoryRemoteStore<Schema extends AnySchema> implements RemoteStore<Schema> {
+class InMemoryRemoteStore<
+	Schema extends AnySchema,
+> implements RemoteStore<Schema> {
 	private readonly recordsByCollection = new Map<
 		CollectionName<Schema>,
 		Map<string | number, Schema[CollectionName<Schema>]>
@@ -85,12 +90,17 @@ class InMemoryRemoteStore<Schema extends AnySchema> implements RemoteStore<Schem
 		return Promise.resolve()
 	}
 
-	readSnapshot(snapshotQueries: EncodedQuery<Schema>[]): Promise<Patch<Schema>> {
+	readSnapshot(
+		snapshotQueries: EncodedQuery<Schema>[],
+	): Promise<Patch<Schema>> {
 		const set: PatchSetOp<Schema>[] = []
 		for (const query of snapshotQueries) {
 			const rows = this.readRows(query)
 			for (const row of rows) {
-				set.push({ collection: query.collection, value: row } as PatchSetOp<Schema>)
+				set.push({
+					collection: query.collection,
+					value: row,
+				} as PatchSetOp<Schema>)
 			}
 		}
 
@@ -122,7 +132,9 @@ class InMemoryRemoteStore<Schema extends AnySchema> implements RemoteStore<Schem
 	}
 }
 
-export class InMemoryRemote<Schema extends AnySchema = AnySchema> extends RemoteServer<Schema> {
+export class InMemoryRemote<
+	Schema extends AnySchema = AnySchema,
+> extends RemoteServer<Schema> {
 	constructor() {
 		super({ store: new InMemoryRemoteStore<Schema>() })
 	}

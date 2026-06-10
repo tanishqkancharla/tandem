@@ -14,7 +14,7 @@
 		"build": "turbo run build",
 		"clean": "turbo run clean",
 		"dev": "turbo run dev",
-		"format": "oxfmt package.json pnpm-workspace.yaml turbo.json tsconfig.json vitest.config.js .oxfmtrc.json .oxlintrc.json \"packages/*/package.json\" \"packages/*/tsconfig*.json\"",
+		"format": "oxfmt package.json pnpm-workspace.yaml turbo.json tsconfig.json vitest.config.js .oxfmtrc.json .oxlintrc.json \"packages/*/package.json\" \"packages/*/tsconfig*.json\" \"packages/*/src/**/*.ts\" \"packages/*/test/**/*.ts\"",
 		"format:check": "pnpm format --check",
 		"lint": "turbo run lint",
 		"test": "turbo run test",

@@ -59,7 +59,9 @@ function mutationSetOpsToPatch<Schema extends AnySchema>(
 	}
 }
 
-function mergePatch<Schema extends AnySchema>(patches: Patch<Schema>[]): Patch<Schema> {
+function mergePatch<Schema extends AnySchema>(
+	patches: Patch<Schema>[],
+): Patch<Schema> {
 	type SetOp = NonNullable<Patch<Schema>["set"]>[number]
 	type RemoveOp = NonNullable<Patch<Schema>["remove"]>[number]
 
@@ -86,9 +88,9 @@ function mergePatch<Schema extends AnySchema>(patches: Patch<Schema>[]): Patch<S
 	}
 }
 
-export class RemoteServer<Schema extends AnySchema = AnySchema>
-	implements RemoteApi<Schema>
-{
+export class RemoteServer<
+	Schema extends AnySchema = AnySchema,
+> implements RemoteApi<Schema> {
 	private readonly clients = new Map<ClientId, ClientState<Schema>>()
 	private readonly mutationLog: Mutation<Schema>[] = []
 	private readonly store: RemoteStore<Schema>

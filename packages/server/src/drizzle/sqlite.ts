@@ -1,6 +1,17 @@
 import { eq } from "drizzle-orm"
-import type { AnySchema, CollectionName, EncodedQuery, Mutation, Patch, PatchSetOp } from "@tandem/types"
-import type { AnySQLiteColumn, BaseSQLiteDatabase, SQLiteTable } from "drizzle-orm/sqlite-core"
+import type {
+	AnySchema,
+	CollectionName,
+	EncodedQuery,
+	Mutation,
+	Patch,
+	PatchSetOp,
+} from "@tandem/types"
+import type {
+	AnySQLiteColumn,
+	BaseSQLiteDatabase,
+	SQLiteTable,
+} from "drizzle-orm/sqlite-core"
 import { RemoteServer, type RemoteStore } from "../RemoteServer"
 import { buildOrderBy, buildWhere, type DrizzleTableWithId } from "./utils"
 
@@ -15,7 +26,9 @@ export type SQLiteDrizzleRemoteArgs<Schema extends AnySchema> = {
 	}
 }
 
-class SQLiteDrizzleStore<Schema extends AnySchema> implements RemoteStore<Schema> {
+class SQLiteDrizzleStore<
+	Schema extends AnySchema,
+> implements RemoteStore<Schema> {
 	private readonly db: SQLiteDatabase
 	private readonly tables: SQLiteDrizzleRemoteArgs<Schema>["tables"]
 
@@ -41,7 +54,10 @@ class SQLiteDrizzleStore<Schema extends AnySchema> implements RemoteStore<Schema
 		for (const query of queries) {
 			const rows = await this.readRows(query)
 			for (const row of rows) {
-				set.push({ collection: query.collection, value: row } as PatchSetOp<Schema>)
+				set.push({
+					collection: query.collection,
+					value: row,
+				} as PatchSetOp<Schema>)
 			}
 		}
 
@@ -103,14 +119,18 @@ class SQLiteDrizzleStore<Schema extends AnySchema> implements RemoteStore<Schema
 	): SQLiteTableWithId {
 		const table = this.tables[collection]
 		if (!table) {
-			throw new Error(`No Drizzle table configured for collection "${collection}"`)
+			throw new Error(
+				`No Drizzle table configured for collection "${collection}"`,
+			)
 		}
 
 		return table
 	}
 }
 
-export class SQLiteDrizzleRemote<Schema extends AnySchema = AnySchema> extends RemoteServer<Schema> {
+export class SQLiteDrizzleRemote<
+	Schema extends AnySchema = AnySchema,
+> extends RemoteServer<Schema> {
 	constructor(args: SQLiteDrizzleRemoteArgs<Schema>) {
 		super({ store: new SQLiteDrizzleStore(args) })
 	}

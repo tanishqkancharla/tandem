@@ -41,8 +41,8 @@ type DatabaseArgs<
 
 export class Database<
 	Schema extends AnySchema,
-	Relations extends
-		RuntimeRelationsDefinition<Schema> = RuntimeRelationsDefinition<Schema>,
+	Relations extends RuntimeRelationsDefinition<Schema> =
+		RuntimeRelationsDefinition<Schema>,
 > {
 	private readonly tupleDb: TupleDatabaseClient = new TupleDatabaseClient(
 		new TupleDatabase(new InMemoryTupleStorage()),

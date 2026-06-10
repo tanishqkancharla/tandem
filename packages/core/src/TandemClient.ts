@@ -43,8 +43,8 @@ type TandemClientArgs<
 
 export class TandemClient<
 	Schema extends AnySchema,
-	Relations extends
-		RuntimeRelationsDefinition<Schema> = RuntimeRelationsDefinition<Schema>,
+	Relations extends RuntimeRelationsDefinition<Schema> =
+		RuntimeRelationsDefinition<Schema>,
 > {
 	private readonly db: Database<Schema, Relations>
 	/**

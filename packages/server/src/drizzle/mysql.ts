@@ -1,11 +1,25 @@
 import { eq } from "drizzle-orm"
-import type { AnySchema, CollectionName, EncodedQuery, Mutation, Patch, PatchSetOp } from "@tandem/types"
-import type { AnyMySqlColumn, MySqlDatabase, MySqlTable } from "drizzle-orm/mysql-core"
+import type {
+	AnySchema,
+	CollectionName,
+	EncodedQuery,
+	Mutation,
+	Patch,
+	PatchSetOp,
+} from "@tandem/types"
+import type {
+	AnyMySqlColumn,
+	MySqlDatabase,
+	MySqlTable,
+} from "drizzle-orm/mysql-core"
 import { RemoteServer, type RemoteStore } from "../RemoteServer"
 import { buildOrderBy, buildWhere, type DrizzleTableWithId } from "./utils"
 
 type MySqlTableWithId = MySqlTable & DrizzleTableWithId<AnyMySqlColumn>
-type MySqlExecutor = Pick<MySqlDatabase<any, any, any, any>, "select" | "insert" | "delete">
+type MySqlExecutor = Pick<
+	MySqlDatabase<any, any, any, any>,
+	"select" | "insert" | "delete"
+>
 
 export type MySqlDrizzleRemoteArgs<Schema extends AnySchema> = {
 	db: MySqlDatabase<any, any, any, any>
@@ -14,7 +28,9 @@ export type MySqlDrizzleRemoteArgs<Schema extends AnySchema> = {
 	}
 }
 
-class MySqlDrizzleStore<Schema extends AnySchema> implements RemoteStore<Schema> {
+class MySqlDrizzleStore<
+	Schema extends AnySchema,
+> implements RemoteStore<Schema> {
 	private readonly db: MySqlDatabase<any, any, any, any>
 	private readonly tables: MySqlDrizzleRemoteArgs<Schema>["tables"]
 
@@ -42,7 +58,10 @@ class MySqlDrizzleStore<Schema extends AnySchema> implements RemoteStore<Schema>
 		for (const query of queries) {
 			const rows = await this.readRows(query)
 			for (const row of rows) {
-				set.push({ collection: query.collection, value: row } as PatchSetOp<Schema>)
+				set.push({
+					collection: query.collection,
+					value: row,
+				} as PatchSetOp<Schema>)
 			}
 		}
 
@@ -101,14 +120,18 @@ class MySqlDrizzleStore<Schema extends AnySchema> implements RemoteStore<Schema>
 	): MySqlTableWithId {
 		const table = this.tables[collection]
 		if (!table) {
-			throw new Error(`No Drizzle table configured for collection "${collection}"`)
+			throw new Error(
+				`No Drizzle table configured for collection "${collection}"`,
+			)
 		}
 
 		return table
 	}
 }
 
-export class MySqlDrizzleRemote<Schema extends AnySchema = AnySchema> extends RemoteServer<Schema> {
+export class MySqlDrizzleRemote<
+	Schema extends AnySchema = AnySchema,
+> extends RemoteServer<Schema> {
 	constructor(args: MySqlDrizzleRemoteArgs<Schema>) {
 		super({ store: new MySqlDrizzleStore(args) })
 	}
