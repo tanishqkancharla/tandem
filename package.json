@@ -12,13 +12,12 @@
 	},
 	"scripts": {
 		"build": "turbo run build",
+		"check-affected": "turbo run lint format test type-check --affected",
 		"clean": "turbo run clean",
 		"dev": "turbo run dev",
-		"format": "oxfmt package.json pnpm-workspace.yaml turbo.json tsconfig.json vitest.config.js .oxfmtrc.json .oxlintrc.json \"packages/*/package.json\" \"packages/*/tsconfig*.json\" \"packages/*/src/**/*.ts\" \"packages/*/test/**/*.ts\"",
-		"format:check": "pnpm format --check",
+		"format": "turbo run format",
 		"lint": "turbo run lint",
 		"test": "turbo run test",
-		"typecheck": "turbo run type-check",
 		"type-check": "turbo run type-check"
 	},
 	"devDependencies": {

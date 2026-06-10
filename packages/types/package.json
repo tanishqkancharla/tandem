@@ -15,6 +15,7 @@
 	"scripts": {
 		"build": "tsc",
 		"type-check": "tsgo --noEmit",
+		"format": "oxfmt \"src/**/*.ts\"",
 		"lint": "oxlint src --fix && tsc --noEmit"
 	},
 	"dependencies": {

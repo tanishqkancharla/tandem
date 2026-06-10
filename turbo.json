@@ -23,6 +23,9 @@
 			"dependsOn": ["^build"],
 			"outputs": []
 		},
+		"format": {
+			"outputs": []
+		},
 		"test": {
 			"dependsOn": ["^build"],
 			"outputs": []
