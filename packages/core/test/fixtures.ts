@@ -345,9 +345,7 @@ export const test = base.extend<Fixtures>({
 						? undefined
 						: remote !== undefined
 							? remote
-							: schema || relations
-								? undefined
-								: (server as unknown as RemoteApi<Schema>)
+							: (server as unknown as RemoteApi<Schema>)
 
 				const storage = storageOption
 					? isStorageApi(storageOption)

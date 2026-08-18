@@ -5,6 +5,7 @@ describe.each(remoteProviders)("$name remote", (provider) => {
 	const test = createRemoteAdapterTest(provider)
 
 	test("push set stores row", async ({ client, context }) => {
+		await client.connect()
 		const tx = client.transact()
 		tx.set("threads", thread("thread-1", { title: "Write tests" }))
 		await client.commit(tx)
@@ -13,6 +14,7 @@ describe.each(remoteProviders)("$name remote", (provider) => {
 	})
 
 	test("push remove deletes row", async ({ client, context }) => {
+		await client.connect()
 		const setTx = client.transact()
 		setTx.set("threads", thread("thread-1"))
 		await client.commit(setTx)
@@ -30,6 +32,7 @@ describe.each(remoteProviders)("$name remote", (provider) => {
 		]
 
 		await context.seed?.(seeded)
+		await client.connect()
 		const subscription = client.subscribe({ collection: "threads" }, () => {})
 		await client.pullFromRemote()
 
@@ -51,6 +54,7 @@ describe.each(remoteProviders)("$name remote", (provider) => {
 		]
 
 		await context.seed?.(records)
+		await client.connect()
 		const query = {
 			collection: "threads",
 			where: { status: "open", createdAt: { lte: 4 } },
@@ -74,9 +78,11 @@ describe.each(remoteProviders)("$name remote", (provider) => {
 	})
 
 	test("poke updates subscribed client", async ({ client1, client2 }) => {
+		await client2.connect()
 		const subscription = client2.subscribe({ collection: "threads" }, () => {})
 		await client2.pullFromRemote()
 
+		await client1.connect()
 		const tx = client1.transact()
 		tx.set("threads", thread("thread-1", { title: "Poked", createdAt: 3 }))
 		await client1.commit(tx)

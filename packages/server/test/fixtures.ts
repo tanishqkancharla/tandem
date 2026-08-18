@@ -448,7 +448,6 @@ export function createRemoteAdapterTest(provider: RemoteProvider) {
 				context.remote,
 				`${provider.name}-client`,
 			)
-			await client.connect()
 			await use(client)
 			await client.disconnect()
 		},
@@ -458,7 +457,6 @@ export function createRemoteAdapterTest(provider: RemoteProvider) {
 				context.remote,
 				`${provider.name}-client1`,
 			)
-			await client.connect()
 			await use(client)
 			await client.disconnect()
 		},
@@ -468,7 +466,6 @@ export function createRemoteAdapterTest(provider: RemoteProvider) {
 				context.remote,
 				`${provider.name}-client2`,
 			)
-			await client.connect()
 			await use(client)
 			await client.disconnect()
 		},
