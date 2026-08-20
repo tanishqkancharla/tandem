@@ -207,10 +207,6 @@ export type MakeClientOptions<
 	syncInterval?: number
 }
 
-export type MakeRemote = {
-	<Schema extends AnySchema = TestsSchema>(): InMemoryRemote<Schema>
-}
-
 export type MakeStorage = {
 	<Schema extends AnySchema = TestsSchema>(
 		options?: MakeStorageOptions<Schema>,
@@ -236,7 +232,7 @@ type Fixtures = {
 	logger: Logger
 	rng: DemoRng
 	server: InMemoryRemote<TestsSchema>
-	makeRemote: MakeRemote
+	threadServer: InMemoryRemote<ThreadTestSchema>
 	makeStorage: MakeStorage
 	makeClient: MakeClient
 	client1: TandemClient<TestsSchema>
@@ -273,20 +269,16 @@ export const test = base.extend<Fixtures>({
 		await use(createRng())
 	},
 
-	makeRemote: async ({}, use) => {
-		const remotes: InMemoryRemote<any>[] = []
-
-		await use(<Schema extends AnySchema = TestsSchema>() => {
-			const remote = new InMemoryRemote<Schema>()
-			remotes.push(remote)
-			return remote
-		})
-
-		await Promise.all(remotes.map((remote) => remote.destroy()))
+	server: async ({}, use) => {
+		const remote = new InMemoryRemote<TestsSchema>()
+		await use(remote)
+		await remote.destroy()
 	},
 
-	server: async ({ makeRemote }, use) => {
-		await use(makeRemote<TestsSchema>())
+	threadServer: async ({}, use) => {
+		const remote = new InMemoryRemote<ThreadTestSchema>()
+		await use(remote)
+		await remote.destroy()
 	},
 
 	makeStorage: async ({ rng }, use) => {
@@ -405,20 +397,19 @@ export const test = base.extend<Fixtures>({
 		)
 	},
 
-	threadClients: async ({ makeClient, makeRemote }, use) => {
-		const remote = makeRemote<ThreadTestSchema>()
+	threadClients: async ({ makeClient, threadServer }, use) => {
 		const [client1, client2] = await Promise.all([
 			makeClient({
 				label: "thread-client1",
 				schema: threadTestSchema,
 				relations: threadTestRelations,
-				remote,
+				remote: threadServer,
 			}),
 			makeClient({
 				label: "thread-client2",
 				schema: threadTestSchema,
 				relations: threadTestRelations,
-				remote,
+				remote: threadServer,
 			}),
 		])
 

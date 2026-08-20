@@ -1112,9 +1112,8 @@ describe("TandemClient", () => {
 
 	test("replays a pending included relation edit on top of a newer remote patch", async ({
 		makeClient,
-		makeRemote,
+		threadServer: server,
 	}) => {
-		const server = makeRemote<ThreadTestSchema>()
 		const gate = Promise.withResolvers<void>()
 		let delayedClientId = ""
 		let delayedPushStarted = false
