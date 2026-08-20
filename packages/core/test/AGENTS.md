@@ -54,4 +54,4 @@ Use the Vitest fixtures from `./fixtures` instead of constructing `TandemClient`
 - `threadClient` — local relational client with no remote
 - `threadClients` — two connected relational clients sharing a remote
 - `server` / `threadServer` — in-memory remotes constructed in the fixture
-- `makeClient` / `makeStorage` — factories for extra clients or IndexedDB storage; still cleaned up automatically
+- `makeClient` — extra clients with custom schema, remote, or `storage: { dbName }`; disconnect and IndexedDB cleanup happen after the test

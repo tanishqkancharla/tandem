@@ -23,7 +23,6 @@ import type {
 	RngApi,
 	RuntimeRelationsDefinition,
 	RuntimeSchemaDefinition,
-	StorageApi,
 } from "@tandem/types"
 
 export type TestsTodo = {
@@ -183,11 +182,7 @@ function createRng(): DemoRng {
 	}
 }
 
-function isStorageApi(value: object): value is StorageApi {
-	return "commit" in value && typeof (value as StorageApi).commit === "function"
-}
-
-export type MakeStorageOptions<Schema extends AnySchema = AnySchema> = {
+export type ClientStorageOptions<Schema extends AnySchema = AnySchema> = {
 	dbName?: string
 	schema?: RuntimeSchemaDefinition<Schema>
 	codecs?: Record<string, Codec<any, any>>
@@ -202,15 +197,9 @@ export type MakeClientOptions<
 	schema?: RuntimeSchemaDefinition<Schema>
 	relations?: Relations
 	remote?: RemoteApi<Schema> | false
-	storage?: StorageApi | MakeStorageOptions<Schema>
+	storage?: ClientStorageOptions<Schema>
 	autoConnect?: boolean
 	syncInterval?: number
-}
-
-export type MakeStorage = {
-	<Schema extends AnySchema = TestsSchema>(
-		options?: MakeStorageOptions<Schema>,
-	): IndexedDbTupleStorage<Schema>
 }
 
 export type MakeClient = {
@@ -233,7 +222,6 @@ type Fixtures = {
 	rng: DemoRng
 	server: InMemoryRemote<TestsSchema>
 	threadServer: InMemoryRemote<ThreadTestSchema>
-	makeStorage: MakeStorage
 	makeClient: MakeClient
 	client1: TandemClient<TestsSchema>
 	client2: TandemClient<TestsSchema>
@@ -281,38 +269,10 @@ export const test = base.extend<Fixtures>({
 		await remote.destroy()
 	},
 
-	makeStorage: async ({ rng }, use) => {
+	makeClient: async ({ logger, rng, server }, use) => {
+		const clients: { client: TandemClient<any>; hasRemote: boolean }[] = []
 		const storages: { dbName: string; storage: IndexedDbTupleStorage<any> }[] =
 			[]
-
-		const makeStorage = <Schema extends AnySchema = TestsSchema>(
-			options: MakeStorageOptions<Schema> = {},
-		) => {
-			const dbName = options.dbName ?? rng.next("storage")
-			const storage = new IndexedDbTupleStorage<Schema>({
-				dbName,
-				schema: options.schema,
-				codecs: options.codecs,
-			})
-			storages.push({ dbName, storage })
-			return storage
-		}
-
-		await use(makeStorage as MakeStorage)
-
-		for (const { storage } of storages) {
-			await storage.close()
-		}
-
-		for (const dbName of new Set(storages.map(({ dbName }) => dbName))) {
-			const storage = new IndexedDbTupleStorage<any>({ dbName })
-			await storage.clear()
-			await storage.close()
-		}
-	},
-
-	makeClient: async ({ logger, rng, server, makeStorage }, use) => {
-		const clients: { client: TandemClient<any>; hasRemote: boolean }[] = []
 
 		await use(
 			async <
@@ -339,15 +299,22 @@ export const test = base.extend<Fixtures>({
 							? remote
 							: (server as unknown as RemoteApi<Schema>)
 
-				const storage = storageOption
-					? isStorageApi(storageOption)
-						? storageOption
-						: makeStorage({
-								dbName: storageOption.dbName,
-								schema: storageOption.schema ?? schema,
-								codecs: storageOption.codecs,
-							})
-					: undefined
+				let storage: IndexedDbTupleStorage<Schema> | undefined
+				if (storageOption) {
+					const dbName = storageOption.dbName ?? rng.next("storage")
+					for (const open of storages.filter(
+						(entry) => entry.dbName === dbName,
+					)) {
+						await open.storage.close()
+					}
+
+					storage = new IndexedDbTupleStorage<Schema>({
+						dbName,
+						schema: storageOption.schema ?? schema,
+						codecs: storageOption.codecs,
+					})
+					storages.push({ dbName, storage })
+				}
 
 				const client = new TandemClient<Schema, Relations>({
 					autoConnect,
@@ -371,6 +338,16 @@ export const test = base.extend<Fixtures>({
 			if (hasRemote) {
 				await client.disconnect()
 			}
+		}
+
+		for (const { storage } of storages) {
+			await storage.close()
+		}
+
+		for (const dbName of new Set(storages.map(({ dbName }) => dbName))) {
+			const storage = new IndexedDbTupleStorage<any>({ dbName })
+			await storage.clear()
+			await storage.close()
 		}
 	},
 

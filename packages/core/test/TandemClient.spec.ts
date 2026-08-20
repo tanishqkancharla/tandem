@@ -1263,19 +1263,14 @@ describe("TandemClient", () => {
 
 	test("reloads persisted records through schema-owned codecs", async ({
 		makeClient,
-		makeStorage,
 		rng,
 	}) => {
 		const dbName = rng.next("schema-codec-events")
-		const firstStorage = makeStorage<TestsEventSchema>({
-			dbName,
-			schema: testsEventRuntimeSchema,
-		})
 		const firstClient = await makeClient({
 			label: "schema-codec-client-1",
 			remote: false,
 			schema: testsEventRuntimeSchema,
-			storage: firstStorage,
+			storage: { dbName, schema: testsEventRuntimeSchema },
 		})
 
 		// Commit an event whose runtime value relies on the schema-owned codec
@@ -1288,16 +1283,12 @@ describe("TandemClient", () => {
 		tx.set("events", event)
 		await firstClient.commit(tx)
 		await firstClient.flushStorage()
-		await firstStorage.close()
 
 		const secondClient = await makeClient({
 			label: "schema-codec-client-2",
 			remote: false,
 			schema: testsEventRuntimeSchema,
-			storage: makeStorage<TestsEventSchema>({
-				dbName,
-				schema: testsEventRuntimeSchema,
-			}),
+			storage: { dbName, schema: testsEventRuntimeSchema },
 		})
 
 		// Recreated storage decodes the persisted value back to the runtime shape
@@ -1309,18 +1300,13 @@ describe("TandemClient", () => {
 
 	test("keeps explicit IndexedDB codec support without a runtime schema", async ({
 		makeClient,
-		makeStorage,
 		rng,
 	}) => {
 		const dbName = rng.next("explicit-codec-events")
-		const firstStorage = makeStorage<TestsEventSchema>({
-			dbName,
-			codecs: { events: eventCodec },
-		})
 		const firstClient = await makeClient<TestsEventSchema>({
 			label: "explicit-codec-client-1",
 			remote: false,
-			storage: firstStorage,
+			storage: { dbName, codecs: { events: eventCodec } },
 		})
 
 		// Existing explicit storage codecs still encode persisted writes
@@ -1333,15 +1319,11 @@ describe("TandemClient", () => {
 		tx.set("events", event)
 		await firstClient.commit(tx)
 		await firstClient.flushStorage()
-		await firstStorage.close()
 
 		const secondClient = await makeClient<TestsEventSchema>({
 			label: "explicit-codec-client-2",
 			remote: false,
-			storage: makeStorage<TestsEventSchema>({
-				dbName,
-				codecs: { events: eventCodec },
-			}),
+			storage: { dbName, codecs: { events: eventCodec } },
 		})
 
 		// Recreated storage decodes through the explicit codec as before
