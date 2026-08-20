@@ -3,7 +3,7 @@ import "fake-indexeddb/auto"
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { expect as extendableExpect } from "extendable-expect"
-import { expect as vitestExpect, test as base, vi } from "vitest"
+import { expect as vitestExpect, test as base, vi, type Task } from "vitest"
 import { TandemClient } from "../src/TandemClient"
 import {
 	collection,
@@ -13,6 +13,7 @@ import {
 } from "../src/schema/Schema"
 import { IndexedDbTupleStorage } from "../src/storage/IndexedDbAdapter"
 import { JsonlLoggerSink, Logger } from "../src/utils/Logger"
+import type { Codec } from "../src/utils/Codec"
 import { InMemoryRemote } from "@tandem/server"
 import type {
 	AnySchema,
@@ -22,8 +23,8 @@ import type {
 	RngApi,
 	RuntimeRelationsDefinition,
 	RuntimeSchemaDefinition,
+	StorageApi,
 } from "@tandem/types"
-import type { Task } from "vitest"
 
 export type TestsTodo = {
 	id: string
@@ -133,6 +134,11 @@ export const threadTestRelations = defineRelations(
 	}),
 )
 
+export type ThreadClient = TandemClient<
+	ThreadTestSchema,
+	typeof threadTestRelations
+>
+
 export type DemoRng = {
 	next(prefix?: string): string
 	create(prefix?: string): RngApi
@@ -177,30 +183,65 @@ function createRng(): DemoRng {
 	}
 }
 
-type ClientOptions = {
+function isStorageApi(value: object): value is StorageApi {
+	return "commit" in value && typeof (value as StorageApi).commit === "function"
+}
+
+export type MakeStorageOptions<Schema extends AnySchema = AnySchema> = {
+	dbName?: string
+	schema?: RuntimeSchemaDefinition<Schema>
+	codecs?: Record<string, Codec<any, any>>
+}
+
+export type MakeClientOptions<
+	Schema extends AnySchema = TestsSchema,
+	Relations extends RuntimeRelationsDefinition<Schema> =
+		RuntimeRelationsDefinition<Schema>,
+> = {
 	label?: string
-	schema?: RuntimeSchemaDefinition<TestsSchema>
-	remote?: RemoteApi<TestsSchema> | false
-	storageDbName?: string
-	syncInterval?: number
+	schema?: RuntimeSchemaDefinition<Schema>
+	relations?: Relations
+	remote?: RemoteApi<Schema> | false
+	storage?: StorageApi | MakeStorageOptions<Schema>
 	autoConnect?: boolean
+	syncInterval?: number
+}
+
+export type MakeRemote = {
+	<Schema extends AnySchema = TestsSchema>(): InMemoryRemote<Schema>
+}
+
+export type MakeStorage = {
+	<Schema extends AnySchema = TestsSchema>(
+		options?: MakeStorageOptions<Schema>,
+	): IndexedDbTupleStorage<Schema>
+}
+
+export type MakeClient = {
+	<
+		Schema extends AnySchema = TestsSchema,
+		Relations extends RuntimeRelationsDefinition<Schema> =
+			RuntimeRelationsDefinition<Schema>,
+	>(
+		options?: MakeClientOptions<Schema, Relations>,
+	): Promise<TandemClient<Schema, Relations>>
+}
+
+type ThreadClients = {
+	client1: ThreadClient
+	client2: ThreadClient
 }
 
 type Fixtures = {
 	logger: Logger
 	rng: DemoRng
 	server: InMemoryRemote<TestsSchema>
+	makeRemote: MakeRemote
+	makeStorage: MakeStorage
+	makeClient: MakeClient
 	client1: TandemClient<TestsSchema>
 	client2: TandemClient<TestsSchema>
-	makeClient: (options?: ClientOptions) => Promise<TandemClient<TestsSchema>>
-}
-
-type ThreadClients = {
-	client1: TandemClient<ThreadTestSchema, typeof threadTestRelations>
-	client2: TandemClient<ThreadTestSchema, typeof threadTestRelations>
-}
-
-type TandemClientFixtures = {
+	threadClient: ThreadClient
 	threadClients: ThreadClients
 }
 
@@ -232,66 +273,112 @@ export const test = base.extend<Fixtures>({
 		await use(createRng())
 	},
 
-	server: async ({}, use) => {
-		await use(new InMemoryRemote<TestsSchema>())
-	},
+	makeRemote: async ({}, use) => {
+		const remotes: InMemoryRemote<any>[] = []
 
-	makeClient: async ({ logger, rng, server }, use) => {
-		const clients: { client: TandemClient<TestsSchema>; hasRemote: boolean }[] =
-			[]
-		const storages: {
-			dbName: string
-			storage: IndexedDbTupleStorage<TestsSchema>
-		}[] = []
-
-		await use(async (options = {}) => {
-			const {
-				autoConnect = false,
-				label = "client",
-				remote,
-				schema,
-				storageDbName,
-				syncInterval = 0,
-			} = options
-
-			const resolvedRemote = remote === undefined ? server : remote || undefined
-			const storage = storageDbName
-				? new IndexedDbTupleStorage<TestsSchema>({ dbName: storageDbName })
-				: undefined
-
-			if (storage && storageDbName) {
-				storages.push({ dbName: storageDbName, storage })
-			}
-
-			const client = new TandemClient<TestsSchema>({
-				autoConnect,
-				logger,
-				rng: rng.create(label),
-				remote: resolvedRemote,
-				schema,
-				storage,
-				syncInterval,
-			})
-
-			clients.push({ client, hasRemote: Boolean(resolvedRemote) })
-			await client.ready
-
-			return client
+		await use(<Schema extends AnySchema = TestsSchema>() => {
+			const remote = new InMemoryRemote<Schema>()
+			remotes.push(remote)
+			return remote
 		})
 
-		for (const { client, hasRemote } of clients) {
-			if (hasRemote) {
-				await client.disconnect()
-			}
+		await Promise.all(remotes.map((remote) => remote.destroy()))
+	},
+
+	server: async ({ makeRemote }, use) => {
+		await use(makeRemote<TestsSchema>())
+	},
+
+	makeStorage: async ({ rng }, use) => {
+		const storages: { dbName: string; storage: IndexedDbTupleStorage<any> }[] =
+			[]
+
+		const makeStorage = <Schema extends AnySchema = TestsSchema>(
+			options: MakeStorageOptions<Schema> = {},
+		) => {
+			const dbName = options.dbName ?? rng.next("storage")
+			const storage = new IndexedDbTupleStorage<Schema>({
+				dbName,
+				schema: options.schema,
+				codecs: options.codecs,
+			})
+			storages.push({ dbName, storage })
+			return storage
 		}
+
+		await use(makeStorage as MakeStorage)
 
 		for (const { storage } of storages) {
 			await storage.close()
 		}
 
 		for (const dbName of new Set(storages.map(({ dbName }) => dbName))) {
-			const storage = new IndexedDbTupleStorage<TestsSchema>({ dbName })
+			const storage = new IndexedDbTupleStorage<any>({ dbName })
 			await storage.clear()
+			await storage.close()
+		}
+	},
+
+	makeClient: async ({ logger, rng, server, makeStorage }, use) => {
+		const clients: { client: TandemClient<any>; hasRemote: boolean }[] = []
+
+		await use(
+			async <
+				Schema extends AnySchema = TestsSchema,
+				Relations extends RuntimeRelationsDefinition<Schema> =
+					RuntimeRelationsDefinition<Schema>,
+			>(
+				options: MakeClientOptions<Schema, Relations> = {},
+			) => {
+				const {
+					autoConnect = false,
+					label = "client",
+					remote,
+					schema,
+					relations,
+					storage: storageOption,
+					syncInterval = 0,
+				} = options
+
+				const resolvedRemote =
+					remote === false
+						? undefined
+						: remote !== undefined
+							? remote
+							: (server as unknown as RemoteApi<Schema>)
+
+				const storage = storageOption
+					? isStorageApi(storageOption)
+						? storageOption
+						: makeStorage({
+								dbName: storageOption.dbName,
+								schema: storageOption.schema ?? schema,
+								codecs: storageOption.codecs,
+							})
+					: undefined
+
+				const client = new TandemClient<Schema, Relations>({
+					autoConnect,
+					logger,
+					rng: rng.create(label),
+					remote: resolvedRemote,
+					schema,
+					relations,
+					storage,
+					syncInterval,
+				})
+
+				clients.push({ client, hasRemote: Boolean(resolvedRemote) })
+				await client.ready
+
+				return client
+			},
+		)
+
+		for (const { client, hasRemote } of clients) {
+			if (hasRemote) {
+				await client.disconnect()
+			}
 		}
 	},
 
@@ -306,36 +393,36 @@ export const test = base.extend<Fixtures>({
 		await client.connect()
 		await use(client)
 	},
-})
 
-export const tandemClientTest = test.extend<TandemClientFixtures>({
-	threadClients: async ({ logger, rng }, use) => {
-		const server = new InMemoryRemote<ThreadTestSchema>()
-		const client1 = new TandemClient<
-			ThreadTestSchema,
-			typeof threadTestRelations
-		>({
-			schema: threadTestSchema,
-			relations: threadTestRelations,
-			remote: server,
-			logger,
-			rng: rng.create("thread-client1"),
-			syncInterval: 0,
-		})
-		const client2 = new TandemClient<
-			ThreadTestSchema,
-			typeof threadTestRelations
-		>({
-			schema: threadTestSchema,
-			relations: threadTestRelations,
-			remote: server,
-			logger,
-			rng: rng.create("thread-client2"),
-			syncInterval: 0,
-		})
+	threadClient: async ({ makeClient }, use) => {
+		await use(
+			await makeClient({
+				label: "thread-client",
+				schema: threadTestSchema,
+				relations: threadTestRelations,
+				remote: false,
+			}),
+		)
+	},
 
+	threadClients: async ({ makeClient, makeRemote }, use) => {
+		const remote = makeRemote<ThreadTestSchema>()
+		const [client1, client2] = await Promise.all([
+			makeClient({
+				label: "thread-client1",
+				schema: threadTestSchema,
+				relations: threadTestRelations,
+				remote,
+			}),
+			makeClient({
+				label: "thread-client2",
+				schema: threadTestSchema,
+				relations: threadTestRelations,
+				remote,
+			}),
+		])
+
+		await Promise.all([client1.connect(), client2.connect()])
 		await use({ client1, client2 })
-
-		await Promise.all([client1.disconnect(), client2.disconnect()])
 	},
 })

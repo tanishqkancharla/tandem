@@ -5,5 +5,4 @@ packages/*/dist/
 **/*.turbo
 *.tsbuildinfo
 packages/core/test/logs/
-test/logs/
 tmp/

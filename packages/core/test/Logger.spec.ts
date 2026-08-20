@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { describe, expect, test, vi } from "vitest"
+import { describe, expect, test as base, vi } from "vitest"
 import {
 	ConsoleLoggerSink,
 	JsonlLoggerSink,
@@ -9,6 +9,14 @@ import {
 	type LoggerEntry,
 	type LoggerSinkApi,
 } from "../src/utils/Logger"
+
+const test = base.extend<{ tempDir: string }>({
+	tempDir: async ({}, use) => {
+		const dir = mkdtempSync(join(tmpdir(), "tandem-logger-"))
+		await use(dir)
+		rmSync(dir, { recursive: true, force: true })
+	},
+})
 
 function createMemorySink() {
 	const entries: LoggerEntry[] = []
@@ -89,37 +97,34 @@ describe("Logger", () => {
 		errorSpy.mockRestore()
 	})
 
-	test("jsonl sink writes structured lines and serializes errors", () => {
-		const dir = mkdtempSync(join(tmpdir(), "tandem-logger-"))
-		const filePath = join(dir, "logs.jsonl")
-		try {
-			const logger = new Logger({
-				sinks: new JsonlLoggerSink({ filePath }),
-			})
+	test("jsonl sink writes structured lines and serializes errors", ({
+		tempDir,
+	}) => {
+		const filePath = join(tempDir, "logs.jsonl")
+		const logger = new Logger({
+			sinks: new JsonlLoggerSink({ filePath }),
+		})
 
-			logger.error({
+		logger.error({
+			message: "failed",
+			error: new Error("nope"),
+			attempt: 1n,
+		})
+
+		const [line] = readFileSync(filePath, "utf8").trim().split("\n")
+		const entry = JSON.parse(line)
+
+		expect(entry).toMatchObject({
+			level: "error",
+			data: {
 				message: "failed",
-				error: new Error("nope"),
-				attempt: 1n,
-			})
-
-			const [line] = readFileSync(filePath, "utf8").trim().split("\n")
-			const entry = JSON.parse(line)
-
-			expect(entry).toMatchObject({
-				level: "error",
-				data: {
-					message: "failed",
-					error: {
-						name: "Error",
-						message: "nope",
-					},
-					attempt: "1",
+				error: {
+					name: "Error",
+					message: "nope",
 				},
-			})
-			expect(entry.timestamp).toEqual(expect.any(String))
-		} finally {
-			rmSync(dir, { recursive: true, force: true })
-		}
+				attempt: "1",
+			},
+		})
+		expect(entry.timestamp).toEqual(expect.any(String))
 	})
 })

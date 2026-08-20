@@ -45,3 +45,12 @@ const draft = client.transact()
 const tx = client.transact()
 const seedTx = client.transact()
 ```
+
+### Fixtures
+
+Use the Vitest fixtures from `./fixtures` instead of constructing `TandemClient`, remotes, or IndexedDB storage in the test body. Fixtures disconnect clients, destroy remotes, and close/clear storage after the test.
+
+- `client1` / `client2` — connected todo-schema clients sharing `server`
+- `threadClient` — local relational client with no remote
+- `threadClients` — two connected relational clients sharing a remote
+- `makeClient` / `makeRemote` / `makeStorage` — factories for custom schema, remotes, or persistence; still cleaned up automatically

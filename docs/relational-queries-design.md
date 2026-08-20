@@ -403,7 +403,7 @@ The next README groups should be specified and implemented separately:
 ## Important files and references
 
 - `README.md` - Relational Queries v2 roadmap.
-- `todos/relations/schema-and-relations-foundation.md` - Completed runtime schema and relation metadata foundation.
+- `packages/core/src/schema/Schema.ts` - Runtime schema and relation helpers.
 - `packages/core/src/query/Query.ts` - Current flat builder API and likely query type/normalization home.
 - `packages/core/src/TandemClient.ts` - Public run/subscribe surface.
 - `packages/core/src/Database.ts` - Current flat executor.
