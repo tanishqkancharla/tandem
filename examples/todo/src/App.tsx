@@ -9,11 +9,10 @@ import {
 	shadow,
 	text,
 	TextField,
-	useTheme,
 } from "@tanishqkancharla/maui"
 import { style, useStyles } from "purse-styles"
 import { useEffect, useState } from "react"
-import { db, type Todo } from "./db"
+import { db, persist, ready, type Todo } from "./db"
 
 const todosQuery = {
 	collection: "todos",
@@ -57,12 +56,23 @@ const completedRowClass = style(rowClass, {
 })
 
 function useTodos() {
-	const [todos, setTodos] = useState<Todo[]>(() => db.query(todosQuery))
+	const [todos, setTodos] = useState<Todo[]>([])
 
 	useEffect(() => {
-		const { result, destroy } = db.subscribe(todosQuery, setTodos)
-		setTodos(result)
-		return destroy
+		let cancelled = false
+		let destroy = () => {}
+
+		void ready.then(() => {
+			if (cancelled) return
+			const subscription = db.subscribe(todosQuery, setTodos)
+			destroy = subscription.destroy
+			setTodos(subscription.result)
+		})
+
+		return () => {
+			cancelled = true
+			destroy()
+		}
 	}, [])
 
 	return todos
@@ -79,32 +89,19 @@ function addTodo(text: string) {
 		complete: false,
 		createdAt: Date.now(),
 	})
-	void db.commit(tx)
+	void persist(tx)
 }
 
 function setComplete(id: string, complete: boolean) {
 	const tx = db.transact()
 	tx.update("todos", id, (todo: Todo) => ({ ...todo, complete }))
-	void db.commit(tx)
+	void persist(tx)
 }
 
 function removeTodo(id: string) {
 	const tx = db.transact()
 	tx.remove("todos", id)
-	void db.commit(tx)
-}
-
-function ThemeToggle() {
-	const { resolvedTheme, setPreference } = useTheme()
-
-	return (
-		<Button
-			variant="quiet"
-			onClick={() => setPreference(resolvedTheme === "dark" ? "light" : "dark")}
-		>
-			{resolvedTheme === "dark" ? "Light" : "Dark"}
-		</Button>
-	)
+	void persist(tx)
 }
 
 export function App() {
@@ -128,16 +125,11 @@ export function App() {
 			<Padding xy={8}>
 				<div className={shell}>
 					<Flex column gap={6}>
-						<Flex row alignItems="center" gap={3}>
-							<div className={grow}>
-								<Flex column gap={1}>
-									<h1 className={title}>Todos</h1>
-									<p className={subtitle}>
-										Local Tandem database. No storage, no remote.
-									</p>
-								</Flex>
-							</div>
-							<ThemeToggle />
+						<Flex column gap={1}>
+							<h1 className={title}>Todos</h1>
+							<p className={subtitle}>
+								Saved in IndexedDB. Refresh to see them persist.
+							</p>
 						</Flex>
 
 						<div className={card}>

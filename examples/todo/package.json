@@ -2,7 +2,7 @@
 	"name": "@tandem/example-todo",
 	"private": true,
 	"type": "module",
-	"description": "In-memory Vite todo app using Tandem and Maui",
+	"description": "Vite todo app using Tandem, IndexedDB, and Maui",
 	"scripts": {
 		"dev": "vite",
 		"build": "vite build",
