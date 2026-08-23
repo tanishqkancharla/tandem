@@ -9,6 +9,7 @@ export default defineConfig({
 	resolve: {
 		alias: {
 			"@tandem/core": `${workspaceRoot}/packages/core/src/index.ts`,
+			"@tandem/react": `${workspaceRoot}/packages/react/src/index.ts`,
 			"@tandem/types": `${workspaceRoot}/packages/types/src/index.ts`,
 		},
 	},
