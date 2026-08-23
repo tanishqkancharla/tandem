@@ -9,6 +9,8 @@ export default defineConfig({
 				"./packages/server/src/index.ts",
 				import.meta.url,
 			).pathname,
+			"@tandem/react": new URL("./packages/react/src/index.ts", import.meta.url)
+				.pathname,
 			"@tandem/types": new URL("./packages/types/src/index.ts", import.meta.url)
 				.pathname,
 		},
