@@ -1,0 +1,25 @@
+{
+	"extends": "../../tsconfig.json",
+	"compilerOptions": {
+		"outDir": "./dist",
+		"rootDir": ".",
+		"noEmit": true,
+		"composite": false,
+		"declaration": false,
+		"declarationMap": false,
+		"jsx": "react-jsx",
+		"paths": {
+			"@tandem/core": ["../core/src/index.ts"],
+			"@tandem/types": ["../types/src/index.ts"]
+		}
+	},
+	"include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts", "test/**/*.tsx"],
+	"references": [
+		{
+			"path": "../core"
+		},
+		{
+			"path": "../types"
+		}
+	]
+}
