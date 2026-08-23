@@ -102,10 +102,7 @@ export function thread(
 	}
 }
 
-export async function createTestClient(
-	remote: RemoteApi<TestsSchema>,
-	label: string,
-) {
+async function createTestClient(remote: RemoteApi<TestsSchema>, label: string) {
 	const client = new TandemClient<TestsSchema>({
 		autoConnect: false,
 		logger: silentLogger,
