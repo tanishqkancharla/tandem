@@ -22,6 +22,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+function isNotFoundError(error: unknown): boolean {
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		error.code === "ENOENT"
+	)
+}
+
 function parseJsonFile<Schema extends AnySchema>(
 	filePath: string,
 	raw: string,
@@ -93,7 +102,7 @@ class JsonFileRemoteStore<
 			const raw = await readFile(this.filePath, "utf8")
 			this.memory.loadRecords(parseJsonFile<Schema>(this.filePath, raw))
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+			if (!isNotFoundError(error)) {
 				throw error
 			}
 		}
