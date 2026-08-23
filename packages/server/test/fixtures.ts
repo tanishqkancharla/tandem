@@ -20,7 +20,11 @@ import { expect, test as base } from "vitest"
 import { TandemClient } from "../../core/src/TandemClient"
 import { collection, defineSchema } from "../../core/src/schema/Schema"
 import type { LoggerApi } from "../../core/src/utils/Logger"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { InMemoryRemote } from "../src/InMemoryRemote"
+import { JsonFileRemote } from "../src/JsonFileRemote"
 import { MySqlDrizzleRemote } from "../src/drizzle/mysql"
 import { PgDrizzleRemote } from "../src/drizzle/pg"
 import { SQLiteDrizzleRemote } from "../src/drizzle/sqlite"
@@ -53,7 +57,7 @@ export type RemoteContext = {
 
 export type RemoteProvider = {
 	name: string
-	kind: "memory" | "sqlite" | "docker"
+	kind: "memory" | "json-file" | "sqlite" | "docker"
 	create: () => Promise<RemoteContext>
 }
 
@@ -98,7 +102,10 @@ export function thread(
 	}
 }
 
-async function createClient(remote: RemoteApi<TestsSchema>, label: string) {
+export async function createTestClient(
+	remote: RemoteApi<TestsSchema>,
+	label: string,
+) {
 	const client = new TandemClient<TestsSchema>({
 		autoConnect: false,
 		logger: silentLogger,
@@ -127,7 +134,7 @@ async function readThreadsFromRemote(
 	remote: RemoteApi<TestsSchema>,
 	label: string,
 ): Promise<TestsThread[]> {
-	const client = await createClient(remote, label)
+	const client = await createTestClient(remote, label)
 	await client.connect()
 	const subscription = client.subscribe({ collection: "threads" }, () => {})
 
@@ -145,7 +152,7 @@ async function seedThreadsThroughRemote(
 	label: string,
 	records: TestsThread[],
 ) {
-	const client = await createClient(remote, label)
+	const client = await createTestClient(remote, label)
 
 	try {
 		await client.connect()
@@ -218,6 +225,35 @@ const memoryProvider: RemoteProvider = {
 			},
 			async cleanup() {
 				await remote.destroy()
+			},
+		}
+	},
+}
+
+const jsonFileProvider: RemoteProvider = {
+	name: "json-file",
+	kind: "json-file",
+	async create() {
+		const dir = await mkdtemp(join(tmpdir(), "tandem-json-remote-"))
+		const filePath = join(dir, "remote.json")
+		const remote = new JsonFileRemote<TestsSchema>({ filePath })
+		return {
+			remote,
+			async assertStored(expected) {
+				const persisted = new JsonFileRemote<TestsSchema>({ filePath })
+				expect(
+					sortedThreads(
+						await readThreadsFromRemote(persisted, "json-file-assert"),
+					),
+				).toEqual(sortedThreads(expected))
+				await persisted.destroy()
+			},
+			async seed(records) {
+				await seedThreadsThroughRemote(remote, "json-file-seed", records)
+			},
+			async cleanup() {
+				await remote.destroy()
+				await rm(dir, { recursive: true, force: true })
 			},
 		}
 	},
@@ -389,12 +425,14 @@ function getRemoteProviders(): RemoteProvider[] {
 	const dockerEnabled = process.env.TANDEM_DOCKER_TESTS === "1"
 	const allProviders = [
 		memoryProvider,
+		jsonFileProvider,
 		sqliteProvider,
 		postgresProvider,
 		mysqlProvider,
 	]
 	const providers = [
 		memoryProvider,
+		jsonFileProvider,
 		sqliteProvider,
 		...(dockerEnabled ? [postgresProvider, mysqlProvider] : []),
 	]
@@ -426,7 +464,7 @@ function getRemoteProviders(): RemoteProvider[] {
 		].filter(Boolean)
 
 		throw new Error(
-			`Invalid TANDEM_REMOTE_PROVIDER="${process.env.TANDEM_REMOTE_PROVIDER}". ${details.join("; ")}. Available providers: memory, sqlite${dockerEnabled ? ", postgres, mysql" : " (set TANDEM_DOCKER_TESTS=1 or run test:docker for postgres, mysql)"}.`,
+			`Invalid TANDEM_REMOTE_PROVIDER="${process.env.TANDEM_REMOTE_PROVIDER}". ${details.join("; ")}. Available providers: memory, json-file, sqlite${dockerEnabled ? ", postgres, mysql" : " (set TANDEM_DOCKER_TESTS=1 or run test:docker for postgres, mysql)"}.`,
 		)
 	}
 
@@ -444,7 +482,7 @@ export function createRemoteAdapterTest(provider: RemoteProvider) {
 		},
 
 		client: async ({ context }, use) => {
-			const client = await createClient(
+			const client = await createTestClient(
 				context.remote,
 				`${provider.name}-client`,
 			)
@@ -453,7 +491,7 @@ export function createRemoteAdapterTest(provider: RemoteProvider) {
 		},
 
 		client1: async ({ context }, use) => {
-			const client = await createClient(
+			const client = await createTestClient(
 				context.remote,
 				`${provider.name}-client1`,
 			)
@@ -462,7 +500,7 @@ export function createRemoteAdapterTest(provider: RemoteProvider) {
 		},
 
 		client2: async ({ context }, use) => {
-			const client = await createClient(
+			const client = await createTestClient(
 				context.remote,
 				`${provider.name}-client2`,
 			)
