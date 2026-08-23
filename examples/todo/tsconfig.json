@@ -8,6 +8,7 @@
 		"types": ["vite/client"],
 		"paths": {
 			"@tandem/core": ["../../packages/core/src/index.ts"],
+			"@tandem/react": ["../../packages/react/src/index.ts"],
 			"@tandem/types": ["../../packages/types/src/index.ts"]
 		}
 	},

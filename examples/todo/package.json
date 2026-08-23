@@ -12,6 +12,7 @@
 	},
 	"dependencies": {
 		"@tandem/core": "workspace:*",
+		"@tandem/react": "workspace:*",
 		"@tanishqkancharla/maui": "^0.0.3",
 		"purse-styles": "^0.2.1",
 		"react": "^19.1.1",

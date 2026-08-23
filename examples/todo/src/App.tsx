@@ -10,9 +10,11 @@ import {
 	text,
 	TextField,
 } from "@tanishqkancharla/maui"
+import type { Transaction } from "@tandem/core"
+import { useQuery, useTransaction } from "@tandem/react"
 import { style, useStyles } from "purse-styles"
-import { useEffect, useState } from "react"
-import { db, persist, ready, type Todo } from "./db"
+import { useState } from "react"
+import type { Todo, TodoSchema } from "./db"
 
 const todosQuery = {
 	collection: "todos",
@@ -55,59 +57,36 @@ const completedRowClass = style(rowClass, {
 	color: colors.gray[10],
 })
 
-function useTodos() {
-	const [todos, setTodos] = useState<Todo[]>([])
-
-	useEffect(() => {
-		let cancelled = false
-		let destroy = () => {}
-
-		void ready.then(() => {
-			if (cancelled) return
-			const subscription = db.subscribe(todosQuery, setTodos)
-			destroy = subscription.destroy
-			setTodos(subscription.result)
-		})
-
-		return () => {
-			cancelled = true
-			destroy()
-		}
-	}, [])
-
-	return todos
-}
-
-function addTodo(text: string) {
-	const trimmed = text.trim()
-	if (!trimmed) return
-
-	const tx = db.transact()
-	tx.set("todos", {
-		id: crypto.randomUUID(),
-		text: trimmed,
-		complete: false,
-		createdAt: Date.now(),
-	})
-	void persist(tx)
-}
-
-function setComplete(id: string, complete: boolean) {
-	const tx = db.transact()
-	tx.update("todos", id, (todo: Todo) => ({ ...todo, complete }))
-	void persist(tx)
-}
-
-function removeTodo(id: string) {
-	const tx = db.transact()
-	tx.remove("todos", id)
-	void persist(tx)
-}
-
 export function App() {
-	const todos = useTodos()
+	const todos = (useQuery(todosQuery) ?? []) as Todo[]
 	const [draft, setDraft] = useState("")
 	const remaining = todos.filter((todo) => !todo.complete).length
+
+	const addTodo = useTransaction(
+		(tx: Transaction<TodoSchema>, text: string) => {
+			const trimmed = text.trim()
+			if (!trimmed) return
+
+			tx.set("todos", {
+				id: crypto.randomUUID(),
+				text: trimmed,
+				complete: false,
+				createdAt: Date.now(),
+			})
+		},
+	)
+
+	const setComplete = useTransaction(
+		(tx: Transaction<TodoSchema>, id: string, complete: boolean) => {
+			tx.update("todos", id, (todo) => ({ ...todo, complete }))
+		},
+	)
+
+	const removeTodo = useTransaction(
+		(tx: Transaction<TodoSchema>, id: string) => {
+			tx.remove("todos", id)
+		},
+	)
 
 	const page = useStyles(pageClass)
 	const shell = useStyles(shellClass)
