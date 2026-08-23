@@ -94,9 +94,15 @@ export function useTandemClient<
 	return db as unknown as TandemClient<Schema, Relations>
 }
 
-export function useTransaction<
-	Schema extends AnySchema,
-	Args extends unknown[],
+export interface UseTandemTransaction<Schema extends AnySchema> {
+	<Args extends unknown[]>(
+		callback: (tx: Transaction<Schema>, ...args: Args) => void,
+	): (...args: Args) => void
+}
+
+export function useTandemTransaction<
+	Schema extends AnySchema = AnySchema,
+	Args extends unknown[] = unknown[],
 >(
 	callback: (tx: Transaction<Schema>, ...args: Args) => void,
 ): (...args: Args) => void {
@@ -112,10 +118,24 @@ export function useTransaction<
 	)
 }
 
-export function useQuery<
+export interface UseTandemQuery<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema>,
-	Query extends RelationalQuery<Schema, Relations>,
+	Relations extends RuntimeRelationsDefinition<Schema> =
+		RuntimeRelationsDefinition<Schema>,
+> {
+	<Query extends RelationalQuery<Schema, Relations>>(
+		query: Query | undefined,
+	): RelationalQueryResult<Schema, Relations, Query> | undefined
+}
+
+export function useTandemQuery<
+	Schema extends AnySchema = AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema> =
+		RuntimeRelationsDefinition<Schema>,
+	Query extends RelationalQuery<Schema, Relations> = RelationalQuery<
+		Schema,
+		Relations
+	>,
 >(
 	query: Query | undefined,
 ): RelationalQueryResult<Schema, Relations, Query> | undefined {
@@ -167,7 +187,7 @@ export function useEntity<
 					>),
 		[collection, id],
 	)
-	const rows = useQuery(query)
+	const rows = useTandemQuery(query)
 	if (rows === undefined) return undefined
 	return rows[0] as unknown as Schema[Collection] | undefined
 }

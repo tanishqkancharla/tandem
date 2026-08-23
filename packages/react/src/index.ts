@@ -1,7 +1,9 @@
 export {
 	TandemClientProvider,
 	useEntity,
-	useQuery,
 	useTandemClient,
-	useTransaction,
+	useTandemQuery,
+	useTandemTransaction,
+	type UseTandemQuery,
+	type UseTandemTransaction,
 } from "./TandemClientProvider"

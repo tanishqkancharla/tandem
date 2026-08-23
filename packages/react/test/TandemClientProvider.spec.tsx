@@ -6,9 +6,11 @@ import { describe, expect, test } from "vitest"
 import {
 	TandemClientProvider,
 	useEntity,
-	useQuery,
 	useTandemClient,
-	useTransaction,
+	useTandemQuery,
+	useTandemTransaction,
+	type UseTandemQuery,
+	type UseTandemTransaction,
 } from "../src"
 
 type TodoSchema = {
@@ -19,6 +21,9 @@ type TodoSchema = {
 		createdAt: number
 	}
 }
+
+const useQuery: UseTandemQuery<TodoSchema> = useTandemQuery
+const useTransaction: UseTandemTransaction<TodoSchema> = useTandemTransaction
 
 const schema = defineSchema({
 	todos: collection({
@@ -54,10 +59,7 @@ function createClient() {
 
 function TodoScreen() {
 	const todos = useQuery(todosQuery) ?? []
-	const selected = useEntity<TodoSchema, "todos">(
-		"todos",
-		todos[0]?.id as string | undefined,
-	)
+	const selected = useEntity<TodoSchema, "todos">("todos", todos[0]?.id)
 	const addTodo = useTransaction((tx, text: string) => {
 		tx.set("todos", {
 			id: "todo-1",

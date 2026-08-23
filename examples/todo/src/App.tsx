@@ -10,11 +10,18 @@ import {
 	text,
 	TextField,
 } from "@tanishqkancharla/maui"
-import type { Transaction } from "@tandem/core"
-import { useQuery, useTransaction } from "@tandem/react"
+import {
+	useTandemQuery,
+	useTandemTransaction,
+	type UseTandemQuery,
+	type UseTandemTransaction,
+} from "@tandem/react"
 import { style, useStyles } from "purse-styles"
 import { useState } from "react"
-import type { Todo, TodoSchema } from "./db"
+import type { TodoSchema } from "./db"
+
+const useQuery: UseTandemQuery<TodoSchema> = useTandemQuery
+const useTransaction: UseTandemTransaction<TodoSchema> = useTandemTransaction
 
 const todosQuery = {
 	collection: "todos",
@@ -58,35 +65,29 @@ const completedRowClass = style(rowClass, {
 })
 
 export function App() {
-	const todos = (useQuery(todosQuery) ?? []) as Todo[]
+	const todos = useQuery(todosQuery) ?? []
 	const [draft, setDraft] = useState("")
 	const remaining = todos.filter((todo) => !todo.complete).length
 
-	const addTodo = useTransaction(
-		(tx: Transaction<TodoSchema>, text: string) => {
-			const trimmed = text.trim()
-			if (!trimmed) return
+	const addTodo = useTransaction((tx, text: string) => {
+		const trimmed = text.trim()
+		if (!trimmed) return
 
-			tx.set("todos", {
-				id: crypto.randomUUID(),
-				text: trimmed,
-				complete: false,
-				createdAt: Date.now(),
-			})
-		},
-	)
+		tx.set("todos", {
+			id: crypto.randomUUID(),
+			text: trimmed,
+			complete: false,
+			createdAt: Date.now(),
+		})
+	})
 
-	const setComplete = useTransaction(
-		(tx: Transaction<TodoSchema>, id: string, complete: boolean) => {
-			tx.update("todos", id, (todo) => ({ ...todo, complete }))
-		},
-	)
+	const setComplete = useTransaction((tx, id: string, complete: boolean) => {
+		tx.update("todos", id, (todo) => ({ ...todo, complete }))
+	})
 
-	const removeTodo = useTransaction(
-		(tx: Transaction<TodoSchema>, id: string) => {
-			tx.remove("todos", id)
-		},
-	)
+	const removeTodo = useTransaction((tx, id: string) => {
+		tx.remove("todos", id)
+	})
 
 	const page = useStyles(pageClass)
 	const shell = useStyles(shellClass)
