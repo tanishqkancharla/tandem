@@ -1,4 +1,6 @@
 export type { RemoteApi } from "@tandem/types"
 export { InMemoryRemote } from "./InMemoryRemote"
+export { JsonFileRemote } from "./JsonFileRemote"
+export type { JsonFileRemoteArgs } from "./JsonFileRemote"
 export { RemoteServer } from "./RemoteServer"
 export type { RemoteServerArgs, RemoteStore } from "./RemoteServer"
