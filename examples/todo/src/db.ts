@@ -33,6 +33,10 @@ export type Todo = {
 	createdAt: number
 }
 
+export type TodoSchema = {
+	todos: Todo
+}
+
 export const db = new TandemClient({
 	schema,
 	storage: new IndexedDbTupleStorage({
@@ -61,8 +65,3 @@ export const ready = db.ready.then(async () => {
 	await db.commit(seedTx)
 	await db.flushStorage()
 })
-
-export async function persist(transaction: ReturnType<typeof db.transact>) {
-	await db.commit(transaction)
-	await db.flushStorage()
-}
