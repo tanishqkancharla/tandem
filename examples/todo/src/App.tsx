@@ -18,15 +18,10 @@ import {
 } from "@tandem/react"
 import { style, useStyles } from "purse-styles"
 import { useState } from "react"
-import type { TodoSchema } from "./db"
+import type { TodoSchema } from "./schema"
 
 const useQuery: UseTandemQuery<TodoSchema> = useTandemQuery
 const useTransaction: UseTandemTransaction<TodoSchema> = useTandemTransaction
-
-const todosQuery = {
-	collection: "todos",
-	orderBy: { createdAt: "desc" },
-} as const
 
 const pageClass = style({
 	minHeight: "100vh",
@@ -65,7 +60,11 @@ const completedRowClass = style(rowClass, {
 })
 
 export function App() {
-	const todos = useQuery(todosQuery) ?? []
+	const todos =
+		useQuery({
+			collection: "todos",
+			orderBy: { createdAt: "desc" },
+		}) ?? []
 	const [draft, setDraft] = useState("")
 	const remaining = todos.filter((todo) => !todo.complete).length
 

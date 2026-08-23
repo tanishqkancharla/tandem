@@ -45,11 +45,6 @@ const silentLogger = {
 	},
 }
 
-const todosQuery = {
-	collection: "todos",
-	orderBy: { createdAt: "desc" },
-} as const
-
 function createClient() {
 	return new TandemClient<TodoSchema>({
 		schema,
@@ -58,7 +53,11 @@ function createClient() {
 }
 
 function TodoScreen() {
-	const todos = useQuery(todosQuery) ?? []
+	const todos =
+		useQuery({
+			collection: "todos",
+			orderBy: { createdAt: "desc" },
+		}) ?? []
 	const selected = useEntity<TodoSchema, "todos">("todos", todos[0]?.id)
 	const addTodo = useTransaction((tx, text: string) => {
 		tx.set("todos", {

@@ -18,16 +18,14 @@ type TodoSchema = {
 	todos: Todo
 }
 
-const todosQuery = {
-	collection: "todos",
-	orderBy: { createdAt: "desc" },
-} as const
-
 const useQuery: UseTandemQuery<TodoSchema> = useTandemQuery
 const useTransaction: UseTandemTransaction<TodoSchema> = useTandemTransaction
 
 function queryTodos() {
-	return useQuery(todosQuery)
+	return useQuery({
+		collection: "todos",
+		orderBy: { createdAt: "desc" },
+	})
 }
 
 function addTodo() {

@@ -1,9 +1,50 @@
+import { IndexedDbTupleStorage, TandemClient } from "@tandem/core"
 import { TandemClientProvider } from "@tandem/react"
 import { MauiProvider } from "@tanishqkancharla/maui"
 import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
 import { App } from "./App"
-import { db, ready } from "./db"
+import { schema } from "./schema"
+
+const silentLogger = {
+	debug() {},
+	info() {},
+	warn() {},
+	log() {},
+	error() {},
+	scope() {
+		return silentLogger
+	},
+}
+
+const db = new TandemClient({
+	schema,
+	storage: new IndexedDbTupleStorage({
+		dbName: "tandem-todo",
+		schema,
+	}),
+	logger: silentLogger,
+})
+
+const ready = db.ready.then(async () => {
+	if (db.query({ collection: "todos" }).length > 0) return
+
+	const seedTx = db.transact()
+	seedTx.set("todos", {
+		id: "welcome",
+		text: "Build something with Tandem",
+		complete: false,
+		createdAt: Date.now(),
+	})
+	seedTx.set("todos", {
+		id: "maui",
+		text: "Style it with Maui color tokens",
+		complete: true,
+		createdAt: Date.now() - 1,
+	})
+	await db.commit(seedTx)
+	await db.flushStorage()
+})
 
 const root = document.getElementById("root")
 if (!root) {

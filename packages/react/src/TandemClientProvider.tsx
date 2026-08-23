@@ -15,6 +15,7 @@ import {
 	useContext,
 	useEffect,
 	useMemo,
+	useRef,
 	useState,
 	type ReactNode,
 } from "react"
@@ -147,13 +148,18 @@ export function useTandemQuery<
 		return db.query(query)
 	})
 
+	const queryRef = useRef(query)
+	queryRef.current = query
+	const queryKey = query === undefined ? undefined : JSON.stringify(query)
+
 	useEffect(() => {
-		if (query === undefined) {
+		const currentQuery = queryRef.current
+		if (currentQuery === undefined) {
 			setValue(undefined)
 			return undefined
 		}
 
-		const { destroy, result } = db.subscribe(query, (nextValue) => {
+		const { destroy, result } = db.subscribe(currentQuery, (nextValue) => {
 			setValue(nextValue)
 		})
 
@@ -162,7 +168,7 @@ export function useTandemQuery<
 		return () => {
 			destroy()
 		}
-	}, [db, query])
+	}, [db, queryKey])
 
 	return value
 }
