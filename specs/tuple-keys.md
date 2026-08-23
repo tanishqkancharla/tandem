@@ -30,6 +30,56 @@ flowchart LR
   remote --> store["Map or SQL row keyed by the tuple"]
 ```
 
+The next four diagrams store the same facts: user `u1` named Ada, thread `t1` owned by Ada, message `m1` that belongs to `t1`.
+
+```mermaid
+flowchart TB
+  subgraph methodA [A. Collection plus id]
+    aU["record, users, u1"] --> aUv["id u1, name Ada"]
+    aT["record, threads, t1"] --> aTv["id t1, ownerId u1, title"]
+    aM["record, messages, m1"] --> aMv["id m1, threadId t1, body"]
+    aTv -.->|ownerId| aU
+    aMv -.->|threadId| aT
+  end
+```
+
+```mermaid
+flowchart TB
+  subgraph methodB [B. Nested prefix]
+    bT["threads, t1"] --> bTv["title, owner users u1"]
+    bT --> bM["threads, t1, messages, m1"]
+    bM --> bMv["body"]
+    bU["users, u1"] --> bUv["name Ada"]
+    bTv -.->|pointer| bU
+  end
+```
+
+```mermaid
+flowchart TB
+  subgraph methodC [C. Flat primary plus pointer]
+    cU["users, u1"] --> cUv["name Ada"]
+    cT["threads, t1"] --> cTv["title, owner users u1"]
+    cM["messages, m1"] --> cMv["body, thread threads t1"]
+    cTv -.->|pointer| cU
+    cMv -.->|pointer| cT
+  end
+```
+
+```mermaid
+flowchart TB
+  subgraph methodD [D. Primary plus index tuples]
+    dU["users, u1"] --> dUv["name Ada"]
+    dT["threads, t1"] --> dTv["title, owner users u1"]
+    dM["threads, t1, messages, m1"] --> dMv["body"]
+    dIdxO["idx, owner, u1, threads, t1"] --> dEmpty1["empty"]
+    dIdxA["idx, author, u1, threads, t1, messages, m1"] --> dEmpty2["empty"]
+    dIdxO -.->|reverse of owner| dT
+    dIdxA -.->|second access path| dM
+  end
+```
+
+This spec uses B for owned children. A is today's Tandem model. C keeps every record first-class and stores the relation on the value. D is the FoundationDB index/edge convention: one home key, extra tuples for other lookups. C and D are not implemented here.
+
 ## Problem overview
 
 Tandem wraps tuple-database in a collection-plus-record model. Callers write `tx.set("todos", { id: "1", text: "Buy milk" })`. The client then invents a storage key `["record", "todos", "1"]` and treats `record.id` as identity. That extra identifier layer is why nested collections are awkward, why one-to-many data needs a foreign-key field, and why Tandem's API does not match the store it already uses. tuple-database already stores `{ key: Tuple, value }` and prefix-scans. Tandem should expose that model.
@@ -177,6 +227,15 @@ client.query({
 ```
 
 Subscribe uses the same object. `where: { id }` is not a thing; identity filters are prefixes.
+
+### Which key layout this spec picks
+
+The diagrams at the top encode one thread, one message, and one user four ways.
+
+- A is current Tandem: identity is `record.id`, storage adds a `"record"` prefix, relations are fields plus `defineRelations`.
+- B is this spec: the message lives under the thread prefix. `list(["threads", "t1", "messages"])` is the child relation. The owner stays a pointer on the thread value because a user is not owned by a thread.
+- C is a flat tuple key for every record, with pointers on values. Listing a thread's messages needs `where` on the pointer or an index. Not in this spec.
+- D adds FoundationDB-style index tuples for reverse lookups, such as threads by owner. Not in this spec.
 
 ## Important files, docs, and websites
 
