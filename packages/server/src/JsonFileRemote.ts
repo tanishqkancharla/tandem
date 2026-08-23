@@ -66,16 +66,14 @@ class JsonFileRemoteStore<
 	Schema extends AnySchema,
 > implements RemoteStore<Schema> {
 	private readonly memory = new InMemoryRemoteStore<Schema>()
-	private readonly ready: Promise<void>
+	private ready?: Promise<void>
 	private queue: Promise<void> = Promise.resolve()
 
-	constructor(private readonly filePath: string) {
-		this.ready = this.loadFromDisk()
-	}
+	constructor(private readonly filePath: string) {}
 
 	applyMutations(mutations: Mutation<Schema>[]): Promise<void> {
 		return this.run(async () => {
-			await this.ready
+			await (this.ready ??= this.readFromDisk())
 			await this.memory.applyMutations(mutations)
 			await this.writeToDisk()
 		})
@@ -83,7 +81,7 @@ class JsonFileRemoteStore<
 
 	readSnapshot(queries: EncodedQuery<Schema>[]): Promise<Patch<Schema>> {
 		return this.run(async () => {
-			await this.ready
+			await (this.ready ??= this.readFromDisk())
 			return this.memory.readSnapshot(queries)
 		})
 	}
@@ -97,7 +95,7 @@ class JsonFileRemoteStore<
 		return result
 	}
 
-	private async loadFromDisk(): Promise<void> {
+	private async readFromDisk(): Promise<void> {
 		try {
 			const raw = await readFile(this.filePath, "utf8")
 			this.memory.loadRecords(parseJsonFile<Schema>(this.filePath, raw))
