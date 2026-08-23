@@ -3,6 +3,7 @@ export { Database } from "./Database"
 export { SyncEngine } from "./sync/SyncEngine"
 export { Transaction } from "./transaction/Transaction"
 export { Storage } from "./storage/Storage"
+export { IndexedDbTupleStorage } from "./storage/IndexedDbAdapter"
 export { collection, defineSchema, defineRelations, t } from "./schema/Schema"
 export { codec, string, literal, date, object, oneOf } from "./utils/Codec"
 export type { Codec, AnyCodec, Encoded, Decoded } from "./utils/Codec"
@@ -33,7 +34,6 @@ export type {
 export {
 	Logger,
 	ConsoleLoggerSink,
-	JsonlLoggerSink,
 	type LoggerData,
 	type LoggerEntry,
 	type LoggerSinkApi,

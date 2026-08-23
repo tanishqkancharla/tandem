@@ -1,0 +1,15 @@
+{
+	"extends": "../../tsconfig.json",
+	"compilerOptions": {
+		"jsx": "react-jsx",
+		"noEmit": true,
+		"declaration": false,
+		"declarationMap": false,
+		"types": ["vite/client"],
+		"paths": {
+			"@tandem/core": ["../../packages/core/src/index.ts"],
+			"@tandem/types": ["../../packages/types/src/index.ts"]
+		}
+	},
+	"include": ["src"]
+}
