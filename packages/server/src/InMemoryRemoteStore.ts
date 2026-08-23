@@ -62,7 +62,7 @@ function compareByOrder<Schema extends AnySchema>(
 	}
 }
 
-export class MemoryRemoteStore<
+export class InMemoryRemoteStore<
 	Schema extends AnySchema,
 > implements RemoteStore<Schema> {
 	private readonly recordsByCollection = new Map<

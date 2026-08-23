@@ -7,7 +7,7 @@ import type {
 	Mutation,
 	Patch,
 } from "@tandem/types"
-import { MemoryRemoteStore } from "./MemoryRemoteStore"
+import { InMemoryRemoteStore } from "./InMemoryRemoteStore"
 import { RemoteServer, type RemoteStore } from "./RemoteServer"
 
 export type JsonFileRemoteArgs = {
@@ -65,7 +65,7 @@ function parseJsonFile<Schema extends AnySchema>(
 class JsonFileRemoteStore<
 	Schema extends AnySchema,
 > implements RemoteStore<Schema> {
-	private readonly memory = new MemoryRemoteStore<Schema>()
+	private readonly memory = new InMemoryRemoteStore<Schema>()
 	private loaded = false
 	private queue: Promise<void> = Promise.resolve()
 
