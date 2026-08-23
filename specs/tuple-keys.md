@@ -59,6 +59,125 @@ Assumption: key elements are `string | number`, as in `["todos", "1"]`. This spe
 - No named-tuple key elements (`["user", { id }]`).
 - No SQL composite keys. Remote SQL stores the tuple as one text key.
 
+## Developer experience
+
+These are the caller-facing API changes. Tandem's user is the app author.
+
+### Schema
+
+Before, a schema is a map of collections, and every record type must include `id`:
+
+```ts
+const schema = defineSchema({
+	todos: collection({
+		id: t.id(),
+		text: t.string(),
+		done: t.boolean(),
+	}),
+	messages: collection({
+		id: t.id(),
+		threadId: t.string(),
+		body: t.string(),
+	}),
+})
+
+const relations = defineRelations(schema, ({ many }) => ({
+	threads: {
+		messages: many("messages", { from: "id", to: "threadId" }),
+	},
+}))
+```
+
+After, the schema is a union of key and value pairs. Nested collections are longer keys. `t.id()` and `defineRelations` are gone:
+
+```ts
+type Schema =
+	| { key: ["todos", string]; value: { text: string; done: boolean } }
+	| { key: ["threads", string]; value: { title: string } }
+	| { key: ["threads", string, "messages", string]; value: { body: string } }
+```
+
+### Writes and reads
+
+Before, the first argument is a collection name and identity lives on the record:
+
+```ts
+const tx = client.transact()
+tx.set("todos", { id: "1", text: "Buy milk", done: false })
+tx.get("todos", "1")
+tx.update("todos", "1", (todo) => ({ ...todo, done: true }))
+tx.remove("todos", "2")
+await client.commit(tx)
+```
+
+After, the first argument is the key. The value has no `id`:
+
+```ts
+const tx = client.transact()
+tx.set(["todos", "1"], { text: "Buy milk", done: false })
+tx.get(["todos", "1"])
+tx.update(["todos", "1"], (todo) => ({ ...todo, done: true }))
+tx.remove(["todos", "2"])
+await client.commit(tx)
+```
+
+### Nested collections
+
+Before, a child row stores a foreign key and lives in a sibling collection. Listing a thread's messages is a query with `where: { threadId }` or a `with` include:
+
+```ts
+tx.set("threads", { id: "t1", title: "Ship keys" })
+tx.set("messages", { id: "m1", threadId: "t1", body: "Hello" })
+client.query({
+	collection: "messages",
+	where: { threadId: "t1" },
+})
+client.query({
+	collection: "threads",
+	with: { messages: true },
+})
+```
+
+After, the child key is nested under the parent. Listing is a prefix scan. The message value does not repeat `threadId`:
+
+```ts
+tx.set(["threads", "t1"], { title: "Ship keys" })
+tx.set(["threads", "t1", "messages", "m1"], { body: "Hello" })
+tx.list(["threads", "t1", "messages"])
+```
+
+`list` and `query` return `{ key, value }[]`, so the caller still has the identifier after a scan.
+
+### Queries
+
+Before, the query names a collection and can select `id` as a field:
+
+```ts
+client.query({
+	collection: "todos",
+	where: { done: false },
+	orderBy: { priority: "desc" },
+	limit: 2,
+	select: { id: true, text: true },
+})
+// [{ id: "todo-3", text: "Fix the sync bug" }, ...]
+```
+
+After, the query names a prefix. `select` projects value fields only. The key is always present:
+
+```ts
+client.query({
+	prefix: ["todos"],
+	where: { done: false },
+	orderBy: { priority: "desc" },
+	limit: 2,
+	select: { text: true },
+})
+// [{ key: ["todos", "todo-3"], value: { text: "Fix the sync bug" } }, ...]
+```
+
+Subscribe uses the same object. `where: { id }` is not a thing; identity filters are prefixes.
+
 ## Important files, docs, and websites
 
 - [`packages/core/src/transaction/Transaction.ts`](../packages/core/src/transaction/Transaction.ts) — `get` / `set` / `update` / `remove` / `list` take a collection name and read `record.id`.
