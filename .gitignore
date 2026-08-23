@@ -1,5 +1,6 @@
 node_modules/
 packages/*/dist/
+examples/*/dist/
 .parcel-cache
 /.kosho**
 **/*.turbo
