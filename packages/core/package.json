@@ -5,9 +5,20 @@
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
 	"source": "./src/index.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./node": {
+			"types": "./dist/utils/Logger.node.d.ts",
+			"import": "./dist/utils/Logger.node.js"
+		}
+	},
 	"author": "Tanishq Kancharla <tanishqkancharla3@gmail.com>",
 	"description": "Core sync engine functionality for Tandem",
 	"license": "MIT",
+	"sideEffects": false,
 	"files": [
 		"dist",
 		"src"

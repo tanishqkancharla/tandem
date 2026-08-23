@@ -4,11 +4,11 @@ import { join } from "node:path"
 import { describe, expect, test as base, vi } from "vitest"
 import {
 	ConsoleLoggerSink,
-	JsonlLoggerSink,
 	Logger,
 	type LoggerEntry,
 	type LoggerSinkApi,
 } from "../src/utils/Logger"
+import { JsonlLoggerSink } from "../src/utils/Logger.node"
 
 const test = base.extend<{ tempDir: string }>({
 	tempDir: async ({}, use) => {

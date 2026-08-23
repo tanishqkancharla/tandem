@@ -1,5 +1,3 @@
-import { appendFileSync } from "node:fs"
-
 export type LogLevel = "debug" | "info" | "warn" | "log" | "error"
 
 export type LoggerData = Record<string, unknown>
@@ -57,7 +55,10 @@ function createLogEntry(
 	}
 }
 
-function serializeLogValue(value: unknown, seen = new WeakSet()): unknown {
+export function serializeLogValue(
+	value: unknown,
+	seen = new WeakSet(),
+): unknown {
 	if (value instanceof Error) {
 		return {
 			name: value.name,
@@ -155,20 +156,5 @@ export class Logger implements LoggerApi {
 export class ConsoleLoggerSink implements LoggerSinkApi {
 	log(entry: LoggerEntry) {
 		console[entry.level](entry.data)
-	}
-}
-
-export class JsonlLoggerSink implements LoggerSinkApi {
-	private readonly filePath: string
-
-	constructor({ filePath }: { filePath: string }) {
-		this.filePath = filePath
-	}
-
-	log(entry: LoggerEntry) {
-		appendFileSync(
-			this.filePath,
-			`${JSON.stringify(serializeLogValue(entry))}\n`,
-		)
 	}
 }

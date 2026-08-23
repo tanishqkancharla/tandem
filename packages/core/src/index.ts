@@ -33,7 +33,6 @@ export type {
 export {
 	Logger,
 	ConsoleLoggerSink,
-	JsonlLoggerSink,
 	type LoggerData,
 	type LoggerEntry,
 	type LoggerSinkApi,

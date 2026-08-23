@@ -12,7 +12,8 @@ import {
 	t,
 } from "../src/schema/Schema"
 import { IndexedDbTupleStorage } from "../src/storage/IndexedDbAdapter"
-import { JsonlLoggerSink, Logger } from "../src/utils/Logger"
+import { Logger } from "../src/utils/Logger"
+import { JsonlLoggerSink } from "../src/utils/Logger.node"
 import type { Codec } from "../src/utils/Codec"
 import { InMemoryRemote } from "@tandem/server"
 import type {
