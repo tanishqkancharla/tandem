@@ -28,7 +28,7 @@ import { randomId, type RngApi } from "./utils/randomId"
 import { Timer, type TimerApi } from "./utils/Timer"
 import type { AsyncUnsubscribe } from "./utils/typeUtils"
 
-type TandemClientArgs<
+export type TandemClientArgs<
 	Schema extends AnySchema,
 	Relations extends RuntimeRelationsDefinition<Schema>,
 > = {

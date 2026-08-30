@@ -124,16 +124,19 @@ export type SchemaToTupleSchema<Schema extends AnySchema> = {
 	}
 }[CollectionName<Schema>]
 
-type CollectionOptions<Record extends AnyCollectionSchema, StorageValue> = {
+export type CollectionOptions<
+	Record extends AnyCollectionSchema,
+	StorageValue,
+> = {
 	codec?: Codec<Record, StorageValue>
 	fields?: readonly (keyof Record & string)[]
 }
 
-type CollectionShape = Record<string, AnyRuntimeFieldDefinition> & {
+export type CollectionShape = Record<string, AnyRuntimeFieldDefinition> & {
 	id: RuntimeFieldDefinition<string | number>
 }
 
-type RecordFromShape<Shape extends CollectionShape> = {
+export type RecordFromShape<Shape extends CollectionShape> = {
 	[Field in keyof Shape & string]: Shape[Field] extends RuntimeFieldDefinition<
 		infer Value
 	>
@@ -143,7 +146,7 @@ type RecordFromShape<Shape extends CollectionShape> = {
 	id: string | number
 }
 
-type SchemaFromCollections<
+export type SchemaFromCollections<
 	Collections extends Record<string, AnyCollectionDefinition>,
 > = {
 	[Name in keyof Collections &
@@ -152,7 +155,7 @@ type SchemaFromCollections<
 		: never
 }
 
-type NamedCollections<
+export type NamedCollections<
 	Collections extends Record<string, AnyCollectionDefinition>,
 > = {
 	readonly [Name in keyof Collections &
@@ -260,7 +263,7 @@ export function defineSchema<
 	}
 }
 
-type RelationRegistration<
+export type RelationRegistration<
 	Type extends RelationType = RelationType,
 	TargetCollection extends string = string,
 	From extends string = string,
@@ -272,7 +275,7 @@ type RelationRegistration<
 	readonly to: To
 }
 
-type RelationRegistrations<Schema extends AnySchema> = {
+export type RelationRegistrations<Schema extends AnySchema> = {
 	readonly [SourceCollection in CollectionName<Schema>]?: {
 		readonly [RelationName in string]?:
 			| RelationRegistration<
@@ -293,7 +296,7 @@ type RelationRegistrations<Schema extends AnySchema> = {
 	}
 }
 
-type RelationBuilderApi<Schema extends AnySchema> = {
+export type RelationBuilderApi<Schema extends AnySchema> = {
 	one: <
 		const TargetCollection extends CollectionName<Schema>,
 		const From extends string,
@@ -341,7 +344,7 @@ type NormalizeRelationRegistration<
 			: never
 		: never
 
-type NormalizedRelationsDefinition<
+export type NormalizedRelationsDefinition<
 	Schema extends AnySchema,
 	Relations extends RelationRegistrations<Schema>,
 > = {

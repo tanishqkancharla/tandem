@@ -11,7 +11,7 @@ import type { AnyPgColumn, PgDatabase, PgTable } from "drizzle-orm/pg-core"
 import { RemoteServer, type RemoteStore } from "../RemoteServer"
 import { buildOrderBy, buildWhere, type DrizzleTableWithId } from "./utils"
 
-type PgTableWithId = PgTable & DrizzleTableWithId<AnyPgColumn>
+export type PgTableWithId = PgTable & DrizzleTableWithId<AnyPgColumn>
 type PgExecutor = Pick<
 	PgDatabase<any, any, any>,
 	"select" | "insert" | "delete"

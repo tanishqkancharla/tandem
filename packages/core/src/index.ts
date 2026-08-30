@@ -1,5 +1,7 @@
 export { TandemClient } from "./TandemClient"
+export type { TandemClientArgs } from "./TandemClient"
 export { Database } from "./Database"
+export type { DatabaseArgs } from "./Database"
 export { SyncEngine } from "./sync/SyncEngine"
 export type {
 	ClientApi,
@@ -9,6 +11,7 @@ export type {
 	PatchRemoveOp,
 	PatchSetOp,
 	RemoteApi,
+	SyncEngineArgs,
 } from "./sync/SyncEngine"
 export { PatchApi } from "./sync/SyncEngine"
 export { Transaction } from "./transaction/Transaction"
@@ -28,6 +31,10 @@ export { Storage } from "./storage/Storage"
 export type { StorageApi } from "./storage/Storage"
 export { WriteOpsApi } from "./storage/Storage"
 export { IndexedDbTupleStorage } from "./storage/IndexedDbAdapter"
+export type {
+	AnyStorageSchema,
+	IndexedDbTupleStorageArgs,
+} from "./storage/IndexedDbAdapter"
 export { collection, defineSchema, defineRelations, t } from "./schema/Schema"
 export type {
 	AnyCollectionDefinition,
@@ -37,14 +44,23 @@ export type {
 	Attribute,
 	CollectionDefinition,
 	CollectionName,
+	CollectionOptions,
+	CollectionShape,
 	NamedCollectionDefinition,
+	NamedCollections,
 	NormalizedManyToOneRelationDefinition,
 	NormalizedOneToManyRelationDefinition,
 	NormalizedRelationDefinition,
+	NormalizedRelationsDefinition,
+	RecordFromShape,
+	RelationBuilderApi,
+	RelationRegistration,
+	RelationRegistrations,
 	RelationType,
 	RuntimeFieldDefinition,
 	RuntimeRelationsDefinition,
 	RuntimeSchemaDefinition,
+	SchemaFromCollections,
 	SchemaToTupleSchema,
 } from "./schema/Schema"
 export type {
@@ -67,6 +83,8 @@ export type { Codec, AnyCodec, Encoded, Decoded } from "./utils/Codec"
 export {
 	Logger,
 	ConsoleLoggerSink,
+	type LoggerApi,
+	type LoggerArgs,
 	type LoggerData,
 	type LoggerEntry,
 	type LoggerSinkApi,

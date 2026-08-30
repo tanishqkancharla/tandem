@@ -117,7 +117,7 @@ function invertibleMutationToMutation<Schema extends AnySchema>(
 	}
 }
 
-type SyncEngineArgs<Schema extends AnySchema> = {
+export type SyncEngineArgs<Schema extends AnySchema> = {
 	clientId: ClientId
 	remote: SyncEngine<Schema>["remote"]
 	handleRollback: SyncEngine<Schema>["handleRollback"]

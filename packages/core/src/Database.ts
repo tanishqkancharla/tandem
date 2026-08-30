@@ -28,7 +28,7 @@ import type { RngApi } from "./utils/randomId"
 import { ThrottleQueue } from "./utils/ThrottleQueue"
 import { Timer } from "./utils/Timer"
 
-type DatabaseArgs<
+export type DatabaseArgs<
 	Schema extends AnySchema,
 	Relations extends RuntimeRelationsDefinition<Schema>,
 > = {

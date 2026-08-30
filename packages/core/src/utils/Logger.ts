@@ -22,7 +22,7 @@ export type LoggerApi = {
 	scope: (name: string, data?: LoggerData) => LoggerApi
 }
 
-type LoggerArgs = {
+export type LoggerArgs = {
 	sinks?: LoggerSinkApi | readonly LoggerSinkApi[]
 	scopes?: LoggerData
 }

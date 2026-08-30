@@ -12,11 +12,11 @@ const version = 1
 
 const storeName = "tupledb"
 
-type AnyStorageSchema<Schema extends AnySchema> = {
+export type AnyStorageSchema<Schema extends AnySchema> = {
 	[K in keyof Schema]?: Json
 }
 
-type IndexedDbTupleStorageArgs<
+export type IndexedDbTupleStorageArgs<
 	Schema extends AnySchema,
 	StorageSchema extends AnyStorageSchema<Schema> = AnyStorageSchema<Schema>,
 > = {

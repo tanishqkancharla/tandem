@@ -15,7 +15,7 @@ import type {
 import { RemoteServer, type RemoteStore } from "../RemoteServer"
 import { buildOrderBy, buildWhere, type DrizzleTableWithId } from "./utils"
 
-type MySqlTableWithId = MySqlTable & DrizzleTableWithId<AnyMySqlColumn>
+export type MySqlTableWithId = MySqlTable & DrizzleTableWithId<AnyMySqlColumn>
 type MySqlExecutor = Pick<
 	MySqlDatabase<any, any, any, any>,
 	"select" | "insert" | "delete"
