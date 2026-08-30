@@ -1,5 +1,5 @@
 {
-	"name": "@get-halo/tandem-server",
+	"name": "@tanishqkancharla/tandem-server",
 	"version": "0.2.0",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -51,7 +51,7 @@
 		"test:docker": "sh -c 'docker compose -f docker-compose.test.yml up -d --wait && TANDEM_DOCKER_TESTS=1 vitest run; status=$?; docker compose -f docker-compose.test.yml down; exit $status'"
 	},
 	"dependencies": {
-		"@get-halo/tandem-types": "workspace:*"
+		"@tanishqkancharla/tandem-core": "workspace:*"
 	},
 	"peerDependencies": {
 		"drizzle-orm": "^0.44.0"

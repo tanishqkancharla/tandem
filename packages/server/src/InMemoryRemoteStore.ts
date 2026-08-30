@@ -5,7 +5,7 @@ import type {
 	Mutation,
 	Patch,
 	PatchSetOp,
-} from "@get-halo/tandem-types"
+} from "@tanishqkancharla/tandem-core"
 import type { RemoteStore } from "./RemoteServer"
 import { compareByOrder, matchesWhere } from "./shared"
 

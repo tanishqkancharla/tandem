@@ -1,14 +1,12 @@
 import {
 	TandemClient,
 	Transaction,
+	type AnySchema,
+	type CollectionName,
 	type RelationalQuery,
 	type RelationalQueryResult,
-} from "@get-halo/tandem-core"
-import type {
-	AnySchema,
-	CollectionName,
-	RuntimeRelationsDefinition,
-} from "@get-halo/tandem-types"
+	type RuntimeRelationsDefinition,
+} from "@tanishqkancharla/tandem-core"
 import {
 	createContext,
 	useCallback,
@@ -24,6 +22,18 @@ const TandemClientContext = createContext<TandemClient<any, any> | undefined>(
 	undefined,
 )
 
+export type TandemClientProviderProps<
+	Schema extends AnySchema,
+	Relations extends RuntimeRelationsDefinition<Schema> =
+		RuntimeRelationsDefinition<Schema>,
+> = {
+	client: TandemClient<Schema, Relations>
+	ready?: Promise<unknown>
+	connect?: boolean
+	fallback?: ReactNode
+	children: ReactNode
+}
+
 export function TandemClientProvider<
 	Schema extends AnySchema,
 	Relations extends RuntimeRelationsDefinition<Schema> =
@@ -34,13 +44,7 @@ export function TandemClientProvider<
 	connect = false,
 	fallback = null,
 	children,
-}: {
-	client: TandemClient<Schema, Relations>
-	ready?: Promise<unknown>
-	connect?: boolean
-	fallback?: ReactNode
-	children: ReactNode
-}) {
+}: TandemClientProviderProps<Schema, Relations>) {
 	const [isReady, setIsReady] = useState(false)
 
 	useEffect(() => {

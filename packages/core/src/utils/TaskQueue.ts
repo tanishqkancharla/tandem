@@ -1,4 +1,4 @@
-import type { TimerApi } from "@get-halo/tandem-types"
+import type { TimerApi } from "./Timer"
 
 type TaskItem<TaskName extends string> = {
 	name: TaskName

@@ -6,7 +6,7 @@ import type {
 	Mutation,
 	Patch,
 	PatchSetOp,
-} from "@get-halo/tandem-types"
+} from "@tanishqkancharla/tandem-core"
 import type {
 	AnySQLiteColumn,
 	BaseSQLiteDatabase,
@@ -15,8 +15,9 @@ import type {
 import { RemoteServer, type RemoteStore } from "../RemoteServer"
 import { buildOrderBy, buildWhere, type DrizzleTableWithId } from "./utils"
 
-type SQLiteTableWithId = SQLiteTable & DrizzleTableWithId<AnySQLiteColumn>
-type SQLiteDatabase = BaseSQLiteDatabase<"sync" | "async", any, any, any>
+export type SQLiteTableWithId = SQLiteTable &
+	DrizzleTableWithId<AnySQLiteColumn>
+export type SQLiteDatabase = BaseSQLiteDatabase<"sync" | "async", any, any, any>
 type SQLiteExecutor = Pick<SQLiteDatabase, "select" | "insert" | "delete">
 
 export type SQLiteDrizzleRemoteArgs<Schema extends AnySchema> = {

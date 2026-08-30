@@ -3,7 +3,7 @@ import type {
 	CollectionName,
 	EncodedQuery,
 	EncodedWhereClause,
-} from "@get-halo/tandem-types"
+} from "@tanishqkancharla/tandem-core"
 
 function compareValues(
 	fieldValue: unknown,

@@ -1,5 +1,5 @@
 {
-	"name": "@get-halo/tandem-core",
+	"name": "@tanishqkancharla/tandem-core",
 	"version": "0.2.0",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -40,7 +40,6 @@
 		"test": "vitest run"
 	},
 	"dependencies": {
-		"@get-halo/tandem-types": "workspace:*",
 		"@triplit/tuple-database": "^2.2.33",
 		"@types/lodash-es": "^4.17.12",
 		"idb": "^8.0.3",
@@ -48,7 +47,6 @@
 		"tuple-database": "^2.2.4"
 	},
 	"devDependencies": {
-		"@get-halo/tandem-server": "workspace:*",
 		"extendable-expect": "^1.0.5",
 		"fake-indexeddb": "^6.2.5",
 		"typescript": "^5.7.2",

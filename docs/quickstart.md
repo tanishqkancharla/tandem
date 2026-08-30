@@ -5,7 +5,7 @@ Get up and running with Tandem in 5 minutes. This guide will walk you through cr
 ## Installation
 
 ```bash
-npm install tandem
+npm install @tanishqkancharla/tandem-core
 ```
 
 ## 1. Define Your Schema
@@ -30,7 +30,7 @@ Create a TandemClient instance:
 
 ```typescript
 // db.ts
-import { TandemClient } from "tandem"
+import { TandemClient } from "@tanishqkancharla/tandem-core"
 import { TodoSchema } from "./types"
 
 export const db = new TandemClient<TodoSchema>({

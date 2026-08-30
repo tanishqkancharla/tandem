@@ -1,6 +1,7 @@
 import { describe, expect } from "vitest"
 import { collection, defineRelations, defineSchema, t } from "../src"
 import type { Assert, TestIsEqual } from "../src"
+import type { SchemaToTupleSchema } from "../src/schema/Schema"
 import { test } from "./fixtures"
 
 function makeSchema() {
@@ -127,3 +128,19 @@ describe("runtime schema relations", () => {
 		)
 	})
 })
+
+type _TestSchemaToTupleSchema = Assert<
+	TestIsEqual<
+		SchemaToTupleSchema<{
+			todos: {
+				id: string
+				text: string
+				complete: boolean
+			}
+		}>,
+		{
+			key: ["record", "todos", string]
+			value: { id: string; text: string; complete: boolean }
+		}
+	>
+>

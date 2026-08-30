@@ -69,7 +69,7 @@ new TandemClient({ schema, relations })
 - [x] Keep `defineSchema(...)` responsible only for collection definitions.
 - [x] Update relation runtime tests to assert the new returned object shape, e.g. `relations.posts.author`, not `schema.relations.posts.author`.
 - [x] Verify existing runtime relation validation behavior still throws the same descriptive startup errors.
-- [x] Verify `pnpm --filter @get-halo/tandem-core test` passes.
+- [x] Verify `pnpm --filter @tanishqkancharla/tandem-core test` passes.
 
 ### Phase 2: Preserve literal relation metadata from `defineRelations`
 
@@ -90,7 +90,7 @@ type MessagesType = typeof relations.threads.messages.type // "one-to-many"
 - [x] Introduce or adjust relation helper types so `typeof relations.threads.owner` preserves `name: "owner"`, `targetCollection: "users"`, and `type: "many-to-one"`.
 - [x] Keep runtime normalization unchanged except for renaming relation `kind` to `type`: relation values still include `type`, `name`, `sourceCollection`, `targetCollection`, `from`, and `to`.
 - [x] Add compile-time assertions that relation names and relation types are not widened to `string`/`RelationType`.
-- [x] Verify `pnpm --filter @get-halo/tandem-types type-check` and `pnpm --filter @get-halo/tandem-core type-check` pass.
+- [x] Verify `pnpm --filter @tanishqkancharla/tandem-core type-check` and `pnpm --filter @tanishqkancharla/tandem-core type-check` pass.
 
 ### Phase 3: Add schema-scoped relational query option types
 
@@ -180,8 +180,8 @@ type ThreadsResult = RelationalQueryResult<
 >
 ```
 
-- [x] Re-export the public option/result types from `@get-halo/tandem-types` and `@get-halo/tandem-core` as appropriate.
+- [x] Re-export the public option/result types from `@tanishqkancharla/tandem-core` and `@tanishqkancharla/tandem-core` as appropriate.
 - [x] Avoid accepting object-style relational queries at runtime unless they intentionally throw or remain type-only; execution belongs to a later spec.
 - [x] Keep existing flat `QueryBuilder` behavior compiling while the object query API is phased in.
 - [x] Verify `pnpm type-check` passes.
-- [x] Verify existing `pnpm --filter @get-halo/tandem-core test` passes.
+- [x] Verify existing `pnpm --filter @tanishqkancharla/tandem-core test` passes.

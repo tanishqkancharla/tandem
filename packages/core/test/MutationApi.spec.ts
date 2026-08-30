@@ -3,7 +3,7 @@ import {
 	type EncodedQuery,
 	type Mutation,
 	MutationApi,
-} from "@get-halo/tandem-types"
+} from "@tanishqkancharla/tandem-core"
 
 type TestSchema = {
 	threads: { id: string; ownerId: string; title: string }

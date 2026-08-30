@@ -5,10 +5,14 @@ import {
 	type LoggerSinkApi,
 } from "./Logger"
 
+export type JsonlLoggerSinkArgs = {
+	filePath: string
+}
+
 export class JsonlLoggerSink implements LoggerSinkApi {
 	private readonly filePath: string
 
-	constructor({ filePath }: { filePath: string }) {
+	constructor({ filePath }: JsonlLoggerSinkArgs) {
 		this.filePath = filePath
 	}
 

@@ -15,8 +15,8 @@
 			"dependsOn": ["^build"],
 			"outputs": []
 		},
-		"@get-halo/tandem-server#type-check": {
-			"dependsOn": ["@get-halo/tandem-types#build", "@get-halo/tandem-core#build"],
+		"@tanishqkancharla/tandem-core#type-check": {
+			"dependsOn": ["^build", "@tanishqkancharla/tandem-server#build"],
 			"outputs": []
 		},
 		"lint": {

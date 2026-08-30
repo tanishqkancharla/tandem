@@ -15,7 +15,7 @@ import { IndexedDbTupleStorage } from "../src/storage/IndexedDbAdapter"
 import { Logger } from "../src/utils/Logger"
 import { JsonlLoggerSink } from "../src/utils/Logger.node"
 import type { Codec } from "../src/utils/Codec"
-import { InMemoryRemote } from "@get-halo/tandem-server"
+import { InMemoryRemote } from "@tanishqkancharla/tandem-server"
 import type {
 	AnySchema,
 	RelationalQuery,
@@ -25,7 +25,7 @@ import type {
 	RuntimeRelationsDefinition,
 	RuntimeSchemaDefinition,
 	StorageApi,
-} from "@get-halo/tandem-types"
+} from "@tanishqkancharla/tandem-core"
 
 export type TestsTodo = {
 	id: string

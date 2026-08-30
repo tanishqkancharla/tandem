@@ -1,5 +1,5 @@
 {
-	"name": "@get-halo/tandem-react",
+	"name": "@tanishqkancharla/tandem-react",
 	"version": "0.2.0",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -36,8 +36,7 @@
 		"test": "vitest run"
 	},
 	"dependencies": {
-		"@get-halo/tandem-core": "workspace:*",
-		"@get-halo/tandem-types": "workspace:*"
+		"@tanishqkancharla/tandem-core": "workspace:*"
 	},
 	"peerDependencies": {
 		"react": ">=18"
