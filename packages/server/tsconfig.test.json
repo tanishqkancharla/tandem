@@ -8,15 +8,11 @@
 		"declaration": false,
 		"declarationMap": false,
 		"paths": {
-			"@get-halo/tandem-core": ["../core/src/index.ts"],
-			"@get-halo/tandem-types": ["../types/src/index.ts"]
+			"@tanishqkancharla/tandem-core": ["../core/src/index.ts"]
 		}
 	},
 	"include": ["src/**/*.ts", "test/**/*.ts"],
 	"references": [
-		{
-			"path": "../types"
-		},
 		{
 			"path": "../core"
 		}

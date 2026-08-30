@@ -1,22 +1,97 @@
-import {
-	PatchApi,
-	type AsyncUnsubscribe,
-	type AnySchema,
-	type ClientId,
-	type Cookie,
-	type EncodedQuery,
-	type InvertibleMutation,
-	type Mutation,
-	type MutationId,
-	type MutationOp,
-	type Patch,
-	type RemoteApi,
-	type ScanWindow,
-	type TimerApi,
-} from "@get-halo/tandem-types"
+import type { WriteOps } from "tuple-database"
+import type { EncodedQuery, ScanWindow } from "../query/Query"
+import type { AnySchema, CollectionName } from "../schema/Schema"
+import type {
+	InvertibleMutation,
+	Mutation,
+	MutationId,
+	MutationOp,
+} from "../transaction/Transaction"
 import type { LoggerApi } from "../utils/Logger.js"
 import { TaskQueue } from "../utils/TaskQueue.js"
-import type { Unsubscribe } from "../utils/typeUtils.js"
+import type { TimerApi } from "../utils/Timer"
+import type {
+	AsyncUnsubscribe,
+	Tagged,
+	Unsubscribe,
+} from "../utils/typeUtils.js"
+
+export type ClientId = Tagged<"ClientId", string>
+export type Cookie = Tagged<"Cookie", number | string>
+
+export type ClientApi = {
+	clientId: ClientId
+	poke: () => void
+}
+
+export type RemoteApi<Schema extends AnySchema> = {
+	connect(api: ClientApi): Promise<AsyncUnsubscribe>
+	push(args: {
+		mutations: Mutation<Schema>[]
+		clientId: ClientId
+	}): Promise<void>
+	pull(args: {
+		clientId: ClientId
+		cookie?: Cookie
+		scanWindow: ScanWindow<Schema>
+	}): Promise<{
+		cookie: Cookie
+		patch: Patch<Schema>
+		lastMutationId?: MutationId
+	}>
+}
+
+export type PatchSetOp<Schema extends AnySchema> = {
+	[Collection in CollectionName<Schema>]: {
+		collection: Collection
+		value: Schema[Collection]
+	}
+}[CollectionName<Schema>]
+
+export type PatchRemoveOp<Schema extends AnySchema> = {
+	[Collection in CollectionName<Schema>]: {
+		collection: Collection
+		id: Schema[Collection]["id"]
+	}
+}[CollectionName<Schema>]
+
+export type Patch<Schema extends AnySchema = AnySchema> = {
+	set?: PatchSetOp<Schema>[]
+	remove?: PatchRemoveOp<Schema>[]
+}
+
+export namespace PatchApi {
+	export function toString<Schema extends AnySchema>(
+		patch: Patch<Schema>,
+	): string {
+		return `Patch {\n${
+			patch.set
+				?.map(
+					(op) =>
+						`  set ${op.collection}.${op.value.id} = ${JSON.stringify(op.value)}`,
+				)
+				.join("\n") ?? ""
+		}\n${patch.remove?.map((op) => `  remove ${op.collection}.${op.id}`).join("\n") ?? ""}}`
+	}
+
+	export function toWriteOps<Schema extends AnySchema>(
+		patch: Patch<Schema>,
+	): WriteOps {
+		const set: WriteOps["set"] = []
+		const remove: WriteOps["remove"] = []
+
+		for (const s of patch.set ?? []) {
+			const key = ["record", s.collection, s.value.id]
+			set!.push({ key, value: s.value })
+		}
+
+		for (const r of patch.remove ?? []) {
+			remove!.push(["record", r.collection, r.id])
+		}
+
+		return { set, remove }
+	}
+}
 
 function invertibleMutationToMutation<Schema extends AnySchema>(
 	invertible: InvertibleMutation<Schema>,

@@ -1,5 +1,8 @@
-import { IndexedDbTupleStorage, TandemClient } from "@get-halo/tandem-core"
-import { TandemClientProvider } from "@get-halo/tandem-react"
+import {
+	IndexedDbTupleStorage,
+	TandemClient,
+} from "@tanishqkancharla/tandem-core"
+import { TandemClientProvider } from "@tanishqkancharla/tandem-react"
 import { MauiProvider } from "@tanishqkancharla/maui"
 import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"

@@ -6,7 +6,7 @@ import type {
 	Mutation,
 	Patch,
 	PatchSetOp,
-} from "@get-halo/tandem-types"
+} from "@tanishqkancharla/tandem-core"
 import type { AnyPgColumn, PgDatabase, PgTable } from "drizzle-orm/pg-core"
 import { RemoteServer, type RemoteStore } from "../RemoteServer"
 import { buildOrderBy, buildWhere, type DrizzleTableWithId } from "./utils"

@@ -59,15 +59,15 @@ importers:
 
   examples/todo:
     dependencies:
-      '@get-halo/tandem-core':
-        specifier: workspace:*
-        version: link:../../packages/core
-      '@get-halo/tandem-react':
-        specifier: workspace:*
-        version: link:../../packages/react
       '@tanishqkancharla/maui':
         specifier: ^0.0.3
         version: 0.0.3(@floating-ui/dom@1.8.0)(@tiptap/core@3.30.2(@tiptap/pm@3.30.2))(@tiptap/extensions@3.30.2(@tiptap/core@3.30.2(@tiptap/pm@3.30.2))(@tiptap/pm@3.30.2))(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)
+      '@tanishqkancharla/tandem-core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@tanishqkancharla/tandem-react':
+        specifier: workspace:*
+        version: link:../../packages/react
       purse-styles:
         specifier: ^0.2.1
         version: 0.2.2(react@19.2.8)
@@ -96,9 +96,6 @@ importers:
 
   packages/core:
     dependencies:
-      '@get-halo/tandem-types':
-        specifier: workspace:*
-        version: link:../types
       '@triplit/tuple-database':
         specifier: ^2.2.33
         version: 2.2.33(react@19.2.8)
@@ -115,9 +112,6 @@ importers:
         specifier: ^2.2.4
         version: 2.2.4(react@19.2.8)
     devDependencies:
-      '@get-halo/tandem-server':
-        specifier: workspace:*
-        version: link:../server
       extendable-expect:
         specifier: ^1.0.5
         version: 1.0.5
@@ -133,12 +127,9 @@ importers:
 
   packages/react:
     dependencies:
-      '@get-halo/tandem-core':
+      '@tanishqkancharla/tandem-core':
         specifier: workspace:*
         version: link:../core
-      '@get-halo/tandem-types':
-        specifier: workspace:*
-        version: link:../types
     devDependencies:
       '@testing-library/react':
         specifier: ^16.3.0
@@ -167,9 +158,9 @@ importers:
 
   packages/server:
     dependencies:
-      '@get-halo/tandem-types':
+      '@tanishqkancharla/tandem-core':
         specifier: workspace:*
-        version: link:../types
+        version: link:../core
     devDependencies:
       '@types/better-sqlite3':
         specifier: ^7.6.13
@@ -195,16 +186,6 @@ importers:
       vitest:
         specifier: ^1.1.0
         version: 1.6.1(@types/node@20.19.9)(jsdom@26.1.0)
-
-  packages/types:
-    dependencies:
-      tuple-database:
-        specifier: ^2.2.4
-        version: 2.2.4(react@19.2.8)
-    devDependencies:
-      typescript:
-        specifier: ^5.7.2
-        version: 5.8.3
 
 packages:
 

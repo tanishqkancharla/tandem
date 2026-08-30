@@ -9,8 +9,8 @@ import type {
 	Patch,
 	RemoteApi,
 	ScanWindow,
-} from "@get-halo/tandem-types"
-import { MutationApi, untag } from "@get-halo/tandem-types"
+} from "@tanishqkancharla/tandem-core"
+import { MutationApi, untag } from "@tanishqkancharla/tandem-core"
 
 type ClientState<Schema extends AnySchema> = {
 	poke: () => void

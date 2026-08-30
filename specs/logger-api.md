@@ -40,7 +40,7 @@ Replace the old `LoggerApi` shape with a core `Logger` class and a small `Logger
 - `packages/core/src/index.ts` - Public exports should expose the new logger class and sink APIs instead of the old `LoggerApi`/`ConsoleLogger` API.
 - `packages/core/test/fixtures.ts` - Test logging helper currently implements `LoggerApi`; it should switch to the new `Logger` plus JSONL sink or a focused test sink.
 - `packages/core/test/TandemClient.spec.ts` - Existing client/sync coverage should continue passing after logger migration.
-- `packages/core/package.json` and root `package.json` - Provide verification commands: `pnpm --filter @get-halo/tandem-core test` and `pnpm --filter @get-halo/tandem-core type-check`.
+- `packages/core/package.json` and root `package.json` - Provide verification commands: `pnpm --filter @tanishqkancharla/tandem-core test` and `pnpm --filter @tanishqkancharla/tandem-core type-check`.
 
 ## Implementation
 
@@ -79,7 +79,7 @@ class Logger {
 - [ ] Implement `addSink(sink)` as immutable: return a new `Logger` with existing scopes and sinks plus the new sink.
 - [ ] Implement `destroy()` on `Logger` that calls `destroy?.()` once for each unique sink.
 - [ ] Add focused logger tests that assert scope merging, multiple sink fan-out, `addSink` immutability, and destructor fan-out.
-- [ ] Verify `pnpm --filter @get-halo/tandem-core type-check` passes.
+- [ ] Verify `pnpm --filter @tanishqkancharla/tandem-core type-check` passes.
 
 ### Phase 2: Add Console and JSONL sinks
 
@@ -104,7 +104,7 @@ class JsonlLoggerSink implements LoggerSinkApi {
 - [ ] Decide constructor shape for JSONL as `new JsonlLoggerSink({ filePath })` to keep path options extensible without adding overloads.
 - [ ] Serialize non-JSON values defensively at the JSONL boundary so sink writes do not throw for common values such as `Error`.
 - [ ] Add tests for console level dispatch with spies and JSONL line output.
-- [ ] Verify `pnpm --filter @get-halo/tandem-core test -- packages/core/test/Logger.spec.ts` passes.
+- [ ] Verify `pnpm --filter @tanishqkancharla/tandem-core test -- packages/core/test/Logger.spec.ts` passes.
 
 ### Phase 3: Make TandemClient logger optional and migrate core call sites
 
@@ -128,7 +128,7 @@ this.db = new Database({
 - [ ] Convert all string/args logger calls in `TandemClient.ts`, `Database.ts`, and `SyncEngine.ts` to single-object calls with a `message` field and structured details.
 - [ ] Replace the direct `console.warn` in `TandemClient.disconnect()` with `this.logger.warn({ message: "attempted to disconnect without a remote server configured" })`.
 - [ ] Update test fixtures to use `new Logger({ sinks: new JsonlLoggerSink({ filePath }) })` or a minimal in-memory sink where assertions need captured events.
-- [ ] Verify `pnpm --filter @get-halo/tandem-core test` passes.
+- [ ] Verify `pnpm --filter @tanishqkancharla/tandem-core test` passes.
 
 ### Phase 4: Update public exports and docs references
 
@@ -149,5 +149,5 @@ export {
 - [ ] Remove exports for `LoggerApi`, `ConsoleLogger`, and `rootLogger`.
 - [ ] Search for `LoggerApi`, `ConsoleLogger`, and `rootLogger` and remove all remaining references.
 - [ ] Update docs examples only if they currently document the logger API.
-- [ ] Verify `pnpm --filter @get-halo/tandem-core type-check` passes.
-- [ ] Verify `pnpm --filter @get-halo/tandem-core test` passes.
+- [ ] Verify `pnpm --filter @tanishqkancharla/tandem-core type-check` passes.
+- [ ] Verify `pnpm --filter @tanishqkancharla/tandem-core test` passes.

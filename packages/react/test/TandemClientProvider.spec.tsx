@@ -5,7 +5,7 @@ import {
 	collection,
 	defineSchema,
 	t,
-} from "@get-halo/tandem-core"
+} from "@tanishqkancharla/tandem-core"
 import { render, screen, waitFor } from "@testing-library/react"
 import { describe, expect, test } from "vitest"
 import {

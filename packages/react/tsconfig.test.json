@@ -9,17 +9,13 @@
 		"declarationMap": false,
 		"jsx": "react-jsx",
 		"paths": {
-			"@get-halo/tandem-core": ["../core/src/index.ts"],
-			"@get-halo/tandem-types": ["../types/src/index.ts"]
+			"@tanishqkancharla/tandem-core": ["../core/src/index.ts"]
 		}
 	},
 	"include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts", "test/**/*.tsx"],
 	"references": [
 		{
 			"path": "../core"
-		},
-		{
-			"path": "../types"
 		}
 	]
 }

@@ -4,7 +4,7 @@ import type {
 	AnySchema,
 	CollectionName,
 	EncodedWhereClause,
-} from "@get-halo/tandem-types"
+} from "@tanishqkancharla/tandem-core"
 
 export type DrizzleTableWithId<Column extends AnyColumn> = {
 	id: Column

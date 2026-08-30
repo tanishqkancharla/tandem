@@ -37,11 +37,10 @@ jobs:
       - name: Publish packages
         run: |
           VERSION="$(node -p "require('./package.json').version")"
-          if npm view "@get-halo/tandem-types@$VERSION" version >/dev/null 2>&1; then
+          if npm view "@tanishqkancharla/tandem-core@$VERSION" version >/dev/null 2>&1; then
             echo "Tandem $VERSION is already published"
           else
-            pnpm --filter @get-halo/tandem-types publish --access public --provenance --no-git-checks
-            pnpm --filter @get-halo/tandem-core publish --access public --provenance --no-git-checks
-            pnpm --filter @get-halo/tandem-server publish --access public --provenance --no-git-checks
-            pnpm --filter @get-halo/tandem-react publish --access public --provenance --no-git-checks
+            pnpm --filter @tanishqkancharla/tandem-core publish --access public --provenance --no-git-checks
+            pnpm --filter @tanishqkancharla/tandem-server publish --access public --provenance --no-git-checks
+            pnpm --filter @tanishqkancharla/tandem-react publish --access public --provenance --no-git-checks
           fi

@@ -1,4 +1,4 @@
-export type { RemoteApi } from "@get-halo/tandem-types"
+export type { RemoteApi } from "@tanishqkancharla/tandem-core"
 export { InMemoryRemote } from "./InMemoryRemote"
 export { JsonFileRemote } from "./JsonFileRemote"
 export type { JsonFileRemoteArgs } from "./JsonFileRemote"

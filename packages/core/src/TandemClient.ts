@@ -1,28 +1,32 @@
 import { Database } from "./Database"
-import { _encodeRelationalQuery } from "./query/Query"
-import { SyncEngine } from "./sync/SyncEngine"
-import { Transaction } from "./transaction/Transaction"
 import {
+	_encodeRelationalQuery,
+	type RelationalQuery,
+	type RelationalQueryResult,
+} from "./query/Query"
+import type {
 	AnySchema,
-	type AsyncUnsubscribe,
-	ClientId,
-	InvertibleMutation,
-	MutationApi,
-	MutationId,
-	Patch,
-	PatchApi,
-	RemoteApi,
-	RelationalQuery,
-	RelationalQueryResult,
-	RngApi,
 	RuntimeRelationsDefinition,
 	RuntimeSchemaDefinition,
-	StorageApi,
-	type TimerApi,
-} from "@get-halo/tandem-types"
+} from "./schema/Schema"
+import type { StorageApi } from "./storage/Storage"
+import {
+	PatchApi,
+	SyncEngine,
+	type ClientId,
+	type Patch,
+	type RemoteApi,
+} from "./sync/SyncEngine"
+import {
+	MutationApi,
+	Transaction,
+	type InvertibleMutation,
+	type MutationId,
+} from "./transaction/Transaction"
 import { ConsoleLoggerSink, Logger, type LoggerApi } from "./utils/Logger"
-import { randomId } from "./utils/randomId"
-import { Timer } from "./utils/Timer"
+import { randomId, type RngApi } from "./utils/randomId"
+import { Timer, type TimerApi } from "./utils/Timer"
+import type { AsyncUnsubscribe } from "./utils/typeUtils"
 
 type TandemClientArgs<
 	Schema extends AnySchema,

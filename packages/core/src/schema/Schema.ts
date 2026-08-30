@@ -1,18 +1,128 @@
-import type {
-	AnyCollectionDefinition,
-	AnyCollectionSchema,
-	AnyRuntimeFieldDefinition,
-	AnySchema,
-	CollectionName,
-	CollectionDefinition,
-	NormalizedManyToOneRelationDefinition,
-	NormalizedOneToManyRelationDefinition,
-	NormalizedRelationDefinition,
-	RelationType,
-	RuntimeFieldDefinition,
-	RuntimeSchemaDefinition,
-} from "@get-halo/tandem-types"
 import type { Codec } from "../utils/Codec"
+
+export type AnyCollectionSchema = Record<string, any> & { id: string | number }
+
+declare const collectionRecord: unique symbol
+declare const fieldValue: unique symbol
+
+export type RuntimeFieldDefinition<Value = unknown> = {
+	readonly kind: "field"
+	readonly type: string
+	readonly [fieldValue]?: Value
+}
+
+export type AnyRuntimeFieldDefinition = RuntimeFieldDefinition<any>
+
+export type CollectionDefinition<
+	CollectionRecord extends AnyCollectionSchema = AnyCollectionSchema,
+	CollectionCodec = unknown,
+> = {
+	readonly kind: "collection"
+	readonly name?: string
+	readonly codec?: CollectionCodec
+	readonly shape?: globalThis.Record<string, AnyRuntimeFieldDefinition>
+	readonly fields?: readonly (keyof CollectionRecord & string)[]
+	readonly [collectionRecord]?: CollectionRecord
+}
+
+export type NamedCollectionDefinition<
+	Record extends AnyCollectionSchema = AnyCollectionSchema,
+	Name extends string = string,
+	CollectionCodec = unknown,
+> = CollectionDefinition<Record, CollectionCodec> & {
+	readonly name: Name
+}
+
+export type AnyCollectionDefinition = CollectionDefinition<
+	AnyCollectionSchema,
+	unknown
+>
+
+export type RuntimeSchemaDefinition<Schema extends AnySchema = AnySchema> = {
+	readonly collections: {
+		readonly [Collection in CollectionName<Schema>]: NamedCollectionDefinition<
+			Schema[Collection],
+			Collection,
+			unknown
+		>
+	}
+}
+
+export type RelationType = "many-to-one" | "one-to-many"
+
+export type NormalizedManyToOneRelationDefinition<
+	Schema extends AnySchema = AnySchema,
+	SourceCollection extends CollectionName<Schema> = CollectionName<Schema>,
+	TargetCollection extends CollectionName<Schema> = CollectionName<Schema>,
+	RelationName extends string = string,
+> = {
+	readonly type: "many-to-one"
+	readonly name: RelationName
+	readonly sourceCollection: SourceCollection
+	readonly targetCollection: TargetCollection
+	readonly from: keyof Schema[SourceCollection] & string
+	readonly to: "id"
+}
+
+export type NormalizedOneToManyRelationDefinition<
+	Schema extends AnySchema = AnySchema,
+	SourceCollection extends CollectionName<Schema> = CollectionName<Schema>,
+	TargetCollection extends CollectionName<Schema> = CollectionName<Schema>,
+	RelationName extends string = string,
+> = {
+	readonly type: "one-to-many"
+	readonly name: RelationName
+	readonly sourceCollection: SourceCollection
+	readonly targetCollection: TargetCollection
+	readonly from: "id"
+	readonly to: keyof Schema[TargetCollection] & string
+}
+
+export type NormalizedRelationDefinition<
+	Schema extends AnySchema = AnySchema,
+	SourceCollection extends CollectionName<Schema> = CollectionName<Schema>,
+	TargetCollection extends CollectionName<Schema> = CollectionName<Schema>,
+	RelationName extends string = string,
+> =
+	| NormalizedManyToOneRelationDefinition<
+			Schema,
+			SourceCollection,
+			TargetCollection,
+			RelationName
+	  >
+	| NormalizedOneToManyRelationDefinition<
+			Schema,
+			SourceCollection,
+			TargetCollection,
+			RelationName
+	  >
+
+export type RuntimeRelationsDefinition<Schema extends AnySchema = AnySchema> = {
+	readonly [SourceCollection in CollectionName<Schema>]?: {
+		readonly [RelationName in string]?: NormalizedRelationDefinition<
+			Schema,
+			SourceCollection,
+			CollectionName<Schema>,
+			RelationName
+		>
+	}
+}
+
+export type Attribute<Schema extends AnySchema> = {
+	[K in keyof Schema]: keyof Schema[K]
+}[keyof Schema] &
+	string
+
+export type AnySchema = Record<string, AnyCollectionSchema>
+
+export type CollectionName<Schema extends AnySchema> = keyof Schema & string
+
+export type SchemaToTupleSchema<Schema extends AnySchema> = {
+	[C in CollectionName<Schema>]: {
+		key: ["record", collection: C, id: Schema[C]["id"]]
+		value: Schema[C]
+	}
+}[CollectionName<Schema>]
 
 type CollectionOptions<Record extends AnyCollectionSchema, StorageValue> = {
 	codec?: Codec<Record, StorageValue>

@@ -3,13 +3,10 @@
 import { deleteDB, IDBPDatabase, openDB } from "idb"
 import { KeyValuePair, ScanStorageArgs, WriteOps } from "tuple-database"
 import { decodeTuple, encodeTuple } from "tuple-database/helpers/codec"
-import {
-	AnySchema,
-	Json,
-	RuntimeSchemaDefinition,
-	StorageApi,
-} from "@get-halo/tandem-types"
+import { AnySchema, RuntimeSchemaDefinition } from "../schema/Schema"
+import type { StorageApi } from "./Storage"
 import { Codec } from "../utils/Codec"
+import type { Json } from "../utils/typeUtils"
 
 const version = 1
 

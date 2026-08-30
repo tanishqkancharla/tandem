@@ -1,4 +1,6 @@
-import type { TimerApi } from "@get-halo/tandem-types"
+export type TimerApi = {
+	delay: (ms: number) => Promise<void>
+}
 
 export class Timer implements TimerApi {
 	delay(ms: number): Promise<void> {
