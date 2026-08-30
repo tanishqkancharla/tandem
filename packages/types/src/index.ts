@@ -53,4 +53,10 @@ export {
 	type Patch,
 } from "./types"
 
-export { type Tagged, type Untagged, tag, untag } from "./utils/typeUtils"
+export {
+	type AsyncUnsubscribe,
+	type Tagged,
+	type Untagged,
+	tag,
+	untag,
+} from "./utils/typeUtils"

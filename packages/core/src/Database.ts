@@ -22,7 +22,7 @@ import {
 	RuntimeSchemaDefinition,
 	StorageApi,
 	WriteOpsApi,
-} from "@tandem/types"
+} from "@get-halo/tandem-types"
 import type { LoggerApi } from "./utils/Logger"
 import { isEqual, pick, sortBy } from "./utils/objectUtils"
 import { ThrottleQueue } from "./utils/ThrottleQueue"

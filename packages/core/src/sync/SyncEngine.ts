@@ -1,5 +1,6 @@
 import {
 	PatchApi,
+	type AsyncUnsubscribe,
 	type AnySchema,
 	type ClientId,
 	type Cookie,
@@ -12,10 +13,10 @@ import {
 	type RemoteApi,
 	type ScanWindow,
 	type TimerApi,
-} from "@tandem/types"
+} from "@get-halo/tandem-types"
 import type { LoggerApi } from "../utils/Logger.js"
 import { TaskQueue } from "../utils/TaskQueue.js"
-import type { AsyncUnsubscribe, Unsubscribe } from "../utils/typeUtils.js"
+import type { Unsubscribe } from "../utils/typeUtils.js"
 
 function invertibleMutationToMutation<Schema extends AnySchema>(
 	invertible: InvertibleMutation<Schema>,
@@ -95,7 +96,7 @@ export class SyncEngine<Schema extends AnySchema> {
 		}
 	}
 
-	async connect() {
+	async connect(): Promise<AsyncUnsubscribe> {
 		this.logger.info({ message: "connecting to remote" })
 		const unsubscribe = await this.remote.connect({
 			clientId: this.clientId,

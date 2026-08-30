@@ -59,10 +59,10 @@ importers:
 
   examples/todo:
     dependencies:
-      '@tandem/core':
+      '@get-halo/tandem-core':
         specifier: workspace:*
         version: link:../../packages/core
-      '@tandem/react':
+      '@get-halo/tandem-react':
         specifier: workspace:*
         version: link:../../packages/react
       '@tanishqkancharla/maui':
@@ -96,7 +96,7 @@ importers:
 
   packages/core:
     dependencies:
-      '@tandem/types':
+      '@get-halo/tandem-types':
         specifier: workspace:*
         version: link:../types
       '@triplit/tuple-database':
@@ -115,7 +115,7 @@ importers:
         specifier: ^2.2.4
         version: 2.2.4(react@19.2.8)
     devDependencies:
-      '@tandem/server':
+      '@get-halo/tandem-server':
         specifier: workspace:*
         version: link:../server
       extendable-expect:
@@ -133,10 +133,10 @@ importers:
 
   packages/react:
     dependencies:
-      '@tandem/core':
+      '@get-halo/tandem-core':
         specifier: workspace:*
         version: link:../core
-      '@tandem/types':
+      '@get-halo/tandem-types':
         specifier: workspace:*
         version: link:../types
     devDependencies:
@@ -167,7 +167,7 @@ importers:
 
   packages/server:
     dependencies:
-      '@tandem/types':
+      '@get-halo/tandem-types':
         specifier: workspace:*
         version: link:../types
     devDependencies:

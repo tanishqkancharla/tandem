@@ -1,5 +1,5 @@
 {
-	"name": "@tandem/core",
+	"name": "@get-halo/tandem-core",
 	"version": "0.2.0",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -8,16 +8,25 @@
 	"exports": {
 		".": {
 			"types": "./dist/index.d.ts",
-			"import": "./dist/index.js"
+			"import": "./dist/index.js",
+			"default": "./dist/index.js"
 		},
 		"./node": {
 			"types": "./dist/utils/Logger.node.d.ts",
 			"import": "./dist/utils/Logger.node.js"
 		}
 	},
+	"publishConfig": {
+		"access": "public"
+	},
 	"author": "Tanishq Kancharla <tanishqkancharla3@gmail.com>",
 	"description": "Core sync engine functionality for Tandem",
 	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/tanishqkancharla/tandem.git",
+		"directory": "packages/core"
+	},
 	"sideEffects": false,
 	"files": [
 		"dist",
@@ -31,7 +40,7 @@
 		"test": "vitest run"
 	},
 	"dependencies": {
-		"@tandem/types": "workspace:*",
+		"@get-halo/tandem-types": "workspace:*",
 		"@triplit/tuple-database": "^2.2.33",
 		"@types/lodash-es": "^4.17.12",
 		"idb": "^8.0.3",
@@ -39,7 +48,7 @@
 		"tuple-database": "^2.2.4"
 	},
 	"devDependencies": {
-		"@tandem/server": "workspace:*",
+		"@get-halo/tandem-server": "workspace:*",
 		"extendable-expect": "^1.0.5",
 		"fake-indexeddb": "^6.2.5",
 		"typescript": "^5.7.2",

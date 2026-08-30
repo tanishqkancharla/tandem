@@ -1,4 +1,4 @@
-import type { AnySchema } from "@tandem/types"
+import type { AnySchema } from "@get-halo/tandem-types"
 import { InMemoryRemoteStore } from "./InMemoryRemoteStore"
 import { RemoteServer } from "./RemoteServer"
 

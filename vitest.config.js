@@ -3,15 +3,15 @@ import { defineConfig } from "vitest/config"
 export default defineConfig({
 	resolve: {
 		alias: {
-			"@tandem/core": new URL("./packages/core/src/index.ts", import.meta.url)
+			"@get-halo/tandem-core": new URL("./packages/core/src/index.ts", import.meta.url)
 				.pathname,
-			"@tandem/server": new URL(
+			"@get-halo/tandem-server": new URL(
 				"./packages/server/src/index.ts",
 				import.meta.url,
 			).pathname,
-			"@tandem/react": new URL("./packages/react/src/index.ts", import.meta.url)
+			"@get-halo/tandem-react": new URL("./packages/react/src/index.ts", import.meta.url)
 				.pathname,
-			"@tandem/types": new URL("./packages/types/src/index.ts", import.meta.url)
+			"@get-halo/tandem-types": new URL("./packages/types/src/index.ts", import.meta.url)
 				.pathname,
 		},
 	},

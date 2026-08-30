@@ -4,7 +4,7 @@ import {
 	CollectionName,
 	InvertibleMutationOp,
 	SchemaToTupleSchema,
-} from "@tandem/types"
+} from "@get-halo/tandem-types"
 
 export class Transaction<Schema extends AnySchema> {
 	/**

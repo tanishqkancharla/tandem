@@ -6,7 +6,7 @@ import {
 	Operator,
 	RelationalQueryOptions,
 	RuntimeRelationsDefinition,
-} from "@tandem/types"
+} from "@get-halo/tandem-types"
 
 const whereOperatorMap = {
 	eq: "=",

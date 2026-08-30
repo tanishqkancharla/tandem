@@ -1,4 +1,4 @@
-import { collection, defineSchema, t } from "@tandem/core"
+import { collection, defineSchema, t } from "@get-halo/tandem-core"
 
 export const schema = defineSchema({
 	todos: collection({

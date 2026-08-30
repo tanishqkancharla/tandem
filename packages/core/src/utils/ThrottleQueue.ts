@@ -1,4 +1,4 @@
-import type { TimerApi } from "@tandem/types"
+import type { TimerApi } from "@get-halo/tandem-types"
 
 export class ThrottleQueue {
 	private taskPromise: Promise<void> | undefined

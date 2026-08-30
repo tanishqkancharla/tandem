@@ -8,8 +8,8 @@
 		"declaration": false,
 		"declarationMap": false,
 		"paths": {
-			"@tandem/server": ["../server/src/index.ts"],
-			"@tandem/types": ["../types/src/index.ts"]
+			"@get-halo/tandem-server": ["../server/src/index.ts"],
+			"@get-halo/tandem-types": ["../types/src/index.ts"]
 		}
 	},
 	"include": ["src/**/*.ts", "test/**/*.ts"],

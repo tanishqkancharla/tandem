@@ -1,5 +1,5 @@
 import type { KeyValuePair, ScanStorageArgs, WriteOps } from "tuple-database"
-import type { StorageApi } from "@tandem/types"
+import type { StorageApi } from "@get-halo/tandem-types"
 
 export class Storage {
 	constructor(

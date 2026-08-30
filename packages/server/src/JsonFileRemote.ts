@@ -6,7 +6,7 @@ import type {
 	EncodedQuery,
 	Mutation,
 	Patch,
-} from "@tandem/types"
+} from "@get-halo/tandem-types"
 import { InMemoryRemoteStore } from "./InMemoryRemoteStore"
 import { RemoteServer, type RemoteStore } from "./RemoteServer"
 

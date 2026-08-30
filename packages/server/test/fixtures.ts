@@ -1,4 +1,4 @@
-import type { RemoteApi } from "@tandem/types"
+import type { RemoteApi } from "@get-halo/tandem-types"
 import Database from "better-sqlite3"
 import { drizzle as drizzleBetterSqlite } from "drizzle-orm/better-sqlite3"
 import { int as mysqlInt, mysqlTable, varchar } from "drizzle-orm/mysql-core"

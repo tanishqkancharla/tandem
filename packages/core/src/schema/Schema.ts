@@ -11,7 +11,7 @@ import type {
 	RelationType,
 	RuntimeFieldDefinition,
 	RuntimeSchemaDefinition,
-} from "@tandem/types"
+} from "@get-halo/tandem-types"
 import type { Codec } from "../utils/Codec"
 
 type CollectionOptions<Record extends AnyCollectionSchema, StorageValue> = {

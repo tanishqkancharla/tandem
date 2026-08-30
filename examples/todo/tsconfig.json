@@ -7,9 +7,9 @@
 		"declarationMap": false,
 		"types": ["vite/client"],
 		"paths": {
-			"@tandem/core": ["../../packages/core/src/index.ts"],
-			"@tandem/react": ["../../packages/react/src/index.ts"],
-			"@tandem/types": ["../../packages/types/src/index.ts"]
+			"@get-halo/tandem-core": ["../../packages/core/src/index.ts"],
+			"@get-halo/tandem-react": ["../../packages/react/src/index.ts"],
+			"@get-halo/tandem-types": ["../../packages/types/src/index.ts"]
 		}
 	},
 	"include": ["src"]

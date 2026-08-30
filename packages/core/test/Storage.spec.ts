@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest"
 import { Storage } from "../src/storage/Storage"
-import type { StorageApi } from "@tandem/types"
+import type { StorageApi } from "@get-halo/tandem-types"
 
 describe("Storage", () => {
 	test("commit failure calls onFailure and rethrows", async () => {

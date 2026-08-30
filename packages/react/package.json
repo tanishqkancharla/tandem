@@ -1,5 +1,5 @@
 {
-	"name": "@tandem/react",
+	"name": "@get-halo/tandem-react",
 	"version": "0.2.0",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -8,6 +8,11 @@
 	"author": "Tanishq Kancharla <tanishqkancharla3@gmail.com>",
 	"description": "React bindings for Tandem",
 	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/tanishqkancharla/tandem.git",
+		"directory": "packages/react"
+	},
 	"sideEffects": false,
 	"files": [
 		"dist",
@@ -16,8 +21,12 @@
 	"exports": {
 		".": {
 			"types": "./dist/index.d.ts",
-			"import": "./dist/index.js"
+			"import": "./dist/index.js",
+			"default": "./dist/index.js"
 		}
+	},
+	"publishConfig": {
+		"access": "public"
 	},
 	"scripts": {
 		"build": "tsc",
@@ -27,8 +36,8 @@
 		"test": "vitest run"
 	},
 	"dependencies": {
-		"@tandem/core": "workspace:*",
-		"@tandem/types": "workspace:*"
+		"@get-halo/tandem-core": "workspace:*",
+		"@get-halo/tandem-types": "workspace:*"
 	},
 	"peerDependencies": {
 		"react": ">=18"

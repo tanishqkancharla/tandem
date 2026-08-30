@@ -62,7 +62,7 @@ function intersectsQuery(
 - [x] Keep root flat-query intersection behavior unchanged.
 - [x] Add focused coverage that a mutation to an included collection intersects a scan window whose root collection is different.
 - [x] Add focused coverage that a mutation to an unrelated collection does not intersect the same scan window.
-- [x] Verify `pnpm --filter @tandem/types type-check` passes.
+- [x] Verify `pnpm --filter @get-halo/tandem-types type-check` passes.
 
 ### Phase 2: Return a scan-window snapshot for root and included collections
 
@@ -92,7 +92,7 @@ function buildSnapshotPatch(scanWindow: ScanWindow<Schema>) {
 - [x] Apply `where` filters for each collection when building the snapshot, but ignore `select`, `order`, `limit`, and `offset` for snapshot fetching.
 - [x] Continue returning remove patches for removals since the caller's cookie so stale local records disappear.
 - [x] Add a test where a client connects, advances its cookie with an empty scan window, then subscribes to a relational query and still receives pre-existing remote parent and child records.
-- [x] Verify `pnpm --filter @tandem/core test` passes.
+- [x] Verify `pnpm --filter @get-halo/tandem-core test` passes.
 
 ### Phase 3: Sync remote child changes into relational subscription results
 
@@ -115,7 +115,7 @@ client2.subscribe(
 - [x] Add coverage for a nested included relation, e.g. `threads.with.owner.with.profile`, where a remote `profiles` update re-emits the subscribed thread result.
 - [x] Assert unrelated collection changes do not re-emit the relational subscription; Phase 1 covers the no-poke intersection behavior directly.
 - [x] Verify the synced records are queryable directly on the subscribed client after the callback fires.
-- [x] Verify `pnpm --filter @tandem/core test` passes.
+- [x] Verify `pnpm --filter @get-halo/tandem-core test` passes.
 
 ### Phase 4: Preserve optimistic replay with relation-expanded results
 
@@ -133,5 +133,5 @@ await vi.waitFor(() => {
 - [x] Add a delayed-push relational replay test modeled after the existing flat `replays a pending local edit on top of a newer remote patch` test.
 - [x] Ensure the pending local mutation can affect an included relation record, not only the root parent record.
 - [x] Assert the subscription callback and direct `client.query` both show the rebased relation-expanded result.
-- [x] Verify `pnpm --filter @tandem/core test` passes.
+- [x] Verify `pnpm --filter @get-halo/tandem-core test` passes.
 - [x] Verify `pnpm type-check` passes.

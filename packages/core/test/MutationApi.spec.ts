@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest"
-import { type EncodedQuery, type Mutation, MutationApi } from "@tandem/types"
+import {
+	type EncodedQuery,
+	type Mutation,
+	MutationApi,
+} from "@get-halo/tandem-types"
 
 type TestSchema = {
 	threads: { id: string; ownerId: string; title: string }

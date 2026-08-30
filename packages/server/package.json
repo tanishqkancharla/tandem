@@ -1,5 +1,5 @@
 {
-	"name": "@tandem/server",
+	"name": "@get-halo/tandem-server",
 	"version": "0.2.0",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -8,6 +8,11 @@
 	"author": "Tanishq Kancharla <tanishqkancharla3@gmail.com>",
 	"description": "Server adapters for Tandem remote APIs",
 	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/tanishqkancharla/tandem.git",
+		"directory": "packages/server"
+	},
 	"files": [
 		"dist",
 		"src"
@@ -34,6 +39,9 @@
 			"default": "./dist/drizzle/sqlite.js"
 		}
 	},
+	"publishConfig": {
+		"access": "public"
+	},
 	"scripts": {
 		"build": "tsc",
 		"type-check": "tsgo --noEmit && tsgo -p tsconfig.test.json --noEmit",
@@ -43,7 +51,7 @@
 		"test:docker": "sh -c 'docker compose -f docker-compose.test.yml up -d --wait && TANDEM_DOCKER_TESTS=1 vitest run; status=$?; docker compose -f docker-compose.test.yml down; exit $status'"
 	},
 	"dependencies": {
-		"@tandem/types": "workspace:*"
+		"@get-halo/tandem-types": "workspace:*"
 	},
 	"peerDependencies": {
 		"drizzle-orm": "^0.44.0"

@@ -1,6 +1,11 @@
 /** @vitest-environment jsdom */
 
-import { TandemClient, collection, defineSchema, t } from "@tandem/core"
+import {
+	TandemClient,
+	collection,
+	defineSchema,
+	t,
+} from "@get-halo/tandem-core"
 import { render, screen, waitFor } from "@testing-library/react"
 import { describe, expect, test } from "vitest"
 import {

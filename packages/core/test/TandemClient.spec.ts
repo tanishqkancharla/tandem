@@ -10,7 +10,7 @@ import {
 	type TestsTodo,
 	type ThreadTestSchema,
 } from "./fixtures"
-import type { RemoteApi } from "@tandem/types"
+import type { RemoteApi } from "@get-halo/tandem-types"
 import { collection, defineSchema } from "../src/schema/Schema"
 import { codec } from "../src/utils/Codec"
 

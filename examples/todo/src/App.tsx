@@ -15,7 +15,7 @@ import {
 	useTandemTransaction,
 	type UseTandemQuery,
 	type UseTandemTransaction,
-} from "@tandem/react"
+} from "@get-halo/tandem-react"
 import { style, useStyles } from "purse-styles"
 import { useState } from "react"
 import type { TodoSchema } from "./schema"

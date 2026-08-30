@@ -1,5 +1,5 @@
-import type { Transaction } from "@tandem/core"
-import type { Assert, TestExtends, TestIsEqual } from "@tandem/core"
+import type { Transaction } from "@get-halo/tandem-core"
+import type { Assert, TestExtends, TestIsEqual } from "@get-halo/tandem-core"
 import {
 	useTandemQuery,
 	useTandemTransaction,

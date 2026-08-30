@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import type { TimerApi } from "@tandem/types"
+import type { TimerApi } from "@get-halo/tandem-types"
 import { TaskQueue } from "../src/utils/TaskQueue.js"
 
 class ManualTimer implements TimerApi {

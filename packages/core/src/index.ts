@@ -30,7 +30,7 @@ export type {
 	RelationalQueryResult,
 	EncodedWhereClause,
 	EncodedQuery,
-} from "@tandem/types"
+} from "@get-halo/tandem-types"
 export {
 	Logger,
 	ConsoleLoggerSink,

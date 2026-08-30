@@ -3,12 +3,12 @@ import {
 	Transaction,
 	type RelationalQuery,
 	type RelationalQueryResult,
-} from "@tandem/core"
+} from "@get-halo/tandem-core"
 import type {
 	AnySchema,
 	CollectionName,
 	RuntimeRelationsDefinition,
-} from "@tandem/types"
+} from "@get-halo/tandem-types"
 import {
 	createContext,
 	useCallback,

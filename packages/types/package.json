@@ -1,13 +1,28 @@
 {
-	"name": "@tandem/types",
+	"name": "@get-halo/tandem-types",
 	"version": "0.2.0",
 	"type": "module",
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
 	"source": "./src/index.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js",
+			"default": "./dist/index.js"
+		}
+	},
+	"publishConfig": {
+		"access": "public"
+	},
 	"author": "Tanishq Kancharla <tanishqkancharla3@gmail.com>",
 	"description": "Shared TypeScript types for Tandem sync engine",
 	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/tanishqkancharla/tandem.git",
+		"directory": "packages/types"
+	},
 	"files": [
 		"dist",
 		"src"

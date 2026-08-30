@@ -4,6 +4,7 @@ import { SyncEngine } from "./sync/SyncEngine"
 import { Transaction } from "./transaction/Transaction"
 import {
 	AnySchema,
+	type AsyncUnsubscribe,
 	ClientId,
 	InvertibleMutation,
 	MutationApi,
@@ -18,7 +19,7 @@ import {
 	RuntimeSchemaDefinition,
 	StorageApi,
 	type TimerApi,
-} from "@tandem/types"
+} from "@get-halo/tandem-types"
 import { ConsoleLoggerSink, Logger, type LoggerApi } from "./utils/Logger"
 import { randomId } from "./utils/randomId"
 import { Timer } from "./utils/Timer"
@@ -222,7 +223,7 @@ export class TandemClient<
 		return commitPromise
 	}
 
-	async connect() {
+	async connect(): Promise<AsyncUnsubscribe> {
 		if (!this.syncEngine) {
 			throw new Error("Attempted to connect without a remote server configured")
 		}

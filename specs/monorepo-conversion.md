@@ -16,9 +16,9 @@ The current Tandem library is structured as a single package, which limits modul
 ## Solution
 
 Convert the library into a monorepo with the following package structure:
-- `@tandem/core`: Core sync engine and database functionality
+- `@get-halo/tandem-core`: Core sync engine and database functionality
 - `@tandem/client`: Browser-focused client package
-- `@tandem/types`: Shared TypeScript types
+- `@get-halo/tandem-types`: Shared TypeScript types
 - `@tandem/testing`: Testing utilities and test remote implementation
 
 ## Implementation
@@ -29,7 +29,7 @@ Convert the library into a monorepo with the following package structure:
   - [x] Create `turbo.json` configuration for build orchestration
   - [x] Set up shared tooling configuration (ESLint, TypeScript, Prettier)
 
-- [x] Create `@tandem/core` package containing the main sync engine functionality
+- [x] Create `@get-halo/tandem-core` package containing the main sync engine functionality
   - [x] Create `packages/core/` directory structure
   - [x] Move core files: `Database.ts`, `TandemClient.ts`, `sync/`, `transaction/`, `storage/`, `utils/`
   - [x] Create `packages/core/package.json` with appropriate dependencies
@@ -39,14 +39,14 @@ Convert the library into a monorepo with the following package structure:
 - [x] Create `@tandem/client` package for browser-optimized client functionality
   - [x] Create `packages/client/` directory structure
   - [x] Move IndexedDB-specific code and browser optimizations
-  - [x] Create `packages/client/package.json` depending on `@tandem/core`
+  - [x] Create `packages/client/package.json` depending on `@get-halo/tandem-core`
   - [x] Set up browser-specific build configuration
 
-- [x] Create `@tandem/types` package for shared TypeScript definitions
+- [x] Create `@get-halo/tandem-types` package for shared TypeScript definitions
   - [x] Create `packages/types/` directory structure
   - [x] Move `types.ts` and other shared type definitions
   - [x] Create `packages/types/package.json` as a pure types package
-  - [x] Update other packages to depend on `@tandem/types`
+  - [x] Update other packages to depend on `@get-halo/tandem-types`
 
 - [x] Create `@tandem/testing` package for test utilities
   - [x] Create `packages/testing/` directory structure

@@ -8,7 +8,7 @@ import {
 	Json,
 	RuntimeSchemaDefinition,
 	StorageApi,
-} from "@tandem/types"
+} from "@get-halo/tandem-types"
 import { Codec } from "../utils/Codec"
 
 const version = 1

@@ -6,7 +6,7 @@ import type {
 	Mutation,
 	Patch,
 	PatchSetOp,
-} from "@tandem/types"
+} from "@get-halo/tandem-types"
 import type {
 	AnyMySqlColumn,
 	MySqlDatabase,
