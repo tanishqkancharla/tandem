@@ -28,7 +28,6 @@ test("server transaction removes a completed task from subscribed views", async 
 
 	const clientA = await makeClient()
 	const clientB = await makeClient()
-	await Promise.all([clientA.connect(), clientB.connect()])
 	clientA.subscribe(unfinishedTasks, () => {})
 	clientB.subscribe(unfinishedTasks, () => {})
 	await expectQuery(clientA, unfinishedTasks).toResolveTo([
@@ -57,7 +56,6 @@ test("view transaction becomes visible to direct queries and another subscriber"
 }) => {
 	const clientA = await makeClient()
 	const clientB = await makeClient()
-	await Promise.all([clientA.connect(), clientB.connect()])
 	clientA.subscribe(allTasksByTitle, () => {})
 	clientB.subscribe(allTasksByTitle, () => {})
 	await expectQuery(clientA, allTasksByTitle).toResolveTo([])
@@ -161,7 +159,6 @@ test("cancel discards a direct transaction without publishing it", async ({
 	await database.commit(seedTx)
 
 	const client = await makeClient()
-	await client.connect()
 	client.subscribe(allTasksByTitle, () => {})
 	await expectQuery(client, allTasksByTitle).toResolveTo([task("a", "Alpha")])
 
@@ -195,7 +192,6 @@ test("failed transaction preserves prior rows and does not publish partial write
 	await database.commit(seedTx)
 
 	const client = await makeClient()
-	await client.connect()
 	client.subscribe(allTasksByTitle, () => {})
 	await expectQuery(client, allTasksByTitle).toResolveTo([
 		task("a", "Alpha"),
@@ -237,7 +233,6 @@ test("server commit does not acknowledge or discard another client's pending tra
 	const gate = makePushGate()
 	const clientA = await makeClient({ remote: gate.remote })
 	const clientB = await makeClient()
-	await Promise.all([clientA.connect(), clientB.connect()])
 	clientA.subscribe(allTasksById, () => {})
 	clientB.subscribe(allTasksById, () => {})
 	await expectQuery(clientA, allTasksById).toResolveTo([
@@ -292,7 +287,6 @@ test("committed data survives reopen for direct and fresh sync consumers", async
 	await first.database.commit(seedTx)
 
 	const writer = await first.makeClient()
-	await writer.connect()
 	const writerTx = writer.transact()
 	writerTx.set("tasks", task("b", "Beta"))
 	await writer.commit(writerTx)
@@ -312,7 +306,6 @@ test("committed data survives reopen for direct and fresh sync consumers", async
 	])
 
 	const client = await reopened.makeClient()
-	await client.connect()
 	client.subscribe(unfinishedTasks, () => {})
 	await expectQuery(client, unfinishedTasks).toResolveTo([
 		task("a", "Alpha"),
@@ -331,7 +324,6 @@ test("concurrent direct and sync commits converge on all distinct records", asyn
 }) => {
 	const client = await makeClient()
 	const observer = await makeClient()
-	await Promise.all([client.connect(), observer.connect()])
 	observer.subscribe(allTasksByTitle, () => {})
 	await expectQuery(observer, allTasksByTitle).toResolveTo([])
 

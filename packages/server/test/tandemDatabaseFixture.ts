@@ -149,7 +149,6 @@ async function createDatabaseHandle(
 			async makeClient(connectOptions = {}) {
 				clientCount += 1
 				const tandemClient = new TandemClient<TaskSchema, TaskRelations>({
-					autoConnect: false,
 					logger: silentLogger,
 					relations,
 					remote: connectOptions.remote ?? database,
