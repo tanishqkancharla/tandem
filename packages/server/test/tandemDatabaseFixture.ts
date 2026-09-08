@@ -1,6 +1,8 @@
 import type {
 	AnySchema,
 	LoggerApi,
+	RelationalQuery,
+	RelationalQueryResult,
 	RemoteApi,
 } from "@tanishqkancharla/tandem-core"
 import { TandemClient } from "@tanishqkancharla/tandem-core"
@@ -15,6 +17,7 @@ import { drizzle } from "drizzle-orm/sqlite-proxy"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { expect, test as base, vi } from "vitest"
 import { SQLiteDrizzleAdapter } from "../src/drizzle/sqlite"
 import { taskSqlSchema, taskTables } from "./taskSchema"
 
@@ -39,6 +42,7 @@ export type TaskClientSchema = ReturnType<
 export type TaskRelations = ReturnType<typeof createTaskRelations>
 export type TaskTandemDatabase = TandemDatabase<TaskSchema, TaskRelations>
 export type TaskTandemClient = TandemClient<TaskSchema, TaskRelations>
+export type TaskQuery = RelationalQuery<TaskSchema, TaskRelations>
 
 function createTaskRelations(clientSchema: TaskClientSchema) {
 	return defineRelations(clientSchema, ({ one, many }) => ({
@@ -71,38 +75,66 @@ function createTursoDrizzle(client: Database) {
 	})
 }
 
-export type OpenTursoFixtureOptions = {
+export function expectQuery<Query extends TaskQuery>(
+	client: TaskTandemClient,
+	query: Query,
+) {
+	return {
+		async toResolveTo(
+			expected: RelationalQueryResult<TaskSchema, TaskRelations, Query>,
+		) {
+			await vi.waitFor(() => {
+				expect(client.query(query)).toEqual(expected)
+			})
+		},
+	}
+}
+
+export type OpenDatabaseOptions = {
 	filePath?: string
 	createTables?: boolean
 }
 
-export type TursoFixture = {
+export type MakeClientOptions = {
+	label?: string
+	remote?: RemoteApi<TaskSchema>
+	subscribe?: TaskQuery
+}
+
+export type DatabaseHandle = {
 	filePath: string
+	ownedDir?: string
+	database: TaskTandemDatabase
 	clientSchema: TaskClientSchema
 	relations: TaskRelations
-	database: TaskTandemDatabase
-	connectClient: (options?: {
-		label?: string
-		remote?: RemoteApi<TaskSchema>
-	}) => Promise<TaskTandemClient>
+	makeClient: (options?: MakeClientOptions) => Promise<TaskTandemClient>
 	close: () => Promise<void>
 }
 
-export async function openTursoFixture(
-	options: OpenTursoFixtureOptions = {},
-): Promise<TursoFixture> {
+type ConnectedClient = {
+	client: TaskTandemClient
+	subscriptions: { destroy: () => void }[]
+}
+
+function queriesFrom(subscribe: MakeClientOptions["subscribe"]): TaskQuery[] {
+	return subscribe == null ? [] : [subscribe]
+}
+
+async function createDatabaseHandle(
+	options: OpenDatabaseOptions = {},
+): Promise<DatabaseHandle> {
 	const createTables = options.createTables ?? true
 	const ownedDir = options.filePath
 		? undefined
 		: await mkdtemp(join(tmpdir(), "tandem-turso-"))
 	const filePath = options.filePath ?? join(ownedDir!, "tandem.db")
-	const client = await connect(filePath)
+	const native = await connect(filePath)
 	try {
 		if (createTables) {
-			await client.exec(taskSqlSchema)
+			await native.exec(taskSqlSchema)
 		}
 
-		const db = createTursoDrizzle(client)
+		const db = createTursoDrizzle(native)
 		const clientSchema = deriveTandemSchema(taskTables)
 		const relations = createTaskRelations(clientSchema)
 		const database = new TandemDatabase({
@@ -114,15 +146,17 @@ export async function openTursoFixture(
 			relations,
 		})
 
-		const connectedClients: TaskTandemClient[] = []
+		const connectedClients: ConnectedClient[] = []
 		let clientCount = 0
+		let closed = false
 
 		return {
 			filePath,
+			ownedDir,
 			clientSchema,
 			relations,
 			database,
-			async connectClient(connectOptions = {}) {
+			async makeClient(connectOptions = {}) {
 				clientCount += 1
 				const tandemClient = new TandemClient<TaskSchema, TaskRelations>({
 					autoConnect: false,
@@ -137,23 +171,29 @@ export async function openTursoFixture(
 					syncInterval: 0,
 				})
 				await tandemClient.ready
+
+				const subscriptions = queriesFrom(connectOptions.subscribe).map(
+					(query) => tandemClient.subscribe(query, () => {}),
+				)
 				await tandemClient.connect()
-				connectedClients.push(tandemClient)
+				connectedClients.push({ client: tandemClient, subscriptions })
 				return tandemClient
 			},
 			async close() {
-				for (const tandemClient of connectedClients) {
-					await tandemClient.disconnect()
+				if (closed) return
+				closed = true
+				for (const { client, subscriptions } of connectedClients) {
+					for (const subscription of subscriptions) {
+						subscription.destroy()
+					}
+					await client.disconnect()
 				}
 				await database.destroy()
-				await client.close()
-				if (ownedDir) {
-					await rm(ownedDir, { recursive: true, force: true })
-				}
+				await native.close()
 			},
 		}
 	} catch (error) {
-		await client.close()
+		await native.close()
 		if (ownedDir) {
 			await rm(ownedDir, { recursive: true, force: true })
 		}
@@ -161,7 +201,7 @@ export async function openTursoFixture(
 	}
 }
 
-export function createGatedPushRemote<Schema extends AnySchema>(
+function createGatedPushRemote<Schema extends AnySchema>(
 	inner: RemoteApi<Schema>,
 ) {
 	let armed = false
@@ -204,3 +244,58 @@ export function createGatedPushRemote<Schema extends AnySchema>(
 		waitForGate: () => gate,
 	}
 }
+
+type DatabaseFixtures = {
+	openDatabase: (options?: OpenDatabaseOptions) => Promise<DatabaseHandle>
+	databaseHandle: DatabaseHandle
+	database: TaskTandemDatabase
+	makeClient: DatabaseHandle["makeClient"]
+	makePushGate: () => ReturnType<typeof createGatedPushRemote<TaskSchema>>
+}
+
+export const test = base.extend<DatabaseFixtures>({
+	openDatabase: async ({}, use) => {
+		const handles: DatabaseHandle[] = []
+
+		await use(async (options = {}) => {
+			const handle = await createDatabaseHandle(options)
+			handles.push(handle)
+			return handle
+		})
+
+		for (const handle of handles) {
+			await handle.close()
+		}
+		for (const dir of new Set(
+			handles
+				.map((handle) => handle.ownedDir)
+				.filter((dir): dir is string => dir !== undefined),
+		)) {
+			await rm(dir, { recursive: true, force: true })
+		}
+	},
+
+	databaseHandle: async ({ openDatabase }, use) => {
+		await use(await openDatabase())
+	},
+
+	database: async ({ databaseHandle }, use) => {
+		await use(databaseHandle.database)
+	},
+
+	makeClient: async ({ databaseHandle }, use) => {
+		await use(databaseHandle.makeClient)
+	},
+
+	makePushGate: async ({ database }, use) => {
+		const gates: ReturnType<typeof createGatedPushRemote<TaskSchema>>[] = []
+		await use(() => {
+			const gate = createGatedPushRemote(database)
+			gates.push(gate)
+			return gate
+		})
+		for (const gate of gates) {
+			gate.release()
+		}
+	},
+})
