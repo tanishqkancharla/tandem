@@ -102,6 +102,9 @@ importers:
       '@types/lodash-es':
         specifier: ^4.17.12
         version: 4.17.12
+      errore:
+        specifier: ^0.14.1
+        version: 0.14.1
       idb:
         specifier: ^8.0.3
         version: 8.0.3
@@ -1127,6 +1130,7 @@ packages:
 
   '@tanishqkancharla/maui@0.0.3':
     resolution: {integrity: sha512-lszQErzG2ti94u1Ykhv5IeOqaL6p6G3olkqU97nJJi4QeFWDC+bGkhs5apzTGPa8IrjCJnHrvMufDvUCXeKZSw==}
+    deprecated: Private design system. First-party apps install from GitHub.
 
   '@testing-library/dom@10.4.1':
     resolution: {integrity: sha512-o4PXJQidqJl82ckFaXUeoAW+XysPLauYI43Abki5hABd853iMhitooc6znOnczgbTYmEP6U6/y1ZyKAIsvMKGg==}
@@ -2094,6 +2098,10 @@ packages:
   entities@6.0.1:
     resolution: {integrity: sha512-aN97NXWF6AWBTahfVOIrB/NShkzi5H7F9r1s9mD3cDj4Ko5f2qhhVoYMibXF7GlLveb/D2ioWay8lxI97Ven3g==}
     engines: {node: '>=0.12'}
+
+  errore@0.14.1:
+    resolution: {integrity: sha512-YCRAEH21ChhJYlzJkZJqfn5pwOB9B9HL5hROdTSm8KEQMiVUOiipJftwwBpfhwQsCAdVEvqAwsBeUBZQZ+ePTg==}
+    hasBin: true
 
   es-toolkit@1.51.0:
     resolution: {integrity: sha512-zC2lQGkM7QX+Gm6iM3+WIdZJzthsEd14LvRNJneSO2hzyz/zNBENR8+YXWo1cKxgPBtV6ksPYHELbcwBRzmdCw==}
@@ -5071,6 +5079,8 @@ snapshots:
       once: 1.4.0
 
   entities@6.0.1: {}
+
+  errore@0.14.1: {}
 
   es-toolkit@1.51.0: {}
 

@@ -1,3 +1,5 @@
+import * as errore from "errore"
+
 type StreamSubscriber<T> = (value: T) => void
 
 export type StreamConsumeOptions = {
@@ -112,28 +114,26 @@ async function* consumeStream<T>(
 		values.push(value)
 		wakeConsumer()
 	})
+	using cleanup = new errore.DisposableStack()
+	cleanup.defer(unsubscribe)
 	const abort = () => {
 		aborted = true
 		wakeConsumer()
 	}
 	signal?.addEventListener("abort", abort, { once: true })
+	cleanup.defer(() => signal?.removeEventListener("abort", abort))
 
-	try {
-		while (true) {
-			if (aborted) return
-			if (values.length === 0) {
-				await new Promise<void>((resolve) => {
-					wake = resolve
-				})
-			}
-			const ready = values.splice(0)
-			for (const value of ready) {
-				if (aborted) return
-				yield value
-			}
+	while (true) {
+		if (aborted) return
+		if (values.length === 0) {
+			await new Promise<void>((resolve) => {
+				wake = resolve
+			})
 		}
-	} finally {
-		unsubscribe()
-		signal?.removeEventListener("abort", abort)
+		const ready = values.splice(0)
+		for (const value of ready) {
+			if (aborted) return
+			yield value
+		}
 	}
 }
