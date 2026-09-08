@@ -26,8 +26,11 @@ test("server transaction removes a completed task from subscribed views", async 
 	seedTx.set("tasks", task("b", "Beta"))
 	await database.commit(seedTx)
 
-	const clientA = await makeClient({ subscribe: unfinishedTasks })
-	const clientB = await makeClient({ subscribe: unfinishedTasks })
+	const clientA = await makeClient()
+	const clientB = await makeClient()
+	await Promise.all([clientA.connect(), clientB.connect()])
+	clientA.subscribe(unfinishedTasks, () => {})
+	clientB.subscribe(unfinishedTasks, () => {})
 	await expectQuery(clientA, unfinishedTasks).toResolveTo([
 		task("a", "Alpha"),
 		task("b", "Beta"),
@@ -52,8 +55,11 @@ test("view transaction becomes visible to direct queries and another subscriber"
 	database,
 	makeClient,
 }) => {
-	const clientA = await makeClient({ subscribe: allTasksByTitle })
-	const clientB = await makeClient({ subscribe: allTasksByTitle })
+	const clientA = await makeClient()
+	const clientB = await makeClient()
+	await Promise.all([clientA.connect(), clientB.connect()])
+	clientA.subscribe(allTasksByTitle, () => {})
+	clientB.subscribe(allTasksByTitle, () => {})
 	await expectQuery(clientA, allTasksByTitle).toResolveTo([])
 	await expectQuery(clientB, allTasksByTitle).toResolveTo([])
 
@@ -154,7 +160,9 @@ test("cancel discards a direct transaction without publishing it", async ({
 	seedTx.set("tasks", task("a", "Alpha"))
 	await database.commit(seedTx)
 
-	const client = await makeClient({ subscribe: allTasksByTitle })
+	const client = await makeClient()
+	await client.connect()
+	client.subscribe(allTasksByTitle, () => {})
 	await expectQuery(client, allTasksByTitle).toResolveTo([task("a", "Alpha")])
 
 	const cancelTx = database.transact()
@@ -186,7 +194,9 @@ test("failed transaction preserves prior rows and does not publish partial write
 	seedTx.set("tasks", task("r", "Reserved"))
 	await database.commit(seedTx)
 
-	const client = await makeClient({ subscribe: allTasksByTitle })
+	const client = await makeClient()
+	await client.connect()
+	client.subscribe(allTasksByTitle, () => {})
 	await expectQuery(client, allTasksByTitle).toResolveTo([
 		task("a", "Alpha"),
 		task("r", "Reserved"),
@@ -225,11 +235,11 @@ test("server commit does not acknowledge or discard another client's pending tra
 	await database.commit(seedTx)
 
 	const gate = makePushGate()
-	const clientA = await makeClient({
-		remote: gate.remote,
-		subscribe: allTasksById,
-	})
-	const clientB = await makeClient({ subscribe: allTasksById })
+	const clientA = await makeClient({ remote: gate.remote })
+	const clientB = await makeClient()
+	await Promise.all([clientA.connect(), clientB.connect()])
+	clientA.subscribe(allTasksById, () => {})
+	clientB.subscribe(allTasksById, () => {})
 	await expectQuery(clientA, allTasksById).toResolveTo([
 		task("a", "Alpha"),
 		task("b", "Beta"),
@@ -281,7 +291,8 @@ test("committed data survives reopen for direct and fresh sync consumers", async
 	seedTx.set("tasks", task("a", "Alpha"))
 	await first.database.commit(seedTx)
 
-	const writer = await first.makeClient({ subscribe: allTasksByTitle })
+	const writer = await first.makeClient()
+	await writer.connect()
 	const writerTx = writer.transact()
 	writerTx.set("tasks", task("b", "Beta"))
 	await writer.commit(writerTx)
@@ -300,7 +311,9 @@ test("committed data survives reopen for direct and fresh sync consumers", async
 		task("b", "Beta"),
 	])
 
-	const client = await reopened.makeClient({ subscribe: unfinishedTasks })
+	const client = await reopened.makeClient()
+	await client.connect()
+	client.subscribe(unfinishedTasks, () => {})
 	await expectQuery(client, unfinishedTasks).toResolveTo([
 		task("a", "Alpha"),
 		task("b", "Beta"),
@@ -317,7 +330,9 @@ test("concurrent direct and sync commits converge on all distinct records", asyn
 	makeClient,
 }) => {
 	const client = await makeClient()
-	const observer = await makeClient({ subscribe: allTasksByTitle })
+	const observer = await makeClient()
+	await Promise.all([client.connect(), observer.connect()])
+	observer.subscribe(allTasksByTitle, () => {})
 	await expectQuery(observer, allTasksByTitle).toResolveTo([])
 
 	const alphaTx = database.transact()

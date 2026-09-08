@@ -98,7 +98,6 @@ export type OpenDatabaseOptions = {
 export type MakeClientOptions = {
 	label?: string
 	remote?: RemoteApi<TaskSchema>
-	subscribe?: TaskQuery
 }
 
 export type DatabaseHandle = {
@@ -109,15 +108,6 @@ export type DatabaseHandle = {
 	relations: TaskRelations
 	makeClient: (options?: MakeClientOptions) => Promise<TaskTandemClient>
 	close: () => Promise<void>
-}
-
-type ConnectedClient = {
-	client: TaskTandemClient
-	subscriptions: { destroy: () => void }[]
-}
-
-function queriesFrom(subscribe: MakeClientOptions["subscribe"]): TaskQuery[] {
-	return subscribe == null ? [] : [subscribe]
 }
 
 async function createDatabaseHandle(
@@ -146,7 +136,7 @@ async function createDatabaseHandle(
 			relations,
 		})
 
-		const connectedClients: ConnectedClient[] = []
+		const clients: TaskTandemClient[] = []
 		let clientCount = 0
 		let closed = false
 
@@ -171,20 +161,13 @@ async function createDatabaseHandle(
 					syncInterval: 0,
 				})
 				await tandemClient.ready
-				await tandemClient.connect()
-				const subscriptions = queriesFrom(connectOptions.subscribe).map(
-					(query) => tandemClient.subscribe(query, () => {}),
-				)
-				connectedClients.push({ client: tandemClient, subscriptions })
+				clients.push(tandemClient)
 				return tandemClient
 			},
 			async close() {
 				if (closed) return
 				closed = true
-				for (const { client, subscriptions } of connectedClients) {
-					for (const subscription of subscriptions) {
-						subscription.destroy()
-					}
+				for (const client of clients) {
 					await client.disconnect()
 				}
 				await database.destroy()
