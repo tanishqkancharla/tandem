@@ -4,6 +4,18 @@ Tandem is unreleased. Do not preserve migrations, compatibility fallbacks, or le
 
 Tests should protect user-facing behavior and developer experience, not internal data formats. Prefer type-level tests for TypeScript inference APIs, public API boundary tests for runtime behavior, and fail-fast tests only for errors developers can actually encounter. Avoid snapshotting or asserting exact internal normalized/encoded structures unless that structure is a documented public contract.
 
+When writing tests, load the `testing` skill.
+
+## Error handling (errore.org)
+
+This codebase uses the [errore.org](https://errore.org) convention. Always read the `errore` skill (`.agents/skills/errore/SKILL.md`) before editing TypeScript that handles failures. Always `import * as errore from "errore"`.
+
+- If the failure is expected and comes from app code, return an `Error` (prefer `errore.createTaggedError`) instead of throwing. Callers check with `instanceof Error` and early-return.
+- If the failure is expected and comes from external library code (or other throwing APIs such as `JSON.parse`, `fetch`, file I/O), convert at that boundary with `errore.try` (sync) or `.catch((e) => new MyError({ cause: e }))` (async). Prefer `.catch()` over `errore.tryAsync`.
+- Do not catch unexpected exceptions. When one shows up, pick a strategy for that case.
+- Replace `try`/`finally` resource cleanup with `await using` + `errore.AsyncDisposableStack` (or `using` + `errore.DisposableStack`) when cleanup is needed.
+- At legacy boundaries that still require throws, convert a returned error back to a throw only at that edge: `if (result instanceof Error) throw result`.
+
 ## Cursor Cloud specific instructions
 
 Tandem is a pnpm (`pnpm@10.12.4`) + Turborepo monorepo of three publishable **libraries** (`@tanishqkancharla/tandem-core`, `@tanishqkancharla/tandem-server`, `@tanishqkancharla/tandem-react`) — there is no long-running app, server binary, or dev server to start. "Running" the project means building and exercising it through its test suites. Standard commands live in the root `package.json` and delegate to Turbo: `pnpm build`, `pnpm lint`, `pnpm type-check`, `pnpm format`, `pnpm test`.

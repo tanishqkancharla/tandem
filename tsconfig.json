@@ -1,12 +1,12 @@
 {
 	"compilerOptions": {
-		"target": "esnext",
+		"target": "ES2022",
 		"module": "esnext",
 		"moduleResolution": "bundler",
 		"esModuleInterop": true,
 		"allowSyntheticDefaultImports": true,
 		"removeComments": false,
-		"lib": ["ESNext", "DOM"],
+		"lib": ["ESNext", "ESNext.Disposable", "DOM"],
 		"declaration": true,
 		"declarationMap": true,
 		"sourceMap": true,
