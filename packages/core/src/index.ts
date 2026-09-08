@@ -91,6 +91,8 @@ export {
 	type LogLevel,
 } from "./utils/Logger"
 export type { RngApi } from "./utils/randomId"
+export { Stream } from "./utils/Stream"
+export type { ReadonlyStream, StreamConsumeOptions } from "./utils/Stream"
 export type { TimerApi } from "./utils/Timer"
 export {
 	type Json,
