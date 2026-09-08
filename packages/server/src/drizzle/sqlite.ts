@@ -12,6 +12,7 @@ import type {
 	BaseSQLiteDatabase,
 	SQLiteTable,
 } from "drizzle-orm/sqlite-core"
+import type { DatabaseAdapter } from "../TandemDatabase"
 import { RemoteServer, type RemoteStore } from "../RemoteServer"
 import { buildOrderBy, buildWhere, type DrizzleTableWithId } from "./utils"
 
@@ -127,6 +128,14 @@ class SQLiteDrizzleStore<
 
 		return table
 	}
+}
+
+export class SQLiteDrizzleAdapter<
+	Schema extends AnySchema = AnySchema,
+> implements DatabaseAdapter<Schema> {
+	readonly adapterKind = "sqlite-drizzle"
+
+	constructor(readonly options: SQLiteDrizzleRemoteArgs<Schema>) {}
 }
 
 export class SQLiteDrizzleRemote<

@@ -37,6 +37,11 @@
 			"types": "./dist/drizzle/sqlite.d.ts",
 			"import": "./dist/drizzle/sqlite.js",
 			"default": "./dist/drizzle/sqlite.js"
+		},
+		"./schema": {
+			"types": "./dist/drizzle/schema.d.ts",
+			"import": "./dist/drizzle/schema.js",
+			"default": "./dist/drizzle/schema.js"
 		}
 	},
 	"publishConfig": {
@@ -64,6 +69,7 @@
 	"devDependencies": {
 		"@types/node": "^20.14.2",
 		"@types/better-sqlite3": "^7.6.13",
+		"@tursodatabase/database": "^0.7.2",
 		"better-sqlite3": "^11.10.0",
 		"drizzle-orm": "^0.44.0",
 		"mysql2": "^3.14.1",
