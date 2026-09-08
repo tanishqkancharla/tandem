@@ -172,6 +172,7 @@ async function createDatabaseHandle(
 				})
 				await tandemClient.ready
 
+				// Register the scan window before connect so the initial pull is the wait-until-in-sync.
 				const subscriptions = queriesFrom(connectOptions.subscribe).map(
 					(query) => tandemClient.subscribe(query, () => {}),
 				)
