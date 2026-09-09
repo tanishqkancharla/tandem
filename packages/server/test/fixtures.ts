@@ -133,7 +133,7 @@ async function readThreadsFromRemote(
 ): Promise<TestsThread[]> {
 	const client = await createTestClient(remote, label)
 	await client.connect()
-	const subscription = client.subscribe({ collection: "threads" }, () => {})
+	const subscription = client.subscribe({ collection: "threads" })
 
 	try {
 		await client.pullFromRemote()
