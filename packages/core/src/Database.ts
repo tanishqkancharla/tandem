@@ -34,7 +34,7 @@ export type DatabaseArgs<
 > = {
 	schema?: RuntimeSchemaDefinition<Schema>
 	relations?: Relations
-	storage?: StorageApi
+	localStore?: StorageApi
 	logger: LoggerApi
 	rng: RngApi
 }
@@ -60,7 +60,7 @@ export class Database<
 		logger,
 		schema,
 		relations,
-		storage: storageAdapter,
+		localStore: storageAdapter,
 		rng,
 	}: DatabaseArgs<Schema, Relations>) {
 		this.logger = logger

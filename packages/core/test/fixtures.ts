@@ -203,7 +203,7 @@ export type MakeClientOptions<
 	schema?: RuntimeSchemaDefinition<Schema>
 	relations?: Relations
 	remote?: RemoteApi<Schema> | false
-	storage?: StorageApi | MakeStorageOptions<Schema>
+	localStore?: StorageApi | MakeStorageOptions<Schema>
 	autoConnect?: boolean
 	syncInterval?: number
 }
@@ -337,7 +337,7 @@ export const test = base.extend<Fixtures>({
 					remote,
 					schema,
 					relations,
-					storage: storageOption,
+					localStore: storageOption,
 					syncInterval = 0,
 				} = options
 
@@ -348,7 +348,7 @@ export const test = base.extend<Fixtures>({
 							? remote
 							: (server as unknown as RemoteApi<Schema>)
 
-				const storage = storageOption
+				const localStore = storageOption
 					? isStorageApi(storageOption)
 						? storageOption
 						: makeStorage({
@@ -365,7 +365,7 @@ export const test = base.extend<Fixtures>({
 					remote: resolvedRemote,
 					schema,
 					relations,
-					storage,
+					localStore,
 					syncInterval,
 				})
 

@@ -11,7 +11,7 @@ import { schema } from "./schema"
 
 const db = new TandemClient({
 	schema,
-	storage: new IndexedDbTupleStorage({
+	localStore: new IndexedDbTupleStorage({
 		dbName: "tandem-todo",
 		schema,
 	}),

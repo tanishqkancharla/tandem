@@ -15,7 +15,7 @@ const storage = new IndexedDbAdapter({
 });
 
 // Used internally by TandemClient
-const db = new TandemClient({ storage });
+const db = new TandemClient({ localStore: storage });
 ```
 
 ## How it works
