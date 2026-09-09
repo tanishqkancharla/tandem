@@ -9,24 +9,12 @@ import { createRoot } from "react-dom/client"
 import { App } from "./App"
 import { schema } from "./schema"
 
-const silentLogger = {
-	debug() {},
-	info() {},
-	warn() {},
-	log() {},
-	error() {},
-	scope() {
-		return silentLogger
-	},
-}
-
 const db = new TandemClient({
 	schema,
 	storage: new IndexedDbTupleStorage({
 		dbName: "tandem-todo",
 		schema,
 	}),
-	logger: silentLogger,
 })
 
 const ready = db.ready.then(async () => {
