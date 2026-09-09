@@ -5,7 +5,7 @@ import type {
 	RemoteApi,
 } from "@tanishqkancharla/tandem-core"
 import { TandemClient } from "@tanishqkancharla/tandem-core"
-import { TandemDatabase } from "@tanishqkancharla/tandem-server"
+import { TandemServer } from "@tanishqkancharla/tandem-server"
 import { expect, test as base, vi } from "vitest"
 import {
 	taskRelations,
@@ -22,7 +22,7 @@ export type {
 	TaskSchema,
 } from "./taskSchema"
 
-export type TaskTandemDatabase = TandemDatabase<TaskSchema, TaskRelations>
+export type TaskTandemServer = TandemServer<TaskSchema, TaskRelations>
 export type TaskTandemClient = TandemClient<TaskSchema, TaskRelations>
 export type TaskQuery = RelationalQuery<TaskSchema, TaskRelations>
 
@@ -46,14 +46,14 @@ export type MakeClientOptions = {
 	remote?: RemoteApi<TaskSchema>
 }
 
-export type DatabaseHandle = {
-	database: TaskTandemDatabase
+export type ServerHandle = {
+	server: TaskTandemServer
 	makeClient: (options?: MakeClientOptions) => Promise<TaskTandemClient>
 	close: () => Promise<void>
 }
 
-function createDatabaseHandle(): DatabaseHandle {
-	const database = new TandemDatabase<TaskSchema, TaskRelations>({
+function createServerHandle(): ServerHandle {
+	const server = new TandemServer<TaskSchema, TaskRelations>({
 		schema: taskSchema,
 		relations: taskRelations,
 	})
@@ -63,12 +63,12 @@ function createDatabaseHandle(): DatabaseHandle {
 	let closed = false
 
 	return {
-		database,
+		server,
 		async makeClient(connectOptions = {}) {
 			clientCount += 1
 			const tandemClient = new TandemClient<TaskSchema, TaskRelations>({
 				relations: taskRelations,
-				remote: connectOptions.remote ?? database,
+				remote: connectOptions.remote ?? server,
 				rng: {
 					randomId: () =>
 						connectOptions.label ?? `server-client-${clientCount}`,
@@ -86,7 +86,7 @@ function createDatabaseHandle(): DatabaseHandle {
 			for (const client of clients) {
 				await client.disconnect()
 			}
-			await database.destroy()
+			await server.destroy()
 		},
 	}
 }
@@ -133,32 +133,32 @@ function createPushGate<Schema extends AnySchema>(inner: RemoteApi<Schema>) {
 	}
 }
 
-type DatabaseFixtures = {
-	databaseHandle: DatabaseHandle
-	database: TaskTandemDatabase
-	makeClient: DatabaseHandle["makeClient"]
+type ServerFixtures = {
+	serverHandle: ServerHandle
+	server: TaskTandemServer
+	makeClient: ServerHandle["makeClient"]
 	makePushGate: () => ReturnType<typeof createPushGate<TaskSchema>>
 }
 
-export const test = base.extend<DatabaseFixtures>({
-	databaseHandle: async ({}, use) => {
-		const handle = createDatabaseHandle()
+export const test = base.extend<ServerFixtures>({
+	serverHandle: async ({}, use) => {
+		const handle = createServerHandle()
 		await use(handle)
 		await handle.close()
 	},
 
-	database: async ({ databaseHandle }, use) => {
-		await use(databaseHandle.database)
+	server: async ({ serverHandle }, use) => {
+		await use(serverHandle.server)
 	},
 
-	makeClient: async ({ databaseHandle }, use) => {
-		await use(databaseHandle.makeClient)
+	makeClient: async ({ serverHandle }, use) => {
+		await use(serverHandle.makeClient)
 	},
 
-	makePushGate: async ({ database }, use) => {
+	makePushGate: async ({ server }, use) => {
 		const gates: ReturnType<typeof createPushGate<TaskSchema>>[] = []
 		await use(() => {
-			const gate = createPushGate(database)
+			const gate = createPushGate(server)
 			gates.push(gate)
 			return gate
 		})

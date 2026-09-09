@@ -6,7 +6,7 @@
 	"types": "./dist/index.d.ts",
 	"source": "./src/index.ts",
 	"author": "Tanishq Kancharla <tanishqkancharla3@gmail.com>",
-	"description": "Server adapters for Tandem remote APIs",
+	"description": "TandemServer and remote adapters for Tandem",
 	"license": "MIT",
 	"repository": {
 		"type": "git",

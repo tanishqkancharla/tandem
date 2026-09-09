@@ -4,19 +4,16 @@ import type {
 	TestExtends,
 	TestIsEqual,
 } from "@tanishqkancharla/tandem-core"
-import type {
-	DatabaseTransaction,
-	TandemDatabase,
-} from "@tanishqkancharla/tandem-server"
+import type { TandemServer } from "@tanishqkancharla/tandem-server"
 import type { TaskRelations, TaskSchema } from "./taskSchema"
 
 type _AssertExtends<_A extends _B, _B> = void
 
+type TaskServer = TandemServer<TaskSchema, TaskRelations>
+type Tx = ReturnType<TaskServer["transact"]>
+
 type _TestDirectQueryIsAsync = Assert<
-	TestExtends<
-		ReturnType<TandemDatabase<TaskSchema, TaskRelations>["query"]>,
-		Promise<unknown>
-	>
+	TestExtends<ReturnType<TaskServer["query"]>, Promise<unknown>>
 >
 
 function clientRelatedTaskQuery(
@@ -29,10 +26,8 @@ function clientRelatedTaskQuery(
 	})
 }
 
-async function databaseRelatedTaskQuery(
-	database: TandemDatabase<TaskSchema, TaskRelations>,
-) {
-	return database.query({
+async function serverRelatedTaskQuery(server: TaskServer) {
+	return server.query({
 		collection: "tasks",
 		select: { id: true, title: true, projectId: true },
 		with: { project: { select: { name: true } } },
@@ -41,12 +36,10 @@ async function databaseRelatedTaskQuery(
 
 type _TestDirectQueryMatchesClient = Assert<
 	TestIsEqual<
-		Awaited<ReturnType<typeof databaseRelatedTaskQuery>>,
+		Awaited<ReturnType<typeof serverRelatedTaskQuery>>,
 		ReturnType<typeof clientRelatedTaskQuery>
 	>
 >
-
-type Tx = DatabaseTransaction<TaskSchema>
 
 type _TestSetCollections = _AssertExtends<
 	Parameters<Tx["set"]>[0],
