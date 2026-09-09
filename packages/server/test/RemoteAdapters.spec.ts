@@ -33,7 +33,7 @@ describe.each(remoteProviders)("$name remote", (provider) => {
 
 		await context.seed?.(seeded)
 		await client.connect()
-		const subscription = client.subscribe({ collection: "threads" }, () => {})
+		const subscription = client.subscribe({ collection: "threads" })
 		await client.pullFromRemote()
 
 		expect(client.query({ collection: "threads" })).toEqual(seeded)
@@ -62,7 +62,7 @@ describe.each(remoteProviders)("$name remote", (provider) => {
 			limit: 2,
 			offset: 1,
 		} as const
-		const subscription = client.subscribe(query, () => {})
+		const subscription = client.subscribe(query)
 		await client.pullFromRemote()
 
 		expect(
@@ -79,7 +79,7 @@ describe.each(remoteProviders)("$name remote", (provider) => {
 
 	test("poke updates subscribed client", async ({ client1, client2 }) => {
 		await client2.connect()
-		const subscription = client2.subscribe({ collection: "threads" }, () => {})
+		const subscription = client2.subscribe({ collection: "threads" })
 		await client2.pullFromRemote()
 
 		await client1.connect()

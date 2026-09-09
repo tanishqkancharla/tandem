@@ -179,12 +179,14 @@ export class TandemClient<
 
 	subscribe<Query extends RelationalQuery<Schema, Relations>>(
 		query: Query,
-		callback: (result: RelationalQueryResult<Schema, Relations, Query>) => void,
+		callback?: (
+			result: RelationalQueryResult<Schema, Relations, Query>,
+		) => void,
 	): {
 		result: RelationalQueryResult<Schema, Relations, Query>
 		destroy: () => void
 	} {
-		const { result, destroy } = this.db.subscribe(query, callback)
+		const { result, destroy } = this.db.subscribe(query, callback ?? (() => {}))
 		const unsubscribe = this.syncEngine?.subscribe(
 			_encodeRelationalQuery(query.collection, query, this.db.relations),
 		)

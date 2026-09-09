@@ -1043,8 +1043,8 @@ describe("TandemClient", () => {
 		})
 		delayedClientId = client2.clientId
 
-		client1.subscribe({ collection: "todos" }, () => {})
-		client2.subscribe({ collection: "todos" }, () => {})
+		client1.subscribe({ collection: "todos" })
+		client2.subscribe({ collection: "todos" })
 
 		await Promise.all([client1.connect(), client2.connect()])
 
@@ -1157,7 +1157,7 @@ describe("TandemClient", () => {
 		await Promise.all([client1.connect(), client2.connect()])
 
 		const seenByClient2: { id: string; messages: { body: string }[] }[][] = []
-		client1.subscribe(threadWithMessagesQuery, () => {})
+		client1.subscribe(threadWithMessagesQuery)
 		client2.subscribe(threadWithMessagesQuery, (result) => {
 			seenByClient2.push(result)
 		})
