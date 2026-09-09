@@ -1,17 +1,6 @@
 import { expect } from "vitest"
 import { expectQuery, project, task, test } from "./tandemDatabaseFixture"
 
-const unfinishedTasks = {
-	collection: "tasks",
-	where: { done: false },
-	orderBy: { title: "asc" },
-} as const
-
-const allTasksByTitle = {
-	collection: "tasks",
-	orderBy: { title: "asc" },
-} as const
-
 test("direct and replica commits are visible to each other", async ({
 	database,
 	makeClient,
@@ -22,28 +11,31 @@ test("direct and replica commits are visible to each other", async ({
 	await database.commit(seedTx)
 
 	const client = await makeClient()
-	client.subscribe(unfinishedTasks)
-	await expectQuery(client, unfinishedTasks).toResolveTo([
-		task("a", "Alpha"),
-		task("b", "Beta"),
-	])
+	client.subscribe(
+		{ collection: "tasks", where: { done: false }, orderBy: { title: "asc" } },
+		() => {},
+	)
+	await expectQuery(client, {
+		collection: "tasks",
+		where: { done: false },
+		orderBy: { title: "asc" },
+	}).toResolveTo([task("a", "Alpha"), task("b", "Beta")])
 
 	const replicaTx = client.transact()
 	replicaTx.set("tasks", task("c", "Gamma"))
 	await client.commit(replicaTx)
-	expect(await database.query(allTasksByTitle)).toEqual([
-		task("a", "Alpha"),
-		task("b", "Beta"),
-		task("c", "Gamma"),
-	])
+	expect(
+		await database.query({ collection: "tasks", orderBy: { title: "asc" } }),
+	).toEqual([task("a", "Alpha"), task("b", "Beta"), task("c", "Gamma")])
 
 	const tx = database.transact()
 	tx.update("tasks", "a", (row) => ({ ...row, done: true }))
 	await database.commit(tx)
-	await expectQuery(client, unfinishedTasks).toResolveTo([
-		task("b", "Beta"),
-		task("c", "Gamma"),
-	])
+	await expectQuery(client, {
+		collection: "tasks",
+		where: { done: false },
+		orderBy: { title: "asc" },
+	}).toResolveTo([task("b", "Beta"), task("c", "Gamma")])
 })
 
 test("direct query filters and projects related records without a sync client", async ({
@@ -119,10 +111,9 @@ test("direct transaction updates and removes existing rows without replica prelo
 
 	await database.commit(tx)
 
-	expect(await database.query(allTasksByTitle)).toEqual([
-		task("a", "Alpha updated"),
-		task("c", "Gamma", { priority: 7 }),
-	])
+	expect(
+		await database.query({ collection: "tasks", orderBy: { title: "asc" } }),
+	).toEqual([task("a", "Alpha updated"), task("c", "Gamma", { priority: 7 })])
 })
 
 test("cancel discards a direct transaction without publishing it", async ({
@@ -137,7 +128,9 @@ test("cancel discards a direct transaction without publishing it", async ({
 	cancelTx.set("tasks", task("b", "Beta"))
 	cancelTx.cancel()
 
-	expect(await database.query(allTasksByTitle)).toEqual([task("a", "Alpha")])
+	expect(
+		await database.query({ collection: "tasks", orderBy: { title: "asc" } }),
+	).toEqual([task("a", "Alpha")])
 })
 
 test("server commit does not acknowledge or discard another client's pending transaction", async ({
@@ -152,11 +145,11 @@ test("server commit does not acknowledge or discard another client's pending tra
 
 	const gate = makePushGate()
 	const client = await makeClient({ remote: gate.remote })
-	client.subscribe(allTasksByTitle)
-	await expectQuery(client, allTasksByTitle).toResolveTo([
-		task("a", "Alpha"),
-		task("b", "Beta"),
-	])
+	client.subscribe({ collection: "tasks", orderBy: { title: "asc" } }, () => {})
+	await expectQuery(client, {
+		collection: "tasks",
+		orderBy: { title: "asc" },
+	}).toResolveTo([task("a", "Alpha"), task("b", "Beta")])
 
 	gate.hold()
 	const pendingTx = client.transact()
@@ -171,7 +164,10 @@ test("server commit does not acknowledge or discard another client's pending tra
 	tx.update("tasks", "b", (row) => ({ ...row, done: true }))
 	await database.commit(tx)
 
-	await expectQuery(client, allTasksByTitle).toResolveTo([
+	await expectQuery(client, {
+		collection: "tasks",
+		orderBy: { title: "asc" },
+	}).toResolveTo([
 		task("a", "Local Alpha"),
 		{ ...task("b", "Beta"), done: true },
 	])
@@ -182,10 +178,9 @@ test("server commit does not acknowledge or discard another client's pending tra
 	gate.allow()
 	await pendingCommit
 
-	expect(await database.query(allTasksByTitle)).toEqual([
-		task("a", "Local Alpha"),
-		{ ...task("b", "Beta"), done: true },
-	])
+	expect(
+		await database.query({ collection: "tasks", orderBy: { title: "asc" } }),
+	).toEqual([task("a", "Local Alpha"), { ...task("b", "Beta"), done: true }])
 })
 
 test("concurrent direct and replica commits converge on all distinct records", async ({
@@ -207,9 +202,7 @@ test("concurrent direct and replica commits converge on all distinct records", a
 		client.commit(gammaTx),
 	])
 
-	expect(await database.query(allTasksByTitle)).toEqual([
-		task("a", "Alpha"),
-		task("b", "Beta"),
-		task("c", "Gamma"),
-	])
+	expect(
+		await database.query({ collection: "tasks", orderBy: { title: "asc" } }),
+	).toEqual([task("a", "Alpha"), task("b", "Beta"), task("c", "Gamma")])
 })
