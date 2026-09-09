@@ -1,57 +1,30 @@
 import type {
 	AnySchema,
-	LoggerApi,
 	RelationalQuery,
 	RelationalQueryResult,
 	RemoteApi,
 } from "@tanishqkancharla/tandem-core"
 import { TandemClient } from "@tanishqkancharla/tandem-core"
-import { defineRelations } from "@tanishqkancharla/tandem-core"
-import {
-	deriveTandemSchema,
-	TandemDatabase,
-	type SchemaFromDrizzleTables,
-} from "@tanishqkancharla/tandem-server"
-import { connect } from "@tursodatabase/database"
-import { mkdtemp, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { TandemDatabase } from "@tanishqkancharla/tandem-server"
 import { expect, test as base, vi } from "vitest"
-import { taskSqlSchema, taskTables } from "./taskSchema"
+import {
+	taskRelations,
+	taskSchema,
+	type TaskRelations,
+	type TaskSchema,
+} from "./taskSchema"
 
-export { project, task, taskTables } from "./taskSchema"
-export type { ProjectRecord, TaskRecord } from "./taskSchema"
+export { project, task } from "./taskSchema"
+export type {
+	ProjectRecord,
+	TaskRecord,
+	TaskRelations,
+	TaskSchema,
+} from "./taskSchema"
 
-const silentLogger: LoggerApi = {
-	debug() {},
-	log() {},
-	info() {},
-	warn() {},
-	error() {},
-	scope() {
-		return silentLogger
-	},
-}
-
-export type TaskSchema = SchemaFromDrizzleTables<typeof taskTables>
-export type TaskClientSchema = ReturnType<
-	typeof deriveTandemSchema<typeof taskTables>
->
-export type TaskRelations = ReturnType<typeof createTaskRelations>
 export type TaskTandemDatabase = TandemDatabase<TaskSchema, TaskRelations>
 export type TaskTandemClient = TandemClient<TaskSchema, TaskRelations>
 export type TaskQuery = RelationalQuery<TaskSchema, TaskRelations>
-
-function createTaskRelations(clientSchema: TaskClientSchema) {
-	return defineRelations(clientSchema, ({ one, many }) => ({
-		tasks: {
-			project: one("projects", { from: "projectId", to: "id" }),
-		},
-		projects: {
-			tasks: many("tasks", { from: "id", to: "projectId" }),
-		},
-	}))
-}
 
 export function expectQuery<Query extends TaskQuery>(
 	client: TaskTandemClient,
@@ -68,91 +41,53 @@ export function expectQuery<Query extends TaskQuery>(
 	}
 }
 
-export type OpenDatabaseOptions = {
-	filePath?: string
-	createTables?: boolean
-}
-
 export type MakeClientOptions = {
 	label?: string
 	remote?: RemoteApi<TaskSchema>
 }
 
 export type DatabaseHandle = {
-	filePath: string
-	ownedDir?: string
 	database: TaskTandemDatabase
-	clientSchema: TaskClientSchema
-	relations: TaskRelations
 	makeClient: (options?: MakeClientOptions) => Promise<TaskTandemClient>
 	close: () => Promise<void>
 }
 
-async function createDatabaseHandle(
-	options: OpenDatabaseOptions = {},
-): Promise<DatabaseHandle> {
-	const createTables = options.createTables ?? true
-	const ownedDir = options.filePath
-		? undefined
-		: await mkdtemp(join(tmpdir(), "tandem-turso-"))
-	const filePath = options.filePath ?? join(ownedDir!, "tandem.db")
-	const native = await connect(filePath)
-	try {
-		if (createTables) {
-			await native.exec(taskSqlSchema)
-		}
+function createDatabaseHandle(): DatabaseHandle {
+	const database = new TandemDatabase<TaskSchema, TaskRelations>({
+		schema: taskSchema,
+		relations: taskRelations,
+	})
 
-		const clientSchema = deriveTandemSchema(taskTables)
-		const relations = createTaskRelations(clientSchema)
-		const database = new TandemDatabase({
-			adapter: { adapterKind: "turso" },
-			schema: clientSchema,
-			relations,
-		})
+	const clients: TaskTandemClient[] = []
+	let clientCount = 0
+	let closed = false
 
-		const clients: TaskTandemClient[] = []
-		let clientCount = 0
-		let closed = false
-
-		return {
-			filePath,
-			ownedDir,
-			clientSchema,
-			relations,
-			database,
-			async makeClient(connectOptions = {}) {
-				clientCount += 1
-				const tandemClient = new TandemClient<TaskSchema, TaskRelations>({
-					logger: silentLogger,
-					relations,
-					remote: connectOptions.remote ?? database,
-					rng: {
-						randomId: () =>
-							connectOptions.label ?? `turso-client-${clientCount}`,
-					},
-					schema: clientSchema,
-					syncInterval: 0,
-				})
-				await tandemClient.ready
-				clients.push(tandemClient)
-				return tandemClient
-			},
-			async close() {
-				if (closed) return
-				closed = true
-				for (const client of clients) {
-					await client.disconnect()
-				}
-				await database.destroy()
-				await native.close()
-			},
-		}
-	} catch (error) {
-		await native.close()
-		if (ownedDir) {
-			await rm(ownedDir, { recursive: true, force: true })
-		}
-		throw error
+	return {
+		database,
+		async makeClient(connectOptions = {}) {
+			clientCount += 1
+			const tandemClient = new TandemClient<TaskSchema, TaskRelations>({
+				relations: taskRelations,
+				remote: connectOptions.remote ?? database,
+				rng: {
+					randomId: () =>
+						connectOptions.label ?? `server-client-${clientCount}`,
+				},
+				schema: taskSchema,
+				syncInterval: 0,
+			})
+			await tandemClient.ready
+			clients.push(tandemClient)
+			return tandemClient
+		},
+		async close() {
+			if (closed) return
+			closed = true
+			for (const client of clients) {
+				await client.disconnect()
+			}
+			await database.destroy()
+		},
 	}
 }
 
@@ -199,7 +134,6 @@ function createPushGate<Schema extends AnySchema>(inner: RemoteApi<Schema>) {
 }
 
 type DatabaseFixtures = {
-	openDatabase: (options?: OpenDatabaseOptions) => Promise<DatabaseHandle>
 	databaseHandle: DatabaseHandle
 	database: TaskTandemDatabase
 	makeClient: DatabaseHandle["makeClient"]
@@ -207,29 +141,10 @@ type DatabaseFixtures = {
 }
 
 export const test = base.extend<DatabaseFixtures>({
-	openDatabase: async ({}, use) => {
-		const handles: DatabaseHandle[] = []
-
-		await use(async (options = {}) => {
-			const handle = await createDatabaseHandle(options)
-			handles.push(handle)
-			return handle
-		})
-
-		for (const handle of handles) {
-			await handle.close()
-		}
-		for (const dir of new Set(
-			handles
-				.map((handle) => handle.ownedDir)
-				.filter((dir): dir is string => dir !== undefined),
-		)) {
-			await rm(dir, { recursive: true, force: true })
-		}
-	},
-
-	databaseHandle: async ({ openDatabase }, use) => {
-		await use(await openDatabase())
+	databaseHandle: async ({}, use) => {
+		const handle = createDatabaseHandle()
+		await use(handle)
+		await handle.close()
 	},
 
 	database: async ({ databaseHandle }, use) => {

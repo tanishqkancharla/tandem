@@ -9,13 +9,13 @@ import type {
 } from "@tanishqkancharla/tandem-core"
 
 /**
- * Chosen public contract for the server data service.
+ * In-process server analog of TandemClient.
  *
- * TandemDatabase is the in-process owner of one data context. Hosts construct
- * it with a storage adapter and inject it into API handlers. The same instance
- * is a RemoteApi for TandemClient views.
+ * Hosts construct it with the same schema and relations as client views and
+ * inject it into API handlers. The same instance is a RemoteApi for
+ * TandemClient.
  *
- * Direct reads: `await database.query(query)` hits authoritative storage. It
+ * Direct reads: `await database.query(query)` hits authoritative state. It
  * does not create a replica, cookie, client identity, or subscription.
  *
  * Direct writes keep Tandem's authoring pattern: `transact()`, `tx.set` /
@@ -29,25 +29,15 @@ import type {
  * `await tx.get(collection, id)` and `await tx.list(collection)` observe
  * this transaction's staged writes. They are not a synchronous local replica.
  *
- * `commit(tx)` and `push(...)` share one persistence-then-notify path. A
- * commit or push is atomic as a whole: persistence failure rejects, publishes
- * nothing, and does not acknowledge the originating client. Direct commits
- * never acknowledge another client's optimistic mutations. Sync cookies and
- * the mutation log are process-local.
- *
- * The host owns the native connection and authorization. destroy() drops
- * connected clients and process-local sync state; it does not close the
- * adapter's database connection.
+ * `commit(tx)` and `push(...)` share one apply-then-notify path. A commit or
+ * push is atomic as a whole: failure rejects, publishes nothing, and does not
+ * acknowledge the originating client. Direct commits never acknowledge
+ * another client's optimistic mutations.
  */
-export type DatabaseAdapter<_Schema extends AnySchema = AnySchema> = {
-	readonly adapterKind: string
-}
-
 export type TandemDatabaseArgs<
 	Schema extends AnySchema,
 	Relations extends RuntimeRelationsDefinition<Schema>,
 > = {
-	adapter: DatabaseAdapter<Schema>
 	schema?: RuntimeSchemaDefinition<Schema>
 	relations?: Relations
 }

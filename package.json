@@ -41,8 +41,7 @@
 	"pnpm": {
 		"onlyBuiltDependencies": [
 			"better-sqlite3",
-			"esbuild",
-			"@tursodatabase/database"
+			"esbuild"
 		]
 	}
 }

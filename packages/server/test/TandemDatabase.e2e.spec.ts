@@ -46,7 +46,7 @@ test("direct and replica commits are visible to each other", async ({
 	])
 })
 
-test("direct query filters and projects persisted related records without a sync client", async ({
+test("direct query filters and projects related records without a sync client", async ({
 	database,
 }) => {
 	const seedTx = database.transact()
@@ -87,7 +87,6 @@ test("direct query filters and projects persisted related records without a sync
 		},
 	])
 
-	// A missing optional relation uses Tandem's null many-to-one result.
 	expect(
 		await database.query({
 			collection: "tasks",
@@ -112,7 +111,6 @@ test("direct transaction updates and removes existing rows without replica prelo
 	tx.update("tasks", "c", (row) => ({ ...row, priority: 7 }))
 	tx.update("tasks", "missing", (row) => ({ ...row, title: "nope" }))
 
-	// Transaction reads observe earlier writes in this transaction.
 	expect(await tx.get("tasks", "c")).toEqual(
 		task("c", "Gamma", { priority: 7 }),
 	)
@@ -140,25 +138,6 @@ test("cancel discards a direct transaction without publishing it", async ({
 	cancelTx.cancel()
 
 	expect(await database.query(allTasksByTitle)).toEqual([task("a", "Alpha")])
-})
-
-test("failed transaction preserves prior rows and does not publish partial writes", async ({
-	database,
-}) => {
-	const seedTx = database.transact()
-	seedTx.set("tasks", task("a", "Alpha"))
-	seedTx.set("tasks", task("r", "Reserved"))
-	await database.commit(seedTx)
-
-	const failedTx = database.transact()
-	failedTx.update("tasks", "a", (row) => ({ ...row, title: "Changed" }))
-	failedTx.set("tasks", task("x", "Reserved"))
-	await expect(database.commit(failedTx)).rejects.toThrow()
-
-	expect(await database.query(allTasksByTitle)).toEqual([
-		task("a", "Alpha"),
-		task("r", "Reserved"),
-	])
 })
 
 test("server commit does not acknowledge or discard another client's pending transaction", async ({
@@ -209,23 +188,7 @@ test("server commit does not acknowledge or discard another client's pending tra
 	])
 })
 
-test("committed data survives reopen", async ({ openDatabase }) => {
-	const first = await openDatabase()
-	const seedTx = first.database.transact()
-	seedTx.set("tasks", task("a", "Alpha"))
-	await first.database.commit(seedTx)
-	await first.close()
-
-	const reopened = await openDatabase({
-		filePath: first.filePath,
-		createTables: false,
-	})
-	expect(await reopened.database.query(allTasksByTitle)).toEqual([
-		task("a", "Alpha"),
-	])
-})
-
-test("concurrent direct and sync commits converge on all distinct records", async ({
+test("concurrent direct and replica commits converge on all distinct records", async ({
 	database,
 	makeClient,
 }) => {
