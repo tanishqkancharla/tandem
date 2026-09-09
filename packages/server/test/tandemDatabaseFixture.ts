@@ -182,37 +182,35 @@ async function createDatabaseHandle(
 	}
 }
 
-function createGatedPushRemote<Schema extends AnySchema>(
-	inner: RemoteApi<Schema>,
-) {
-	let armed = false
-	let releasePush = () => {}
-	let notifyGate = () => {}
-	let hold = Promise.resolve()
-	let gate = Promise.resolve()
+function createPushGate<Schema extends AnySchema>(inner: RemoteApi<Schema>) {
+	let holding = false
+	let allowPush = () => {}
+	let notifyHeld = () => {}
+	let untilAllow = Promise.resolve()
+	let untilHeld = Promise.resolve()
 
-	function arm() {
-		armed = true
-		hold = new Promise<void>((resolve) => {
-			releasePush = resolve
+	function hold() {
+		holding = true
+		untilAllow = new Promise<void>((resolve) => {
+			allowPush = resolve
 		})
-		gate = new Promise<void>((resolve) => {
-			notifyGate = resolve
+		untilHeld = new Promise<void>((resolve) => {
+			notifyHeld = resolve
 		})
 	}
 
-	function release() {
-		armed = false
-		releasePush()
+	function allow() {
+		holding = false
+		allowPush()
 	}
 
 	const remote: RemoteApi<Schema> = {
 		connect: (api) => inner.connect(api),
 		pull: (args) => inner.pull(args),
 		push: async (args) => {
-			if (armed) {
-				notifyGate()
-				await hold
+			if (holding) {
+				notifyHeld()
+				await untilAllow
 			}
 			return inner.push(args)
 		},
@@ -220,9 +218,9 @@ function createGatedPushRemote<Schema extends AnySchema>(
 
 	return {
 		remote,
-		arm,
-		release,
-		waitForGate: () => gate,
+		hold,
+		allow,
+		waitUntilHeld: () => untilHeld,
 	}
 }
 
@@ -231,7 +229,7 @@ type DatabaseFixtures = {
 	databaseHandle: DatabaseHandle
 	database: TaskTandemDatabase
 	makeClient: DatabaseHandle["makeClient"]
-	makePushGate: () => ReturnType<typeof createGatedPushRemote<TaskSchema>>
+	makePushGate: () => ReturnType<typeof createPushGate<TaskSchema>>
 }
 
 export const test = base.extend<DatabaseFixtures>({
@@ -269,14 +267,14 @@ export const test = base.extend<DatabaseFixtures>({
 	},
 
 	makePushGate: async ({ database }, use) => {
-		const gates: ReturnType<typeof createGatedPushRemote<TaskSchema>>[] = []
+		const gates: ReturnType<typeof createPushGate<TaskSchema>>[] = []
 		await use(() => {
-			const gate = createGatedPushRemote(database)
+			const gate = createPushGate(database)
 			gates.push(gate)
 			return gate
 		})
 		for (const gate of gates) {
-			gate.release()
+			gate.allow()
 		}
 	},
 })

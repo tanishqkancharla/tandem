@@ -179,14 +179,14 @@ test("server commit does not acknowledge or discard another client's pending tra
 		task("b", "Beta"),
 	])
 
-	gate.arm()
+	gate.hold()
 	const pendingTx = client.transact()
 	pendingTx.update("tasks", "a", (row) => ({
 		...row,
 		title: "Local Alpha",
 	}))
 	const pendingCommit = client.commit(pendingTx)
-	await gate.waitForGate()
+	await gate.waitUntilHeld()
 
 	const tx = database.transact()
 	tx.update("tasks", "b", (row) => ({ ...row, done: true }))
@@ -200,7 +200,7 @@ test("server commit does not acknowledge or discard another client's pending tra
 		await database.query({ collection: "tasks", where: { id: "a" } }),
 	).toEqual([task("a", "Alpha")])
 
-	gate.release()
+	gate.allow()
 	await pendingCommit
 
 	expect(await database.query(allTasksByTitle)).toEqual([
