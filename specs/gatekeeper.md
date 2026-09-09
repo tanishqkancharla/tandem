@@ -62,11 +62,11 @@ export class Gatekeeper<Services extends Record<string, object> = {}> {
 }
 ```
 
-- [ ] Add `packages/gatekeeper/package.json` as `@tanishqkancharla/tandem-gatekeeper` with the same scripts as `packages/core` (`build`, `type-check`, `format`, `lint`, `test`).
-- [ ] Add `packages/gatekeeper/tsconfig.json` and `packages/gatekeeper/tsconfig.test.json` extending the repo root tsconfig.
-- [ ] Export the public API from `packages/gatekeeper/src/index.ts`.
-- [ ] Alias `@tanishqkancharla/tandem-gatekeeper` to `packages/gatekeeper/src/index.ts` in `vitest.config.js`.
-- [ ] Verify `pnpm install` links the new workspace package.
+- [x] Add `packages/gatekeeper/package.json` as `@tanishqkancharla/tandem-gatekeeper` with the same scripts as `packages/core` (`build`, `type-check`, `format`, `lint`, `test`).
+- [x] Add `packages/gatekeeper/tsconfig.json` and `packages/gatekeeper/tsconfig.test.json` extending the repo root tsconfig.
+- [x] Export the public API from `packages/gatekeeper/src/index.ts`.
+- [x] Alias `@tanishqkancharla/tandem-gatekeeper` to `packages/gatekeeper/src/index.ts` in `vitest.config.js`.
+- [x] Verify `pnpm install` links the new workspace package.
 
 ### Phase 2: Implement test-facing GateCall.allow()
 
@@ -81,12 +81,12 @@ const addOneCall = await harness.server.addOne(1)
 expect(await addOneCall.allow()).toBe(2)
 ```
 
-- [ ] Implement immutable `add(name, factory)` that records factories in registration order.
-- [ ] Throw `DuplicateServiceError` when `add()` reuses a service name.
-- [ ] `build()` constructs each service by calling its factory with previously built service proxies.
-- [ ] Test-facing method calls return a `GateCall` without running the implementation.
-- [ ] `GateCall.allow()` runs the underlying async method with the captured `args` and resolves with its result.
-- [ ] Add a test that `allow()` on `server.addOne(1)` returns `2`.
+- [x] Implement immutable `add(name, factory)` that records factories in registration order.
+- [x] Throw `DuplicateServiceError` when `add()` reuses a service name.
+- [x] `build()` constructs each service by calling its factory with previously built service proxies.
+- [x] Test-facing method calls return a `GateCall` without running the implementation.
+- [x] `GateCall.allow()` runs the underlying async method with the captured `args` and resolves with its result.
+- [x] Add a test that `allow()` on `server.addOne(1)` returns `2`.
 
 ### Phase 3: Add mockReturnValue, fail, and double-settle errors
 
@@ -100,12 +100,12 @@ const failed = await harness.server.addOne(1)
 await expect(failed.fail(new Error("boom"))).rejects.toThrow("boom")
 ```
 
-- [ ] Implement `mockReturnValue(value)` so the implementation does not run and the call resolves to `value`.
-- [ ] Implement `fail(error)` so the call's returned promise rejects with `error`.
-- [ ] Throw `CallAlreadySettledError` if `allow()`, `mockReturnValue()`, or `fail()` runs on a call that is already started or settled.
-- [ ] Add a test that `mockReturnValue()` does not increment an implementation counter.
-- [ ] Add a test that `fail()` rejects with the given error.
-- [ ] Add a test that settling the same call twice throws `CallAlreadySettledError`.
+- [x] Implement `mockReturnValue(value)` so the implementation does not run and the call resolves to `value`.
+- [x] Implement `fail(error)` so the call's returned promise rejects with `error`.
+- [x] Throw `CallAlreadySettledError` if `allow()`, `mockReturnValue()`, or `fail()` runs on a call that is already started or settled.
+- [x] Add a test that `mockReturnValue()` does not increment an implementation counter.
+- [x] Add a test that `fail()` rejects with the given error.
+- [x] Add a test that settling the same call twice throws `CallAlreadySettledError`.
 
 ### Phase 4: Pause inter-service calls behind nextCall()
 
@@ -120,14 +120,14 @@ await serverCall.allow()
 expect(await resultPromise).toBe(2)
 ```
 
-- [ ] Pass proxies (not raw instances) into later factories so `client` calling `server.addOne()` creates a pending `GateCall`.
-- [ ] Inter-service proxies return `Promise<Result>` (the service's real async API), not `GateCall`.
-- [ ] `harness.nextCall()` resolves immediately when a matching call is already queued, otherwise waits until one arrives.
-- [ ] Test-facing calls do not appear in `nextCall()`. Only service-to-service hops do.
-- [ ] Add a test that the client call stays pending until the nested server call is allowed.
-- [ ] Add a test that mocking the nested server call makes the client observe the mocked value.
-- [ ] Add a test that failing the nested server call rejects the client call.
-- [ ] Add a test that two pending nested calls are returned by `nextCall()` in FIFO order.
+- [x] Pass proxies (not raw instances) into later factories so `client` calling `server.addOne()` creates a pending `GateCall`.
+- [x] Inter-service proxies return `Promise<Result>` (the service's real async API), not `GateCall`.
+- [x] `harness.nextCall()` resolves immediately when a matching call is already queued, otherwise waits until one arrives.
+- [x] Test-facing calls do not appear in `nextCall()`. Only service-to-service hops do.
+- [x] Add a test that the client call stays pending until the nested server call is allowed.
+- [x] Add a test that mocking the nested server call makes the client observe the mocked value.
+- [x] Add a test that failing the nested server call rejects the client call.
+- [x] Add a test that two pending nested calls are returned by `nextCall()` in FIFO order.
 
 ### Phase 5: Lock the public TypeScript inference API
 
@@ -145,8 +145,8 @@ type _ExpectResult = Assert<
 >
 ```
 
-- [ ] Infer `harness.server` and `harness.client` from `add()` names.
-- [ ] Infer `GateCall` args from the service method parameters and the result from `Awaited<ReturnType>`.
-- [ ] Type factory `deps` so `({ server }) => new Client(server)` type-checks without a manual annotation.
-- [ ] Add `packages/gatekeeper/test/Gatekeeper.types.ts` assertions for the harness and `GateCall` types.
-- [ ] Verify `pnpm --filter @tanishqkancharla/tandem-gatekeeper type-check` and `pnpm --filter @tanishqkancharla/tandem-gatekeeper test` pass.
+- [x] Infer `harness.server` and `harness.client` from `add()` names.
+- [x] Infer `GateCall` args from the service method parameters and the result from `Awaited<ReturnType>`.
+- [x] Type factory `deps` so `({ server }) => new Client(server)` type-checks without a manual annotation.
+- [x] Add `packages/gatekeeper/test/Gatekeeper.types.ts` assertions for the harness and `GateCall` types.
+- [x] Verify `pnpm --filter @tanishqkancharla/tandem-gatekeeper type-check` and `pnpm --filter @tanishqkancharla/tandem-gatekeeper test` pass.

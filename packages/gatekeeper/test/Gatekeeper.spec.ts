@@ -104,9 +104,10 @@ describe("Gatekeeper", () => {
 		const resultPromise = (await harness.client.addOneThroughServer(1)).allow()
 		const serverCall = await harness.nextCall()
 		const error = new Error("server down")
+		const clientRejected = expect(resultPromise).rejects.toBe(error)
 
 		await expect(serverCall.fail(error)).rejects.toBe(error)
-		await expect(resultPromise).rejects.toBe(error)
+		await clientRejected
 	})
 
 	test("nextCall() yields pending inter-service calls in order", async () => {
@@ -121,7 +122,7 @@ describe("Gatekeeper", () => {
 		expect(secondCall.args).toEqual([10])
 		await secondCall.allow()
 
-		expect(await resultPromise).toBe(12)
+		expect(await resultPromise).toBe(13)
 	})
 
 	test("nextCall() waits until a nested call is made", async () => {

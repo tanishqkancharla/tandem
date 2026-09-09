@@ -2,11 +2,11 @@ import * as errore from "errore"
 
 type Prettify<T> = { [K in keyof T]: T[K] } & {}
 
-type AnyMethod = (...args: never[]) => unknown
+type AnyMethod = (...args: unknown[]) => unknown
 
 export class DuplicateServiceError extends errore.createTaggedError({
 	name: "DuplicateServiceError",
-	message: "Service $name is already registered",
+	message: "Service $serviceName is already registered",
 }) {}
 
 export class CallAlreadySettledError extends errore.createTaggedError({
@@ -64,6 +64,8 @@ class PendingCall<
 		this.method = args.method
 		this.args = args.args
 		this.implementation = args.implementation
+		// Other listeners still observe rejection; this only avoids unhandled-rejection noise.
+		void this.settlement.promise.catch(() => {})
 	}
 
 	get result(): Promise<Result> {
@@ -182,14 +184,14 @@ export class Gatekeeper<Services extends Record<string, object> = {}> {
 		factory: (deps: Services) => Service,
 	): Gatekeeper<Prettify<Services & { [K in Name]: Service }>> {
 		if (this.registrations.some((registration) => registration.name === name)) {
-			throw new DuplicateServiceError({ name })
+			throw new DuplicateServiceError({ serviceName: name })
 		}
 
 		return new Gatekeeper([
 			...this.registrations,
 			{
 				name,
-				factory: factory as (deps: Record<string, object>) => object,
+				factory: factory as unknown as (deps: Record<string, object>) => object,
 			},
 		])
 	}
