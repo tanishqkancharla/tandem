@@ -34,7 +34,11 @@ export type TandemClientArgs<
 > = {
 	schema?: RuntimeSchemaDefinition<Schema>
 	relations?: Relations
-	storage?: StorageApi
+	/**
+	 * Optional replica cache (IndexedDB tuples). Not the backend
+	 * persistence adapter used by the server.
+	 */
+	localStore?: StorageApi
 	remote?: RemoteApi<Schema>
 	/**
 	 * @default ConsoleLoggerSink
@@ -71,7 +75,7 @@ export class TandemClient<
 	constructor({
 		schema,
 		relations,
-		storage: storageAdapter,
+		localStore,
 		remote,
 		logger,
 		autoConnect = true,
@@ -104,7 +108,7 @@ export class TandemClient<
 			schema,
 			relations,
 			logger: this.logger.scope("db"),
-			storage: storageAdapter,
+			localStore,
 			rng: this.rng,
 		})
 

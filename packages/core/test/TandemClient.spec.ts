@@ -1232,7 +1232,7 @@ describe("TandemClient", () => {
 		const firstClient = await makeClient({
 			label: "persistent-client-1",
 			remote: false,
-			storage: { dbName: "persisted-todos" },
+			localStore: { dbName: "persisted-todos" },
 		})
 
 		const tx = firstClient.transact()
@@ -1248,7 +1248,7 @@ describe("TandemClient", () => {
 		const secondClient = await makeClient({
 			label: "persistent-client-2",
 			remote: false,
-			storage: { dbName: "persisted-todos" },
+			localStore: { dbName: "persisted-todos" },
 		})
 
 		const persistedTodosOnReload = secondClient.query({
@@ -1276,7 +1276,7 @@ describe("TandemClient", () => {
 			label: "schema-codec-client-1",
 			remote: false,
 			schema: testsEventRuntimeSchema,
-			storage: firstStorage,
+			localStore: firstStorage,
 		})
 
 		// Commit an event whose runtime value relies on the schema-owned codec
@@ -1295,7 +1295,7 @@ describe("TandemClient", () => {
 			label: "schema-codec-client-2",
 			remote: false,
 			schema: testsEventRuntimeSchema,
-			storage: makeStorage<TestsEventSchema>({
+			localStore: makeStorage<TestsEventSchema>({
 				dbName,
 				schema: testsEventRuntimeSchema,
 			}),
@@ -1321,7 +1321,7 @@ describe("TandemClient", () => {
 		const firstClient = await makeClient<TestsEventSchema>({
 			label: "explicit-codec-client-1",
 			remote: false,
-			storage: firstStorage,
+			localStore: firstStorage,
 		})
 
 		// Existing explicit storage codecs still encode persisted writes
@@ -1339,7 +1339,7 @@ describe("TandemClient", () => {
 		const secondClient = await makeClient<TestsEventSchema>({
 			label: "explicit-codec-client-2",
 			remote: false,
-			storage: makeStorage<TestsEventSchema>({
+			localStore: makeStorage<TestsEventSchema>({
 				dbName,
 				codecs: { events: eventCodec },
 			}),
