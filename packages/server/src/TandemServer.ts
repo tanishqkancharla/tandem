@@ -9,6 +9,7 @@ import type {
 	RuntimeSchemaDefinition,
 } from "@tanishqkancharla/tandem-core"
 import { ConsoleLoggerSink, Logger } from "@tanishqkancharla/tandem-core"
+import type { RemoteStore } from "./RemoteServer"
 
 /**
  * Authoritative in-process analog of TandemClient.
@@ -39,13 +40,20 @@ import { ConsoleLoggerSink, Logger } from "@tanishqkancharla/tandem-core"
  * push is atomic as a whole: failure rejects, publishes nothing, and does not
  * acknowledge the originating client. Direct commits never acknowledge
  * another client's optimistic mutations.
+ *
+ * Persistence is a required `store`. That API is not the client replica
+ * cache (`TandemClient` `localStore` / IndexedDB tuples). Server stores
+ * apply mutations and serve snapshots.
  */
+export type TandemServerStore<Schema extends AnySchema> = RemoteStore<Schema>
+
 export type TandemServerArgs<
 	Schema extends AnySchema,
 	Relations extends RuntimeRelationsDefinition<Schema>,
 > = {
 	schema?: RuntimeSchemaDefinition<Schema>
 	relations?: Relations
+	store: TandemServerStore<Schema>
 	/**
 	 * @default ConsoleLoggerSink
 	 */
@@ -104,7 +112,15 @@ export class TandemServer<
 > implements RemoteApi<Schema> {
 	private readonly logger: LoggerApi
 
-	constructor({ logger }: TandemServerArgs<Schema, Relations>) {
+	constructor({
+		schema,
+		relations,
+		store,
+		logger,
+	}: TandemServerArgs<Schema, Relations>) {
+		void schema
+		void relations
+		void store
 		this.logger = logger ?? new Logger({ sinks: new ConsoleLoggerSink() })
 	}
 

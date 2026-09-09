@@ -4,13 +4,27 @@ import type {
 	TestExtends,
 	TestIsEqual,
 } from "@tanishqkancharla/tandem-core"
-import type { TandemServer } from "@tanishqkancharla/tandem-server"
+import type {
+	TandemServer,
+	TandemServerArgs,
+	TandemServerStore,
+} from "@tanishqkancharla/tandem-server"
 import type { TaskRelations, TaskSchema } from "./taskSchema"
 
 type _AssertExtends<_A extends _B, _B> = void
 
 type TaskServer = TandemServer<TaskSchema, TaskRelations>
+type TaskServerArgs = TandemServerArgs<TaskSchema, TaskRelations>
 type Tx = ReturnType<TaskServer["transact"]>
+
+type _TestStoreMatchesAdapter = _AssertExtends<
+	TaskServerArgs["store"],
+	TandemServerStore<TaskSchema>
+>
+type _TestStoreMatchesAdapterReverse = _AssertExtends<
+	TandemServerStore<TaskSchema>,
+	TaskServerArgs["store"]
+>
 
 type _TestDirectQueryIsAsync = Assert<
 	TestExtends<ReturnType<TaskServer["query"]>, Promise<unknown>>

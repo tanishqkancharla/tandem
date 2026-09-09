@@ -5,7 +5,10 @@ import type {
 	RemoteApi,
 } from "@tanishqkancharla/tandem-core"
 import { TandemClient } from "@tanishqkancharla/tandem-core"
-import { TandemServer } from "@tanishqkancharla/tandem-server"
+import {
+	InMemoryRemoteStore,
+	TandemServer,
+} from "@tanishqkancharla/tandem-server"
 import { expect, test as base, vi } from "vitest"
 import {
 	taskRelations,
@@ -56,6 +59,7 @@ function createServerHandle(): ServerHandle {
 	const server = new TandemServer<TaskSchema, TaskRelations>({
 		schema: taskSchema,
 		relations: taskRelations,
+		store: new InMemoryRemoteStore(),
 	})
 
 	const clients: TaskTandemClient[] = []
