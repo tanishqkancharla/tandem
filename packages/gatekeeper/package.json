@@ -1,0 +1,45 @@
+{
+	"name": "@tanishqkancharla/tandem-gatekeeper",
+	"version": "0.2.0",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"source": "./src/index.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js",
+			"default": "./dist/index.js"
+		}
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"author": "Tanishq Kancharla <tanishqkancharla3@gmail.com>",
+	"description": "Deterministic gates for testing async service-to-service calls",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/tanishqkancharla/tandem.git",
+		"directory": "packages/gatekeeper"
+	},
+	"sideEffects": false,
+	"files": [
+		"dist",
+		"src"
+	],
+	"scripts": {
+		"build": "tsc",
+		"type-check": "tsgo --noEmit && tsgo -p tsconfig.test.json --noEmit",
+		"format": "oxfmt \"src/**/*.ts\" \"test/**/*.ts\"",
+		"lint": "oxlint src --fix && tsc --noEmit",
+		"test": "vitest run"
+	},
+	"dependencies": {
+		"errore": "^0.14.1"
+	},
+	"devDependencies": {
+		"typescript": "^5.7.2",
+		"vitest": "^1.1.0"
+	}
+}
