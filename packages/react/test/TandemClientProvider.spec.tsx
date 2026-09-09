@@ -39,21 +39,9 @@ const schema = defineSchema({
 	}),
 })
 
-const silentLogger = {
-	debug() {},
-	info() {},
-	warn() {},
-	log() {},
-	error() {},
-	scope() {
-		return silentLogger
-	},
-}
-
 function createClient() {
 	return new TandemClient<TodoSchema>({
 		schema,
-		logger: silentLogger,
 	})
 }
 

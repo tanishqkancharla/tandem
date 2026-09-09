@@ -36,6 +36,9 @@ export type TandemClientArgs<
 	relations?: Relations
 	storage?: StorageApi
 	remote?: RemoteApi<Schema>
+	/**
+	 * @default ConsoleLoggerSink
+	 */
 	logger?: LoggerApi
 	rng?: RngApi
 	timer?: TimerApi

@@ -19,7 +19,6 @@ import postgres from "postgres"
 import { expect, test as base } from "vitest"
 import { TandemClient } from "../../core/src/TandemClient"
 import { collection, defineSchema } from "../../core/src/schema/Schema"
-import type { LoggerApi } from "../../core/src/utils/Logger"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -77,18 +76,6 @@ const testsRuntimeSchema = defineSchema({
 	}),
 })
 
-// The sync engine logs every push/pull; silence it so failed assertions stay readable.
-const silentLogger: LoggerApi = {
-	debug() {},
-	log() {},
-	info() {},
-	warn() {},
-	error() {},
-	scope() {
-		return silentLogger
-	},
-}
-
 export function thread(
 	id: string,
 	overrides: Partial<TestsThread> = {},
@@ -105,7 +92,6 @@ export function thread(
 async function createTestClient(remote: RemoteApi<TestsSchema>, label: string) {
 	const client = new TandemClient<TestsSchema>({
 		autoConnect: false,
-		logger: silentLogger,
 		remote,
 		rng: { randomId: () => label },
 		schema: testsRuntimeSchema,
