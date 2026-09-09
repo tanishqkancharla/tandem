@@ -12,13 +12,11 @@ import {
 	TandemDatabase,
 	type SchemaFromDrizzleTables,
 } from "@tanishqkancharla/tandem-server"
-import { connect, type Database } from "@tursodatabase/database"
-import { drizzle } from "drizzle-orm/sqlite-proxy"
+import { connect } from "@tursodatabase/database"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { expect, test as base, vi } from "vitest"
-import { SQLiteDrizzleAdapter } from "../src/drizzle/sqlite"
 import { taskSqlSchema, taskTables } from "./taskSchema"
 
 export { project, task, taskTables } from "./taskSchema"
@@ -53,26 +51,6 @@ function createTaskRelations(clientSchema: TaskClientSchema) {
 			tasks: many("tasks", { from: "id", to: "projectId" }),
 		},
 	}))
-}
-
-function createTursoDrizzle(client: Database) {
-	// Drizzle 0.44 does not ship drizzle-orm/tursodatabase/database. The
-	// fixture still opens real embedded Turso and presents a Drizzle SQLite
-	// database to the public adapter.
-	return drizzle(async (sql, params, method) => {
-		if (method === "run") {
-			await client.run(sql, ...params)
-			return { rows: [] }
-		}
-
-		if (method === "get") {
-			const row = await client.get(sql, ...params)
-			return { rows: row ? [Object.values(row)] : [] }
-		}
-
-		const rows = await client.all(sql, ...params)
-		return { rows: rows.map((row) => Object.values(row)) }
-	})
 }
 
 export function expectQuery<Query extends TaskQuery>(
@@ -124,14 +102,10 @@ async function createDatabaseHandle(
 			await native.exec(taskSqlSchema)
 		}
 
-		const db = createTursoDrizzle(native)
 		const clientSchema = deriveTandemSchema(taskTables)
 		const relations = createTaskRelations(clientSchema)
 		const database = new TandemDatabase({
-			adapter: new SQLiteDrizzleAdapter({
-				db,
-				tables: taskTables as any,
-			}),
+			adapter: { adapterKind: "turso" },
 			schema: clientSchema,
 			relations,
 		})
