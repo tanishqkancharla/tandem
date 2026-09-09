@@ -18,6 +18,10 @@ export default defineConfig({
 				"./packages/react/src/index.ts",
 				import.meta.url,
 			).pathname,
+			"@tanishqkancharla/tandem-gatekeeper": new URL(
+				"./packages/gatekeeper/src/index.ts",
+				import.meta.url,
+			).pathname,
 		},
 	},
 	test: {
