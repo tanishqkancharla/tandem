@@ -128,6 +128,30 @@ importers:
         specifier: ^1.1.0
         version: 1.6.1(@types/node@20.19.9)(jsdom@26.1.0)
 
+  packages/gatekeeper:
+    devDependencies:
+      '@types/node':
+        specifier: ^20.14.2
+        version: 20.19.9
+      errore:
+        specifier: ^0.14.1
+        version: 0.14.1
+      oxfmt:
+        specifier: ^0.54.0
+        version: 0.54.0
+      oxlint:
+        specifier: ^1.69.0
+        version: 1.69.0(oxlint-tsgolint@0.23.0)
+      oxlint-tsgolint:
+        specifier: ^0.23.0
+        version: 0.23.0
+      typescript:
+        specifier: ^5.7.2
+        version: 5.8.3
+      vitest:
+        specifier: ^1.1.0
+        version: 1.6.1(@types/node@20.19.9)(jsdom@26.1.0)
+
   packages/react:
     dependencies:
       '@tanishqkancharla/tandem-core':
