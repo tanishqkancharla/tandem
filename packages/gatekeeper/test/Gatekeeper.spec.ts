@@ -10,7 +10,7 @@ import {
 	Server,
 } from "./services"
 
-describe("Gatekeeper contract (runtime implementation pending)", () => {
+describe("Gatekeeper", () => {
 	test("ordinary calls await their real results without enabling gates", async ({
 		client1,
 		client2,

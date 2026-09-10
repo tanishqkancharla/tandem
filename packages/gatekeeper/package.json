@@ -27,11 +27,16 @@
 	},
 	"devDependencies": {
 		"@types/node": "^20.14.2",
-		"errore": "^0.14.1",
 		"oxfmt": "^0.54.0",
 		"oxlint": "^1.69.0",
 		"oxlint-tsgolint": "^0.23.0",
 		"typescript": "^5.7.2",
 		"vitest": "^1.1.0"
+	},
+	"engines": {
+		"node": ">=22"
+	},
+	"dependencies": {
+		"errore": "^0.14.1"
 	}
 }

@@ -129,13 +129,14 @@ importers:
         version: 1.6.1(@types/node@20.19.9)(jsdom@26.1.0)
 
   packages/gatekeeper:
+    dependencies:
+      errore:
+        specifier: ^0.14.1
+        version: 0.14.1
     devDependencies:
       '@types/node':
         specifier: ^20.14.2
         version: 20.19.9
-      errore:
-        specifier: ^0.14.1
-        version: 0.14.1
       oxfmt:
         specifier: ^0.54.0
         version: 0.54.0
