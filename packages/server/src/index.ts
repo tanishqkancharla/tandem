@@ -10,6 +10,8 @@ export type {
 	TandemTuple,
 	TandemServerStorageApi,
 } from "./storage/TandemServerStorage"
+export { TandemServerJsonFileStorage } from "./storage/TandemServerJsonFileStorage"
+export type { TandemServerJsonFileStorageArgs } from "./storage/TandemServerJsonFileStorage"
 export { InMemoryRemote } from "./InMemoryRemote"
 export { JsonFileRemote } from "./JsonFileRemote"
 export type { JsonFileRemoteArgs } from "./JsonFileRemote"

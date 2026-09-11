@@ -4,7 +4,7 @@ import {
 	defineSchema,
 } from "@tanishqkancharla/tandem-core"
 import { expectTypeOf } from "vitest"
-import { TandemServer } from "../src"
+import { TandemServer, TandemServerJsonFileStorage } from "../src"
 import type { TandemTuple, TandemServerStorageApi } from "../src"
 
 type User = { id: string; name: string }
@@ -78,3 +78,9 @@ new TandemServer({ schema, relations, storage: otherSchemaStorage })
 
 // Storage is reusable with another relation definition over the same schema.
 new TandemServer({ schema, relations: {}, storage })
+
+const jsonFileStorage = new TandemServerJsonFileStorage<AppSchema>({
+	filePath: "tandem.json",
+})
+expectTypeOf(jsonFileStorage).toMatchTypeOf<TandemServerStorageApi<AppSchema>>()
+new TandemServer({ schema, relations, storage: jsonFileStorage })
