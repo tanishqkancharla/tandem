@@ -1232,7 +1232,7 @@ describe("TandemClient", () => {
 		const firstClient = await makeClient({
 			label: "persistent-client-1",
 			remote: false,
-			localStore: { dbName: "persisted-todos" },
+			clientStorage: { dbName: "persisted-todos" },
 		})
 
 		const tx = firstClient.transact()
@@ -1242,13 +1242,13 @@ describe("TandemClient", () => {
 		)
 		tx.set("todos", todo("todo-3", { text: "Fix the sync bug", priority: 3 }))
 		await firstClient.commit(tx)
-		await firstClient.flushStorage()
+		await firstClient.flushClientStorage()
 
 		// A new client backed by the same storage sees the persisted records
 		const secondClient = await makeClient({
 			label: "persistent-client-2",
 			remote: false,
-			localStore: { dbName: "persisted-todos" },
+			clientStorage: { dbName: "persisted-todos" },
 		})
 
 		const persistedTodosOnReload = secondClient.query({
@@ -1276,7 +1276,7 @@ describe("TandemClient", () => {
 			label: "schema-codec-client-1",
 			remote: false,
 			schema: testsEventRuntimeSchema,
-			localStore: firstStorage,
+			clientStorage: firstStorage,
 		})
 
 		// Commit an event whose runtime value relies on the schema-owned codec
@@ -1288,14 +1288,14 @@ describe("TandemClient", () => {
 		const tx = firstClient.transact()
 		tx.set("events", event)
 		await firstClient.commit(tx)
-		await firstClient.flushStorage()
+		await firstClient.flushClientStorage()
 		await firstStorage.close()
 
 		const secondClient = await makeClient({
 			label: "schema-codec-client-2",
 			remote: false,
 			schema: testsEventRuntimeSchema,
-			localStore: makeStorage<TestsEventSchema>({
+			clientStorage: makeStorage<TestsEventSchema>({
 				dbName,
 				schema: testsEventRuntimeSchema,
 			}),
@@ -1321,7 +1321,7 @@ describe("TandemClient", () => {
 		const firstClient = await makeClient<TestsEventSchema>({
 			label: "explicit-codec-client-1",
 			remote: false,
-			localStore: firstStorage,
+			clientStorage: firstStorage,
 		})
 
 		// Existing explicit storage codecs still encode persisted writes
@@ -1333,13 +1333,13 @@ describe("TandemClient", () => {
 		const tx = firstClient.transact()
 		tx.set("events", event)
 		await firstClient.commit(tx)
-		await firstClient.flushStorage()
+		await firstClient.flushClientStorage()
 		await firstStorage.close()
 
 		const secondClient = await makeClient<TestsEventSchema>({
 			label: "explicit-codec-client-2",
 			remote: false,
-			localStore: makeStorage<TestsEventSchema>({
+			clientStorage: makeStorage<TestsEventSchema>({
 				dbName,
 				codecs: { events: eventCodec },
 			}),

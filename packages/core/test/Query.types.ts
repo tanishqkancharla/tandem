@@ -1,7 +1,4 @@
-import type {
-	NormalizedManyToOneRelationDefinition,
-	NormalizedOneToManyRelationDefinition,
-} from "../src/schema/Schema"
+import type { Relations } from "../src/schema/Schema"
 import type {
 	FieldWhereOperators,
 	RelationalQueryOptions,
@@ -16,38 +13,41 @@ type _RelationalQueryTestSchema = {
 	profiles: { id: string; userId: string; displayName: string }
 }
 
-type _RelationalQueryTestRelations = {
-	threads: {
-		owner: NormalizedManyToOneRelationDefinition<
-			_RelationalQueryTestSchema,
-			"threads",
-			"users",
-			"owner"
-		>
-		messages: NormalizedOneToManyRelationDefinition<
-			_RelationalQueryTestSchema,
-			"threads",
-			"messages",
-			"messages"
-		>
+type _RelationalQueryTestRelations = Relations<
+	_RelationalQueryTestSchema,
+	{
+		threads: {
+			owner: {
+				type: "many-to-one"
+				targetCollection: "users"
+				from: "ownerId"
+				to: "id"
+			}
+			messages: {
+				type: "one-to-many"
+				targetCollection: "messages"
+				from: "id"
+				to: "threadId"
+			}
+		}
+		messages: {
+			thread: {
+				type: "many-to-one"
+				targetCollection: "threads"
+				from: "threadId"
+				to: "id"
+			}
+		}
+		users: {
+			profile: {
+				type: "many-to-one"
+				targetCollection: "profiles"
+				from: "id"
+				to: "id"
+			}
+		}
 	}
-	messages: {
-		thread: NormalizedManyToOneRelationDefinition<
-			_RelationalQueryTestSchema,
-			"messages",
-			"threads",
-			"thread"
-		>
-	}
-	users: {
-		profile: NormalizedManyToOneRelationDefinition<
-			_RelationalQueryTestSchema,
-			"users",
-			"profiles",
-			"profile"
-		>
-	}
-}
+>
 
 type _ThreadQueryOptions = RelationalQueryOptions<
 	_RelationalQueryTestSchema,

@@ -293,6 +293,12 @@ importers:
       '@tanishqkancharla/tandem-core':
         specifier: workspace:*
         version: link:../core
+      errore:
+        specifier: ^0.14.1
+        version: 0.14.1
+      tuple-database:
+        specifier: ^2.2.4
+        version: 2.2.4(react@19.2.8)
     devDependencies:
       '@types/better-sqlite3':
         specifier: ^7.6.13

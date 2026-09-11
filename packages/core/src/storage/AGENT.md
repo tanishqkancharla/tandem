@@ -1,4 +1,4 @@
-# Storage Layer
+# Tandem Client Storage
 
 ## What
 
@@ -7,15 +7,15 @@ Persistent tuple storage with IndexedDB backend. Handles data persistence, cachi
 ## How to use
 
 ```typescript
-import { IndexedDbAdapter } from "./IndexedDbAdapter";
+import { TandemClientIndexedDbStorage } from "./TandemClientIndexedDbStorage";
 
-const storage = new IndexedDbAdapter({
+const storage = new TandemClientIndexedDbStorage({
 	dbName: "my-app",
 	version: 1,
 });
 
 // Used internally by TandemClient
-const db = new TandemClient({ localStore: storage });
+const db = new TandemClient({ clientStorage: storage });
 ```
 
 ## How it works

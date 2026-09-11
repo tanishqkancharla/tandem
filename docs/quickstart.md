@@ -30,12 +30,15 @@ Create a TandemClient instance:
 
 ```typescript
 // db.ts
-import { TandemClient } from "@tanishqkancharla/tandem-core"
+import {
+  TandemClient,
+  TandemClientIndexedDbStorage,
+} from "@tanishqkancharla/tandem-core"
 import { TodoSchema } from "./types"
 
 export const db = new TandemClient<TodoSchema>({
   // Optional: Add persistent storage
-  localStore: new IndexedDbTupleStorage({
+  clientStorage: new TandemClientIndexedDbStorage({
     dbName: "my-todo-app",
     version: 1,
   }),
@@ -186,7 +189,7 @@ To enable real-time sync between clients, you'll need to implement a backend. Se
 ```typescript
 // With sync enabled
 const db = new TandemClient<TodoSchema>({
-  localStore: new IndexedDbTupleStorage({
+  clientStorage: new TandemClientIndexedDbStorage({
     dbName: "my-todo-app",
     version: 1,
   }),

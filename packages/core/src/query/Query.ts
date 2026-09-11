@@ -2,7 +2,7 @@ import type {
 	AnySchema,
 	Attribute,
 	CollectionName,
-	RuntimeRelationsDefinition,
+	AnyRelations,
 } from "../schema/Schema"
 
 export type FieldWhereOperators<Value> = {
@@ -50,7 +50,7 @@ type RelationTypeForResult<Relation> = Relation extends {
 
 export type RelationalWithOptions<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema>,
 	Collection extends CollectionName<Schema>,
 > = {
 	readonly [RelationName in keyof NonNullable<Relations[Collection]> &
@@ -68,7 +68,7 @@ export type RelationalWithOptions<
 
 export type RelationalQueryOptions<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema>,
 	Collection extends CollectionName<Schema>,
 > = {
 	readonly select?: RelationalSelectOptions<Schema, Collection>
@@ -81,7 +81,7 @@ export type RelationalQueryOptions<
 
 export type RelationalQuery<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema>,
 	Collection extends CollectionName<Schema> = CollectionName<Schema>,
 > =
 	Collection extends CollectionName<Schema>
@@ -104,7 +104,7 @@ type SelectedScalarKeys<
 
 export type RelationalQueryRow<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema>,
 	Collection extends CollectionName<Schema>,
 	Options extends RelationalQueryOptions<Schema, Relations, Collection> = {},
 > = RelationalQueryScalars<Schema, Collection, Options> &
@@ -125,7 +125,7 @@ type RelationalQueryScalars<
 
 type RelationalQueryIncludedRelations<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema>,
 	Collection extends CollectionName<Schema>,
 	Options extends RelationalQueryOptions<Schema, Relations, Collection>,
 > = Options extends { readonly with: infer With }
@@ -143,7 +143,7 @@ type RelationalQueryIncludedRelations<
 
 type RelationalIncludedRelationResult<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema>,
 	Relation,
 	Include,
 > =
@@ -177,7 +177,7 @@ type RelationalIncludedRelationResult<
 
 type RelationalIncludedRelationOptions<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema>,
 	Collection extends CollectionName<Schema>,
 	Include,
 > = Include extends true
@@ -188,14 +188,14 @@ type RelationalIncludedRelationOptions<
 
 type RelationalQueryResultForOptions<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema>,
 	Collection extends CollectionName<Schema>,
 	Options extends RelationalQueryOptions<Schema, Relations, Collection> = {},
 > = RelationalQueryRow<Schema, Relations, Collection, Options>[]
 
 export type RelationalQueryResult<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema>,
 	Query extends RelationalQuery<Schema, Relations>,
 > = RelationalQueryResultForOptions<
 	Schema,
@@ -251,7 +251,7 @@ function isWhereOperatorObject(
 
 export function _encodeRelationalQuery<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema>,
 	Collection extends CollectionName<Schema>,
 >(
 	collection: Collection,

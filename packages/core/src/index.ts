@@ -1,7 +1,5 @@
 export { TandemClient } from "./TandemClient"
 export type { TandemClientArgs } from "./TandemClient"
-export { Database } from "./Database"
-export type { DatabaseArgs } from "./Database"
 export { SyncEngine } from "./sync/SyncEngine"
 export type {
 	ClientApi,
@@ -27,19 +25,20 @@ export type {
 	SetMutationOp,
 } from "./transaction/Transaction"
 export { MutationApi } from "./transaction/Transaction"
-export { Storage } from "./storage/Storage"
-export type { StorageApi } from "./storage/Storage"
-export { WriteOpsApi } from "./storage/Storage"
-export { IndexedDbTupleStorage } from "./storage/IndexedDbAdapter"
+export { TandemClientStorage } from "./storage/TandemClientStorage"
+export type { TandemClientStorageApi } from "./storage/TandemClientStorage"
+export { WriteOpsApi } from "./storage/TandemClientStorage"
+export { TandemClientIndexedDbStorage } from "./storage/TandemClientIndexedDbStorage"
 export type {
 	AnyStorageSchema,
-	IndexedDbTupleStorageArgs,
-} from "./storage/IndexedDbAdapter"
+	TandemClientIndexedDbStorageArgs,
+} from "./storage/TandemClientIndexedDbStorage"
 export { collection, defineSchema, defineRelations, t } from "./schema/Schema"
 export type {
 	AnyCollectionDefinition,
 	AnyCollectionSchema,
 	AnyRuntimeFieldDefinition,
+	AnyRelations,
 	AnySchema,
 	Attribute,
 	CollectionDefinition,
@@ -48,17 +47,10 @@ export type {
 	CollectionShape,
 	NamedCollectionDefinition,
 	NamedCollections,
-	NormalizedManyToOneRelationDefinition,
-	NormalizedOneToManyRelationDefinition,
-	NormalizedRelationDefinition,
-	NormalizedRelationsDefinition,
 	RecordFromShape,
-	RelationBuilderApi,
-	RelationRegistration,
-	RelationRegistrations,
-	RelationType,
+	Relations,
+	RelationsInput,
 	RuntimeFieldDefinition,
-	RuntimeRelationsDefinition,
 	RuntimeSchemaDefinition,
 	SchemaFromCollections,
 	SchemaToTupleSchema,

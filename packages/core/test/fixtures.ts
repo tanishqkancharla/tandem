@@ -11,7 +11,7 @@ import {
 	defineSchema,
 	t,
 } from "../src/schema/Schema"
-import { IndexedDbTupleStorage } from "../src/storage/IndexedDbAdapter"
+import { TandemClientIndexedDbStorage } from "../src/storage/TandemClientIndexedDbStorage"
 import { Logger } from "../src/utils/Logger"
 import { JsonlLoggerSink } from "../src/utils/Logger.node"
 import type { Codec } from "../src/utils/Codec"
@@ -22,9 +22,9 @@ import type {
 	RelationalQueryResult,
 	RemoteApi,
 	RngApi,
-	RuntimeRelationsDefinition,
+	AnyRelations,
 	RuntimeSchemaDefinition,
-	StorageApi,
+	TandemClientStorageApi,
 } from "@tanishqkancharla/tandem-core"
 
 export type TestsTodo = {
@@ -70,7 +70,7 @@ const expectResolver = extendableExpect.extend({
 
 export function expectQuery<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema>,
 	Query extends RelationalQuery<Schema, Relations>,
 >(client: TandemClient<Schema, Relations>, query: Query) {
 	return expectResolver(
@@ -184,8 +184,13 @@ function createRng(): DemoRng {
 	}
 }
 
-function isStorageApi(value: object): value is StorageApi {
-	return "commit" in value && typeof (value as StorageApi).commit === "function"
+function isTandemClientStorageApi<Schema extends AnySchema>(
+	value: object,
+): value is TandemClientStorageApi<Schema> {
+	return (
+		"commit" in value &&
+		typeof (value as TandemClientStorageApi<Schema>).commit === "function"
+	)
 }
 
 export type MakeStorageOptions<Schema extends AnySchema = AnySchema> = {
@@ -196,14 +201,13 @@ export type MakeStorageOptions<Schema extends AnySchema = AnySchema> = {
 
 export type MakeClientOptions<
 	Schema extends AnySchema = TestsSchema,
-	Relations extends RuntimeRelationsDefinition<Schema> =
-		RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
 > = {
 	label?: string
 	schema?: RuntimeSchemaDefinition<Schema>
 	relations?: Relations
 	remote?: RemoteApi<Schema> | false
-	localStore?: StorageApi | MakeStorageOptions<Schema>
+	clientStorage?: TandemClientStorageApi<Schema> | MakeStorageOptions<Schema>
 	autoConnect?: boolean
 	syncInterval?: number
 }
@@ -215,14 +219,13 @@ export type MakeRemote = {
 export type MakeStorage = {
 	<Schema extends AnySchema = TestsSchema>(
 		options?: MakeStorageOptions<Schema>,
-	): IndexedDbTupleStorage<Schema>
+	): TandemClientIndexedDbStorage<Schema>
 }
 
 export type MakeClient = {
 	<
 		Schema extends AnySchema = TestsSchema,
-		Relations extends RuntimeRelationsDefinition<Schema> =
-			RuntimeRelationsDefinition<Schema>,
+		Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
 	>(
 		options?: MakeClientOptions<Schema, Relations>,
 	): Promise<TandemClient<Schema, Relations>>
@@ -291,14 +294,16 @@ export const test = base.extend<Fixtures>({
 	},
 
 	makeStorage: async ({ rng }, use) => {
-		const storages: { dbName: string; storage: IndexedDbTupleStorage<any> }[] =
-			[]
+		const storages: {
+			dbName: string
+			storage: TandemClientIndexedDbStorage<any>
+		}[] = []
 
 		const makeStorage = <Schema extends AnySchema = TestsSchema>(
 			options: MakeStorageOptions<Schema> = {},
 		) => {
 			const dbName = options.dbName ?? rng.next("storage")
-			const storage = new IndexedDbTupleStorage<Schema>({
+			const storage = new TandemClientIndexedDbStorage<Schema>({
 				dbName,
 				schema: options.schema,
 				codecs: options.codecs,
@@ -314,7 +319,7 @@ export const test = base.extend<Fixtures>({
 		}
 
 		for (const dbName of new Set(storages.map(({ dbName }) => dbName))) {
-			const storage = new IndexedDbTupleStorage<any>({ dbName })
+			const storage = new TandemClientIndexedDbStorage<any>({ dbName })
 			await storage.clear()
 			await storage.close()
 		}
@@ -326,8 +331,7 @@ export const test = base.extend<Fixtures>({
 		await use(
 			async <
 				Schema extends AnySchema = TestsSchema,
-				Relations extends RuntimeRelationsDefinition<Schema> =
-					RuntimeRelationsDefinition<Schema>,
+				Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
 			>(
 				options: MakeClientOptions<Schema, Relations> = {},
 			) => {
@@ -337,7 +341,7 @@ export const test = base.extend<Fixtures>({
 					remote,
 					schema,
 					relations,
-					localStore: storageOption,
+					clientStorage: storageOption,
 					syncInterval = 0,
 				} = options
 
@@ -348,10 +352,10 @@ export const test = base.extend<Fixtures>({
 							? remote
 							: (server as unknown as RemoteApi<Schema>)
 
-				const localStore = storageOption
-					? isStorageApi(storageOption)
+				const clientStorage = storageOption
+					? isTandemClientStorageApi<Schema>(storageOption)
 						? storageOption
-						: makeStorage({
+						: makeStorage<Schema>({
 								dbName: storageOption.dbName,
 								schema: storageOption.schema ?? schema,
 								codecs: storageOption.codecs,
@@ -365,7 +369,7 @@ export const test = base.extend<Fixtures>({
 					remote: resolvedRemote,
 					schema,
 					relations,
-					localStore,
+					clientStorage,
 					syncInterval,
 				})
 

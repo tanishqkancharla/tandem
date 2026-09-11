@@ -1,5 +1,5 @@
 import {
-	IndexedDbTupleStorage,
+	TandemClientIndexedDbStorage,
 	TandemClient,
 } from "@tanishqkancharla/tandem-core"
 import { TandemClientProvider } from "@tanishqkancharla/tandem-react"
@@ -11,7 +11,7 @@ import { schema } from "./schema"
 
 const db = new TandemClient({
 	schema,
-	localStore: new IndexedDbTupleStorage({
+	clientStorage: new TandemClientIndexedDbStorage({
 		dbName: "tandem-todo",
 		schema,
 	}),
@@ -34,7 +34,7 @@ const ready = db.ready.then(async () => {
 		createdAt: Date.now() - 1,
 	})
 	await db.commit(seedTx)
-	await db.flushStorage()
+	await db.flushClientStorage()
 })
 
 const root = document.getElementById("root")

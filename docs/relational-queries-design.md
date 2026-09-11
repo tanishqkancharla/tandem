@@ -229,7 +229,7 @@ useQuery({ collection: "threads", orderBy: { missingField: "asc" } })
 useQuery({ collection: "threads", with: { missingRelation: true } })
 ```
 
-Implementation detail: `defineRelations` must preserve literal relation names, target collections, and `many-to-one`/`one-to-many` relation types. If relation metadata widens too early to `RuntimeRelationsDefinition<Schema>`, `with` and nested result inference will be weakly typed.
+Implementation detail: `defineRelations` must preserve literal relation names, target collections, and `many-to-one`/`one-to-many` relation types. If relation metadata widens too early to `AnyRelations<Schema>`, `with` and nested result inference will be weakly typed.
 
 ## Server authorization model
 

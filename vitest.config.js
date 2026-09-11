@@ -6,6 +6,10 @@ export default defineConfig({
 	},
 	resolve: {
 		alias: {
+			"@tanishqkancharla/tandem-core/internal": new URL(
+				"./packages/core/src/internal.ts",
+				import.meta.url,
+			).pathname,
 			"@tanishqkancharla/gatekeeper": new URL(
 				"./packages/gatekeeper/src/Gatekeeper.ts",
 				import.meta.url,

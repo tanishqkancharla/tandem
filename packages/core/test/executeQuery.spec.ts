@@ -5,7 +5,7 @@ import {
 	TupleDatabase,
 	TupleDatabaseClient,
 } from "tuple-database"
-import { expect, expectTypeOf, test } from "vitest"
+import { expect, expectTypeOf, test as baseTest } from "vitest"
 import { executeQueryAsync, executeQuerySync } from "../src/internal"
 import { collection, defineRelations, defineSchema } from "../src/schema/Schema"
 import type { SchemaToTupleSchema } from "../src/schema/Schema"
@@ -113,23 +113,38 @@ const tuples: SchemaToTupleSchema<QuerySchema>[] = [
 	},
 ]
 
-function createDatabases() {
-	const syncStorage = new InMemoryTupleStorage()
-	syncStorage.commit({ set: [...tuples] })
-	const syncDb = new TupleDatabaseClient<SchemaToTupleSchema<QuerySchema>>(
-		new TupleDatabase(syncStorage),
-	)
-	const asyncStorage = new InMemoryTupleStorage()
-	asyncStorage.commit({ set: [...tuples] })
-	const asyncDb = new AsyncTupleDatabaseClient<
-		SchemaToTupleSchema<QuerySchema>
-	>(new AsyncTupleDatabase(asyncStorage))
+type TupleSchema = SchemaToTupleSchema<QuerySchema>
 
-	return { syncDb, asyncDb }
-}
+const test = baseTest.extend<{
+	syncDb: TupleDatabaseClient<TupleSchema>
+	asyncDb: AsyncTupleDatabaseClient<TupleSchema>
+}>({
+	syncDb: async ({}, use) => {
+		const storage = new InMemoryTupleStorage()
+		storage.commit({ set: [...tuples] })
+		const db = new TupleDatabaseClient<TupleSchema>(new TupleDatabase(storage))
 
-test("sync and async execution apply scalar query options identically", async () => {
-	const { syncDb, asyncDb } = createDatabases()
+		await use(db)
+
+		db.close()
+	},
+	asyncDb: async ({}, use) => {
+		const storage = new InMemoryTupleStorage()
+		storage.commit({ set: [...tuples] })
+		const db = new AsyncTupleDatabaseClient<TupleSchema>(
+			new AsyncTupleDatabase(storage),
+		)
+
+		await use(db)
+
+		await db.close()
+	},
+})
+
+test("sync and async execution apply scalar query options identically", async ({
+	syncDb,
+	asyncDb,
+}) => {
 	const query = {
 		collection: "threads",
 		where: { status: "active" },
@@ -139,20 +154,27 @@ test("sync and async execution apply scalar query options identically", async ()
 		select: { id: true, title: true },
 	} as const
 
-	const syncResult = executeQuerySync(syncDb, relations, query)
-	const asyncResult = await executeQueryAsync(asyncDb, relations, query)
+	const syncResult = executeQuerySync<
+		QuerySchema,
+		typeof relations,
+		typeof query
+	>(syncDb, relations, query)
+	const asyncResult = await executeQueryAsync<
+		QuerySchema,
+		typeof relations,
+		typeof query
+	>(asyncDb, relations, query)
 
 	expect(syncResult).toEqual([{ id: "thread-4", title: "Bravo" }])
 	expect(asyncResult).toEqual(syncResult)
 	expectTypeOf(syncResult).toEqualTypeOf<{ id: string; title: string }[]>()
 	expectTypeOf(asyncResult).toEqualTypeOf(syncResult)
-
-	syncDb.close()
-	await asyncDb.close()
 })
 
-test("sync and async execution expand relations identically", async () => {
-	const { syncDb, asyncDb } = createDatabases()
+test("sync and async execution expand relations identically", async ({
+	syncDb,
+	asyncDb,
+}) => {
 	const query = {
 		collection: "threads",
 		where: { id: "thread-1" },
@@ -167,8 +189,16 @@ test("sync and async execution expand relations identically", async () => {
 		},
 	} as const
 
-	const syncResult = executeQuerySync(syncDb, relations, query)
-	const asyncResult = await executeQueryAsync(asyncDb, relations, query)
+	const syncResult = executeQuerySync<
+		QuerySchema,
+		typeof relations,
+		typeof query
+	>(syncDb, relations, query)
+	const asyncResult = await executeQueryAsync<
+		QuerySchema,
+		typeof relations,
+		typeof query
+	>(asyncDb, relations, query)
 
 	expect(syncResult).toEqual([
 		{
@@ -187,7 +217,4 @@ test("sync and async execution expand relations identically", async () => {
 	>()
 	expectTypeOf(syncResult[0]).not.toBeAny()
 	expectTypeOf(asyncResult).toEqualTypeOf(syncResult)
-
-	syncDb.close()
-	await asyncDb.close()
 })

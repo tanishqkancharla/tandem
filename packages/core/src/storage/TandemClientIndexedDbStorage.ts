@@ -1,10 +1,15 @@
 /// <reference lib="dom" />
 
-import { deleteDB, IDBPDatabase, openDB } from "idb"
-import { KeyValuePair, ScanStorageArgs, WriteOps } from "tuple-database"
+import { deleteDB, openDB } from "idb"
+import type { DBSchema, IDBPDatabase } from "idb"
+import type { ScanStorageArgs, WriteOps } from "tuple-database"
 import { decodeTuple, encodeTuple } from "tuple-database/helpers/codec"
-import { AnySchema, RuntimeSchemaDefinition } from "../schema/Schema"
-import type { StorageApi } from "./Storage"
+import type {
+	AnySchema,
+	RuntimeSchemaDefinition,
+	SchemaToTupleSchema,
+} from "../schema/Schema"
+import type { TandemClientStorageApi } from "./TandemClientStorage"
 import { Codec } from "../utils/Codec"
 import type { Json } from "../utils/typeUtils"
 
@@ -12,11 +17,18 @@ const version = 1
 
 const storeName = "tupledb"
 
+interface TandemIndexedDbSchema extends DBSchema {
+	tupledb: {
+		key: string
+		value: unknown
+	}
+}
+
 export type AnyStorageSchema<Schema extends AnySchema> = {
 	[K in keyof Schema]?: Json
 }
 
-export type IndexedDbTupleStorageArgs<
+export type TandemClientIndexedDbStorageArgs<
 	Schema extends AnySchema,
 	StorageSchema extends AnyStorageSchema<Schema> = AnyStorageSchema<Schema>,
 > = {
@@ -48,13 +60,13 @@ function getSchemaCodecs<
 	}
 }
 
-export class IndexedDbTupleStorage<
+export class TandemClientIndexedDbStorage<
 	Schema extends AnySchema,
 	StorageSchema extends {
 		[K in keyof Schema]?: Json
 	} = Schema,
-> implements StorageApi {
-	private db: Promise<IDBPDatabase<any>>
+> implements TandemClientStorageApi<Schema> {
+	private db: Promise<IDBPDatabase<TandemIndexedDbSchema>>
 	private codecs?: {
 		[K in keyof Schema]?: Codec<Schema[K], StorageSchema[K]>
 	}
@@ -64,7 +76,7 @@ export class IndexedDbTupleStorage<
 		dbName,
 		schema,
 		codecs,
-	}: IndexedDbTupleStorageArgs<Schema, StorageSchema>) {
+	}: TandemClientIndexedDbStorageArgs<Schema, StorageSchema>) {
 		this.codecs = {
 			...getSchemaCodecs(schema),
 			...codecs,
@@ -72,8 +84,8 @@ export class IndexedDbTupleStorage<
 			[K in keyof Schema]?: Codec<Schema[K], StorageSchema[K]>
 		}
 		this.dbName = dbName
-		this.db = openDB(dbName, version, {
-			upgrade(db: IDBPDatabase) {
+		this.db = openDB<TandemIndexedDbSchema>(dbName, version, {
+			upgrade(db) {
 				db.createObjectStore(storeName)
 			},
 		})
@@ -113,17 +125,16 @@ export class IndexedDbTupleStorage<
 		const direction = args?.reverse ? "prev" : "next"
 
 		const limit = args?.limit || Infinity
-		let results: KeyValuePair[] = []
+		const results: SchemaToTupleSchema<Schema>[] = []
 		for await (const cursor of index.iterate(range, direction)) {
 			const key = decodeTuple(cursor.key)
 			const recordType = key[1] as keyof Schema & string
 			const codec = this.codecs?.[recordType]
 			const value = codec ? codec.decode(cursor.value) : cursor.value
 
-			results.push({
-				key,
-				value,
-			})
+			// IndexedDB and the tuple codec return untyped serialized data. The
+			// adapter is the boundary that restores the configured schema type.
+			results.push({ key, value } as SchemaToTupleSchema<Schema>)
 			if (results.length >= limit) break
 		}
 		await tx.done
@@ -131,7 +142,7 @@ export class IndexedDbTupleStorage<
 		return results
 	}
 
-	async commit(writes: WriteOps) {
+	async commit(writes: WriteOps<SchemaToTupleSchema<Schema>>) {
 		const db = await this.db
 		const tx = db.transaction(storeName, "readwrite")
 		for (const { key, value } of writes.set || []) {
@@ -159,8 +170,8 @@ export class IndexedDbTupleStorage<
 		await deleteDB(this.dbName)
 
 		// Recreate the database
-		this.db = openDB(this.dbName, version, {
-			upgrade(db: IDBPDatabase) {
+		this.db = openDB<TandemIndexedDbSchema>(this.dbName, version, {
+			upgrade(db) {
 				db.createObjectStore(storeName)
 			},
 		})

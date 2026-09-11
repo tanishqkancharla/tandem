@@ -1,4 +1,15 @@
 export type { RemoteApi } from "@tanishqkancharla/tandem-core"
+export { TandemServer } from "./TandemServer"
+export type {
+	TandemServerArgs,
+	TandemServerSubscription,
+	TandemServerSubscriptionOptions,
+} from "./TandemServer"
+export { TandemServerTransaction } from "./TandemServerTransaction"
+export type {
+	TandemTuple,
+	TandemServerStorageApi,
+} from "./storage/TandemServerStorage"
 export { InMemoryRemote } from "./InMemoryRemote"
 export { JsonFileRemote } from "./JsonFileRemote"
 export type { JsonFileRemoteArgs } from "./JsonFileRemote"

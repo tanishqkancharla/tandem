@@ -8,7 +8,7 @@ Today, the browser database and remote server use separate persistence models. T
 flowchart TD
     TC[TandemClient] --> CDB[core Database]
     CDB --> MEM[TupleDatabase over in-memory storage]
-    CDB -. asynchronous mirror .-> LS[optional local StorageApi]
+    CDB -. asynchronous mirror .-> LS[optional local TandemClientStorageApi]
 
     TC --> SE[SyncEngine]
     SE --> RA[RemoteApi]
@@ -19,7 +19,7 @@ flowchart TD
     RST --> DR[Drizzle application tables]
 ```
 
-This refactor adds the future server foundation without changing the existing sync path. `TandemServer` owns an asynchronous `tuple-database` stack, while an injected, schema-aware `TupleStorageApi` owns persistence. The core client database and the new server use parallel sync and async entry points from one shared query module so their query behavior cannot drift.
+This refactor adds the future server foundation without changing the existing sync path. `TandemServer` owns an asynchronous `tuple-database` stack, while an injected, schema-aware `TandemServerStorageApi` owns persistence. The core client database and the new server use parallel sync and async entry points from one shared query module so their query behavior cannot drift.
 
 ```mermaid
 flowchart TD
@@ -30,7 +30,7 @@ flowchart TD
     TX --> ATC[AsyncTupleDatabaseClient]
     AQ --> ATC
     ATC --> ATD[AsyncTupleDatabase]
-    ATD --> TSA[TupleStorageApi&lt;Schema, Relations&gt;]
+    ATD --> TSA[TandemServerStorageApi&lt;Schema&gt;]
 
     TC[TandemClient] --> CDB[client-internal Database]
     CDB --> SQ[executeQuerySync]
@@ -47,7 +47,7 @@ sequenceDiagram
     participant S as TandemServer
     participant T as TandemServerTransaction
     participant D as AsyncTupleDatabase
-    participant P as TupleStorageApi
+    participant P as TandemServerStorageApi
 
     A->>S: transact()
     S-->>A: transaction
@@ -61,9 +61,9 @@ sequenceDiagram
         D-->>S: committed
         S-->>A: undefined
     else storage fails
-        P-->>D: Error
+        P--xD: rejects
         D-->>S: storage failure
-        S-->>A: TandemServerError
+        S--xA: rejects with Error
     end
 ```
 
@@ -73,7 +73,7 @@ sequenceDiagram
     participant S as TandemServer
     participant SQ as subscribeQueryAsync
     participant D as AsyncTupleDatabase
-    participant P as TupleStorageApi
+    participant P as TandemServerStorageApi
 
     A->>S: await subscribe(query, callback)
     S->>SQ: run async relational query
@@ -96,17 +96,16 @@ The upstream `AsyncTupleStorageApi` is also untyped: its `scan` and `commit` met
 
 ## Solution overview
 
-Add `TandemServer` to `@tanishqkancharla/tandem-server`. It accepts runtime `schema`, `relations`, and a Tandem-owned `TupleStorageApi<Schema, Relations>`, then wraps that storage with `AsyncTupleDatabase` and `AsyncTupleDatabaseClient`. The server exposes asynchronous `query`, `subscribe`, `transact`, `commit`, and `close` methods.
+Add `TandemServer` to `@tanishqkancharla/tandem-server`. It accepts runtime `schema`, `relations`, and a Tandem-owned `TandemServerStorageApi<Schema>`, then wraps that storage with `AsyncTupleDatabase` and `AsyncTupleDatabaseClient`. The server exposes asynchronous `query`, `subscribe`, `transact`, `commit`, and `close` methods.
 
-The storage contract types record tuple keys, IDs, and values from the Tandem schema. Relations participate in the storage type identity so mismatched storage cannot be injected, but this phase does not persist relation indexes. Storage failures and public server operations follow the repository's errors-as-values convention.
+The storage contract types record tuple keys, IDs, and values from the Tandem schema. Relations remain a server query concern and do not participate in the raw storage type. Storage failures and public server operations follow the repository's errors-as-values convention.
 
 Extract the current relational evaluation logic from the client-specific `Database` into a shared query module with two typed entry points: `executeQuerySync(db, relations, query)` and `executeQueryAsync(db, relations, query)`. Each function owns the appropriate tuple-database reads. They share private filtering, sorting, projection, and relation-expansion helpers so query semantics remain identical without exposing record-loading details to callers.
 
 ## Goals
 
 - Export `TandemServer` from `@tanishqkancharla/tandem-server` with inferred schema- and relation-aware query and transaction APIs.
-- Export a `TupleStorageApi<Schema, Relations>` whose reads and writes preserve the correlation between collection names, record IDs, and record values.
-- Make relation definitions part of storage type compatibility without adding persisted relation or secondary-index tuples.
+- Export a `TandemServerStorageApi<Schema>` whose reads and writes preserve the correlation between collection names, record IDs, and record values.
 - Support asynchronous `get`, `list`, and `update` transaction reads; synchronous staged `set` and `remove` writes; and commit only through `TandemServer.commit()`.
 - Match `TandemClient` behavior and result inference for `select`, `where`, `orderBy`, `limit`, `offset`, and nested `with` queries.
 - Support async relational subscriptions with an initial result, recomputation after relevant commits, and explicit destruction.
@@ -130,7 +129,7 @@ Extract the current relational evaluation logic from the client-specific `Databa
 - [`packages/core/src/query/Query.ts`](../packages/core/src/query/Query.ts) — Defines relational query inputs, encoded query types, and inferred result types.
 - [`packages/core/src/schema/Schema.ts`](../packages/core/src/schema/Schema.ts) — Defines `SchemaToTupleSchema`, runtime schemas, and normalized relation metadata.
 - [`packages/core/src/transaction/Transaction.ts`](../packages/core/src/transaction/Transaction.ts) — Supplies the existing client transaction behavior that the async server API should mirror where practical.
-- [`packages/core/src/storage/Storage.ts`](../packages/core/src/storage/Storage.ts) — Shows why the current `StorageApi` is a client cache contract and must remain distinct from server tuple storage.
+- [`packages/core/src/storage/TandemClientStorage.ts`](../packages/core/src/storage/TandemClientStorage.ts) — Shows why the current `TandemClientStorageApi` is a client cache contract and must remain distinct from server tuple storage.
 - [`packages/server/src/RemoteServer.ts`](../packages/server/src/RemoteServer.ts) — The existing sync implementation that remains untouched until the later sync refactor.
 - [`packages/server/src/index.ts`](../packages/server/src/index.ts) — Public server-package exports for the new server and storage contracts.
 - [`packages/server/test/fixtures.ts`](../packages/server/test/fixtures.ts) — Existing remote-adapter fixtures that must continue working unchanged.
@@ -159,22 +158,20 @@ Add one query module with synchronous and asynchronous entry points over the cor
 Add `packages/core/src/query/executeQuery.ts`. Preserve the existing ordering, filtering, nested `with`, projection, and cardinality behavior exactly.
 
 ```ts
-export function executeQuerySync<TupleSchema, Relations, Query>(
-	db: ReadOnlyTupleDatabaseClientApi<TupleSchema>,
+export function executeQuerySync<Schema, Relations, Query>(
+	db: ReadOnlyTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
 	relations: Relations | undefined,
 	query: Query,
-): RelationalQueryResult<TupleSchemaToSchema<TupleSchema>, Relations, Query>
+): RelationalQueryResult<Schema, Relations, Query>
 
-export function executeQueryAsync<TupleSchema, Relations, Query>(
-	db: ReadOnlyAsyncTupleDatabaseClientApi<TupleSchema>,
+export function executeQueryAsync<Schema, Relations, Query>(
+	db: ReadOnlyAsyncTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
 	relations: Relations | undefined,
 	query: Query,
-): Promise<
-	RelationalQueryResult<TupleSchemaToSchema<TupleSchema>, Relations, Query>
->
+): Promise<RelationalQueryResult<Schema, Relations, Query>>
 ```
 
-The functions infer the application schema from the tuple client's correlated record tuple union. Expose both functions from a new `packages/core/src/internal.ts` entry point and `@tanishqkancharla/tandem-core/internal` package subpath rather than making them part of the normal application API. Focused parity tests run the same query workflows through both functions and assert equal runtime results and result types.
+The functions take the application schema as their primary type parameter instead of attempting to reconstruct it from a mapped tuple union. Generic callers provide the schema explicitly; application code continues to infer query results through `TandemClient` and `TandemServer`. Expose both functions from a new `packages/core/src/internal.ts` entry point and `@tanishqkancharla/tandem-core/internal` package subpath rather than making them part of the normal application API. Focused parity tests run the same query workflows through both functions and assert equal runtime results and result types.
 
 - [x] Add typed `executeQuerySync` and `executeQueryAsync` entry points plus their shared private helpers in `packages/core/src/query/executeQuery.ts`.
 - [x] Add `packages/core/src/internal.ts` and the `@tanishqkancharla/tandem-core/internal` export in `packages/core/package.json`.
@@ -201,66 +198,54 @@ Replace the relational evaluator embedded in `Database` with `executeQuerySync`,
      query: Query,
  ): RelationalQueryResult<Schema, Relations, Query> {
 -	return this.runRelationalQuery(query.collection, query) as ...
-+	return executeQuerySync(this.tupleDb, this.relations, query)
++	return executeQuerySync<Schema, Relations, Query>(
++		this.tupleDb,
++		this.relations,
++		query,
++	)
  }
 ```
 
 Remove the misleading public `Database` and `DatabaseArgs` exports from the core root while keeping the class available internally to `TandemClient`.
 
-- [ ] Update `packages/core/src/Database.ts` to delegate both `query` and the function passed to `subscribeQuery` to `executeQuerySync`.
-- [ ] Delete the superseded private filtering, ordering, projection, and relation-expansion methods and their unused imports from `packages/core/src/Database.ts`.
-- [ ] Remove `Database` and `DatabaseArgs` from `packages/core/src/index.ts` without changing `TandemClient` exports.
-- [ ] Run `pnpm --filter @tanishqkancharla/tandem-core exec vitest run test/TandemClient.spec.ts`.
-- [ ] Run `pnpm --filter @tanishqkancharla/tandem-core type-check`.
+- [x] Update `packages/core/src/Database.ts` to delegate both `query` and the function passed to `subscribeQuery` to `executeQuerySync`.
+- [x] Type the client tuple database, persistence adapter, write batches, and transaction handles with `SchemaToTupleSchema<Schema>`.
+- [x] Delete the superseded private filtering, ordering, projection, and relation-expansion methods and their unused imports from `packages/core/src/Database.ts`.
+- [x] Remove `Database` and `DatabaseArgs` from `packages/core/src/index.ts` without changing `TandemClient` exports.
+- [x] Run `pnpm --filter @tanishqkancharla/tandem-core exec vitest run test/TandemClient.spec.ts`.
+- [x] Run `pnpm --filter @tanishqkancharla/tandem-core type-check`.
 
-### Phase 3: Define schema- and relation-typed tuple storage
+### Phase 3: Define schema-typed tuple storage
 
-Add a server-owned storage interface instead of exposing the untyped upstream storage API. Its tuple union initially contains only Tandem record tuples. A private phantom type member makes both `Schema` and `Relations` invariant for compatibility checks without producing runtime fields or persisted relation tuples.
+Add a server-owned storage interface instead of exposing the untyped upstream storage API. Its tuple union initially contains only Tandem record tuples. The schema determines the valid record keys, IDs, and values; relations do not affect the physical storage contract.
 
 ```callstack
  storage adapter
 -└── tuple-database AsyncTupleStorageApi
 -    ├── scan(...) => KeyValuePair[]
 -    └── commit(WriteOps<KeyValuePair>)
-+└── Tandem TupleStorageApi<Schema, Relations>
-+    ├── scan(...) => Error | TandemTuple<Schema, Relations>[]
-+    ├── commit(WriteOps<TandemTuple<Schema, Relations>>) => Error | void
-+    └── close() => Error | void
++└── TandemServerStorageApi<Schema>
++    ├── scan(...) => TandemTuple<Schema>[]
++    ├── commit(WriteOps<TandemTuple<Schema>>) => void
++    └── close() => void
 ```
 
 ```ts
-declare const tupleStorageTypes: unique symbol
+export type TandemTuple<Schema extends AnySchema> = SchemaToTupleSchema<Schema>
 
-export type TandemTuple<
-	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema>,
-> = SchemaToTupleSchema<Schema>
+export interface TandemServerStorageApi<Schema extends AnySchema> {
+	scan(args?: ScanStorageArgs): Promise<TandemTuple<Schema>[]>
 
-export interface TupleStorageApi<
-	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema>,
-> {
-	readonly [tupleStorageTypes]?: {
-		schema: (schema: Schema) => Schema
-		relations: (relations: Relations) => Relations
-	}
+	commit(writes: WriteOps<TandemTuple<Schema>>): Promise<void>
 
-	scan(
-		args?: ScanStorageArgs,
-	): Promise<Error | TandemTuple<Schema, Relations>[]>
-
-	commit(
-		writes: WriteOps<TandemTuple<Schema, Relations>>,
-	): Promise<Error | void>
-
-	close(): Promise<Error | void>
+	close(): Promise<void>
 }
 ```
 
-The storage API owns only ordered range scans, atomic write batches, and resource cleanup. It does not expose `clear`, because server persistence is not a disposable replica cache. The adapter must return expected failures as `Error` values; a later adapter is responsible for converting database-driver rejections at its own boundary.
+The storage API owns only ordered range scans, atomic write batches, and resource cleanup. It does not expose `clear`, because server persistence is not a disposable replica cache. Storage adapters use conventional promise rejection so Tandem's internal errors-as-values convention does not leak into consumer implementations.
 
 ```ts
-type AppStorage = TupleStorageApi<AppSchema, AppRelations>
+type AppStorage = TandemServerStorageApi<AppSchema>
 
 declare const storage: AppStorage
 
@@ -277,19 +262,19 @@ await storage.commit({
 ```diff:packages/server/src/index.ts
 +export type {
 +	TandemTuple,
-+	TupleStorageApi,
-+} from "./storage/TupleStorage"
++	TandemServerStorageApi,
++} from "./storage/TandemServerStorage"
 ```
 
-- [ ] Add `TandemTuple<Schema, Relations>` and `TupleStorageApi<Schema, Relations>` in `packages/server/src/storage/TupleStorage.ts`, using schema-correlated record key/value pairs and relation type identity only.
-- [ ] Add `tuple-database` as a direct dependency of `packages/server/package.json` and export the new public types from `packages/server/src/index.ts`.
-- [ ] Add `packages/server/test/TupleStorage.types.ts` with positive inference checks and `@ts-expect-error` cases for unknown collections, wrong ID/value types, and schema or relation mismatches.
-- [ ] Run `pnpm --filter @tanishqkancharla/tandem-server type-check`.
-- [ ] Run `pnpm type-check`.
+- [x] Add `TandemTuple<Schema>` and `TandemServerStorageApi<Schema>` in `packages/server/src/storage/TandemServerStorage.ts`, using schema-correlated record key/value pairs.
+- [x] Add `tuple-database` as a direct dependency of `packages/server/package.json` and export the new public types from `packages/server/src/index.ts`.
+- [x] Add `packages/server/test/TandemServerStorage.types.ts` with positive inference checks and `@ts-expect-error` cases for unknown collections, wrong ID/value types, and schema mismatches.
+- [x] Run `pnpm --filter @tanishqkancharla/tandem-server type-check`.
+- [x] Run `pnpm type-check`.
 
 ### Phase 4: Add typed asynchronous server transactions
 
-Introduce `TandemServer` and `TandemServerTransaction` with transaction CRUD before layering relational queries on top. `TandemServer` adapts the errors-as-values storage contract to the throwing contract required internally by `AsyncTupleDatabase`, then converts rejections back into a tagged `TandemServerError` at each public async boundary. The error preserves the operation and original cause, whether the failure came from storage or `tuple-database` concurrency control.
+Introduce `TandemServer` and `TandemServerTransaction` with transaction CRUD before layering relational queries on top. Tandem converts storage and `tuple-database` rejections into tagged error values internally, then throws only at consumer-facing method boundaries. The internal error preserves the operation and original cause without appearing in public return types or package exports.
 
 ```callstack
  application write
@@ -301,32 +286,33 @@ Introduce `TandemServer` and `TandemServerTransaction` with transaction CRUD bef
 +        └── TandemServer.commit
 +            └── AsyncTupleRootTransaction.commit
 +                └── AsyncTupleDatabase.commit
-+                    └── TupleStorageApi.commit
++                    └── TandemServerStorageApi.commit
 ```
 
 ```ts
 export type TandemServerArgs<Schema, Relations> = {
 	schema: RuntimeSchemaDefinition<Schema>
 	relations: Relations
-	storage: TupleStorageApi<Schema, Relations>
+	storage: TandemServerStorageApi<Schema>
 }
 
 export class TandemServer<Schema, Relations> {
 	constructor(args: TandemServerArgs<Schema, Relations>) {
-		this.tupleDb = new AsyncTupleDatabaseClient<TandemTuple<Schema, Relations>>(
-			new AsyncTupleDatabase(toTupleDatabaseStorage(args.storage)),
+		this.tupleDb = new AsyncTupleDatabaseClient<TandemTuple<Schema>>(
+			new AsyncTupleDatabase(tandemStorageToTupleDatabaseStorage(args.storage)),
 		)
 		...
 	}
 
 	transact(): TandemServerTransaction<Schema, Relations> {
-		return new TandemServerTransaction(this.tupleDb.transact())
+		return new TandemServerTransaction(this.tupleDb.transact(), this.relations)
 	}
 
 	async commit(transaction: TandemServerTransaction<Schema, Relations>) {
-		return await transaction.commit().catch(
-			(error) => new TandemServerError({ operation: "commit", cause: error }),
+		const result = await transaction.commit().catch(
+			(cause) => new TandemServerError({ operation: "commit", cause }),
 		)
+		if (result instanceof Error) throw result
 	}
 }
 ```
@@ -335,21 +321,17 @@ export class TandemServer<Schema, Relations> {
 const tx = server.transact()
 
 const existing = await tx.get("threads", "thread-1")
-if (existing instanceof Error) return existing
-
 tx.set("threads", { ...existing, title: "Updated" })
-
-const committed = await server.commit(tx)
-if (committed instanceof Error) return committed
+await server.commit(tx)
 ```
 
-The transaction wrapper keeps the upstream tuple transaction private. Reads return `Error | value`, `update` is asynchronous because it reads the existing record, and writes remain synchronously staged. Only `TandemServer.commit(transaction)` can commit. `close()` closes the wrapped tuple database and therefore the injected storage; adapters that wrap shared external clients may implement `close()` as a no-op.
+Like the synchronous `Transaction`, the server transaction manages one upstream tuple transaction directly on the instance. That upstream transaction owns its staged writes and read set until `TandemServer.commit(transaction)` commits it. Transaction queries use the same relation-aware API as `TandemServer.query()` and include those staged writes. Reads return their values directly and reject on failure, `update` is asynchronous because it reads the existing record, and writes remain synchronously staged. `close()` closes the wrapped tuple database and therefore the injected storage; adapters that wrap shared external clients may implement `close()` as a no-op.
 
-- [ ] Add `packages/server/src/TandemServer.ts`, `packages/server/src/TandemServerTransaction.ts`, and a tagged `TandemServerError`, always importing `errore` as a namespace.
-- [ ] Implement async `get`, `list`, and `update`, staged `set` and `remove`, server-owned `commit`, transaction cancellation, and server `close` over `AsyncTupleDatabaseClient`.
-- [ ] Add a reusable in-memory `TupleStorageApi` test fixture and public-surface CRUD tests in `packages/server/test/TandemServer.spec.ts`, including transactional read-your-writes, a concurrent read/write conflict, and an injected storage failure returned as an `Error` value.
-- [ ] Export `TandemServer`, `TandemServerArgs`, `TandemServerTransaction`, and the public error type from `packages/server/src/index.ts`; add `errore` to `packages/server/package.json`.
-- [ ] Run `pnpm --filter @tanishqkancharla/tandem-server exec vitest run test/TandemServer.spec.ts`; then run `pnpm --filter @tanishqkancharla/tandem-server type-check`.
+- [x] Add `packages/server/src/TandemServer.ts`, `packages/server/src/TandemServerTransaction.ts`, and an internal tagged `TandemServerError`, always importing `errore` as a namespace where the package is used.
+- [x] Implement async `get`, `list`, `update`, and relational `query`, staged `set` and `remove`, server-owned `commit`, transaction cancellation, and server `close` over `AsyncTupleDatabaseClient`.
+- [x] Add a reusable in-memory `TandemServerStorageApi` test fixture and public-surface CRUD tests in `packages/server/test/TandemServer.spec.ts`, including transactional read-your-writes, a concurrent read/write conflict, and an injected storage rejection.
+- [x] Export `TandemServer`, `TandemServerArgs`, and `TandemServerTransaction` from `packages/server/src/index.ts`; keep the tagged error type internal and add `errore` to `packages/server/package.json`.
+- [x] Run `pnpm --filter @tanishqkancharla/tandem-server exec vitest run test/TandemServer.spec.ts`; then run `pnpm --filter @tanishqkancharla/tandem-server type-check`.
 
 ### Phase 5: Add full relational query parity
 
@@ -368,13 +350,16 @@ Implement `TandemServer.query()` by delegating to `executeQueryAsync`. The query
 ```diff:packages/server/src/TandemServer.ts
 +async query<Query extends RelationalQuery<Schema, Relations>>(
 +	query: Query,
-+): Promise<
-+	| TandemServerError
-+	| RelationalQueryResult<Schema, Relations, Query>
-+> {
-+	return executeQueryAsync(this.tupleDb, this.relations, query).catch(
++): Promise<RelationalQueryResult<Schema, Relations, Query>> {
++	const result = await executeQueryAsync<Schema, Relations, Query>(
++		this.tupleDb,
++		this.relations,
++		query,
++	).catch(
 +		(cause) => new TandemServerError({ cause }),
 +	)
++	if (result instanceof Error) throw result
++	return result
 +}
 ```
 
@@ -393,16 +378,15 @@ const result = await server.query({
 		},
 	},
 })
-if (result instanceof Error) return result
 
 // Inferred as Array<{ id: string; title: string; messages: Array<{ body: string }> }>
 ```
 
-- [ ] Add `TandemServer.query()` in `packages/server/src/TandemServer.ts` by delegating to `executeQueryAsync` and translating expected storage failures at the public boundary.
-- [ ] Extend `packages/server/test/TandemServer.spec.ts` with public query workflows for filtering, ordering, pagination, selection, one-to-many, many-to-one, and nested relations.
-- [ ] Add `packages/server/test/TandemServer.types.ts` assertions for inferred root and nested query results plus rejected collection, field, and relation names.
-- [ ] Run `pnpm --filter @tanishqkancharla/tandem-server exec vitest run test/TandemServer.spec.ts`.
-- [ ] Run `pnpm --filter @tanishqkancharla/tandem-server type-check`.
+- [x] Add `TandemServer.query()` in `packages/server/src/TandemServer.ts` by delegating to `executeQueryAsync` and translating expected storage failures at the public boundary.
+- [x] Extend `packages/server/test/TandemServer.spec.ts` with public query workflows for filtering, ordering, pagination, selection, one-to-many, many-to-one, and nested relations.
+- [x] Add `packages/server/test/TandemServer.types.ts` assertions for inferred root and nested query results plus rejected collection, field, and relation names.
+- [x] Run `pnpm --filter @tanishqkancharla/tandem-server exec vitest run test/TandemServer.spec.ts`.
+- [x] Run `pnpm --filter @tanishqkancharla/tandem-server type-check`.
 
 ### Phase 6: Add reactive relational subscriptions and lifecycle cleanup
 
@@ -418,51 +402,52 @@ Use `subscribeQueryAsync` with `executeQueryAsync`. Because `subscribeQueryAsync
 +        └── recompute after matching commits
 
  TandemServer.close
--└── TupleStorageApi.close
+-└── TandemServerStorageApi.close
 +├── destroy active relational subscriptions
 +└── AsyncTupleDatabase.close
-+    └── TupleStorageApi.close
++    └── TandemServerStorageApi.close
 ```
 
 ```ts
 async subscribe<Query extends RelationalQuery<Schema, Relations>>(
 	query: Query,
-	callback: (
-		result:
-			| TandemServerError
-			| RelationalQueryResult<Schema, Relations, Query>,
-	) => void,
-): Promise<
-	| TandemServerError
-	| {
+	callback: (result: RelationalQueryResult<Schema, Relations, Query>) => void,
+	options?: { onError?: (error: Error) => void },
+): Promise<{
 		result: RelationalQueryResult<Schema, Relations, Query>
 		destroy: () => void
-	}
-> {
+}> {
 	...
 }
 ```
 
-An initial read failure returns `TandemServerError` and removes any listeners registered during the failed computation. A later recomputation failure is delivered to the callback as an error value. `TandemServer` tracks returned destructors so `close()` makes every active subscription inert before closing storage.
+An initial read failure rejects `subscribe()` and removes any listeners registered during the failed computation. A later recomputation failure goes to the optional `onError` callback; the result callback only receives query results. Without an error callback, Tandem logs the background failure. `TandemServer` tracks returned destructors so `close()` makes every active subscription inert before closing storage.
 
 ```diff:packages/server/src/TandemServer.ts
 +const subscription = await subscribeQueryAsync(
 +	this.tupleDb,
 +	(db) => this.runQuery(query, db),
-+	callback,
++	(result) => {
++		if (result instanceof Error) {
++			if (options.onError) options.onError(result)
++			else console.error(result)
++			return
++		}
++		callback(result)
++	},
 +).catch(
 +	(error) => new TandemServerError({ operation: "subscribe", cause: error }),
 +)
-+if (subscription instanceof Error) return subscription
++if (subscription instanceof Error) throw subscription
 +if (subscription.result instanceof Error) {
 +	subscription.destroy()
-+	return subscription.result
++	throw subscription.result
 +}
 +return this.trackSubscription(subscription)
 ```
 
-- [ ] Add `TandemServer.subscribe()` using `subscribeQueryAsync`, `executeQueryAsync`, and the same schema-aware result inference as `query()`.
-- [ ] Track subscription destructors and update `TandemServer.close()` to destroy listeners before closing its injected storage.
-- [ ] Add public behavior tests for the initial result, root and included-record recomputation, explicit destruction, storage-read errors, and server cleanup; extend `packages/server/test/TandemServer.types.ts` with subscription result, callback, and error-union inference.
-- [ ] Run `pnpm --filter @tanishqkancharla/tandem-server test`; then run `pnpm --filter @tanishqkancharla/tandem-server type-check`.
-- [ ] Run `pnpm build`, `pnpm lint`, `pnpm type-check`, and `pnpm test`.
+- [x] Add `TandemServer.subscribe()` using `subscribeQueryAsync`, `executeQueryAsync`, and the same schema-aware result inference as `query()`.
+- [x] Track subscription destructors and update `TandemServer.close()` to destroy listeners before closing its injected storage.
+- [x] Add public behavior tests for the initial result, root and included-record recomputation, explicit destruction, storage-read errors, and server cleanup; extend `packages/server/test/TandemServer.types.ts` with result-only subscription and error-callback inference.
+- [x] Run `pnpm --filter @tanishqkancharla/tandem-server test`; then run `pnpm --filter @tanishqkancharla/tandem-server type-check`.
+- [x] Run `pnpm build`, `pnpm lint`, `pnpm type-check`, and `pnpm test`.
