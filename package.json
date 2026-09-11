@@ -3,7 +3,7 @@
 	"version": "0.2.0",
 	"private": true,
 	"type": "module",
-	"packageManager": "pnpm@10.12.4",
+	"packageManager": "pnpm@12.3.4",
 	"author": "Tanishq Kancharla <tanishqkancharla3@gmail.com>",
 	"description": "A sync engine and database for building collaborative apps",
 	"license": "MIT",
@@ -37,11 +37,5 @@
 		"turbo": "^2.9.17",
 		"typescript": "^5.7.2",
 		"vitest": "^1.1.0"
-	},
-	"pnpm": {
-		"onlyBuiltDependencies": [
-			"better-sqlite3",
-			"esbuild"
-		]
 	}
 }
