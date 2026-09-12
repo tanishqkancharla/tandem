@@ -3,6 +3,7 @@ import {
 	defineRelations,
 	defineSchema,
 } from "@tanishqkancharla/tandem-core"
+import type { RemoteApi } from "@tanishqkancharla/tandem-core"
 import { expectTypeOf } from "vitest"
 import type { TandemServerStorageApi } from "../src"
 import { TandemServer } from "../src"
@@ -32,6 +33,9 @@ const relations = defineRelations(schema, ({ one, many }) => ({
 
 declare const storage: TandemServerStorageApi<AppSchema>
 const server = new TandemServer({ schema, relations, storage })
+expectTypeOf(server).toEqualTypeOf<TandemServer<AppSchema, typeof relations>>()
+const remote: RemoteApi<AppSchema> = server
+void remote
 const transaction = server.transact()
 expectTypeOf(server.commit(transaction)).toEqualTypeOf<Promise<void>>()
 

@@ -335,33 +335,33 @@ application commit or non-empty push advances the revision only after storage
 commit succeeds. Push stores its acknowledgement before emitting pokes so a
 resulting pull observes it. Failed and empty commits do not advance or poke.
 
-- [ ] Add private typed sync-client state to `TandemServer`; do not extend
+- [x] Add private typed sync-client state to `TandemServer`; do not extend
       `TandemTuple` or `TandemServerStorageApi` with protocol metadata.
-- [ ] Implement `push` by applying every existing mutation operation through a
+- [x] Implement `push` by applying every existing mutation operation through a
       `TandemServerTransaction` and committing once per push request; retain current
       empty-batch, ID, duplicate, and failure semantics.
-- [ ] Implement `pull` through `executeScanWindowAsync`, emitting current values
+- [x] Implement `pull` through `executeScanWindowAsync`, emitting current values
       as `set` operations and previous-view keys absent from the result as `remove`
       operations.
-- [ ] Implement `connect` and idempotent disconnect with the existing callback
+- [x] Implement `connect` and idempotent disconnect with the existing callback
       contract; conservatively poke connected clients after successful record
       commits.
-- [ ] Centralize post-commit revision and poke bookkeeping so public application
+- [x] Centralize post-commit revision and poke bookkeeping so public application
       transactions and remote pushes do not double-advance or notify before the
       acknowledgement is visible.
-- [ ] Clear relational subscriptions and sync client registrations in
+- [x] Clear relational subscriptions and sync client registrations in
       `TandemServer.close()` before closing tuple storage.
-- [ ] Keep expected internal failures as errore-style error values and convert
+- [x] Keep expected internal failures as errore-style error values and convert
       them to rejected promises only at the existing public `TandemServer` boundary;
       do not export internal error-management types.
-- [ ] Extend `packages/server/test/TandemServer.spec.ts` with public workflows for
+- [x] Extend `packages/server/test/TandemServer.spec.ts` with public workflows for
       two clients, mutation acknowledgement, filtered rows entering and leaving a
       view, pagination changes, nested relations, scan-window shrinkage, unchanged
       cookies, app-side commits, pokes, disconnect, storage failure, and close.
-- [ ] Add a type-level assertion in `packages/server/test/TandemServer.types.ts`
+- [x] Add a type-level assertion in `packages/server/test/TandemServer.types.ts`
       that a schema/relations-specific server satisfies `RemoteApi<Schema>` without
       widening either generic.
-- [ ] Run
+- [x] Run
       `pnpm --filter @tanishqkancharla/tandem-server exec vitest run test/TandemServer.spec.ts`
       and `pnpm --filter @tanishqkancharla/tandem-server type-check`.
 

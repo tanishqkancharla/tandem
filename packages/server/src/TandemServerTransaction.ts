@@ -186,7 +186,11 @@ export class TandemServerTransaction<
 	/**
 	 * @internal
 	 */
-	commit(): Promise<void> {
-		return this.tupleDbTx.commit()
+	async commit(): Promise<boolean> {
+		const hasWrites =
+			this.tupleDbTx.writes.set.length > 0 ||
+			this.tupleDbTx.writes.remove.length > 0
+		await this.tupleDbTx.commit()
+		return hasWrites
 	}
 }
