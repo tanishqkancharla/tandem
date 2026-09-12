@@ -1,0 +1,12 @@
+{
+	"extends": "../../../../tsconfig.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"declaration": false,
+		"declarationMap": false,
+		"paths": {
+			"@tanishqkancharla/tandem-core": ["../../../../packages/core/src/index.ts"]
+		}
+	},
+	"include": ["src"]
+}

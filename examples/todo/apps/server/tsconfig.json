@@ -1,0 +1,19 @@
+{
+	"extends": "../../../../tsconfig.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"declaration": false,
+		"declarationMap": false,
+		"types": ["node"],
+		"paths": {
+			"@tanishqkancharla/tandem-core": ["../../../../packages/core/src/index.ts"],
+			"@tanishqkancharla/tandem-core/internal": [
+				"../../../../packages/core/src/internal.ts"
+			],
+			"@tanishqkancharla/tandem-server": [
+				"../../../../packages/server/src/index.ts"
+			]
+		}
+	},
+	"include": ["src", "test"]
+}

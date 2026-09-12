@@ -16,9 +16,9 @@ import {
 	type UseTandemQuery,
 	type UseTandemTransaction,
 } from "@tanishqkancharla/tandem-react"
+import type { TodoSchema } from "@tandem/example-todo-shared"
 import { style, useStyles } from "purse-styles"
 import { useState } from "react"
-import type { TodoSchema } from "./schema"
 
 const useQuery: UseTandemQuery<TodoSchema> = useTandemQuery
 const useTransaction: UseTandemTransaction<TodoSchema> = useTandemTransaction
@@ -107,7 +107,7 @@ export function App() {
 						<Flex column gap={1}>
 							<h1 className={title}>Todos</h1>
 							<p className={subtitle}>
-								Saved in IndexedDB. Refresh to see them persist.
+								Synced through TandemServer and saved to a JSON file.
 							</p>
 						</Flex>
 
@@ -160,6 +160,7 @@ export function App() {
 													</div>
 													<Button
 														variant="quiet"
+														aria-label={`Delete ${todo.text}`}
 														onClick={() => removeTodo(todo.id)}
 													>
 														Delete
