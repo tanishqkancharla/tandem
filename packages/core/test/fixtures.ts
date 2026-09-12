@@ -15,7 +15,7 @@ import { TandemClientIndexedDbStorage } from "../src/storage/TandemClientIndexed
 import { Logger } from "../src/utils/Logger"
 import { JsonlLoggerSink } from "../src/utils/Logger.node"
 import type { Codec } from "../src/utils/Codec"
-import { InMemoryRemote } from "@tanishqkancharla/tandem-server"
+import { TandemServer } from "@tanishqkancharla/tandem-server"
 import type {
 	AnySchema,
 	RelationalQuery,
@@ -26,6 +26,7 @@ import type {
 	RuntimeSchemaDefinition,
 	TandemClientStorageApi,
 } from "@tanishqkancharla/tandem-core"
+import { TestTandemServerStorage } from "./TandemServerStorage.fixture"
 
 export type TestsTodo = {
 	id: string
@@ -213,7 +214,11 @@ export type MakeClientOptions<
 }
 
 export type MakeRemote = {
-	<Schema extends AnySchema = TestsSchema>(): InMemoryRemote<Schema>
+	(): TandemServer<TestsSchema, {}>
+	<Schema extends AnySchema, Relations extends AnyRelations<Schema>>(options: {
+		schema: RuntimeSchemaDefinition<Schema>
+		relations: Relations
+	}): TandemServer<Schema, Relations>
 }
 
 export type MakeStorage = {
@@ -223,11 +228,17 @@ export type MakeStorage = {
 }
 
 export type MakeClient = {
-	<
+	(
+		options?: MakeClientOptions<TestsSchema, AnyRelations<TestsSchema>>,
+	): Promise<TandemClient<TestsSchema, AnyRelations<TestsSchema>>>
+	withSchema<
 		Schema extends AnySchema = TestsSchema,
 		Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
 	>(
-		options?: MakeClientOptions<Schema, Relations>,
+		options: MakeClientOptions<Schema, Relations> & {
+			remote: RemoteApi<Schema> | false
+			relations: Relations
+		},
 	): Promise<TandemClient<Schema, Relations>>
 }
 
@@ -239,7 +250,7 @@ type ThreadClients = {
 type Fixtures = {
 	logger: Logger
 	rng: DemoRng
-	server: InMemoryRemote<TestsSchema>
+	server: TandemServer<TestsSchema, {}>
 	makeRemote: MakeRemote
 	makeStorage: MakeStorage
 	makeClient: MakeClient
@@ -278,19 +289,48 @@ export const test = base.extend<Fixtures>({
 	},
 
 	makeRemote: async ({}, use) => {
-		const remotes: InMemoryRemote<any>[] = []
+		const remotes: { close(): Promise<void> }[] = []
 
-		await use(<Schema extends AnySchema = TestsSchema>() => {
-			const remote = new InMemoryRemote<Schema>()
+		function makeRemote(): TandemServer<TestsSchema, {}>
+		function makeRemote<
+			Schema extends AnySchema,
+			Relations extends AnyRelations<Schema>,
+		>(options: {
+			schema: RuntimeSchemaDefinition<Schema>
+			relations: Relations
+		}): TandemServer<Schema, Relations>
+		function makeRemote<
+			Schema extends AnySchema,
+			Relations extends AnyRelations<Schema>,
+		>(options?: {
+			schema: RuntimeSchemaDefinition<Schema>
+			relations: Relations
+		}) {
+			if (options) {
+				const remote = new TandemServer({
+					...options,
+					storage: new TestTandemServerStorage<Schema>(),
+				})
+				remotes.push(remote)
+				return remote
+			}
+
+			const remote = new TandemServer({
+				schema: testsRuntimeSchema,
+				relations: {},
+				storage: new TestTandemServerStorage<TestsSchema>(),
+			})
 			remotes.push(remote)
 			return remote
-		})
+		}
 
-		await Promise.all(remotes.map((remote) => remote.destroy()))
+		await use(makeRemote)
+
+		await Promise.all(remotes.map((remote) => remote.close()))
 	},
 
 	server: async ({ makeRemote }, use) => {
-		await use(makeRemote<TestsSchema>())
+		await use(makeRemote())
 	},
 
 	makeStorage: async ({ rng }, use) => {
@@ -326,59 +366,76 @@ export const test = base.extend<Fixtures>({
 	},
 
 	makeClient: async ({ logger, rng, server, makeStorage }, use) => {
-		const clients: { client: TandemClient<any>; hasRemote: boolean }[] = []
+		const clients: {
+			client: { disconnect(): Promise<void> }
+			hasRemote: boolean
+		}[] = []
 
-		await use(
-			async <
-				Schema extends AnySchema = TestsSchema,
-				Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
-			>(
-				options: MakeClientOptions<Schema, Relations> = {},
-			) => {
-				const {
-					autoConnect = false,
-					label = "client",
-					remote,
-					schema,
-					relations,
-					clientStorage: storageOption,
-					syncInterval = 0,
-				} = options
+		const createClient = async <
+			Schema extends AnySchema,
+			Relations extends AnyRelations<Schema>,
+		>(
+			options: MakeClientOptions<Schema, Relations>,
+			fallbackRemote?: RemoteApi<Schema>,
+		) => {
+			const {
+				autoConnect = false,
+				label = "client",
+				remote,
+				schema,
+				relations,
+				clientStorage: storageOption,
+				syncInterval = 0,
+			} = options
 
-				const resolvedRemote =
-					remote === false
-						? undefined
-						: remote !== undefined
-							? remote
-							: (server as unknown as RemoteApi<Schema>)
+			const resolvedRemote =
+				remote === false ? undefined : (remote ?? fallbackRemote)
 
-				const clientStorage = storageOption
-					? isTandemClientStorageApi<Schema>(storageOption)
-						? storageOption
-						: makeStorage<Schema>({
-								dbName: storageOption.dbName,
-								schema: storageOption.schema ?? schema,
-								codecs: storageOption.codecs,
-							})
-					: undefined
+			const clientStorage = storageOption
+				? isTandemClientStorageApi<Schema>(storageOption)
+					? storageOption
+					: makeStorage<Schema>({
+							dbName: storageOption.dbName,
+							schema: storageOption.schema ?? schema,
+							codecs: storageOption.codecs,
+						})
+				: undefined
 
-				const client = new TandemClient<Schema, Relations>({
-					autoConnect,
-					logger,
-					rng: rng.create(label),
-					remote: resolvedRemote,
-					schema,
-					relations,
-					clientStorage,
-					syncInterval,
-				})
+			const client = new TandemClient<Schema, Relations>({
+				autoConnect,
+				logger,
+				rng: rng.create(label),
+				remote: resolvedRemote,
+				schema,
+				relations,
+				clientStorage,
+				syncInterval,
+			})
 
-				clients.push({ client, hasRemote: Boolean(resolvedRemote) })
-				await client.ready
+			clients.push({ client, hasRemote: Boolean(resolvedRemote) })
+			await client.ready
 
-				return client
+			return client
+		}
+
+		const makeClient = Object.assign(
+			(
+				options: MakeClientOptions<TestsSchema, AnyRelations<TestsSchema>> = {},
+			) => createClient(options, server),
+			{
+				withSchema: <
+					Schema extends AnySchema = TestsSchema,
+					Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
+				>(
+					options: MakeClientOptions<Schema, Relations> & {
+						remote: RemoteApi<Schema> | false
+						relations: Relations
+					},
+				) => createClient(options),
 			},
 		)
+
+		await use(makeClient)
 
 		for (const { client, hasRemote } of clients) {
 			if (hasRemote) {
@@ -401,7 +458,7 @@ export const test = base.extend<Fixtures>({
 
 	threadClient: async ({ makeClient }, use) => {
 		await use(
-			await makeClient({
+			await makeClient.withSchema({
 				label: "thread-client",
 				schema: threadTestSchema,
 				relations: threadTestRelations,
@@ -411,15 +468,18 @@ export const test = base.extend<Fixtures>({
 	},
 
 	threadClients: async ({ makeClient, makeRemote }, use) => {
-		const remote = makeRemote<ThreadTestSchema>()
+		const remote = makeRemote({
+			schema: threadTestSchema,
+			relations: threadTestRelations,
+		})
 		const [client1, client2] = await Promise.all([
-			makeClient({
+			makeClient.withSchema({
 				label: "thread-client1",
 				schema: threadTestSchema,
 				relations: threadTestRelations,
 				remote,
 			}),
-			makeClient({
+			makeClient.withSchema({
 				label: "thread-client2",
 				schema: threadTestSchema,
 				relations: threadTestRelations,

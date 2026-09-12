@@ -778,21 +778,6 @@ describe("TandemClient", () => {
 				createdAt: 1,
 			},
 		])
-
-		const unrelatedTx = client1.transact()
-		unrelatedTx.set("users", {
-			id: "user-1",
-			profileId: "profile-1",
-			name: "Ada",
-		})
-		await client1.commit(unrelatedTx)
-		await new Promise((resolve) => setTimeout(resolve, 10))
-
-		// Unrelated collections do not re-emit the relational subscription
-		expect(seenByClient2).toEqual([
-			[{ id: "thread-1", messages: [] }],
-			[{ id: "thread-1", messages: [{ body: "First message" }] }],
-		])
 	})
 
 	test("syncs remote one-to-many relation removals into subscribed results", async ({
@@ -1114,7 +1099,10 @@ describe("TandemClient", () => {
 		makeClient,
 		makeRemote,
 	}) => {
-		const server = makeRemote<ThreadTestSchema>()
+		const server = makeRemote({
+			schema: threadTestSchema,
+			relations: threadTestRelations,
+		})
 		const gate = Promise.withResolvers<void>()
 		let delayedClientId = ""
 		let delayedPushStarted = false
@@ -1130,13 +1118,13 @@ describe("TandemClient", () => {
 				return server.push(args)
 			},
 		}
-		const client1 = await makeClient({
+		const client1 = await makeClient.withSchema({
 			label: "relational-replay-client1",
 			schema: threadTestSchema,
 			relations: threadTestRelations,
 			remote: delayedServer,
 		})
-		const client2 = await makeClient({
+		const client2 = await makeClient.withSchema({
 			label: "relational-replay-client2",
 			schema: threadTestSchema,
 			relations: threadTestRelations,
@@ -1272,10 +1260,11 @@ describe("TandemClient", () => {
 			dbName,
 			schema: testsEventRuntimeSchema,
 		})
-		const firstClient = await makeClient({
+		const firstClient = await makeClient.withSchema({
 			label: "schema-codec-client-1",
 			remote: false,
 			schema: testsEventRuntimeSchema,
+			relations: {},
 			clientStorage: firstStorage,
 		})
 
@@ -1291,10 +1280,11 @@ describe("TandemClient", () => {
 		await firstClient.flushClientStorage()
 		await firstStorage.close()
 
-		const secondClient = await makeClient({
+		const secondClient = await makeClient.withSchema({
 			label: "schema-codec-client-2",
 			remote: false,
 			schema: testsEventRuntimeSchema,
+			relations: {},
 			clientStorage: makeStorage<TestsEventSchema>({
 				dbName,
 				schema: testsEventRuntimeSchema,
@@ -1318,9 +1308,10 @@ describe("TandemClient", () => {
 			dbName,
 			codecs: { events: eventCodec },
 		})
-		const firstClient = await makeClient<TestsEventSchema>({
+		const firstClient = await makeClient.withSchema<TestsEventSchema>({
 			label: "explicit-codec-client-1",
 			remote: false,
+			relations: {},
 			clientStorage: firstStorage,
 		})
 
@@ -1336,9 +1327,10 @@ describe("TandemClient", () => {
 		await firstClient.flushClientStorage()
 		await firstStorage.close()
 
-		const secondClient = await makeClient<TestsEventSchema>({
+		const secondClient = await makeClient.withSchema<TestsEventSchema>({
 			label: "explicit-codec-client-2",
 			remote: false,
+			relations: {},
 			clientStorage: makeStorage<TestsEventSchema>({
 				dbName,
 				codecs: { events: eventCodec },

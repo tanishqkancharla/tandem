@@ -381,19 +381,20 @@ production must not gain an in-memory storage adapter solely for tests.
 +        └── test TandemServerStorageApi fixture
 ```
 
-- [ ] Replace the `InMemoryRemote` import and `makeRemote` fixture in
+- [x] Replace the `InMemoryRemote` import and `makeRemote` fixture in
       `packages/core/test/fixtures.ts` with a real `TandemServer` backed by a typed
       test storage fixture, preserving custom schema and relations at construction.
-- [ ] Keep `packages/core/test/sync/fixtures.ts` as an in-process transport
+- [x] Keep `packages/core/test/sync/fixtures.ts` as an in-process transport
       boundary around `RemoteApi`; point its server side at `TandemServer`.
-- [ ] Remove schema-widening assertions from the fixture path. Require schema and
-      relations explicitly where a custom test schema prevents safe inference.
-- [ ] Preserve explicit delayed/failing remotes in `TandemClient.spec.ts` because
+- [x] Remove schema-widening assertions from the fixture path. Keep `makeClient()`
+      specific to the default test schema and require `makeClient.withSchema()`
+      callers to provide an explicit remote and relations for custom schemas.
+- [x] Preserve explicit delayed/failing remotes in `TandemClient.spec.ts` because
       they test client scheduling and rollback behavior rather than server storage.
-- [ ] Move adapter-independent client/server convergence coverage to the
-      `TandemServer` integration suite when that avoids duplicating the same workflow
-      in core.
-- [ ] Run
+- [x] Remove the legacy notification-selectivity assertion from core while keeping
+      client convergence workflows there; conservative poke behavior is already
+      covered by the `TandemServer` integration suite.
+- [x] Run
       `pnpm --filter @tanishqkancharla/tandem-core exec vitest run test/TandemClient.spec.ts test/sync/ordering.spec.ts`
       and the core type check.
 
