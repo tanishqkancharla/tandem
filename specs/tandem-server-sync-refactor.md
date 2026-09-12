@@ -85,16 +85,16 @@ prevents other schemas from using `TandemServer` directly with `TandemClient`.
 
 This refactor changes the server implementation, not the sync protocol.
 
-| Contract | Preserved behavior |
-| --- | --- |
-| `RemoteApi` | Keeps the existing name and `connect`, `push`, and `pull` signatures. |
-| `TandemClientArgs.remote` | Keeps the existing option and type. |
-| `pullFromRemote()` | Keeps the existing public method. |
-| `MutationId` | Remains the current tagged string generated from the local tuple transaction. |
-| `Cookie` | Remains the current opaque tagged `number \| string`. |
-| `Patch` | Remains `set` and `remove`; no reset or clear operation is added. |
-| Push retry behavior | Remains unchanged, including the current rollback-on-failure behavior. |
-| Connect transport | Keeps callback-based pokes; the todo browser transport continues polling. |
+| Contract                  | Preserved behavior                                                            |
+| ------------------------- | ----------------------------------------------------------------------------- |
+| `RemoteApi`               | Keeps the existing name and `connect`, `push`, and `pull` signatures.         |
+| `TandemClientArgs.remote` | Keeps the existing option and type.                                           |
+| `pullFromRemote()`        | Keeps the existing public method.                                             |
+| `MutationId`              | Remains the current tagged string generated from the local tuple transaction. |
+| `Cookie`                  | Remains the current opaque tagged `number \| string`.                         |
+| `Patch`                   | Remains `set` and `remove`; no reset or clear operation is added.             |
+| Push retry behavior       | Remains unchanged, including the current rollback-on-failure behavior.        |
+| Connect transport         | Keeps callback-based pokes; the todo browser transport continues polling.     |
 
 Cookies, mutation acknowledgements, connected clients, server revisions, and
 previous client views remain in memory. Only application record tuples remain
@@ -238,7 +238,15 @@ projection and deduplicates them by collection and record ID.
 ```
 
 ```diff:packages/core/src/query/executeQuery.ts
-+export type ScanWindowRecord<Schema extends AnySchema> = PatchSetOp<Schema>
++export type ScanWindowRecord<
++  Schema extends AnySchema,
++  Collection extends CollectionName<Schema> = CollectionName<Schema>,
++> = {
++  [CurrentCollection in Collection]: {
++    collection: CurrentCollection
++    value: Schema[CurrentCollection]
++  }
++}[Collection]
 +
 +export function executeScanWindowAsync<Schema, Relations>(
 +  db: ReadOnlyAsyncTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
@@ -249,29 +257,30 @@ projection and deduplicates them by collection and record ID.
 +}
 ```
 
-`EncodedQuery.with` remains runtime-shaped because it crosses a transport
-boundary. Validate relation names and target collections against `relations`
-while constructing the normalized node. The normalized node then carries the
-specific collection type through traversal, so the implementation does not cast
-encoded queries into relational queries or weaken the tuple database to an
-untyped record store.
+`EncodedQuery` is collection-discriminated so nested relation fields retain
+their collection-specific types, while its serialized shape remains unchanged.
+Validate relation names and target collections against `relations` while
+constructing the normalized node. The normalized node then carries the specific
+collection type through traversal, so the implementation does not cast encoded
+queries into relational queries or weaken the tuple database to an untyped
+record store.
 
-- [ ] Refactor `packages/core/src/query/executeQuery.ts` so relational and
-  encoded inputs share typed comparison, sorting, windowing, and relation
-  traversal primitives.
-- [ ] Remove query-shape assertions from `_encodeRelationalQuery`, the shared
-  executor, and the new encoded-query path; use typed entry helpers and runtime
-  validation for dynamic object entries.
-- [ ] Add `executeScanWindowAsync()` and `ScanWindowRecord` to
-  `packages/core/src/internal.ts` without changing the public `EncodedQuery` or
-  `ScanWindow` contracts.
-- [ ] Extend `packages/core/test/executeQuery.spec.ts` with one representative
-  encoded workflow covering filters, ordering, offset/limit, duplicate
-  membership, and nested relations; verify collected values are complete records
-  even when the encoded query contains `select`.
-- [ ] Run
-  `pnpm --filter @tanishqkancharla/tandem-core exec vitest run test/executeQuery.spec.ts`
-  and `pnpm --filter @tanishqkancharla/tandem-core type-check`.
+- [x] Refactor `packages/core/src/query/executeQuery.ts` so relational and
+      encoded inputs share typed comparison, sorting, windowing, and relation
+      traversal primitives.
+- [x] Remove query-shape assertions from `_encodeRelationalQuery`, the shared
+      executor, and the new encoded-query path; use typed entry helpers and runtime
+      validation for dynamic object entries.
+- [x] Add `executeScanWindowAsync()` and `ScanWindowRecord` to
+      `packages/core/src/internal.ts` without changing the serialized `EncodedQuery`
+      or `ScanWindow` shapes.
+- [x] Extend `packages/core/test/executeQuery.spec.ts` with one representative
+      encoded workflow covering filters, ordering, offset/limit, duplicate
+      membership, and nested relations; verify collected values are complete records
+      even when the encoded query contains `select`.
+- [x] Run
+      `pnpm --filter @tanishqkancharla/tandem-core exec vitest run test/executeQuery.spec.ts`
+      and `pnpm --filter @tanishqkancharla/tandem-core type-check`.
 
 ### Phase 2: Implement the existing RemoteApi on TandemServer
 
@@ -327,34 +336,34 @@ commit succeeds. Push stores its acknowledgement before emitting pokes so a
 resulting pull observes it. Failed and empty commits do not advance or poke.
 
 - [ ] Add private typed sync-client state to `TandemServer`; do not extend
-  `TandemTuple` or `TandemServerStorageApi` with protocol metadata.
+      `TandemTuple` or `TandemServerStorageApi` with protocol metadata.
 - [ ] Implement `push` by applying every existing mutation operation through a
-  `TandemServerTransaction` and committing once per push request; retain current
-  empty-batch, ID, duplicate, and failure semantics.
+      `TandemServerTransaction` and committing once per push request; retain current
+      empty-batch, ID, duplicate, and failure semantics.
 - [ ] Implement `pull` through `executeScanWindowAsync`, emitting current values
-  as `set` operations and previous-view keys absent from the result as `remove`
-  operations.
+      as `set` operations and previous-view keys absent from the result as `remove`
+      operations.
 - [ ] Implement `connect` and idempotent disconnect with the existing callback
-  contract; conservatively poke connected clients after successful record
-  commits.
+      contract; conservatively poke connected clients after successful record
+      commits.
 - [ ] Centralize post-commit revision and poke bookkeeping so public application
-  transactions and remote pushes do not double-advance or notify before the
-  acknowledgement is visible.
+      transactions and remote pushes do not double-advance or notify before the
+      acknowledgement is visible.
 - [ ] Clear relational subscriptions and sync client registrations in
-  `TandemServer.close()` before closing tuple storage.
+      `TandemServer.close()` before closing tuple storage.
 - [ ] Keep expected internal failures as errore-style error values and convert
-  them to rejected promises only at the existing public `TandemServer` boundary;
-  do not export internal error-management types.
+      them to rejected promises only at the existing public `TandemServer` boundary;
+      do not export internal error-management types.
 - [ ] Extend `packages/server/test/TandemServer.spec.ts` with public workflows for
-  two clients, mutation acknowledgement, filtered rows entering and leaving a
-  view, pagination changes, nested relations, scan-window shrinkage, unchanged
-  cookies, app-side commits, pokes, disconnect, storage failure, and close.
+      two clients, mutation acknowledgement, filtered rows entering and leaving a
+      view, pagination changes, nested relations, scan-window shrinkage, unchanged
+      cookies, app-side commits, pokes, disconnect, storage failure, and close.
 - [ ] Add a type-level assertion in `packages/server/test/TandemServer.types.ts`
-  that a schema/relations-specific server satisfies `RemoteApi<Schema>` without
-  widening either generic.
+      that a schema/relations-specific server satisfies `RemoteApi<Schema>` without
+      widening either generic.
 - [ ] Run
-  `pnpm --filter @tanishqkancharla/tandem-server exec vitest run test/TandemServer.spec.ts`
-  and `pnpm --filter @tanishqkancharla/tandem-server type-check`.
+      `pnpm --filter @tanishqkancharla/tandem-server exec vitest run test/TandemServer.spec.ts`
+      and `pnpm --filter @tanishqkancharla/tandem-server type-check`.
 
 ### Phase 3: Move test consumers from legacy remotes to TandemServer
 
@@ -373,20 +382,20 @@ production must not gain an in-memory storage adapter solely for tests.
 ```
 
 - [ ] Replace the `InMemoryRemote` import and `makeRemote` fixture in
-  `packages/core/test/fixtures.ts` with a real `TandemServer` backed by a typed
-  test storage fixture, preserving custom schema and relations at construction.
+      `packages/core/test/fixtures.ts` with a real `TandemServer` backed by a typed
+      test storage fixture, preserving custom schema and relations at construction.
 - [ ] Keep `packages/core/test/sync/fixtures.ts` as an in-process transport
-  boundary around `RemoteApi`; point its server side at `TandemServer`.
+      boundary around `RemoteApi`; point its server side at `TandemServer`.
 - [ ] Remove schema-widening assertions from the fixture path. Require schema and
-  relations explicitly where a custom test schema prevents safe inference.
+      relations explicitly where a custom test schema prevents safe inference.
 - [ ] Preserve explicit delayed/failing remotes in `TandemClient.spec.ts` because
-  they test client scheduling and rollback behavior rather than server storage.
+      they test client scheduling and rollback behavior rather than server storage.
 - [ ] Move adapter-independent client/server convergence coverage to the
-  `TandemServer` integration suite when that avoids duplicating the same workflow
-  in core.
+      `TandemServer` integration suite when that avoids duplicating the same workflow
+      in core.
 - [ ] Run
-  `pnpm --filter @tanishqkancharla/tandem-core exec vitest run test/TandemClient.spec.ts test/sync/ordering.spec.ts`
-  and the core type check.
+      `pnpm --filter @tanishqkancharla/tandem-core exec vitest run test/TandemClient.spec.ts test/sync/ordering.spec.ts`
+      and the core type check.
 
 ### Phase 4: Make the todo Hono app delegate directly to TandemServer
 
@@ -425,17 +434,17 @@ directly to it. Keep the existing JSON request envelope and
 ```
 
 - [ ] Move server construction and idempotent seed behavior from
-  `TodoSyncServer.ts` into `app.ts` or a small adjacent server factory.
+      `TodoSyncServer.ts` into `app.ts` or a small adjacent server factory.
 - [ ] Delete `TodoSyncServer.ts` and its todo-only encoded-query decoder.
 - [ ] Keep `TodoRemoteRequest`, `TodoHttpRemote`, `TandemClient({ remote })`,
-  polling, and manual post-push poke behavior unchanged.
+      polling, and manual post-push poke behavior unchanged.
 - [ ] Replace `TodoSyncServer.spec.ts` with Hono route workflows using
-  `app.request()` for initial pull, set/remove pushes, filtered view removal,
-  invalid envelopes, and durable application records after reopening the JSON
-  storage. Do not assert that cookies or acknowledgement state survive restart.
+      `app.request()` for initial pull, set/remove pushes, filtered view removal,
+      invalid envelopes, and durable application records after reopening the JSON
+      storage. Do not assert that cookies or acknowledgement state survive restart.
 - [ ] Run `pnpm --filter @tandem/example-todo-server test`,
-  `pnpm --filter @tandem/example-todo type-check`, and
-  `pnpm --filter @tandem/example-todo-web test:e2e`.
+      `pnpm --filter @tandem/example-todo type-check`, and
+      `pnpm --filter @tandem/example-todo-web test:e2e`.
 
 ### Phase 5: Delete the legacy server and remote storage stack
 
@@ -456,20 +465,20 @@ core `RemoteApi` contract and the todo HTTP transport.
 ```
 
 - [ ] Delete `RemoteServer.ts`, `InMemoryRemote.ts`,
-  `InMemoryRemoteStore.ts`, `JsonFileRemote.ts`, and sync-only helpers in
-  `packages/server/src/shared.ts`.
+      `InMemoryRemoteStore.ts`, `JsonFileRemote.ts`, and sync-only helpers in
+      `packages/server/src/shared.ts`.
 - [ ] Delete the PostgreSQL, MySQL, and SQLite Drizzle remote subclasses and
-  their `RemoteStore` utilities under `packages/server/src/drizzle/`.
+      their `RemoteStore` utilities under `packages/server/src/drizzle/`.
 - [ ] Remove deleted classes and argument types from
-  `packages/server/src/index.ts`; continue re-exporting the unchanged
-  `RemoteApi` type if current consumers rely on that export.
+      `packages/server/src/index.ts`; continue re-exporting the unchanged
+      `RemoteApi` type if current consumers rely on that export.
 - [ ] Delete `packages/server/test/RemoteAdapters.spec.ts`, its provider fixture,
-  and `docker-compose.test.yml`; retain TandemServer and JSON tuple-storage tests.
+      and `docker-compose.test.yml`; retain TandemServer and JSON tuple-storage tests.
 - [ ] Remove Drizzle remote export subpaths, optional peer metadata, Docker test
-  scripts, unused database drivers, and native build allowlist entries from the
-  package and workspace manifests.
+      scripts, unused database drivers, and native build allowlist entries from the
+      package and workspace manifests.
 - [ ] Run `pnpm install` to regenerate `pnpm-lock.yaml`, then run the server test
-  and type-check commands.
+      and type-check commands.
 
 ### Phase 6: Document the boundary and verify the monorepo
 
@@ -478,16 +487,16 @@ the current `RemoteApi`. Record protocol redesign as separate future work so
 this refactor does not silently establish reset-sync semantics.
 
 - [ ] Update `README.md` examples and architecture notes to use
-  `TandemServer`; keep the current client-facing `remote` terminology.
+      `TandemServer`; keep the current client-facing `remote` terminology.
 - [ ] Replace the completed legacy-stack item in `TODO.md` with explicit future
-  work for durable sync metadata, protocol naming, reset versus incremental pull
-  strategy, retry semantics, and a production Drizzle
-  `TandemServerStorageApi` adapter.
+      work for durable sync metadata, protocol naming, reset versus incremental pull
+      strategy, retry semantics, and a production Drizzle
+      `TandemServerStorageApi` adapter.
 - [ ] Run
-  `rg -n "RemoteServer|RemoteStore|InMemoryRemote|JsonFileRemote|TodoSyncServer|decodeTodoQuery" packages examples README.md TODO.md`
-  and resolve every obsolete production reference.
+      `rg -n "RemoteServer|RemoteStore|InMemoryRemote|JsonFileRemote|TodoSyncServer|decodeTodoQuery" packages examples README.md TODO.md`
+      and resolve every obsolete production reference.
 - [ ] Verify that `RemoteApi`, `remote`, `pullFromRemote`, `Cookie`, the current
-  string `MutationId`, and the set/remove-only `Patch` remain present and
-  unchanged.
+      string `MutationId`, and the set/remove-only `Patch` remain present and
+      unchanged.
 - [ ] Run `pnpm build`, `pnpm lint`, `pnpm type-check`, `pnpm test`, and
-  `pnpm --filter @tandem/example-todo-web test:e2e`.
+      `pnpm --filter @tandem/example-todo-web test:e2e`.

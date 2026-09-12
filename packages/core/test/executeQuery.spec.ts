@@ -6,7 +6,13 @@ import {
 	TupleDatabaseClient,
 } from "tuple-database"
 import { expect, expectTypeOf, test as baseTest } from "vitest"
-import { executeQueryAsync, executeQuerySync } from "../src/internal"
+import {
+	executeQueryAsync,
+	executeQuerySync,
+	executeScanWindowAsync,
+} from "../src/internal"
+import type { ScanWindowRecord } from "../src/internal"
+import type { EncodedQuery } from "../src/query/Query"
 import { collection, defineRelations, defineSchema } from "../src/schema/Schema"
 import type { SchemaToTupleSchema } from "../src/schema/Schema"
 
@@ -217,4 +223,70 @@ test("sync and async execution expand relations identically", async ({
 	>()
 	expectTypeOf(syncResult[0]).not.toBeAny()
 	expectTypeOf(asyncResult).toEqualTypeOf(syncResult)
+})
+
+test("encoded scan windows collect complete deduplicated records", async ({
+	asyncDb,
+}) => {
+	const threadsQuery = {
+		collection: "threads",
+		select: ["id"],
+		where: [["status", "=", "active"]],
+		order: [["title", "desc"]],
+		offset: 2,
+		limit: 1,
+		with: {
+			owner: {
+				collection: "users",
+				select: ["id"],
+			},
+			messages: {
+				collection: "messages",
+				select: ["id"],
+				where: [["createdAt", ">=", 1]],
+				order: [["createdAt", "desc"]],
+				limit: 1,
+			},
+		},
+	} satisfies EncodedQuery<QuerySchema, "threads">
+	const duplicateOwnerQuery = {
+		collection: "users",
+		where: [["id", "=", "user-1"]],
+	} satisfies EncodedQuery<QuerySchema, "users">
+
+	const records = await executeScanWindowAsync<QuerySchema, typeof relations>(
+		asyncDb,
+		relations,
+		[threadsQuery, duplicateOwnerQuery],
+	)
+
+	expect(records).toEqual([
+		{
+			collection: "threads",
+			value: {
+				id: "thread-1",
+				ownerId: "user-1",
+				title: "Alpha",
+				status: "active",
+			},
+		},
+		{
+			collection: "users",
+			value: { id: "user-1", name: "Ada" },
+		},
+		{
+			collection: "messages",
+			value: {
+				id: "message-2",
+				threadId: "thread-1",
+				body: "Latest",
+				createdAt: 2,
+			},
+		},
+	])
+	expectTypeOf(records).toEqualTypeOf<ScanWindowRecord<QuerySchema>[]>()
+	for (const record of records) {
+		if (record.collection !== "threads") continue
+		expectTypeOf(record.value).toEqualTypeOf<Thread>()
+	}
 })

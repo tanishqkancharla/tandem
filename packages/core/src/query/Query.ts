@@ -1,9 +1,4 @@
-import type {
-	AnySchema,
-	Attribute,
-	CollectionName,
-	AnyRelations,
-} from "../schema/Schema"
+import type { AnySchema, CollectionName, AnyRelations } from "../schema/Schema"
 
 export type FieldWhereOperators<Value> = {
 	readonly eq?: Value
@@ -209,44 +204,79 @@ export type Operator = "=" | ">" | "<" | ">=" | "<="
 export type EncodedWhereClause<
 	Schema extends AnySchema,
 	Collection extends CollectionName<Schema>,
+	Field extends keyof Schema[Collection] & string = keyof Schema[Collection] &
+		string,
 > = {
-	[Field in keyof Schema[Collection] & string]: [
-		attribute: Field,
+	[CurrentField in Field]: [
+		attribute: CurrentField,
 		operator: Operator,
-		value: Schema[Collection][Field],
+		value: Schema[Collection][CurrentField],
 	]
-}[keyof Schema[Collection] & string]
+}[Field]
 
 export type EncodedQuery<
 	Schema extends AnySchema,
 	Collection extends CollectionName<Schema> = CollectionName<Schema>,
 > = {
-	collection: Collection
-	select?: readonly (keyof Schema[Collection] & string)[] | "*"
-	where?: EncodedWhereClause<Schema, Collection>[]
-	order?: [
-		attribute: keyof Schema[Collection] & string,
-		direction: "asc" | "desc",
-	][]
-	limit?: number
-	offset?: number
-	with?: Record<string, EncodedQuery<Schema>>
-}
+	[CurrentCollection in Collection]: {
+		collection: CurrentCollection
+		select?: readonly (keyof Schema[CurrentCollection] & string)[] | "*"
+		where?: EncodedWhereClause<Schema, CurrentCollection>[]
+		order?: [
+			attribute: keyof Schema[CurrentCollection] & string,
+			direction: "asc" | "desc",
+		][]
+		limit?: number
+		offset?: number
+		with?: Record<string, EncodedQuery<Schema>>
+	}
+}[Collection]
 
 export type ScanWindow<Schema extends AnySchema> = EncodedQuery<Schema>[]
 
-const whereOperatorMap = {
-	eq: "=",
-	gt: ">",
-	lt: "<",
-	gte: ">=",
-	lte: "<=",
-} as const satisfies Record<string, Operator>
-
-function isWhereOperatorObject(
-	value: unknown,
-): value is Record<string, unknown> {
+function isWhereOperatorObject<Value>(
+	value: Value | FieldWhereOperators<Value>,
+): value is FieldWhereOperators<Value> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function isFieldWhereOperator(
+	operator: string,
+): operator is keyof FieldWhereOperators<unknown> {
+	return (
+		operator === "eq" ||
+		operator === "gt" ||
+		operator === "lt" ||
+		operator === "gte" ||
+		operator === "lte"
+	)
+}
+
+function encodeWhereCondition<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+	Field extends keyof Schema[Collection] & string,
+>(
+	field: Field,
+	condition:
+		| Schema[Collection][Field]
+		| FieldWhereOperators<Schema[Collection][Field]>,
+): EncodedWhereClause<Schema, Collection, Field>[] {
+	if (!isWhereOperatorObject(condition)) return [[field, "=", condition]]
+
+	for (const operator in condition) {
+		if (!isFieldWhereOperator(operator)) {
+			throw new Error(`Unknown where operator "${operator}"`)
+		}
+	}
+
+	const clauses: EncodedWhereClause<Schema, Collection, Field>[] = []
+	if (condition.eq !== undefined) clauses.push([field, "=", condition.eq])
+	if (condition.gt !== undefined) clauses.push([field, ">", condition.gt])
+	if (condition.lt !== undefined) clauses.push([field, "<", condition.lt])
+	if (condition.gte !== undefined) clauses.push([field, ">=", condition.gte])
+	if (condition.lte !== undefined) clauses.push([field, "<=", condition.lte])
+	return clauses
 }
 
 export function _encodeRelationalQuery<
@@ -257,45 +287,36 @@ export function _encodeRelationalQuery<
 	collection: Collection,
 	options: RelationalQueryOptions<Schema, Relations, Collection> = {},
 	relations?: Relations,
-): EncodedQuery<Schema> {
-	const encoded: EncodedQuery<Schema> = { collection }
+): EncodedQuery<Schema, Collection> {
+	const encoded: EncodedQuery<Schema, Collection> = { collection }
 
 	if (options.select) {
-		encoded.select = Object.keys(options.select) as Attribute<Schema>[]
+		const select: (keyof Schema[Collection] & string)[] = []
+		for (const field in options.select) {
+			if (options.select[field]) select.push(field)
+		}
+		encoded.select = select
 	}
 
 	if (options.where) {
-		encoded.where = []
-		for (const [field, condition] of Object.entries(options.where)) {
-			if (isWhereOperatorObject(condition)) {
-				for (const [operator, value] of Object.entries(condition)) {
-					const encodedOperator =
-						whereOperatorMap[operator as keyof typeof whereOperatorMap]
-					if (!encodedOperator) {
-						throw new Error(`Unknown where operator "${operator}"`)
-					}
-
-					encoded.where.push([field, encodedOperator, value] as NonNullable<
-						EncodedQuery<Schema, Collection>["where"]
-					>[number])
-				}
-			} else {
-				encoded.where.push([field, "=", condition] as NonNullable<
-					EncodedQuery<Schema, Collection>["where"]
-				>[number])
-			}
+		const where: EncodedWhereClause<Schema, Collection>[] = []
+		for (const field in options.where) {
+			const condition = options.where[field]
+			if (condition === undefined) continue
+			where.push(...encodeWhereCondition(field, condition))
 		}
+		encoded.where = where
 	}
 
 	if (options.orderBy) {
-		encoded.order = []
-		for (const [field, direction] of Object.entries(options.orderBy)) {
+		const order: NonNullable<EncodedQuery<Schema, Collection>["order"]> = []
+		for (const field in options.orderBy) {
+			const direction = options.orderBy[field]
 			if (!direction) continue
 
-			encoded.order.push([field, direction] as NonNullable<
-				EncodedQuery<Schema, Collection>["order"]
-			>[number])
+			order.push([field, direction])
 		}
+		encoded.order = order
 	}
 
 	if (options.limit !== undefined) {
@@ -313,22 +334,23 @@ export function _encodeRelationalQuery<
 			)
 		}
 
-		encoded.with = {}
+		const withQueries: Record<string, EncodedQuery<Schema>> = {}
 		const collectionRelations = relations[collection]
-		for (const [relationName, relationOptions] of Object.entries(
-			options.with,
-		)) {
+		for (const relationName in options.with) {
+			const relationOptions = options.with[relationName]
+			if (!relationOptions) continue
 			const relation = collectionRelations?.[relationName]
 			if (!relation) {
 				throw new Error(`Unknown relation "${collection}.${relationName}"`)
 			}
 
-			encoded.with[relationName] = _encodeRelationalQuery(
+			withQueries[relationName] = _encodeRelationalQuery(
 				relation.targetCollection,
-				relationOptions === true ? {} : (relationOptions as any),
+				relationOptions === true ? {} : relationOptions,
 				relations,
 			)
 		}
+		encoded.with = withQueries
 	}
 
 	return encoded

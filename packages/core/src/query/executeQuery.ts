@@ -4,80 +4,170 @@ import type {
 } from "tuple-database"
 import type {
 	AnySchema,
-	Attribute,
 	CollectionName,
 	AnyRelations,
 	SchemaToTupleSchema,
 } from "../schema/Schema"
 import { isEqual, isObject, pick } from "../utils/objectUtils"
-import type { RelationalQuery, RelationalQueryResult } from "./Query"
+import type {
+	EncodedQuery,
+	Operator,
+	RelationalQuery,
+	RelationalQueryResult,
+	ScanWindow,
+} from "./Query"
 
 type RuntimeRecord = Record<string, unknown>
 
-type AnyQueryInput<Schema extends AnySchema> = {
+type RelationalQueryInput<Schema extends AnySchema> = {
 	readonly collection: CollectionName<Schema>
-	readonly select?: Readonly<Partial<Record<Attribute<Schema>, true>>>
-	readonly where?: Readonly<Partial<Record<Attribute<Schema>, unknown>>>
+	readonly select?: Readonly<Record<string, true | undefined>>
+	readonly where?: Readonly<Record<string, unknown>>
 	readonly with?: Readonly<
-		Record<string, true | Omit<AnyQueryInput<Schema>, "collection"> | undefined>
+		Record<
+			string,
+			true | Omit<RelationalQueryInput<Schema>, "collection"> | undefined
+		>
 	>
-	readonly orderBy?: Readonly<
-		Partial<Record<Attribute<Schema>, "asc" | "desc">>
-	>
+	readonly orderBy?: Readonly<Record<string, "asc" | "desc" | undefined>>
 	readonly limit?: number
 	readonly offset?: number
 }
 
-type AnyQuery<Schema extends AnySchema> = Omit<
-	AnyQueryInput<Schema>,
-	"with"
-> & {
-	readonly with?: Readonly<Record<string, AnyQuery<Schema>>>
+type QueryWhereClause = readonly [
+	field: string,
+	operator: Operator,
+	value: unknown,
+]
+
+type QueryOrderClause = readonly [field: string, direction: "asc" | "desc"]
+
+type QueryNode<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema> = CollectionName<Schema>,
+> = {
+	readonly collection: Collection
+	readonly select?: readonly string[]
+	readonly where?: readonly QueryWhereClause[]
+	readonly with?: Readonly<Record<string, QueryNode<Schema>>>
+	readonly order?: readonly QueryOrderClause[]
+	readonly limit?: number
+	readonly offset?: number
 }
 
-type RecordsByCollection<Schema extends AnySchema> = ReadonlyMap<
-	CollectionName<Schema>,
-	readonly RuntimeRecord[]
->
+type RecordsByCollection<Schema extends AnySchema> = {
+	readonly [Collection in CollectionName<Schema>]?: readonly Schema[Collection][]
+}
 
-function normalizeQuery<
+type MutableRecordsByCollection<Schema extends AnySchema> = {
+	-readonly [Collection in CollectionName<Schema>]?: Schema[Collection][]
+}
+
+type QueryRowCollector<Schema extends AnySchema> = <
+	Collection extends CollectionName<Schema>,
+>(
+	collection: Collection,
+	record: Schema[Collection],
+) => void
+
+export type ScanWindowRecord<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema> = CollectionName<Schema>,
+> = {
+	[CurrentCollection in Collection]: {
+		collection: CurrentCollection
+		value: Schema[CurrentCollection]
+	}
+}[Collection]
+
+function isRelationalWhereOperator(operator: string) {
+	return (
+		operator === "eq" ||
+		operator === "gt" ||
+		operator === "lt" ||
+		operator === "gte" ||
+		operator === "lte"
+	)
+}
+
+function encodeRelationalWhereOperator(operator: string): Operator {
+	if (operator === "eq") return "="
+	if (operator === "gt") return ">"
+	if (operator === "lt") return "<"
+	if (operator === "gte") return ">="
+	if (operator === "lte") return "<="
+	throw new Error(`Unknown where operator "${operator}"`)
+}
+
+function normalizeRelationalQuery<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema>,
 	Query extends RelationalQuery<Schema, Relations>,
->(query: Query, relations: Relations | undefined): AnyQuery<Schema>
-function normalizeQuery<Schema extends AnySchema>(
-	query: AnyQueryInput<Schema>,
+>(query: Query, relations: Relations | undefined): QueryNode<Schema>
+function normalizeRelationalQuery<Schema extends AnySchema>(
+	query: RelationalQueryInput<Schema>,
 	relations: AnyRelations<Schema> | undefined,
-): AnyQuery<Schema>
-function normalizeQuery<Schema extends AnySchema>(
-	query: AnyQueryInput<Schema>,
+): QueryNode<Schema>
+function normalizeRelationalQuery<Schema extends AnySchema>(
+	query: RelationalQueryInput<Schema>,
 	relations: AnyRelations<Schema> | undefined,
-): AnyQuery<Schema> {
+): QueryNode<Schema> {
+	const select: string[] = []
+	for (const field in query.select) {
+		if (query.select[field]) select.push(field)
+	}
+
+	const where: QueryWhereClause[] = []
+	for (const field in query.where) {
+		const condition = query.where[field]
+		if (!isObject(condition) || Array.isArray(condition)) {
+			where.push([field, "=", condition])
+			continue
+		}
+
+		for (const operator in condition) {
+			if (!isRelationalWhereOperator(operator)) {
+				throw new Error(`Unknown where operator "${operator}"`)
+			}
+			where.push([
+				field,
+				encodeRelationalWhereOperator(operator),
+				condition[operator],
+			])
+		}
+	}
+
+	const order: QueryOrderClause[] = []
+	for (const field in query.orderBy) {
+		const direction = query.orderBy[field]
+		if (direction) order.push([field, direction])
+	}
+
 	const normalized = {
 		collection: query.collection,
-		select: query.select,
-		where: query.where,
-		orderBy: query.orderBy,
-		limit: query.limit,
-		offset: query.offset,
+		...(query.select ? { select } : {}),
+		...(query.where ? { where } : {}),
+		...(query.orderBy ? { order } : {}),
+		...(query.limit === undefined ? {} : { limit: query.limit }),
+		...(query.offset === undefined ? {} : { offset: query.offset }),
 	}
 	if (!query.with) return normalized
-
 	if (!relations) {
 		throw new Error(
 			"Cannot execute relational query includes without relations",
 		)
 	}
 
-	const withQueries: Record<string, AnyQuery<Schema>> = {}
-	for (const [relationName, includeOptions] of Object.entries(query.with)) {
+	const withQueries: Record<string, QueryNode<Schema>> = {}
+	for (const relationName in query.with) {
+		const includeOptions = query.with[relationName]
 		if (!includeOptions) continue
 		const relation = relations[query.collection]?.[relationName]
 		if (!relation) {
 			throw new Error(`Unknown relation "${query.collection}.${relationName}"`)
 		}
 
-		withQueries[relationName] = normalizeQuery(
+		withQueries[relationName] = normalizeRelationalQuery(
 			{
 				collection: relation.targetCollection,
 				...(includeOptions === true ? {} : includeOptions),
@@ -89,8 +179,43 @@ function normalizeQuery<Schema extends AnySchema>(
 	return { ...normalized, with: withQueries }
 }
 
+function normalizeEncodedQuery<Schema extends AnySchema>(
+	query: EncodedQuery<Schema>,
+	relations: AnyRelations<Schema>,
+): QueryNode<Schema> {
+	const normalized = {
+		collection: query.collection,
+		...(query.select === undefined || query.select === "*"
+			? {}
+			: { select: query.select }),
+		...(query.where?.length ? { where: query.where } : {}),
+		...(query.order?.length ? { order: query.order } : {}),
+		...(query.limit === undefined ? {} : { limit: query.limit }),
+		...(query.offset === undefined ? {} : { offset: query.offset }),
+	}
+	if (!query.with) return normalized
+
+	const withQueries: Record<string, QueryNode<Schema>> = {}
+	for (const relationName in query.with) {
+		const nestedQuery = query.with[relationName]
+		const relation = relations[query.collection]?.[relationName]
+		if (!relation) {
+			throw new Error(`Unknown relation "${query.collection}.${relationName}"`)
+		}
+		if (nestedQuery.collection !== relation.targetCollection) {
+			throw new Error(
+				`Relation "${query.collection}.${relationName}" targets collection "${relation.targetCollection}", not "${nestedQuery.collection}"`,
+			)
+		}
+
+		withQueries[relationName] = normalizeEncodedQuery(nestedQuery, relations)
+	}
+
+	return { ...normalized, with: withQueries }
+}
+
 function collectQueryCollections<Schema extends AnySchema>(
-	query: AnyQuery<Schema>,
+	query: QueryNode<Schema>,
 	collections: Set<CollectionName<Schema>>,
 ) {
 	collections.add(query.collection)
@@ -102,13 +227,20 @@ function collectQueryCollections<Schema extends AnySchema>(
 }
 
 function getQueryCollections<Schema extends AnySchema>(
-	query: AnyQuery<Schema>,
+	queries: readonly QueryNode<Schema>[],
 ) {
 	const collections = new Set<CollectionName<Schema>>()
-	collectQueryCollections(query, collections)
+	for (const query of queries) collectQueryCollections(query, collections)
 	return collections
 }
 
+function scanCollectionSync<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+>(
+	db: ReadOnlyTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
+	collection: Collection,
+): Schema[Collection][]
 function scanCollectionSync<
 	Schema extends AnySchema,
 	Collection extends CollectionName<Schema>,
@@ -130,6 +262,13 @@ async function scanCollectionAsync<
 >(
 	db: ReadOnlyAsyncTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
 	collection: Collection,
+): Promise<Schema[Collection][]>
+async function scanCollectionAsync<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+>(
+	db: ReadOnlyAsyncTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
+	collection: Collection,
 ): Promise<RuntimeRecord[]> {
 	const tuples = await db.scan<
 		["record", Collection, Schema[Collection]["id"]],
@@ -138,33 +277,44 @@ async function scanCollectionAsync<
 	return tuples.map(({ value }) => value)
 }
 
-function mapEntry<Key, Value>(key: Key, value: Value): readonly [Key, Value] {
-	return [key, value]
+function getCollectionRecords<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+>(
+	recordsByCollection: RecordsByCollection<Schema>,
+	collection: Collection,
+): readonly Schema[Collection][]
+function getCollectionRecords<Schema extends AnySchema>(
+	recordsByCollection: RecordsByCollection<Schema>,
+	collection: CollectionName<Schema>,
+): readonly RuntimeRecord[]
+function getCollectionRecords<Schema extends AnySchema>(
+	recordsByCollection: RecordsByCollection<Schema>,
+	collection: CollectionName<Schema>,
+): readonly RuntimeRecord[] {
+	return recordsByCollection[collection] ?? []
 }
 
 function loadRecordsSync<Schema extends AnySchema>(
 	db: ReadOnlyTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
 	collections: ReadonlySet<CollectionName<Schema>>,
-) {
-	return new Map(
-		Array.from(collections, (collection) => [
-			collection,
-			scanCollectionSync(db, collection),
-		]),
-	)
+): RecordsByCollection<Schema> {
+	const records: MutableRecordsByCollection<Schema> = {}
+	for (const collection of collections) {
+		records[collection] = scanCollectionSync(db, collection)
+	}
+	return records
 }
 
 async function loadRecordsAsync<Schema extends AnySchema>(
 	db: ReadOnlyAsyncTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
 	collections: ReadonlySet<CollectionName<Schema>>,
-) {
-	return new Map(
-		await Promise.all(
-			Array.from(collections, async (collection) =>
-				mapEntry(collection, await scanCollectionAsync(db, collection)),
-			),
-		),
-	)
+): Promise<RecordsByCollection<Schema>> {
+	const records: MutableRecordsByCollection<Schema> = {}
+	for (const collection of collections) {
+		records[collection] = await scanCollectionAsync(db, collection)
+	}
+	return records
 }
 
 function compareOrderedValues(left: unknown, right: unknown) {
@@ -180,59 +330,48 @@ function compareOrderedValues(left: unknown, right: unknown) {
 	return 0
 }
 
-function compareRelationalValue(
+function compareQueryValue(
 	fieldValue: unknown,
-	operator: string,
+	operator: Operator,
 	comparisonValue: unknown,
 ) {
-	if (operator === "eq") return isEqual(fieldValue, comparisonValue)
-	if (!["gt", "lt", "gte", "lte"].includes(operator)) {
-		throw new Error(`Unknown where operator "${operator}"`)
-	}
+	if (operator === "=") return isEqual(fieldValue, comparisonValue)
 
 	const comparison = compareOrderedValues(fieldValue, comparisonValue)
-	if (operator === "gt") return comparison > 0
-	if (operator === "lt") return comparison < 0
-	if (operator === "gte") return comparison >= 0
+	if (operator === ">") return comparison > 0
+	if (operator === "<") return comparison < 0
+	if (operator === ">=") return comparison >= 0
 	return comparison <= 0
 }
 
-function matchesRelationalWhere(
-	record: RuntimeRecord,
-	field: string,
-	condition: unknown,
-) {
-	const fieldValue = record[field]
-
-	if (isObject(condition) && !Array.isArray(condition)) {
-		return Object.entries(condition).every(([operator, value]) =>
-			compareRelationalValue(fieldValue, operator, value),
-		)
-	}
-
-	return isEqual(fieldValue, condition)
+function matchesWhere(record: RuntimeRecord, clause: QueryWhereClause) {
+	const [field, operator, comparisonValue] = clause
+	return compareQueryValue(record[field], operator, comparisonValue)
 }
 
-function getRelationalRows<Schema extends AnySchema>(
-	query: AnyQuery<Schema>,
+function getQueryRows<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+>(
+	query: QueryNode<Schema, Collection>,
 	recordsByCollection: RecordsByCollection<Schema>,
-	extraFilter?: (record: RuntimeRecord) => boolean,
-) {
-	const collectionRecords = recordsByCollection.get(query.collection) ?? []
+	extraFilter?: (record: Schema[Collection]) => boolean,
+): Schema[Collection][] {
+	const collectionRecords = getCollectionRecords(
+		recordsByCollection,
+		query.collection,
+	)
 	const relationFiltered = extraFilter
 		? collectionRecords.filter(extraFilter)
 		: [...collectionRecords]
 	const whereFiltered = query.where
 		? relationFiltered.filter((record) =>
-				Object.entries(query.where ?? {}).every(([field, condition]) =>
-					matchesRelationalWhere(record, field, condition),
-				),
+				query.where?.every((clause) => matchesWhere(record, clause)),
 			)
 		: relationFiltered
-	const ordered = query.orderBy
+	const ordered = query.order
 		? [...whereFiltered].sort((left, right) => {
-				for (const [field, direction] of Object.entries(query.orderBy ?? {})) {
-					if (!direction) continue
+				for (const [field, direction] of query.order ?? []) {
 					const comparison = compareOrderedValues(left[field], right[field])
 					if (comparison !== 0) {
 						return direction === "asc" ? comparison : -comparison
@@ -252,31 +391,35 @@ function executeLoadedQuery<
 	Relations extends AnyRelations<Schema>,
 	Query extends RelationalQuery<Schema, Relations>,
 >(
-	query: AnyQuery<Schema>,
+	query: QueryNode<Schema>,
 	relations: Relations | undefined,
 	recordsByCollection: RecordsByCollection<Schema>,
 	extraFilter?: (record: RuntimeRecord) => boolean,
+	collectRow?: QueryRowCollector<Schema>,
 ): RelationalQueryResult<Schema, Relations, Query>
 function executeLoadedQuery<Schema extends AnySchema>(
-	query: AnyQuery<Schema>,
+	query: QueryNode<Schema>,
 	relations: AnyRelations<Schema> | undefined,
 	recordsByCollection: RecordsByCollection<Schema>,
 	extraFilter?: (record: RuntimeRecord) => boolean,
+	collectRow?: QueryRowCollector<Schema>,
 ): RuntimeRecord[]
 function executeLoadedQuery<Schema extends AnySchema>(
-	query: AnyQuery<Schema>,
+	query: QueryNode<Schema>,
 	relations: AnyRelations<Schema> | undefined,
 	recordsByCollection: RecordsByCollection<Schema>,
 	extraFilter?: (record: RuntimeRecord) => boolean,
+	collectRow?: QueryRowCollector<Schema>,
 ): RuntimeRecord[] {
-	const rows = getRelationalRows(query, recordsByCollection, extraFilter)
+	const rows = getQueryRows(query, recordsByCollection, extraFilter)
 
 	return rows.map((row) => {
+		collectRow?.(query.collection, row)
+		const runtimeRow: RuntimeRecord = row
 		const result: RuntimeRecord = query.select
-			? pick(row, Object.keys(query.select))
-			: { ...row }
+			? pick(runtimeRow, query.select)
+			: { ...runtimeRow }
 		if (!query.with) return result
-
 		if (!relations) {
 			throw new Error(
 				"Cannot execute relational query includes without relations",
@@ -291,12 +434,13 @@ function executeLoadedQuery<Schema extends AnySchema>(
 				)
 			}
 
-			const joinValue = row[relation.from]
+			const joinValue = runtimeRow[relation.from]
 			const related = executeLoadedQuery(
 				nestedQuery,
 				relations,
 				recordsByCollection,
 				(target) => target[relation.to] === joinValue,
+				collectRow,
 			)
 
 			result[relationName] =
@@ -305,6 +449,16 @@ function executeLoadedQuery<Schema extends AnySchema>(
 
 		return result
 	})
+}
+
+function createScanWindowRecord<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+>(
+	collection: Collection,
+	value: Schema[Collection],
+): ScanWindowRecord<Schema, Collection> {
+	return { collection, value }
 }
 
 export function executeQuerySync<
@@ -316,8 +470,8 @@ export function executeQuerySync<
 	relations: Relations | undefined,
 	query: Query,
 ): RelationalQueryResult<Schema, Relations, Query> {
-	const normalizedQuery = normalizeQuery(query, relations)
-	const collections = getQueryCollections(normalizedQuery)
+	const normalizedQuery = normalizeRelationalQuery(query, relations)
+	const collections = getQueryCollections([normalizedQuery])
 	const records = loadRecordsSync(db, collections)
 
 	return executeLoadedQuery<Schema, Relations, Query>(
@@ -336,8 +490,8 @@ export async function executeQueryAsync<
 	relations: Relations | undefined,
 	query: Query,
 ): Promise<RelationalQueryResult<Schema, Relations, Query>> {
-	const normalizedQuery = normalizeQuery(query, relations)
-	const collections = getQueryCollections(normalizedQuery)
+	const normalizedQuery = normalizeRelationalQuery(query, relations)
+	const collections = getQueryCollections([normalizedQuery])
 	const records = await loadRecordsAsync(db, collections)
 
 	return executeLoadedQuery<Schema, Relations, Query>(
@@ -345,4 +499,41 @@ export async function executeQueryAsync<
 		relations,
 		records,
 	)
+}
+
+export async function executeScanWindowAsync<
+	Schema extends AnySchema,
+	Relations extends AnyRelations<Schema>,
+>(
+	db: ReadOnlyAsyncTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
+	relations: Relations,
+	scanWindow: ScanWindow<Schema>,
+): Promise<ScanWindowRecord<Schema>[]> {
+	const queries = scanWindow.map((query) =>
+		normalizeEncodedQuery(query, relations),
+	)
+	const collections = getQueryCollections(queries)
+	const recordsByCollection = await loadRecordsAsync(db, collections)
+	const result: ScanWindowRecord<Schema>[] = []
+	const seen = new Map<CollectionName<Schema>, Set<string | number>>()
+	const collectRow: QueryRowCollector<Schema> = (collection, value) => {
+		const collectionIds = seen.get(collection) ?? new Set<string | number>()
+		if (collectionIds.has(value.id)) return
+
+		collectionIds.add(value.id)
+		seen.set(collection, collectionIds)
+		result.push(createScanWindowRecord(collection, value))
+	}
+
+	for (const query of queries) {
+		executeLoadedQuery(
+			query,
+			relations,
+			recordsByCollection,
+			undefined,
+			collectRow,
+		)
+	}
+
+	return result
 }
