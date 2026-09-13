@@ -1,0 +1,20 @@
+{
+	"extends": "../../../../tsconfig.json",
+	"compilerOptions": {
+		"jsx": "react-jsx",
+		"noEmit": true,
+		"declaration": false,
+		"declarationMap": false,
+		"types": ["vite/client", "node"],
+		"paths": {
+			"@tanishqkancharla/tandem-core": ["../../../../packages/core/src/index.ts"],
+			"@tanishqkancharla/tandem-core/internal": [
+				"../../../../packages/core/src/internal.ts"
+			],
+			"@tanishqkancharla/tandem-react": [
+				"../../../../packages/react/src/index.ts"
+			]
+		}
+	},
+	"include": ["src", "e2e", "playwright.config.ts", "vite.config.ts"]
+}

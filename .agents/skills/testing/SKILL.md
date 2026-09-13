@@ -22,6 +22,11 @@ Use Vitest for service, API, and library tests, and Playwright for UI end-to-end
 - In all scenarios, the service should be used identically, so we know the tests are representative of real usage. Importantly, this means: the behavior of a service during a test should be as identical as possible to other situations:
   - No mocks
   - Minimize test-specific configuration of the service under test.
+- Always drive the service through its consumer API. For frontend behavior, the
+  consumer API is the rendered application exercised through Playwright. Do not
+  bypass the UI with direct component, hook, HTTP, server-method, IndexedDB, or
+  browser-storage access unless that lower-level service is itself the stated
+  subject of the test.
 - Tests are generally composed of 3 phases: setup, action, assertion
   - Setup: Service is driven into the state being tested. Previous tests cover correctness of these actions
   - Action: an action is taken on the service
@@ -42,3 +47,31 @@ Use Vitest for service, API, and library tests, and Playwright for UI end-to-end
     - For sync engine, this could be a timer object, and a secondary client
     - For web pages, it could be a second client/browser to load the same web page and assert some change propagated
   - Different drivers (like code, human, agent) might have different external services exposed to them. The test should contain the union of these. Don’t add external services that might plausibly be used by other drivers, until we decide behavior on those services should be tested.
+
+# Common violations
+
+Do not put behavioral assertions in shared setup helpers or fixtures. This
+silently repeats the same coverage in every test and obscures which behavior a
+test owns. Fixtures may navigate, prepare state, and wait for readiness without
+asserting that readiness as product behavior.
+
+```ts
+// Avoid: every caller re-tests the heading.
+async function openApp(page: Page) {
+  await page.goto("/")
+  await expect(page.getByRole("heading", { name: "Tasks" })).toBeVisible()
+}
+```
+
+Do not extract short, ordinary consumer actions merely to reduce repeated
+lines. Thin wrappers hide the API the user actually exercises and make the test
+harder to read. Keep these actions inline unless the abstraction represents a
+meaningful reusable workflow or driver capability.
+
+```ts
+// Avoid: this name conveys less than the visible interaction.
+async function addItem(page: Page, text: string) {
+  await page.getByLabel("New item").fill(text)
+  await page.getByRole("button", { name: "Add" }).click()
+}
+```

@@ -8,66 +8,63 @@ import {
 	type WriteOps,
 } from "tuple-database"
 import {
-	AnySchema,
-	CollectionName,
-	type RuntimeRelationsDefinition,
+	type AnySchema,
+	type AnyRelations,
 	type RuntimeSchemaDefinition,
+	type SchemaToTupleSchema,
 } from "./schema/Schema"
+import { type RelationalQuery, type RelationalQueryResult } from "./query/Query"
+import { executeQuerySync } from "./query/executeQuery"
 import {
-	type FieldWhereOperators,
-	type RelationalQuery,
-	type RelationalQueryOptions,
-	type RelationalQueryRow,
-	type RelationalQueryResult,
-} from "./query/Query"
-import { Storage, type StorageApi, WriteOpsApi } from "./storage/Storage"
+	TandemClientStorage,
+	type TandemClientStorageApi,
+	WriteOpsApi,
+} from "./storage/TandemClientStorage"
 import { Transaction } from "./transaction/Transaction"
 import type { LoggerApi } from "./utils/Logger"
-import { isEqual, pick, sortBy } from "./utils/objectUtils"
 import type { RngApi } from "./utils/randomId"
 import { ThrottleQueue } from "./utils/ThrottleQueue"
 import { Timer } from "./utils/Timer"
 
 export type DatabaseArgs<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema>,
 > = {
 	schema?: RuntimeSchemaDefinition<Schema>
 	relations?: Relations
-	localStore?: StorageApi
+	clientStorage?: TandemClientStorageApi<Schema>
 	logger: LoggerApi
 	rng: RngApi
 }
 
 export class Database<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema> =
-		RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
 > {
-	private readonly tupleDb: TupleDatabaseClient = new TupleDatabaseClient(
-		new TupleDatabase(new InMemoryTupleStorage()),
-	)
+	private readonly tupleDb = new TupleDatabaseClient<
+		SchemaToTupleSchema<Schema>
+	>(new TupleDatabase(new InMemoryTupleStorage()))
 
-	private readonly storage?: Storage
+	private readonly clientStorage?: TandemClientStorage<Schema>
 	private readonly logger: LoggerApi
 	private readonly rng: RngApi
 	readonly schema?: RuntimeSchemaDefinition<Schema>
 	readonly relations?: Relations
-	private storageWriteQueue?: ThrottleQueue
+	private clientStorageWriteQueue?: ThrottleQueue
 	readonly ready: Promise<void>
 
 	constructor({
 		logger,
 		schema,
 		relations,
-		localStore: storageAdapter,
+		clientStorage,
 		rng,
 	}: DatabaseArgs<Schema, Relations>) {
 		this.logger = logger
 		this.schema = schema
 		this.relations = relations
-		this.storage = storageAdapter
-			? new Storage(storageAdapter, (error) => {
+		this.clientStorage = clientStorage
+			? new TandemClientStorage(clientStorage, (error) => {
 					// TODO: clean up? What should we do when storage fails?
 					this.logger.error({ message: "storage error", error })
 				})
@@ -75,39 +72,37 @@ export class Database<
 
 		this.rng = rng
 
-		this.ready = this.storage
-			? this.loadFromStorage(this.storage)
+		this.ready = this.clientStorage
+			? this.loadFromStorage(this.clientStorage)
 			: Promise.resolve()
 	}
 
 	async clear() {
 		// Clear the in-memory tuple database
-		const writeOps = this.tupleDb.scan({}).reduce((ops, { key }) => {
-			ops.remove = ops.remove || []
-			ops.remove.push(key)
-			return ops
-		}, {} as WriteOps)
+		const writeOps: WriteOps<SchemaToTupleSchema<Schema>> = {
+			remove: this.tupleDb.scan({}).map(({ key }) => key),
+		}
 
 		if (writeOps.remove?.length) {
 			this.tupleDb.commit(writeOps)
 		}
 
 		// Clear storage if available
-		await this.storage?.clear()
+		await this.clientStorage?.clear()
 	}
 
 	/**
 	 * What if values in storage changes?
 	 * What if storage too big to load all at once?
 	 */
-	private async loadFromStorage(storage: Storage) {
+	private async loadFromStorage(storage: TandemClientStorage<Schema>) {
 		this.logger.info({ message: "loading from storage" })
 		const results = await storage.scan()
 		this.tupleDb.commit({ set: results })
 
-		let writeOpsQueue: WriteOps = {}
+		let writeOpsQueue: WriteOps<SchemaToTupleSchema<Schema>> = {}
 
-		const storageWriteQueue = new ThrottleQueue(
+		const clientStorageWriteQueue = new ThrottleQueue(
 			async () => {
 				this.logger.info({ message: "committing to storage" })
 				const copy = writeOpsQueue
@@ -124,22 +119,24 @@ export class Database<
 			new Timer(),
 		)
 
-		this.storageWriteQueue = storageWriteQueue
+		this.clientStorageWriteQueue = clientStorageWriteQueue
 
 		this.tupleDb.subscribe({}, (writeOps) => {
 			writeOpsQueue = WriteOpsApi.merge(writeOpsQueue, writeOps)
-			void storageWriteQueue.enqueue()
+			void clientStorageWriteQueue.enqueue()
 		})
 	}
 
 	/**
 	 * Flush any pending writes to storage immediately.
 	 */
-	async flushStorage(): Promise<void> {
-		await this.storageWriteQueue?.flush()
+	async flushClientStorage(): Promise<void> {
+		await this.clientStorageWriteQueue?.flush()
 	}
 
-	makeTupleDbTransaction(): TupleRootTransactionApi {
+	makeTupleDbTransaction(): TupleRootTransactionApi<
+		SchemaToTupleSchema<Schema>
+	> {
 		return this.tupleDb.transact(this.rng.randomId())
 	}
 
@@ -161,13 +158,7 @@ export class Database<
 	} {
 		return subscribeQuery(
 			this.tupleDb,
-			(db) =>
-				this.runRelationalQuery(
-					query.collection,
-					query,
-					undefined,
-					db,
-				) as unknown as RelationalQueryResult<Schema, Relations, Query>,
+			(db) => this.executeQuery(db, query),
 			callback,
 		)
 	}
@@ -175,167 +166,13 @@ export class Database<
 	query<Query extends RelationalQuery<Schema, Relations>>(
 		query: Query,
 	): RelationalQueryResult<Schema, Relations, Query> {
-		return this.runRelationalQuery(
-			query.collection,
-			query,
-		) as unknown as RelationalQueryResult<Schema, Relations, Query>
+		return this.executeQuery(this.tupleDb, query)
 	}
 
-	private runRelationalQuery<
-		Collection extends CollectionName<Schema>,
-		Options extends RelationalQueryOptions<Schema, Relations, Collection>,
-	>(
-		collection: Collection,
-		options: Options,
-		extraFilter?: (record: Schema[Collection]) => boolean,
-		tupleDb: ReadOnlyTupleDatabaseClientApi = this.tupleDb,
-	): RelationalQueryRow<Schema, Relations, Collection, Options>[] {
-		const rows = this.getRelationalRows(
-			collection,
-			options,
-			extraFilter,
-			tupleDb,
-		)
-		return rows.map((row) =>
-			this.expandRelationalRow(collection, row, options, tupleDb),
-		) as RelationalQueryRow<Schema, Relations, Collection, Options>[]
-	}
-
-	private getRelationalRows<Collection extends CollectionName<Schema>>(
-		collection: Collection,
-		options: RelationalQueryOptions<Schema, Relations, Collection>,
-		extraFilter?: (record: Schema[Collection]) => boolean,
-		tupleDb: ReadOnlyTupleDatabaseClientApi = this.tupleDb,
-	): Schema[Collection][] {
-		let results = tupleDb
-			.scan({
-				gte: ["record", collection, null],
-				lte: ["record", collection, true],
-			})
-			.map(({ value }) => value) as Schema[Collection][]
-
-		if (extraFilter) {
-			results = results.filter(extraFilter)
-		}
-
-		if (options.where) {
-			results = results.filter((record) =>
-				Object.entries(options.where ?? {}).every(([field, condition]) =>
-					this.matchesRelationalWhere(record, field, condition),
-				),
-			)
-		}
-
-		if (options.orderBy) {
-			results = sortBy(
-				results,
-				...Object.entries(options.orderBy).flatMap(([field, direction]) =>
-					direction ? [[(item: any) => item[field], direction] as const] : [],
-				),
-			)
-		}
-
-		if (options.offset !== undefined) {
-			results = results.slice(options.offset)
-		}
-
-		if (options.limit !== undefined) {
-			results = results.slice(0, options.limit)
-		}
-
-		return results
-	}
-
-	private matchesRelationalWhere(
-		record: Record<string, any>,
-		field: string,
-		condition: unknown,
-	): boolean {
-		const fieldValue = record[field]
-
-		if (
-			typeof condition === "object" &&
-			condition !== null &&
-			!Array.isArray(condition)
-		) {
-			return Object.entries(condition as FieldWhereOperators<unknown>).every(
-				([operator, value]) =>
-					this.compareRelationalValue(fieldValue, operator, value),
-			)
-		}
-
-		return isEqual(fieldValue, condition)
-	}
-
-	private compareRelationalValue(
-		fieldValue: any,
-		operator: string,
-		comparisonValue: any,
-	): boolean {
-		switch (operator) {
-			case "eq":
-				return isEqual(fieldValue, comparisonValue)
-			case "gt":
-				return fieldValue > comparisonValue
-			case "lt":
-				return fieldValue < comparisonValue
-			case "gte":
-				return fieldValue >= comparisonValue
-			case "lte":
-				return fieldValue <= comparisonValue
-			default:
-				throw new Error(`Unknown where operator "${operator}"`)
-		}
-	}
-
-	private expandRelationalRow<Collection extends CollectionName<Schema>>(
-		collection: Collection,
-		row: Schema[Collection],
-		options: RelationalQueryOptions<Schema, Relations, Collection>,
-		tupleDb: ReadOnlyTupleDatabaseClientApi = this.tupleDb,
-	): Record<string, any> {
-		const result: Record<string, any> = options.select
-			? pick(row, Object.keys(options.select))
-			: { ...row }
-
-		if (!options.with) return result
-
-		if (!this.relations) {
-			throw new Error(
-				"Cannot execute relational query includes without relations",
-			)
-		}
-
-		for (const [relationName, includeOptions] of Object.entries(options.with)) {
-			const relation = this.relations[collection]?.[relationName]
-			if (!relation) {
-				throw new Error(`Unknown relation "${collection}.${relationName}"`)
-			}
-
-			const targetCollection = relation.targetCollection
-			const nestedOptions =
-				includeOptions === true ? {} : (includeOptions as any)
-
-			if (relation.type === "many-to-one") {
-				const joinValue = row[relation.from]
-				result[relationName] =
-					this.runRelationalQuery(
-						targetCollection,
-						nestedOptions,
-						(target) => target[relation.to] === joinValue,
-						tupleDb,
-					)[0] ?? null
-			} else {
-				const joinValue = row[relation.from]
-				result[relationName] = this.runRelationalQuery(
-					targetCollection,
-					nestedOptions,
-					(target) => target[relation.to] === joinValue,
-					tupleDb,
-				)
-			}
-		}
-
-		return result
+	private executeQuery<Query extends RelationalQuery<Schema, Relations>>(
+		db: ReadOnlyTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
+		query: Query,
+	): RelationalQueryResult<Schema, Relations, Query> {
+		return executeQuerySync<Schema, Relations, Query>(db, this.relations, query)
 	}
 }

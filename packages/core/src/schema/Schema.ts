@@ -48,9 +48,9 @@ export type RuntimeSchemaDefinition<Schema extends AnySchema = AnySchema> = {
 	}
 }
 
-export type RelationType = "many-to-one" | "one-to-many"
+type RelationType = "many-to-one" | "one-to-many"
 
-export type NormalizedManyToOneRelationDefinition<
+type ManyToOneRelation<
 	Schema extends AnySchema = AnySchema,
 	SourceCollection extends CollectionName<Schema> = CollectionName<Schema>,
 	TargetCollection extends CollectionName<Schema> = CollectionName<Schema>,
@@ -64,7 +64,7 @@ export type NormalizedManyToOneRelationDefinition<
 	readonly to: "id"
 }
 
-export type NormalizedOneToManyRelationDefinition<
+type OneToManyRelation<
 	Schema extends AnySchema = AnySchema,
 	SourceCollection extends CollectionName<Schema> = CollectionName<Schema>,
 	TargetCollection extends CollectionName<Schema> = CollectionName<Schema>,
@@ -78,28 +78,18 @@ export type NormalizedOneToManyRelationDefinition<
 	readonly to: keyof Schema[TargetCollection] & string
 }
 
-export type NormalizedRelationDefinition<
+type AnyRelation<
 	Schema extends AnySchema = AnySchema,
 	SourceCollection extends CollectionName<Schema> = CollectionName<Schema>,
 	TargetCollection extends CollectionName<Schema> = CollectionName<Schema>,
 	RelationName extends string = string,
 > =
-	| NormalizedManyToOneRelationDefinition<
-			Schema,
-			SourceCollection,
-			TargetCollection,
-			RelationName
-	  >
-	| NormalizedOneToManyRelationDefinition<
-			Schema,
-			SourceCollection,
-			TargetCollection,
-			RelationName
-	  >
+	| ManyToOneRelation<Schema, SourceCollection, TargetCollection, RelationName>
+	| OneToManyRelation<Schema, SourceCollection, TargetCollection, RelationName>
 
-export type RuntimeRelationsDefinition<Schema extends AnySchema = AnySchema> = {
+export type AnyRelations<Schema extends AnySchema = AnySchema> = {
 	readonly [SourceCollection in CollectionName<Schema>]?: {
-		readonly [RelationName in string]?: NormalizedRelationDefinition<
+		readonly [RelationName in string]?: AnyRelation<
 			Schema,
 			SourceCollection,
 			CollectionName<Schema>,
@@ -263,7 +253,7 @@ export function defineSchema<
 	}
 }
 
-export type RelationRegistration<
+type RelationInput<
 	Type extends RelationType = RelationType,
 	TargetCollection extends string = string,
 	From extends string = string,
@@ -275,16 +265,16 @@ export type RelationRegistration<
 	readonly to: To
 }
 
-export type RelationRegistrations<Schema extends AnySchema> = {
+export type RelationsInput<Schema extends AnySchema> = {
 	readonly [SourceCollection in CollectionName<Schema>]?: {
 		readonly [RelationName in string]?:
-			| RelationRegistration<
+			| RelationInput<
 					"many-to-one",
 					CollectionName<Schema>,
 					keyof Schema[SourceCollection] & string,
 					"id"
 			  >
-			| RelationRegistration<
+			| RelationInput<
 					"one-to-many",
 					CollectionName<Schema>,
 					"id",
@@ -296,45 +286,40 @@ export type RelationRegistrations<Schema extends AnySchema> = {
 	}
 }
 
-export type RelationBuilderApi<Schema extends AnySchema> = {
+type RelationBuilderApi<Schema extends AnySchema> = {
 	one: <
 		const TargetCollection extends CollectionName<Schema>,
 		const From extends string,
 	>(
 		targetCollection: TargetCollection,
 		join: { readonly from: From; readonly to: "id" },
-	) => RelationRegistration<"many-to-one", TargetCollection, From, "id">
+	) => RelationInput<"many-to-one", TargetCollection, From, "id">
 	many: <
 		const TargetCollection extends CollectionName<Schema>,
 		const To extends keyof Schema[TargetCollection] & string,
 	>(
 		targetCollection: TargetCollection,
 		join: { readonly from: "id"; readonly to: To },
-	) => RelationRegistration<"one-to-many", TargetCollection, "id", To>
+	) => RelationInput<"one-to-many", TargetCollection, "id", To>
 }
 
-type NormalizeRelationRegistration<
+type NormalizeRelation<
 	Schema extends AnySchema,
 	SourceCollection extends CollectionName<Schema>,
 	RelationName extends string,
-	Relation extends RelationRegistration,
+	Relation extends RelationInput,
 > =
-	Relation extends RelationRegistration<
-		infer Type,
-		infer TargetCollection,
-		any,
-		any
-	>
+	Relation extends RelationInput<infer Type, infer TargetCollection, any, any>
 		? TargetCollection extends CollectionName<Schema>
 			? Type extends "many-to-one"
-				? NormalizedManyToOneRelationDefinition<
+				? ManyToOneRelation<
 						Schema,
 						SourceCollection,
 						TargetCollection,
 						RelationName
 					>
 				: Type extends "one-to-many"
-					? NormalizedOneToManyRelationDefinition<
+					? OneToManyRelation<
 							Schema,
 							SourceCollection,
 							TargetCollection,
@@ -344,29 +329,29 @@ type NormalizeRelationRegistration<
 			: never
 		: never
 
-export type NormalizedRelationsDefinition<
+export type Relations<
 	Schema extends AnySchema,
-	Relations extends RelationRegistrations<Schema>,
+	Input extends RelationsInput<Schema>,
 > = {
-	readonly [SourceCollection in keyof Relations & CollectionName<Schema>]: {
-		readonly [RelationName in keyof NonNullable<Relations[SourceCollection]> &
+	readonly [SourceCollection in keyof Input & CollectionName<Schema>]: {
+		readonly [RelationName in keyof NonNullable<Input[SourceCollection]> &
 			string]: NonNullable<
-			Relations[SourceCollection]
-		>[RelationName] extends RelationRegistration
-			? NormalizeRelationRegistration<
+			Input[SourceCollection]
+		>[RelationName] extends RelationInput
+			? NormalizeRelation<
 					Schema,
 					SourceCollection,
 					RelationName,
-					NonNullable<Relations[SourceCollection]>[RelationName]
+					NonNullable<Input[SourceCollection]>[RelationName]
 				>
 			: never
 	}
 }
 
-type MutableRuntimeRelationsDefinition<Schema extends AnySchema> = {
+type MutableRelations<Schema extends AnySchema> = {
 	[SourceCollection in CollectionName<Schema>]?: Record<
 		string,
-		NormalizedRelationDefinition<Schema, SourceCollection>
+		AnyRelation<Schema, SourceCollection>
 	>
 }
 
@@ -386,11 +371,11 @@ function requireRuntimeFields<Schema extends AnySchema>(
 
 export function defineRelations<
 	Schema extends AnySchema,
-	const Relations extends RelationRegistrations<Schema>,
+	const Input extends RelationsInput<Schema>,
 >(
 	schema: RuntimeSchemaDefinition<Schema>,
-	define: (builders: RelationBuilderApi<Schema>) => Relations,
-): NormalizedRelationsDefinition<Schema, Relations> {
+	define: (builders: RelationBuilderApi<Schema>) => Input,
+): Relations<Schema, Input> {
 	const rawRelations = define({
 		one: (targetCollection, join) => ({
 			type: "many-to-one",
@@ -406,7 +391,7 @@ export function defineRelations<
 		}),
 	})
 
-	const normalized: MutableRuntimeRelationsDefinition<Schema> = {}
+	const normalized: MutableRelations<Schema> = {}
 
 	for (const [sourceCollectionName, relations] of Object.entries(
 		rawRelations,
@@ -476,11 +461,11 @@ export function defineRelations<
 				targetCollection: relation.targetCollection,
 				from: relation.from,
 				to: relation.to,
-			} as NormalizedRelationDefinition<Schema>
+			} as AnyRelation<Schema>
 		}
 
 		normalized[sourceCollection] = normalizedForSource
 	}
 
-	return normalized as NormalizedRelationsDefinition<Schema, Relations>
+	return normalized as Relations<Schema, Input>
 }

@@ -1,0 +1,20 @@
+{
+	"name": "@tandem/example-todo-shared",
+	"private": true,
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"scripts": {
+		"build": "tsc --noEmit",
+		"type-check": "tsc --noEmit",
+		"lint": "oxlint src --deny-warnings",
+		"format": "oxfmt \"src/**/*.ts\""
+	},
+	"dependencies": {
+		"@tanishqkancharla/tandem-core": "workspace:*"
+	},
+	"devDependencies": {
+		"typescript": "^5.7.2"
+	}
+}

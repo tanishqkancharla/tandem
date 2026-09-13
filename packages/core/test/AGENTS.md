@@ -53,4 +53,4 @@ Use the Vitest fixtures from `./fixtures` instead of constructing `TandemClient`
 - `client1` / `client2` — connected todo-schema clients sharing `server`
 - `threadClient` — local relational client with no remote
 - `threadClients` — two connected relational clients sharing a remote
-- `makeClient` / `makeRemote` / `makeStorage` — factories for custom schema, remotes, or persistence; still cleaned up automatically
+- `makeClient` / `makeClient.withSchema` / `makeRemote` / `makeStorage` — factories for the default schema, custom schemas, remotes, or persistence; still cleaned up automatically

@@ -2,14 +2,15 @@
 	"extends": "../../tsconfig.json",
 	"compilerOptions": {
 		"outDir": "./dist",
-		"rootDir": ".",
+		"rootDir": "../..",
 		"noEmit": true,
 		"composite": false,
 		"declaration": false,
 		"declarationMap": false,
 		"paths": {
 			"@tanishqkancharla/tandem-core": ["./src/index.ts"],
-			"@tanishqkancharla/tandem-server": ["../server/src/index.ts"]
+			"@tanishqkancharla/tandem-server": ["../server/src/index.ts"],
+			"@tanishqkancharla/gatekeeper": ["../gatekeeper/src/Gatekeeper.ts"]
 		}
 	},
 	"include": ["src/**/*.ts", "test/**/*.ts"],

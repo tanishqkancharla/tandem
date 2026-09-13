@@ -1,6 +1,9 @@
 node_modules/
 packages/*/dist/
-examples/*/dist/
+examples/**/dist/
+examples/**/.data/
+examples/**/playwright-report/
+examples/**/test-results/
 .parcel-cache
 /.kosho**
 **/*.turbo

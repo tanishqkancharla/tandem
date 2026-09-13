@@ -1,0 +1,83 @@
+import type { KeyValuePair, ScanStorageArgs, WriteOps } from "tuple-database"
+import type { AnySchema, SchemaToTupleSchema } from "../schema/Schema"
+import { isEqual } from "../utils/objectUtils"
+
+export interface TandemClientStorageApi<Schema extends AnySchema> {
+	scan(args?: ScanStorageArgs): Promise<SchemaToTupleSchema<Schema>[]>
+	commit(writes: WriteOps<SchemaToTupleSchema<Schema>>): Promise<void>
+	close(): Promise<void>
+	clear(): Promise<void>
+}
+
+export namespace WriteOpsApi {
+	export function toString<TupleSchema extends KeyValuePair>(
+		writeOps: WriteOps<TupleSchema>,
+	): string {
+		return `WriteOps {\n${
+			writeOps.set
+				?.map(
+					(op) =>
+						`  set (${op.key[1]}) ${JSON.stringify(op.value, undefined, 2)}`,
+				)
+				.join("\n") ?? ""
+		}\n${writeOps.remove?.map((op) => `  remove (${op})`).join("\n") ?? ""}}`
+	}
+
+	export function merge<TupleSchema extends KeyValuePair>(
+		...allWriteOps: WriteOps<TupleSchema>[]
+	): WriteOps<TupleSchema> {
+		const target: WriteOps<TupleSchema> = {
+			set: [],
+			remove: [],
+		}
+
+		for (const { set = [], remove = [] } of allWriteOps) {
+			for (const tuple of set) {
+				const { key } = tuple
+				// Filter out all the keys that we marked as set
+				target.remove = target.remove?.filter(
+					(removedKey) => !isEqual(removedKey, key),
+				)
+
+				target.set ??= []
+				target.set.push(tuple)
+			}
+
+			for (const key of remove) {
+				target.set = target.set?.filter(
+					({ key: keySet }) => !isEqual(keySet, key),
+				)
+
+				target.remove ??= []
+				target.remove.push(key)
+			}
+		}
+
+		return target
+	}
+}
+
+export class TandemClientStorage<Schema extends AnySchema> {
+	constructor(
+		readonly adapter: TandemClientStorageApi<Schema>,
+		private readonly onFailure: (error: unknown) => void,
+	) {}
+
+	async commit(writeOps: WriteOps<SchemaToTupleSchema<Schema>>) {
+		try {
+			await this.adapter.commit(writeOps)
+		} catch (error) {
+			this.onFailure(error)
+			throw error
+		}
+	}
+
+	async scan(args?: ScanStorageArgs): Promise<SchemaToTupleSchema<Schema>[]> {
+		// TODO: what should we do if this fails?
+		return await this.adapter.scan(args)
+	}
+
+	async clear() {
+		await this.adapter.clear()
+	}
+}

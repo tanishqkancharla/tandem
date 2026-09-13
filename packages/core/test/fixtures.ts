@@ -11,21 +11,22 @@ import {
 	defineSchema,
 	t,
 } from "../src/schema/Schema"
-import { IndexedDbTupleStorage } from "../src/storage/IndexedDbAdapter"
+import { TandemClientIndexedDbStorage } from "../src/storage/TandemClientIndexedDbStorage"
 import { Logger } from "../src/utils/Logger"
 import { JsonlLoggerSink } from "../src/utils/Logger.node"
 import type { Codec } from "../src/utils/Codec"
-import { InMemoryRemote } from "@tanishqkancharla/tandem-server"
+import { TandemServer } from "@tanishqkancharla/tandem-server"
 import type {
 	AnySchema,
 	RelationalQuery,
 	RelationalQueryResult,
 	RemoteApi,
 	RngApi,
-	RuntimeRelationsDefinition,
+	AnyRelations,
 	RuntimeSchemaDefinition,
-	StorageApi,
+	TandemClientStorageApi,
 } from "@tanishqkancharla/tandem-core"
+import { TestTandemServerStorage } from "./TandemServerStorage.fixture"
 
 export type TestsTodo = {
 	id: string
@@ -70,7 +71,7 @@ const expectResolver = extendableExpect.extend({
 
 export function expectQuery<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema>,
 	Query extends RelationalQuery<Schema, Relations>,
 >(client: TandemClient<Schema, Relations>, query: Query) {
 	return expectResolver(
@@ -184,8 +185,13 @@ function createRng(): DemoRng {
 	}
 }
 
-function isStorageApi(value: object): value is StorageApi {
-	return "commit" in value && typeof (value as StorageApi).commit === "function"
+function isTandemClientStorageApi<Schema extends AnySchema>(
+	value: object,
+): value is TandemClientStorageApi<Schema> {
+	return (
+		"commit" in value &&
+		typeof (value as TandemClientStorageApi<Schema>).commit === "function"
+	)
 }
 
 export type MakeStorageOptions<Schema extends AnySchema = AnySchema> = {
@@ -196,35 +202,43 @@ export type MakeStorageOptions<Schema extends AnySchema = AnySchema> = {
 
 export type MakeClientOptions<
 	Schema extends AnySchema = TestsSchema,
-	Relations extends RuntimeRelationsDefinition<Schema> =
-		RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
 > = {
 	label?: string
 	schema?: RuntimeSchemaDefinition<Schema>
 	relations?: Relations
 	remote?: RemoteApi<Schema> | false
-	localStore?: StorageApi | MakeStorageOptions<Schema>
+	clientStorage?: TandemClientStorageApi<Schema> | MakeStorageOptions<Schema>
 	autoConnect?: boolean
 	syncInterval?: number
 }
 
 export type MakeRemote = {
-	<Schema extends AnySchema = TestsSchema>(): InMemoryRemote<Schema>
+	(): TandemServer<TestsSchema, {}>
+	<Schema extends AnySchema, Relations extends AnyRelations<Schema>>(options: {
+		schema: RuntimeSchemaDefinition<Schema>
+		relations: Relations
+	}): TandemServer<Schema, Relations>
 }
 
 export type MakeStorage = {
 	<Schema extends AnySchema = TestsSchema>(
 		options?: MakeStorageOptions<Schema>,
-	): IndexedDbTupleStorage<Schema>
+	): TandemClientIndexedDbStorage<Schema>
 }
 
 export type MakeClient = {
-	<
+	(
+		options?: MakeClientOptions<TestsSchema, AnyRelations<TestsSchema>>,
+	): Promise<TandemClient<TestsSchema, AnyRelations<TestsSchema>>>
+	withSchema<
 		Schema extends AnySchema = TestsSchema,
-		Relations extends RuntimeRelationsDefinition<Schema> =
-			RuntimeRelationsDefinition<Schema>,
+		Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
 	>(
-		options?: MakeClientOptions<Schema, Relations>,
+		options: MakeClientOptions<Schema, Relations> & {
+			remote: RemoteApi<Schema> | false
+			relations: Relations
+		},
 	): Promise<TandemClient<Schema, Relations>>
 }
 
@@ -236,7 +250,7 @@ type ThreadClients = {
 type Fixtures = {
 	logger: Logger
 	rng: DemoRng
-	server: InMemoryRemote<TestsSchema>
+	server: TandemServer<TestsSchema, {}>
 	makeRemote: MakeRemote
 	makeStorage: MakeStorage
 	makeClient: MakeClient
@@ -275,30 +289,61 @@ export const test = base.extend<Fixtures>({
 	},
 
 	makeRemote: async ({}, use) => {
-		const remotes: InMemoryRemote<any>[] = []
+		const remotes: { close(): Promise<void> }[] = []
 
-		await use(<Schema extends AnySchema = TestsSchema>() => {
-			const remote = new InMemoryRemote<Schema>()
+		function makeRemote(): TandemServer<TestsSchema, {}>
+		function makeRemote<
+			Schema extends AnySchema,
+			Relations extends AnyRelations<Schema>,
+		>(options: {
+			schema: RuntimeSchemaDefinition<Schema>
+			relations: Relations
+		}): TandemServer<Schema, Relations>
+		function makeRemote<
+			Schema extends AnySchema,
+			Relations extends AnyRelations<Schema>,
+		>(options?: {
+			schema: RuntimeSchemaDefinition<Schema>
+			relations: Relations
+		}) {
+			if (options) {
+				const remote = new TandemServer({
+					...options,
+					storage: new TestTandemServerStorage<Schema>(),
+				})
+				remotes.push(remote)
+				return remote
+			}
+
+			const remote = new TandemServer({
+				schema: testsRuntimeSchema,
+				relations: {},
+				storage: new TestTandemServerStorage<TestsSchema>(),
+			})
 			remotes.push(remote)
 			return remote
-		})
+		}
 
-		await Promise.all(remotes.map((remote) => remote.destroy()))
+		await use(makeRemote)
+
+		await Promise.all(remotes.map((remote) => remote.close()))
 	},
 
 	server: async ({ makeRemote }, use) => {
-		await use(makeRemote<TestsSchema>())
+		await use(makeRemote())
 	},
 
 	makeStorage: async ({ rng }, use) => {
-		const storages: { dbName: string; storage: IndexedDbTupleStorage<any> }[] =
-			[]
+		const storages: {
+			dbName: string
+			storage: TandemClientIndexedDbStorage<any>
+		}[] = []
 
 		const makeStorage = <Schema extends AnySchema = TestsSchema>(
 			options: MakeStorageOptions<Schema> = {},
 		) => {
 			const dbName = options.dbName ?? rng.next("storage")
-			const storage = new IndexedDbTupleStorage<Schema>({
+			const storage = new TandemClientIndexedDbStorage<Schema>({
 				dbName,
 				schema: options.schema,
 				codecs: options.codecs,
@@ -314,67 +359,83 @@ export const test = base.extend<Fixtures>({
 		}
 
 		for (const dbName of new Set(storages.map(({ dbName }) => dbName))) {
-			const storage = new IndexedDbTupleStorage<any>({ dbName })
+			const storage = new TandemClientIndexedDbStorage<any>({ dbName })
 			await storage.clear()
 			await storage.close()
 		}
 	},
 
 	makeClient: async ({ logger, rng, server, makeStorage }, use) => {
-		const clients: { client: TandemClient<any>; hasRemote: boolean }[] = []
+		const clients: {
+			client: { disconnect(): Promise<void> }
+			hasRemote: boolean
+		}[] = []
 
-		await use(
-			async <
-				Schema extends AnySchema = TestsSchema,
-				Relations extends RuntimeRelationsDefinition<Schema> =
-					RuntimeRelationsDefinition<Schema>,
-			>(
-				options: MakeClientOptions<Schema, Relations> = {},
-			) => {
-				const {
-					autoConnect = false,
-					label = "client",
-					remote,
-					schema,
-					relations,
-					localStore: storageOption,
-					syncInterval = 0,
-				} = options
+		const createClient = async <
+			Schema extends AnySchema,
+			Relations extends AnyRelations<Schema>,
+		>(
+			options: MakeClientOptions<Schema, Relations>,
+			fallbackRemote?: RemoteApi<Schema>,
+		) => {
+			const {
+				autoConnect = false,
+				label = "client",
+				remote,
+				schema,
+				relations,
+				clientStorage: storageOption,
+				syncInterval = 0,
+			} = options
 
-				const resolvedRemote =
-					remote === false
-						? undefined
-						: remote !== undefined
-							? remote
-							: (server as unknown as RemoteApi<Schema>)
+			const resolvedRemote =
+				remote === false ? undefined : (remote ?? fallbackRemote)
 
-				const localStore = storageOption
-					? isStorageApi(storageOption)
-						? storageOption
-						: makeStorage({
-								dbName: storageOption.dbName,
-								schema: storageOption.schema ?? schema,
-								codecs: storageOption.codecs,
-							})
-					: undefined
+			const clientStorage = storageOption
+				? isTandemClientStorageApi<Schema>(storageOption)
+					? storageOption
+					: makeStorage<Schema>({
+							dbName: storageOption.dbName,
+							schema: storageOption.schema ?? schema,
+							codecs: storageOption.codecs,
+						})
+				: undefined
 
-				const client = new TandemClient<Schema, Relations>({
-					autoConnect,
-					logger,
-					rng: rng.create(label),
-					remote: resolvedRemote,
-					schema,
-					relations,
-					localStore,
-					syncInterval,
-				})
+			const client = new TandemClient<Schema, Relations>({
+				autoConnect,
+				logger,
+				rng: rng.create(label),
+				remote: resolvedRemote,
+				schema,
+				relations,
+				clientStorage,
+				syncInterval,
+			})
 
-				clients.push({ client, hasRemote: Boolean(resolvedRemote) })
-				await client.ready
+			clients.push({ client, hasRemote: Boolean(resolvedRemote) })
+			await client.ready
 
-				return client
+			return client
+		}
+
+		const makeClient = Object.assign(
+			(
+				options: MakeClientOptions<TestsSchema, AnyRelations<TestsSchema>> = {},
+			) => createClient(options, server),
+			{
+				withSchema: <
+					Schema extends AnySchema = TestsSchema,
+					Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
+				>(
+					options: MakeClientOptions<Schema, Relations> & {
+						remote: RemoteApi<Schema> | false
+						relations: Relations
+					},
+				) => createClient(options),
 			},
 		)
+
+		await use(makeClient)
 
 		for (const { client, hasRemote } of clients) {
 			if (hasRemote) {
@@ -397,7 +458,7 @@ export const test = base.extend<Fixtures>({
 
 	threadClient: async ({ makeClient }, use) => {
 		await use(
-			await makeClient({
+			await makeClient.withSchema({
 				label: "thread-client",
 				schema: threadTestSchema,
 				relations: threadTestRelations,
@@ -407,15 +468,18 @@ export const test = base.extend<Fixtures>({
 	},
 
 	threadClients: async ({ makeClient, makeRemote }, use) => {
-		const remote = makeRemote<ThreadTestSchema>()
+		const remote = makeRemote({
+			schema: threadTestSchema,
+			relations: threadTestRelations,
+		})
 		const [client1, client2] = await Promise.all([
-			makeClient({
+			makeClient.withSchema({
 				label: "thread-client1",
 				schema: threadTestSchema,
 				relations: threadTestRelations,
 				remote,
 			}),
-			makeClient({
+			makeClient.withSchema({
 				label: "thread-client2",
 				schema: threadTestSchema,
 				relations: threadTestRelations,

@@ -5,9 +5,44 @@ import type {
 	SchemaToTupleSchema,
 } from "../schema/Schema"
 import type { EncodedQuery, ScanWindow } from "../query/Query"
-import { WriteOpsApi } from "../storage/Storage"
+import { WriteOpsApi } from "../storage/TandemClientStorage"
 import { partition, reverse } from "../utils/objectUtils"
 import type { Tagged } from "../utils/typeUtils"
+
+type CollectionTupleKey<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+> = ["record", Collection, Schema[Collection]["id"]]
+
+type CollectionTransactionApi<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+> = {
+	scan(args: { prefix: ["record", Collection] }): {
+		key: CollectionTupleKey<Schema, Collection>
+		value: Schema[Collection]
+	}[]
+	get(
+		key: CollectionTupleKey<Schema, Collection>,
+	): Schema[Collection] | undefined
+	set(
+		key: CollectionTupleKey<Schema, Collection>,
+		value: Schema[Collection],
+	): unknown
+	remove(key: CollectionTupleKey<Schema, Collection>): unknown
+}
+
+function getCollectionTransaction<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+>(
+	transaction: TupleRootTransactionApi<SchemaToTupleSchema<Schema>>,
+	_collection: Collection,
+): CollectionTransactionApi<Schema, Collection> {
+	// tuple-database's key filtering cannot reduce a mapped tuple union while
+	// Schema is generic. Narrow the transaction once per selected collection.
+	return transaction as unknown as CollectionTransactionApi<Schema, Collection>
+}
 
 export type InveribleSetMutationOp<Schema extends AnySchema> = {
 	type: "set"
@@ -96,7 +131,7 @@ export namespace MutationApi {
 
 	export function getRollbackWrites<Schema extends AnySchema>(
 		mutations: readonly InvertibleMutation<Schema>[],
-	): WriteOps {
+	): WriteOps<SchemaToTupleSchema<Schema>> {
 		return WriteOpsApi.merge(
 			...reverse(mutations)
 				.map((mutation) => mutation.ops.map(invertMutationOp))
@@ -104,14 +139,16 @@ export namespace MutationApi {
 		)
 	}
 
-	export function toWriteOps(ops: MutationOp<any>[]): WriteOps {
+	export function toWriteOps<Schema extends AnySchema>(
+		ops: MutationOp<Schema>[],
+	): WriteOps<SchemaToTupleSchema<Schema>> {
 		const [setOps, removeOps] = partition(ops, (op) => op.type === "set")
 
-		const writeOps = {
+		const writeOps: WriteOps<SchemaToTupleSchema<Schema>> = {
 			set: setOps.map((op) => ({
 				key: ["record", op.collection, op.value.id],
 				value: op.value,
-			})),
+			})) as SchemaToTupleSchema<Schema>[],
 			remove: removeOps.map((op) => ["record", op.collection, op.id]),
 		}
 
@@ -175,15 +212,15 @@ export class Transaction<Schema extends AnySchema> {
 		/**
 		 * @internal
 		 */
-		readonly tupleDbTx: TupleRootTransactionApi,
+		readonly tupleDbTx: TupleRootTransactionApi<SchemaToTupleSchema<Schema>>,
 	) {}
 
 	list<Collection extends CollectionName<Schema>>(
 		collection: Collection,
 	): Readonly<Schema[Collection]>[] {
-		const results = this.tupleDbTx.scan({
-			gte: ["record", collection, null],
-			lte: ["record", collection, true],
+		const transaction = getCollectionTransaction(this.tupleDbTx, collection)
+		const results = transaction.scan({
+			prefix: ["record", collection],
 		})
 
 		return results.map((result) => result.value)
@@ -193,50 +230,38 @@ export class Transaction<Schema extends AnySchema> {
 		collection: Collection,
 		id: Schema[Collection]["id"],
 	): Readonly<Schema[Collection]> | undefined {
-		const tupleSchemaKey: SchemaToTupleSchema<Schema>["key"] = [
+		const tupleSchemaKey: CollectionTupleKey<Schema, Collection> = [
 			"record",
 			collection,
 			id,
 		]
-
-		const result = this.tupleDbTx.scan({
-			gte: tupleSchemaKey,
-			lte: tupleSchemaKey,
-		})
-
-		const first = result[0]
-
-		if (!first) {
-			return undefined
-		}
-
-		return first.value
+		return getCollectionTransaction(this.tupleDbTx, collection).get(
+			tupleSchemaKey,
+		)
 	}
 
 	set<Collection extends CollectionName<Schema>>(
 		collection: Collection,
 		record: Schema[Collection],
 	): Transaction<Schema> {
-		const tupleSchema: SchemaToTupleSchema<Schema> = {
-			key: ["record", collection, record.id],
-			value: record,
-		}
+		const tupleSchemaKey: CollectionTupleKey<Schema, Collection> = [
+			"record",
+			collection,
+			record.id,
+		]
+		const transaction = getCollectionTransaction(this.tupleDbTx, collection)
+		const prevValue = transaction.get(tupleSchemaKey)
 
-		const prevValueResult = this.tupleDbTx.scan({
-			gte: tupleSchema.key,
-			lte: tupleSchema.key,
-		})
-
-		this.tupleDbTx.set<any>(tupleSchema.key, tupleSchema.value)
+		transaction.set(tupleSchemaKey, record)
 
 		const setOp: InvertibleMutationOp<Schema> = {
 			type: "set",
 			collection,
-			value: tupleSchema.value,
+			value: record,
 		}
 
-		if (prevValueResult.length > 0) {
-			setOp.prevValue = prevValueResult[0]!.value
+		if (prevValue !== undefined) {
+			setOp.prevValue = prevValue
 		}
 
 		this.ops.push(setOp)
@@ -253,29 +278,22 @@ export class Transaction<Schema extends AnySchema> {
 		id: Schema[Collection]["id"],
 		updateFn: (record: Readonly<Schema[Collection]>) => Schema[Collection],
 	): Transaction<Schema> {
-		const tupleSchemaKey: SchemaToTupleSchema<Schema>["key"] = [
+		const tupleSchemaKey: CollectionTupleKey<Schema, Collection> = [
 			"record",
 			collection,
 			id,
 		]
 
-		const prevValueResult = this.tupleDbTx.scan({
-			gte: tupleSchemaKey,
-			lte: tupleSchemaKey,
-		})
-
-		if (prevValueResult.length === 0) {
-			return this
-		}
-
-		const prevRecord = prevValueResult[0]!.value
+		const transaction = getCollectionTransaction(this.tupleDbTx, collection)
+		const prevRecord = transaction.get(tupleSchemaKey)
+		if (prevRecord === undefined) return this
 
 		const updatedRecord = updateFn(prevRecord)
 		if (updatedRecord === prevRecord) {
 			return this
 		}
 
-		this.tupleDbTx.set<any>(tupleSchemaKey, updatedRecord)
+		transaction.set(tupleSchemaKey, updatedRecord)
 
 		const setOp: InvertibleMutationOp<Schema> = {
 			type: "set",
@@ -294,25 +312,23 @@ export class Transaction<Schema extends AnySchema> {
 		collection: Collection,
 		id: Schema[Collection]["id"],
 	): Transaction<Schema> {
-		const tupleSchemaKey: SchemaToTupleSchema<Schema>["key"] = [
+		const tupleSchemaKey: CollectionTupleKey<Schema, Collection> = [
 			"record",
 			collection,
 			id,
 		]
 
-		const values = this.tupleDbTx.scan({
-			gte: tupleSchemaKey,
-			lte: tupleSchemaKey,
-		})
+		const transaction = getCollectionTransaction(this.tupleDbTx, collection)
+		const value = transaction.get(tupleSchemaKey)
 
-		this.tupleDbTx.remove(tupleSchemaKey)
+		transaction.remove(tupleSchemaKey)
 
-		if (values.length) {
+		if (value !== undefined) {
 			this.ops.push({
 				type: "remove",
 				collection,
 				id,
-				value: values[0]!.value,
+				value,
 			})
 		}
 

@@ -11,6 +11,11 @@
 			"import": "./dist/index.js",
 			"default": "./dist/index.js"
 		},
+		"./internal": {
+			"types": "./dist/internal.d.ts",
+			"import": "./dist/internal.js",
+			"default": "./dist/internal.js"
+		},
 		"./node": {
 			"types": "./dist/utils/Logger.node.d.ts",
 			"import": "./dist/utils/Logger.node.js"
@@ -51,6 +56,7 @@
 		"extendable-expect": "^1.0.5",
 		"fake-indexeddb": "^6.2.5",
 		"typescript": "^5.7.2",
-		"vitest": "^1.1.0"
+		"vitest": "^1.1.0",
+		"@tanishqkancharla/gatekeeper": "workspace:*"
 	}
 }

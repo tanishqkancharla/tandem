@@ -4,6 +4,63 @@
 
 A sync engine and database for building collaborative apps.
 
+## Server
+
+`TandemServer` is the server-side database and the implementation of the
+current `RemoteApi` sync contract. It accepts the same runtime schema and
+relations as the client plus a durable tuple-storage adapter.
+
+```ts
+import {
+  collection,
+  defineSchema,
+  t,
+  TandemClient,
+} from "@tanishqkancharla/tandem-core"
+import {
+  TandemServer,
+  TandemServerJsonFileStorage,
+} from "@tanishqkancharla/tandem-server"
+
+type TodoSchema = {
+  todos: {
+    id: string
+    text: string
+    complete: boolean
+  }
+}
+
+const schema = defineSchema({
+  todos: collection({
+    id: t.id(),
+    text: t.string(),
+    complete: t.boolean(),
+  }),
+})
+
+const server = new TandemServer<TodoSchema, {}>({
+  schema,
+  relations: {},
+  storage: new TandemServerJsonFileStorage<TodoSchema>({
+    filePath: "./data/tandem.json",
+  }),
+})
+```
+
+The client still receives a transport through its `remote` option. An HTTP or
+RPC adapter forwards that unchanged `RemoteApi` contract to `TandemServer`.
+
+```ts
+const client = new TandemClient({
+  schema,
+  remote: todoHttpRemote,
+})
+```
+
+Application tuples are durable when the configured storage is durable. Sync
+metadata such as revisions, mutation acknowledgements, and client scan windows
+currently lives in the `TandemServer` process and resets when it restarts.
+
 - [x] Basic database
   - [x] getRecord
   - [x] listRecords
@@ -85,10 +142,12 @@ A sync engine and database for building collaborative apps.
     - [x] Local run coverage
     - [x] Local subscribe coverage
     - [x] Remote sync coverage
-- [ ] Create a server module
-  - [ ] Add database-backed invalidation for remote adapters
-    - Current pokes are emitted by the in-process `RemoteServer` when mutations are pushed through that instance.
-    - Future SQL adapters should support database-originated change notifications so multi-process servers and direct database writes can poke subscribed clients.
+- [x] Create a server module
+  - [x] Add a typed `TandemServer` database and durable storage contract
+  - [x] Implement the current `RemoteApi` on `TandemServer`
+  - [ ] Add database-backed invalidation for server storage adapters
+    - Current pokes are emitted by a `TandemServer` instance after it commits writes.
+    - Future storage adapters should support database-originated change notifications so multi-process servers and direct database writes can poke subscribed clients.
     - Likely shape: keep snapshot reads as the source of truth, add optional store invalidations, and use database-native mechanisms such as Postgres `LISTEN`/`NOTIFY` plus triggers to emit coarse collection/id changes.
     - Start with collection-level invalidation for correctness, then refine query-aware matching later as an optimization.
 - [ ] Nested remote idea: be able to define remote data sources on a subspace

@@ -3,7 +3,7 @@
 	"version": "0.2.0",
 	"private": true,
 	"type": "module",
-	"packageManager": "pnpm@10.12.4",
+	"packageManager": "pnpm@12.3.4",
 	"author": "Tanishq Kancharla <tanishqkancharla3@gmail.com>",
 	"description": "A sync engine and database for building collaborative apps",
 	"license": "MIT",
@@ -21,27 +21,16 @@
 		"type-check": "turbo run type-check"
 	},
 	"devDependencies": {
-		"@types/better-sqlite3": "^7.6.13",
 		"@types/node": "^20.14.2",
 		"@typescript/native-preview": "7.0.0-dev.20260609.1",
-		"better-sqlite3": "^11.10.0",
-		"drizzle-orm": "^0.44.0",
 		"extendable-expect": "^1.0.5",
 		"fake-indexeddb": "^6.2.5",
-		"mysql2": "^3.14.1",
 		"oxfmt": "^0.54.0",
 		"oxlint": "^1.69.0",
 		"oxlint-tsgolint": "^0.23.0",
-		"postgres": "^3.4.5",
 		"tsc-alias": "^1.8.17",
 		"turbo": "^2.9.17",
 		"typescript": "^5.7.2",
 		"vitest": "^1.1.0"
-	},
-	"pnpm": {
-		"onlyBuiltDependencies": [
-			"better-sqlite3",
-			"esbuild"
-		]
 	}
 }

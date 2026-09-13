@@ -5,7 +5,7 @@ import {
 	type CollectionName,
 	type RelationalQuery,
 	type RelationalQueryResult,
-	type RuntimeRelationsDefinition,
+	type AnyRelations,
 } from "@tanishqkancharla/tandem-core"
 import {
 	createContext,
@@ -24,8 +24,7 @@ const TandemClientContext = createContext<TandemClient<any, any> | undefined>(
 
 export type TandemClientProviderProps<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema> =
-		RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
 > = {
 	client: TandemClient<Schema, Relations>
 	ready?: Promise<unknown>
@@ -36,8 +35,7 @@ export type TandemClientProviderProps<
 
 export function TandemClientProvider<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema> =
-		RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
 >({
 	client,
 	ready,
@@ -89,8 +87,7 @@ export function TandemClientProvider<
 
 export function useTandemClient<
 	Schema extends AnySchema = AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema> =
-		RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
 >(): TandemClient<Schema, Relations> {
 	const db = useContext(TandemClientContext)
 	if (db === undefined) {
@@ -117,7 +114,7 @@ export function useTandemTransaction<
 		(...args: Args) => {
 			const tx = db.transact()
 			callback(tx, ...args)
-			void db.commit(tx).then(() => db.flushStorage())
+			void db.commit(tx).then(() => db.flushClientStorage())
 		},
 		[callback, db],
 	)
@@ -125,8 +122,7 @@ export function useTandemTransaction<
 
 export interface UseTandemQuery<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema> =
-		RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
 > {
 	<Query extends RelationalQuery<Schema, Relations>>(
 		query: Query | undefined,
@@ -135,8 +131,7 @@ export interface UseTandemQuery<
 
 export function useTandemQuery<
 	Schema extends AnySchema = AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema> =
-		RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
 	Query extends RelationalQuery<Schema, Relations> = RelationalQuery<
 		Schema,
 		Relations
@@ -191,10 +186,7 @@ export function useEntity<
 				: ({
 						collection,
 						where: { id },
-					} as unknown as RelationalQuery<
-						Schema,
-						RuntimeRelationsDefinition<Schema>
-					>),
+					} as unknown as RelationalQuery<Schema, AnyRelations<Schema>>),
 		[collection, id],
 	)
 	const rows = useTandemQuery(query)

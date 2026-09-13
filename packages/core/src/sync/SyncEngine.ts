@@ -1,6 +1,10 @@
 import type { WriteOps } from "tuple-database"
 import type { EncodedQuery, ScanWindow } from "../query/Query"
-import type { AnySchema, CollectionName } from "../schema/Schema"
+import type {
+	AnySchema,
+	CollectionName,
+	SchemaToTupleSchema,
+} from "../schema/Schema"
 import type {
 	InvertibleMutation,
 	Mutation,
@@ -76,17 +80,17 @@ export namespace PatchApi {
 
 	export function toWriteOps<Schema extends AnySchema>(
 		patch: Patch<Schema>,
-	): WriteOps {
-		const set: WriteOps["set"] = []
-		const remove: WriteOps["remove"] = []
+	): WriteOps<SchemaToTupleSchema<Schema>> {
+		const set: SchemaToTupleSchema<Schema>[] = []
+		const remove: SchemaToTupleSchema<Schema>["key"][] = []
 
 		for (const s of patch.set ?? []) {
 			const key = ["record", s.collection, s.value.id]
-			set!.push({ key, value: s.value })
+			set.push({ key, value: s.value } as SchemaToTupleSchema<Schema>)
 		}
 
 		for (const r of patch.remove ?? []) {
-			remove!.push(["record", r.collection, r.id])
+			remove.push(["record", r.collection, r.id])
 		}
 
 		return { set, remove }

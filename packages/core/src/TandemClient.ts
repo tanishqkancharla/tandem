@@ -6,10 +6,10 @@ import {
 } from "./query/Query"
 import type {
 	AnySchema,
-	RuntimeRelationsDefinition,
+	AnyRelations,
 	RuntimeSchemaDefinition,
 } from "./schema/Schema"
-import type { StorageApi } from "./storage/Storage"
+import type { TandemClientStorageApi } from "./storage/TandemClientStorage"
 import {
 	PatchApi,
 	SyncEngine,
@@ -30,7 +30,7 @@ import type { AsyncUnsubscribe } from "./utils/typeUtils"
 
 export type TandemClientArgs<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema>,
 > = {
 	schema?: RuntimeSchemaDefinition<Schema>
 	relations?: Relations
@@ -38,7 +38,7 @@ export type TandemClientArgs<
 	 * Optional replica cache (IndexedDB tuples). Not the backend
 	 * persistence adapter used by the server.
 	 */
-	localStore?: StorageApi
+	clientStorage?: TandemClientStorageApi<Schema>
 	remote?: RemoteApi<Schema>
 	/**
 	 * @default ConsoleLoggerSink
@@ -55,8 +55,7 @@ export type TandemClientArgs<
 
 export class TandemClient<
 	Schema extends AnySchema,
-	Relations extends RuntimeRelationsDefinition<Schema> =
-		RuntimeRelationsDefinition<Schema>,
+	Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
 > {
 	private readonly db: Database<Schema, Relations>
 	/**
@@ -75,7 +74,7 @@ export class TandemClient<
 	constructor({
 		schema,
 		relations,
-		localStore,
+		clientStorage,
 		remote,
 		logger,
 		autoConnect = true,
@@ -108,7 +107,7 @@ export class TandemClient<
 			schema,
 			relations,
 			logger: this.logger.scope("db"),
-			localStore,
+			clientStorage,
 			rng: this.rng,
 		})
 
@@ -254,10 +253,10 @@ export class TandemClient<
 	}
 
 	/**
-	 * Flush any pending writes to storage immediately.
+	 * Flush any pending writes to client storage immediately.
 	 */
-	async flushStorage(): Promise<void> {
-		await this.db.flushStorage()
+	async flushClientStorage(): Promise<void> {
+		await this.db.flushClientStorage()
 	}
 
 	async clear() {
