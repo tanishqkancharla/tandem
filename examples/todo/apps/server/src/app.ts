@@ -1,8 +1,14 @@
-import type { TodoRemoteRequest, TodoSchema } from "@tandem/example-todo-shared"
-import type { RemoteApi } from "@tanishqkancharla/tandem-core"
+import {
+	schema,
+	type TodoRemoteRequest,
+	type TodoSchema,
+} from "@tandem/example-todo-shared"
+import {
+	TandemServer,
+	TandemServerJsonFileStorage,
+} from "@tanishqkancharla/tandem-server"
 import * as errore from "errore"
 import { Hono } from "hono"
-import { createTodoSyncServer } from "./TodoSyncServer"
 
 class TodoHonoError extends errore.createTaggedError({
 	name: "TodoHonoError",
@@ -26,17 +32,17 @@ function validateRequest(value: unknown) {
 	return new TodoHonoError({ operation: "validate request" })
 }
 
-type TodoRemote = Pick<RemoteApi<TodoSchema>, "pull" | "push">
+type TodoServer = TandemServer<TodoSchema, {}>
 
 function executeRequest({
-	remote,
+	server,
 	request,
 }: {
-	remote: TodoRemote
+	server: TodoServer
 	request: TodoRemoteRequest
 }) {
 	if (request.action === "push") {
-		return remote
+		return server
 			.push(request.args)
 			.then(() => ({}))
 			.catch(
@@ -44,14 +50,57 @@ function executeRequest({
 			)
 	}
 
-	return remote
+	return server
 		.pull(request.args)
 		.catch((cause) => new TodoHonoError({ operation: "pull changes", cause }))
 }
 
+async function seedIfEmpty(server: TodoServer) {
+	const todos = await server
+		.query({ collection: "todos" })
+		.catch((cause) => new TodoHonoError({ operation: "read seed data", cause }))
+	if (todos instanceof Error) return todos
+	if (todos.length > 0) return
+
+	const tx = server.transact()
+	tx.set("todos", {
+		id: "welcome",
+		text: "Build something with Tandem",
+		complete: false,
+		createdAt: Date.now(),
+	})
+	tx.set("todos", {
+		id: "maui",
+		text: "Style it with Maui color tokens",
+		complete: true,
+		createdAt: Date.now() - 1,
+	})
+	return server
+		.commit(tx)
+		.catch(
+			(cause) => new TodoHonoError({ operation: "write seed data", cause }),
+		)
+}
+
+async function createTodoServer({ filePath }: { filePath: string }) {
+	const server = new TandemServer({
+		schema,
+		relations: {},
+		storage: new TandemServerJsonFileStorage<TodoSchema>({ filePath }),
+	})
+	const seeded = await seedIfEmpty(server)
+	if (!(seeded instanceof Error)) return server
+
+	const closed = await server
+		.close()
+		.catch((cause) => new TodoHonoError({ operation: "close storage", cause }))
+	if (closed instanceof Error) console.error(closed)
+	return seeded
+}
+
 export async function createTodoApp({ filePath }: { filePath: string }) {
-	const remote = await createTodoSyncServer({ filePath })
-	if (remote instanceof Error) return remote
+	const server = await createTodoServer({ filePath })
+	if (server instanceof Error) return server
 
 	const app = new Hono()
 	app.get("/health", (context) => context.json({ status: "ok" }))
@@ -70,7 +119,7 @@ export async function createTodoApp({ filePath }: { filePath: string }) {
 			return context.json({ error: "Invalid Tandem request" }, 400)
 		}
 
-		const result = await executeRequest({ remote, request })
+		const result = await executeRequest({ server, request })
 		if (result instanceof Error) {
 			console.error(result)
 			return context.json({ error: "Tandem request failed" }, 500)
@@ -81,6 +130,6 @@ export async function createTodoApp({ filePath }: { filePath: string }) {
 
 	return {
 		app,
-		close: () => remote.close(),
+		close: () => server.close(),
 	}
 }

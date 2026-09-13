@@ -434,18 +434,19 @@ directly to it. Keep the existing JSON request envelope and
  }
 ```
 
-- [ ] Move server construction and idempotent seed behavior from
+- [x] Move server construction and idempotent seed behavior from
       `TodoSyncServer.ts` into `app.ts` or a small adjacent server factory.
-- [ ] Delete `TodoSyncServer.ts` and its todo-only encoded-query decoder.
-- [ ] Keep `TodoRemoteRequest`, `TodoHttpRemote`, `TandemClient({ remote })`,
+- [x] Delete `TodoSyncServer.ts` and its todo-only encoded-query decoder.
+- [x] Keep `TodoRemoteRequest`, `TodoHttpRemote`, `TandemClient({ remote })`,
       polling, and manual post-push poke behavior unchanged.
-- [ ] Replace `TodoSyncServer.spec.ts` with Hono route workflows using
-      `app.request()` for initial pull, set/remove pushes, filtered view removal,
-      invalid envelopes, and durable application records after reopening the JSON
-      storage. Do not assert that cookies or acknowledgement state survive restart.
-- [ ] Run `pnpm --filter @tandem/example-todo-server test`,
-      `pnpm --filter @tandem/example-todo type-check`, and
-      `pnpm --filter @tandem/example-todo-web test:e2e`.
+- [x] Delete `TodoSyncServer.spec.ts` and cover the example only through its
+      Playwright app workflows. Exercise seeded data, create/update/delete sync
+      between browsers, and persistence across reloads without testing server
+      routes or methods directly.
+- [x] Allow Playwright's API and web ports to be overridden for isolated test runs
+      while preserving the existing defaults.
+- [x] Run `pnpm --dir examples/todo type-check` and the full app workflow
+      through `pnpm --dir examples/todo test`.
 
 ### Phase 5: Delete the legacy server and remote storage stack
 

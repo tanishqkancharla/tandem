@@ -6,7 +6,7 @@
 		"dev": "pnpm --workspace-root exec turbo run dev --filter=@tandem/example-todo-web --filter=@tandem/example-todo-server",
 		"build": "pnpm --workspace-root exec turbo run build --filter=@tandem/example-todo-web --filter=@tandem/example-todo-server",
 		"type-check": "pnpm --workspace-root exec turbo run type-check --filter=@tandem/example-todo-web --filter=@tandem/example-todo-server",
-		"test": "pnpm --workspace-root exec turbo run test --filter=@tandem/example-todo-server",
-		"test:e2e": "pnpm --workspace-root exec turbo run test:e2e --filter=@tandem/example-todo-web"
+		"test": "pnpm --workspace-root --filter @tandem/example-todo-web test:e2e",
+		"test:e2e": "pnpm --workspace-root --filter @tandem/example-todo-web test:e2e"
 	}
 }

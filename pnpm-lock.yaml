@@ -188,9 +188,6 @@ importers:
       typescript:
         specifier: ^5.7.2
         version: 5.8.3
-      vitest:
-        specifier: ^1.1.0
-        version: 1.6.1(@types/node@20.19.9)(jsdom@26.1.0)
 
   examples/todo/apps/web:
     dependencies:
