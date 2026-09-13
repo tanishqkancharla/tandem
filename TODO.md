@@ -8,7 +8,10 @@
 - Remove the redundant `Relational` prefix from the public query types: `Query`, `QueryOptions`, `QueryResult`, `QueryRow`, `SelectOptions`, `WhereOptions`, `OrderByOptions`, and `WithOptions`. Rename `_encodeRelationalQuery` to `encodeQuery`; keep `EncodedQuery` for the sync protocol representation.
 - Correct `InveribleSetMutationOp` and `InveribleRemoveMutationOp` to `InvertibleSetMutationOp` and `InvertibleRemoveMutationOp`.
 
-## Remove the legacy remote stack
+## Server sync follow-up
 
-- Remove `RemoteServer`, `RemoteStore`, `InMemoryRemote`, `JsonFileRemote`, and the Drizzle remote adapters after `TandemServer` replaces the `RemoteApi` `connect`/`push`/`pull` path used by `TandemClient` and `SyncEngine`.
-- Remove the corresponding exports, package subpaths, tests, fixtures, and documentation in the same change.
+- Persist server revisions, client mutation acknowledgements, scan windows, and synced record keys.
+- Decide whether the next protocol keeps the current `remote` terminology.
+- Specify reset versus incremental pull behavior.
+- Specify retry and idempotency semantics for pushes and pulls.
+- Build a production Drizzle `TandemServerStorageApi` adapter.

@@ -466,20 +466,20 @@ core `RemoteApi` contract and the todo HTTP transport.
 +        └── TandemServerStorageApi
 ```
 
-- [ ] Delete `RemoteServer.ts`, `InMemoryRemote.ts`,
+- [x] Delete `RemoteServer.ts`, `InMemoryRemote.ts`,
       `InMemoryRemoteStore.ts`, `JsonFileRemote.ts`, and sync-only helpers in
       `packages/server/src/shared.ts`.
-- [ ] Delete the PostgreSQL, MySQL, and SQLite Drizzle remote subclasses and
+- [x] Delete the PostgreSQL, MySQL, and SQLite Drizzle remote subclasses and
       their `RemoteStore` utilities under `packages/server/src/drizzle/`.
-- [ ] Remove deleted classes and argument types from
+- [x] Remove deleted classes and argument types from
       `packages/server/src/index.ts`; continue re-exporting the unchanged
       `RemoteApi` type if current consumers rely on that export.
-- [ ] Delete `packages/server/test/RemoteAdapters.spec.ts`, its provider fixture,
+- [x] Delete `packages/server/test/RemoteAdapters.spec.ts`, its provider fixture,
       and `docker-compose.test.yml`; retain TandemServer and JSON tuple-storage tests.
-- [ ] Remove Drizzle remote export subpaths, optional peer metadata, Docker test
+- [x] Remove Drizzle remote export subpaths, optional peer metadata, Docker test
       scripts, unused database drivers, and native build allowlist entries from the
       package and workspace manifests.
-- [ ] Run `pnpm install` to regenerate `pnpm-lock.yaml`, then run the server test
+- [x] Run `pnpm install` to regenerate `pnpm-lock.yaml`, then run the server test
       and type-check commands.
 
 ### Phase 6: Document the boundary and verify the monorepo
@@ -488,17 +488,17 @@ Update documentation to present `TandemServer` as the server implementation of
 the current `RemoteApi`. Record protocol redesign as separate future work so
 this refactor does not silently establish reset-sync semantics.
 
-- [ ] Update `README.md` examples and architecture notes to use
+- [x] Update `README.md` examples and architecture notes to use
       `TandemServer`; keep the current client-facing `remote` terminology.
-- [ ] Replace the completed legacy-stack item in `TODO.md` with explicit future
+- [x] Replace the completed legacy-stack item in `TODO.md` with explicit future
       work for durable sync metadata, protocol naming, reset versus incremental pull
       strategy, retry semantics, and a production Drizzle
       `TandemServerStorageApi` adapter.
-- [ ] Run
+- [x] Run
       `rg -n "RemoteServer|RemoteStore|InMemoryRemote|JsonFileRemote|TodoSyncServer|decodeTodoQuery" packages examples README.md TODO.md`
       and resolve every obsolete production reference.
-- [ ] Verify that `RemoteApi`, `remote`, `pullFromRemote`, `Cookie`, the current
+- [x] Verify that `RemoteApi`, `remote`, `pullFromRemote`, `Cookie`, the current
       string `MutationId`, and the set/remove-only `Patch` remain present and
       unchanged.
-- [ ] Run `pnpm build`, `pnpm lint`, `pnpm type-check`, `pnpm test`, and
+- [x] Run `pnpm build`, `pnpm lint`, `pnpm type-check`, `pnpm test`, and
       `pnpm --filter @tandem/example-todo-web test:e2e`.
