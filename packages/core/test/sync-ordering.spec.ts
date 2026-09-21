@@ -55,8 +55,10 @@ describe("Tandem client sync ordering", () => {
 		secondTx.set("todos", secondTodo)
 		const secondReady = client1.commit(secondTx)
 
-		await first.continueToCompletion()
+		await first.continueTo("server")
+		await first.continueTo("client1")
 		const second = await secondReady
+		second.assertSentBy("client1").assertWaitingFor("server")
 		await second.continueToCompletion()
 
 		first.assertCompleted()

@@ -209,33 +209,10 @@ class Runtime {
 							})
 						}
 						if (this.gatesActive && parent.call) {
-							const queuedCall = this.pendingCallFrom(
-								parent.service,
-								parent.call,
-							)
-							if (!parent.call.isCompleted && !queuedCall) {
-								return parent.call.interact({
-									sender: parent.service,
-									receiver: service,
-									invoke,
-								})
-							}
-
-							// A shared async worker can outlive the root call whose context
-							// started it. Let promise reactions settle before deciding whether
-							// the handoff still belongs to that call or its next queued caller.
-							return Promise.resolve().then(() => {
-								const call = parent.call?.isCompleted
-									? this.pendingCallFrom(parent.service)
-									: parent.call
-								if (call) {
-									return call.interact({
-										sender: parent.service,
-										receiver: service,
-										invoke,
-									})
-								}
-								return context.run({ runtime: this, service }, invoke)
+							return parent.call.interact({
+								sender: parent.service,
+								receiver: service,
+								invoke,
 							})
 						}
 						return context.run({ ...parent, service }, invoke)
@@ -261,12 +238,6 @@ class Runtime {
 	private assertUsable(): void {
 		if (this.disposed)
 			throw new GatekeeperError({ detail: "Harness is disposed" })
-	}
-
-	private pendingCallFrom(service: Service, excluded?: Call): Call | undefined {
-		return [...this.calls].find(
-			(call) => call !== excluded && call.isPendingFrom(service),
-		)
 	}
 
 	isGating(): boolean {
@@ -470,7 +441,6 @@ class Call {
 	private exposed = false
 	private controlling = false
 	private controlError?: GatekeeperError
-	private rootService?: Service
 
 	constructor({ runtime, label }: CallArgs) {
 		this.runtime = runtime
@@ -482,7 +452,6 @@ class Call {
 	}
 
 	start({ service, invoke }: { service: Service; invoke: () => unknown }) {
-		this.rootService = service
 		const invoked: Outcome = (() => {
 			try {
 				return {
@@ -520,14 +489,6 @@ class Call {
 		return this.publicResult.promise
 	}
 
-	get isCompleted(): boolean {
-		return this.outcome !== undefined
-	}
-
-	isPendingFrom(service: Service): boolean {
-		return !this.outcome && this.rootService === service
-	}
-
 	interact({
 		sender,
 		receiver,
@@ -538,6 +499,13 @@ class Call {
 		invoke: () => unknown
 	}): Promise<unknown> {
 		if (this.controlError) return Promise.reject(this.controlError)
+		if (this.outcome) {
+			return Promise.reject(
+				new GatekeeperError({
+					detail: `${this.label}: cannot add a service handoff after the call completed`,
+				}),
+			)
+		}
 		const interaction = new Interaction({
 			call: this,
 			sender,
