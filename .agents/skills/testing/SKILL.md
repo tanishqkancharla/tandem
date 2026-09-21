@@ -40,6 +40,7 @@ Use Vitest for service, API, and library tests, and Playwright for UI end-to-end
     - Asserting it updates an internal database with specific rows - instead, ask if it did update properly, what end-driver outcome could we measure/see?
   - Examples of externally visible outcomes
     - Asserting that a file is really deleted in the filesystem after deleting it in the app. The filesystem is not an implementation detail if the driver expects to interact with it not through the app. But if the filesystem is being used to store an internal db that’s not meant to be directly used by drivers, then it would be considered an implementation detail.
+- Do not test whether instance properties exist or do not exist. Exercise the public API through its intended workflow and assert the behavior a consumer observes; API shape belongs in type-level tests rather than runtime property checks.
 - The fixtures available to a test code driver should be the following
   - The service being tested, able to send events to it at the same fidelity as other drivers.
     - E.g. for a web page, this might be the playwright page. For a server, it’s the ability to directly call routes.
