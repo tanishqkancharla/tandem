@@ -2,6 +2,10 @@
 
 Tandem is unreleased. Do not preserve migrations, compatibility fallbacks, or legacy code paths unless the user explicitly asks for them. Prefer cutting and editing relentlessly before release: keep the design small, remove obsolete behavior, and avoid compatibility layers that only serve pre-release states.
 
+## Skills
+
+Use the [conventions skill](.agents/skills/conventions/SKILL.md) when writing, refactoring, or reviewing TypeScript packages, services, state, dependencies, environments, or tests. Read the pages relevant to the change rather than the whole handbook. When changing tests, also read the existing [testing skill](.agents/skills/testing/SKILL.md) and any closer package-level `AGENTS.md` instructions.
+
 ## Naming
 
 - Infrastructure abstractions owned by `tuple-database`, including Tandem's structural views over its APIs, use the `Tuple` domain name (`TupleX` or `AsyncTupleX`).
