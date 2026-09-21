@@ -519,6 +519,261 @@ describe("TandemClient relation sync", () => {
 		},
 	)
 
+	threadSyncTest(
+		"moves a remote child between subscribed parent relations",
+		async ({ threadGatekeeper }) => {
+			const { client1, client2 } = threadGatekeeper
+			const query = {
+				collection: "threads",
+				select: { id: true },
+				orderBy: { title: "asc" },
+				with: { messages: { select: { body: true } } },
+			} as const
+			const seenByClient2: {
+				id: string
+				messages: { body: string }[]
+			}[][] = []
+			client2.subscribe(query, (result) => {
+				seenByClient2.push(result)
+			})
+			await (
+				await client2.pullFromRemote()
+			).result
+
+			// Seed two parents with one child attached to the first
+			const seedTx = client1.transact()
+			seedTx.set("threads", {
+				id: "thread-1",
+				ownerId: "user-1",
+				title: "First",
+				status: "active",
+			})
+			seedTx.set("threads", {
+				id: "thread-2",
+				ownerId: "user-1",
+				title: "Second",
+				status: "active",
+			})
+			seedTx.set("messages", {
+				id: "message-1",
+				threadId: "thread-1",
+				body: "Move me",
+				createdAt: 1,
+			})
+			await (
+				await client1.commit(seedTx)
+			).result
+			await vi.waitFor(() => {
+				expect(seenByClient2.at(-1)).toEqual([
+					{ id: "thread-1", messages: [{ body: "Move me" }] },
+					{ id: "thread-2", messages: [] },
+				])
+			})
+
+			// Changing the foreign key updates both parent relation results
+			const moveTx = client1.transact()
+			moveTx.set("messages", {
+				id: "message-1",
+				threadId: "thread-2",
+				body: "Move me",
+				createdAt: 1,
+			})
+			await (
+				await client1.commit(moveTx)
+			).result
+
+			await vi.waitFor(() => {
+				expect(seenByClient2.at(-1)).toEqual([
+					{ id: "thread-1", messages: [] },
+					{ id: "thread-2", messages: [{ body: "Move me" }] },
+				])
+			})
+		},
+	)
+
+	threadSyncTest(
+		"updates a subscribed many-to-one relation when its foreign key changes",
+		async ({ threadGatekeeper }) => {
+			const { client1, client2 } = threadGatekeeper
+			const query = {
+				collection: "threads",
+				select: { id: true },
+				with: { owner: { select: { name: true } } },
+			} as const
+			const seenByClient2: {
+				id: string
+				owner: { name: string } | null
+			}[][] = []
+			client2.subscribe(query, (result) => {
+				seenByClient2.push(result)
+			})
+			await (
+				await client2.pullFromRemote()
+			).result
+
+			// Seed a thread owned by the first user
+			const seedTx = client1.transact()
+			seedTx.set("users", {
+				id: "user-1",
+				profileId: "profile-1",
+				name: "Ada",
+			})
+			seedTx.set("users", {
+				id: "user-2",
+				profileId: "profile-2",
+				name: "Grace",
+			})
+			seedTx.set("threads", {
+				id: "thread-1",
+				ownerId: "user-1",
+				title: "Thread",
+				status: "active",
+			})
+			await (
+				await client1.commit(seedTx)
+			).result
+			await vi.waitFor(() => {
+				expect(seenByClient2.at(-1)).toEqual([
+					{ id: "thread-1", owner: { name: "Ada" } },
+				])
+			})
+
+			// Reassigning the parent updates the embedded owner
+			const reassignTx = client1.transact()
+			reassignTx.set("threads", {
+				id: "thread-1",
+				ownerId: "user-2",
+				title: "Thread",
+				status: "active",
+			})
+			await (
+				await client1.commit(reassignTx)
+			).result
+
+			await vi.waitFor(() => {
+				expect(seenByClient2.at(-1)).toEqual([
+					{ id: "thread-1", owner: { name: "Grace" } },
+				])
+			})
+		},
+	)
+
+	threadSyncTest(
+		"returns null after a subscribed many-to-one target is removed",
+		async ({ threadGatekeeper }) => {
+			const { client1, client2 } = threadGatekeeper
+			const query = {
+				collection: "threads",
+				select: { id: true },
+				with: { owner: { select: { name: true } } },
+			} as const
+			const seenByClient2: {
+				id: string
+				owner: { name: string } | null
+			}[][] = []
+			client2.subscribe(query, (result) => {
+				seenByClient2.push(result)
+			})
+			await (
+				await client2.pullFromRemote()
+			).result
+
+			// Seed a thread with an existing owner
+			const seedTx = client1.transact()
+			seedTx.set("users", {
+				id: "user-1",
+				profileId: "profile-1",
+				name: "Ada",
+			})
+			seedTx.set("threads", {
+				id: "thread-1",
+				ownerId: "user-1",
+				title: "Thread",
+				status: "active",
+			})
+			await (
+				await client1.commit(seedTx)
+			).result
+			await vi.waitFor(() => {
+				expect(seenByClient2.at(-1)).toEqual([
+					{ id: "thread-1", owner: { name: "Ada" } },
+				])
+			})
+
+			// Removing the target preserves the parent and nulls the relation
+			const removeOwnerTx = client1.transact()
+			removeOwnerTx.remove("users", "user-1")
+			await (
+				await client1.commit(removeOwnerTx)
+			).result
+
+			await vi.waitFor(() => {
+				expect(seenByClient2.at(-1)).toEqual([{ id: "thread-1", owner: null }])
+			})
+		},
+	)
+
+	threadSyncTest(
+		"removes a deleted root from a subscribed relational result",
+		async ({ threadGatekeeper }) => {
+			const { client1, client2 } = threadGatekeeper
+			const seenByClient2: {
+				id: string
+				messages: { body: string }[]
+			}[][] = []
+			client2.subscribe(
+				{
+					collection: "threads",
+					select: { id: true },
+					with: { messages: { select: { body: true } } },
+				},
+				(result) => {
+					seenByClient2.push(result)
+				},
+			)
+			await (
+				await client2.pullFromRemote()
+			).result
+
+			// Seed a root with an included child
+			const seedTx = client1.transact()
+			seedTx.set("threads", {
+				id: "thread-1",
+				ownerId: "user-1",
+				title: "Thread",
+				status: "active",
+			})
+			seedTx.set("messages", {
+				id: "message-1",
+				threadId: "thread-1",
+				body: "Included message",
+				createdAt: 1,
+			})
+			await (
+				await client1.commit(seedTx)
+			).result
+			await vi.waitFor(() => {
+				expect(seenByClient2.at(-1)).toEqual([
+					{
+						id: "thread-1",
+						messages: [{ body: "Included message" }],
+					},
+				])
+			})
+
+			// Removing the root removes the expanded row from the subscription
+			const removeThreadTx = client1.transact()
+			removeThreadTx.remove("threads", "thread-1")
+			await (
+				await client1.commit(removeThreadTx)
+			).result
+
+			await vi.waitFor(() => {
+				expect(seenByClient2.at(-1)).toEqual([])
+			})
+		},
+	)
+
 	threadConflictTest(
 		"replays a pending included relation edit on top of a newer remote patch",
 		async ({ makeRemote, makeThreadGatekeeper }) => {

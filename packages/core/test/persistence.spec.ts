@@ -3,10 +3,21 @@ import {
 	codec,
 	collection,
 	defineSchema,
+	type LoggerApi,
+	type RemoteApi,
 	TandemClient,
+	type TandemClientStorageApi,
 } from "@tanishqkancharla/tandem-core"
+import * as errore from "errore"
 import { describe, expect } from "vitest"
-import { test, todo, type TestsSchema } from "./fixtures"
+import {
+	buildGatekeeperHarness,
+	expectQuery,
+	test,
+	todo,
+	type DemoRng,
+	type TestsSchema,
+} from "./fixtures"
 
 class EventStart {
 	constructor(readonly iso: string) {}
@@ -55,6 +66,36 @@ const testsEventRuntimeSchema = defineSchema({
 
 function buildClientGatekeeper<Client extends object>(client: Client) {
 	return new Gatekeeper().add("client", () => client).build()
+}
+
+function createPersistentSyncGatekeeper({
+	server,
+	logger,
+	rng,
+	client1Storage,
+}: {
+	server: RemoteApi<TestsSchema>
+	logger: LoggerApi
+	rng: DemoRng
+	client1Storage: TandemClientStorageApi<TestsSchema>
+}) {
+	const clients: TandemClient<TestsSchema>[] = []
+	const gatekeeper = buildGatekeeperHarness({
+		server,
+		createClient: (remote, label) => {
+			const client = new TandemClient<TestsSchema>({
+				remote,
+				clientStorage: label === "client1" ? client1Storage : undefined,
+				logger,
+				rng: rng.create(label),
+				autoConnect: false,
+				syncInterval: 0,
+			})
+			clients.push(client)
+			return client
+		},
+	})
+	return { clients, gatekeeper }
 }
 
 describe("TandemClient persistence", () => {
@@ -229,5 +270,82 @@ describe("TandemClient persistence", () => {
 
 		expect(persistedEvents).toEqual([event])
 		expect(persistedEvents[0]?.startAt).toBeInstanceOf(EventStart)
+	})
+
+	test("loads cached data before reconciling with a newer server", async ({
+		logger,
+		makeStorage,
+		rng,
+		server,
+	}) => {
+		const dbName = rng.next("reconciled-cache")
+		const cachedTodo = todo("todo-1", { text: "Cached title" })
+		const serverTodo = todo("todo-1", { text: "Newer server title" })
+
+		// The first app instance syncs and persists the initial server value
+		{
+			const firstStorage = makeStorage<TestsSchema>({ dbName })
+			const { clients, gatekeeper } = createPersistentSyncGatekeeper({
+				server,
+				logger,
+				rng,
+				client1Storage: firstStorage,
+			})
+			await using cleanup = new errore.AsyncDisposableStack()
+			await using harness = gatekeeper
+			for (const client of clients) {
+				await client.ready
+				await client.connect()
+				cleanup.defer(() => client.disconnect())
+			}
+			const subscription = harness.client1.subscribe({ collection: "todos" })
+
+			const seedTx = harness.client2.transact()
+			seedTx.set("todos", cachedTodo)
+			await (
+				await harness.client2.commit(seedTx)
+			).result
+			await expectQuery(harness.client1, {
+				collection: "todos",
+			}).toResolveTo([cachedTodo])
+			await (
+				await harness.client1.flushClientStorage()
+			).result
+			await (
+				await harness.client1.disconnect()
+			).result
+
+			// The server advances after the persisted client goes offline
+			const updateTx = harness.client2.transact()
+			updateTx.set("todos", serverTodo)
+			await (
+				await harness.client2.commit(updateTx)
+			).result
+			subscription.destroy()
+			await firstStorage.close()
+		}
+
+		// A recreated app renders its cache, then reconciles after connecting
+		const secondStorage = makeStorage<TestsSchema>({ dbName })
+		const { clients, gatekeeper } = createPersistentSyncGatekeeper({
+			server,
+			logger,
+			rng,
+			client1Storage: secondStorage,
+		})
+		await using cleanup = new errore.AsyncDisposableStack()
+		await using harness = gatekeeper
+		await Promise.all(clients.map((client) => client.ready))
+
+		expect(harness.client1.query({ collection: "todos" })).toEqual([cachedTodo])
+
+		const subscription = harness.client1.subscribe({ collection: "todos" })
+		await (
+			await harness.client1.connect()
+		).result
+		cleanup.defer(() => clients[0]?.disconnect())
+
+		expect(harness.client1.query({ collection: "todos" })).toEqual([serverTodo])
+		subscription.destroy()
 	})
 })

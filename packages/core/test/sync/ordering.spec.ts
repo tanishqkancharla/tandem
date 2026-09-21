@@ -119,7 +119,14 @@ describe("Tandem client sync ordering", () => {
 		gatekeeper,
 	}) => {
 		const { client1, client2 } = gatekeeper
+		const recoveringSubscription = client1.subscribe({ collection: "todos" })
 		const subscription = client2.subscribe({ collection: "todos" })
+		await (
+			await client1.pullFromRemote()
+		).result
+		await (
+			await client2.pullFromRemote()
+		).result
 		const acceptedTodo = todo("accepted-without-ack", {
 			text: "Stored despite the lost response",
 		})
@@ -139,6 +146,12 @@ describe("Tandem client sync ordering", () => {
 		expect(client2.query({ collection: "todos" })).toEqual([acceptedTodo])
 
 		await commitSettled
+		const recoveryPull = await client1.pullFromRemote()
+		await recoveryPull.continueToCompletion()
+
+		recoveryPull.assertCompleted()
+		expect(client1.query({ collection: "todos" })).toEqual([acceptedTodo])
+		recoveringSubscription.destroy()
 		subscription.destroy()
 	})
 })

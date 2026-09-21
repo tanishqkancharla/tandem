@@ -133,6 +133,268 @@ describe("TandemClient sync conflicts", () => {
 		},
 	)
 
+	test("recovers local and remote changes after disconnecting and reconnecting", async ({
+		gatekeeper,
+	}) => {
+		const { client1, client2 } = gatekeeper
+		const client1Subscription = client1.subscribe({ collection: "todos" })
+		const client2Subscription = client2.subscribe({ collection: "todos" })
+		await (
+			await client1.disconnect()
+		).result
+
+		// The connected client advances the server while client1 is offline
+		const remoteTx = client2.transact()
+		remoteTx.set("todos", todo("remote", { text: "Written remotely" }))
+		await (
+			await client2.commit(remoteTx)
+		).result
+
+		// Client1 keeps its local optimistic change queued while disconnected
+		const localTx = client1.transact()
+		localTx.set("todos", todo("local", { text: "Written offline" }))
+		await (
+			await client1.commit(localTx)
+		).result
+
+		expect(client1.query({ collection: "todos" })).toEqual([
+			todo("local", { text: "Written offline" }),
+		])
+
+		// Reconnecting pulls the missed remote change and pushes the queued local change
+		await (
+			await client1.connect()
+		).result
+
+		const convergedTodos = [
+			todo("local", { text: "Written offline" }),
+			todo("remote", { text: "Written remotely" }),
+		]
+		await expectQuery(client1, { collection: "todos" }).toResolveTo(
+			convergedTodos,
+		)
+		await expectQuery(client2, { collection: "todos" }).toResolveTo(
+			convergedTodos,
+		)
+		client1Subscription.destroy()
+		client2Subscription.destroy()
+	})
+
+	conflictTest(
+		"recovers from a transient pull failure on the next pull",
+		async ({ makeTodoGatekeeper, server }) => {
+			let failingClientId = ""
+			let shouldFail = false
+			let failedPulls = 0
+			const failure = new Error("Temporary pull failure")
+			const unreliableRemote: RemoteApi<TestsSchema> = {
+				connect: (client) => server.connect(client),
+				push: (args) => server.push(args),
+				pull: (args) => {
+					if (shouldFail && args.clientId === failingClientId) {
+						shouldFail = false
+						failedPulls += 1
+						return Promise.reject(failure)
+					}
+					return server.pull(args)
+				},
+			}
+			const gatekeeper = await makeTodoGatekeeper({ remote: unreliableRemote })
+			const { client1, client2 } = gatekeeper
+			failingClientId = client2.clientId
+			const subscription = client2.subscribe({ collection: "todos" })
+			await (
+				await client2.pullFromRemote()
+			).result
+			shouldFail = true
+
+			// The server poke reaches client2, but its first pull fails
+			const tx = client1.transact()
+			tx.set("todos", todo("todo-1", { text: "Retry this pull" }))
+			await (
+				await client1.commit(tx)
+			).result
+			await vi.waitFor(() => expect(failedPulls).toBe(1))
+
+			expect(client2.query({ collection: "todos" })).toEqual([])
+
+			// A later pull succeeds without reconstructing the client
+			await (
+				await client2.pullFromRemote()
+			).result
+
+			expect(client2.query({ collection: "todos" })).toEqual([
+				todo("todo-1", { text: "Retry this pull" }),
+			])
+			subscription.destroy()
+		},
+	)
+
+	test("converges after both clients edit the same record concurrently", async ({
+		gatekeeper,
+	}) => {
+		const { client1, client2 } = gatekeeper
+		const client1Subscription = client1.subscribe({ collection: "todos" })
+		const client2Subscription = client2.subscribe({ collection: "todos" })
+		const seedTx = client1.transact()
+		seedTx.set("todos", todo("shared", { text: "Original" }))
+		await (
+			await client1.commit(seedTx)
+		).result
+		await expectQuery(client2, { collection: "todos" }).toResolveTo([
+			todo("shared", { text: "Original" }),
+		])
+		await gatekeeper.activateGates()
+
+		// Both clients optimistically replace the same server record
+		const client1Tx = client1.transact()
+		client1Tx.set("todos", todo("shared", { text: "Client 1 edit" }))
+		const client1Commit = await client1.commit(client1Tx)
+		const client2Tx = client2.transact()
+		client2Tx.set("todos", todo("shared", { text: "Client 2 edit" }))
+		const client2Commit = await client2.commit(client2Tx)
+
+		// Applying client2 last establishes the canonical record
+		await client1Commit.continueToCompletion()
+		await client2Commit.continueToCompletion()
+		const client1Pull = await client1.pullFromRemote()
+		await client1Pull.continueToCompletion()
+		const client2Pull = await client2.pullFromRemote()
+		await client2Pull.continueToCompletion()
+
+		const canonicalTodos = [todo("shared", { text: "Client 2 edit" })]
+		expect(client1.query({ collection: "todos" })).toEqual(canonicalTodos)
+		expect(client2.query({ collection: "todos" })).toEqual(canonicalTodos)
+		client1Subscription.destroy()
+		client2Subscription.destroy()
+	})
+
+	test("converges after clients concurrently edit different records", async ({
+		gatekeeper,
+	}) => {
+		const { client1, client2 } = gatekeeper
+		const client1Subscription = client1.subscribe({ collection: "todos" })
+		const client2Subscription = client2.subscribe({ collection: "todos" })
+		await gatekeeper.activateGates()
+
+		// Each client optimistically creates an independent record
+		const client1Tx = client1.transact()
+		client1Tx.set("todos", todo("client-1", { text: "From client 1" }))
+		const client1Commit = await client1.commit(client1Tx)
+		const client2Tx = client2.transact()
+		client2Tx.set("todos", todo("client-2", { text: "From client 2" }))
+		const client2Commit = await client2.commit(client2Tx)
+
+		await client1Commit.continueToCompletion()
+		await client2Commit.continueToCompletion()
+		const client1Pull = await client1.pullFromRemote()
+		await client1Pull.continueToCompletion()
+		const client2Pull = await client2.pullFromRemote()
+		await client2Pull.continueToCompletion()
+
+		const canonicalTodos = [
+			todo("client-1", { text: "From client 1" }),
+			todo("client-2", { text: "From client 2" }),
+		]
+		expect(client1.query({ collection: "todos" })).toEqual(canonicalTodos)
+		expect(client2.query({ collection: "todos" })).toEqual(canonicalTodos)
+		client1Subscription.destroy()
+		client2Subscription.destroy()
+	})
+
+	test("replays a later local mutation while pulling between queued pushes", async ({
+		gatekeeper,
+	}) => {
+		const { client1, client2 } = gatekeeper
+		const client1Subscription = client1.subscribe({ collection: "todos" })
+		const client2Subscription = client2.subscribe({ collection: "todos" })
+		const seedTx = client1.transact()
+		seedTx.set("todos", todo("todo-1", { text: "First original" }))
+		seedTx.set("todos", todo("todo-2", { text: "Second original" }))
+		await (
+			await client1.commit(seedTx)
+		).result
+		await expectQuery(client2, { collection: "todos" }).toResolveTo([
+			todo("todo-1", { text: "First original" }),
+			todo("todo-2", { text: "Second original" }),
+		])
+		await gatekeeper.activateGates()
+
+		// Hold client2's first push while client1 advances the same server record
+		const firstLocalTx = client2.transact()
+		firstLocalTx.set("todos", todo("todo-1", { text: "First local edit" }))
+		const firstLocalCommit = await client2.commit(firstLocalTx)
+		const remoteTx = client1.transact()
+		remoteTx.set("todos", todo("todo-1", { text: "Remote edit" }))
+		const remoteCommit = await client1.commit(remoteTx)
+		await remoteCommit.continueToCompletion()
+
+		// A second local mutation queues behind the pull triggered by the remote edit
+		const secondLocalTx = client2.transact()
+		secondLocalTx.set("todos", todo("todo-2", { text: "Second local edit" }))
+		const secondLocalReady = client2.commit(secondLocalTx)
+		await firstLocalCommit.continueToCompletion()
+		const secondLocalCommit = await secondLocalReady
+
+		expect(client2.query({ collection: "todos" })).toEqual([
+			todo("todo-1", { text: "First local edit" }),
+			todo("todo-2", { text: "Second local edit" }),
+		])
+
+		await secondLocalCommit.continueToCompletion()
+		const client1Pull = await client1.pullFromRemote()
+		await client1Pull.continueToCompletion()
+		const client2Pull = await client2.pullFromRemote()
+		await client2Pull.continueToCompletion()
+
+		const canonicalTodos = [
+			todo("todo-1", { text: "First local edit" }),
+			todo("todo-2", { text: "Second local edit" }),
+		]
+		expect(client1.query({ collection: "todos" })).toEqual(canonicalTodos)
+		expect(client2.query({ collection: "todos" })).toEqual(canonicalTodos)
+		client1Subscription.destroy()
+		client2Subscription.destroy()
+	})
+
+	test("converges when a concurrent removal follows an update", async ({
+		gatekeeper,
+	}) => {
+		const { client1, client2 } = gatekeeper
+		const client1Subscription = client1.subscribe({ collection: "todos" })
+		const client2Subscription = client2.subscribe({ collection: "todos" })
+		const seedTx = client1.transact()
+		seedTx.set("todos", todo("shared", { text: "Original" }))
+		await (
+			await client1.commit(seedTx)
+		).result
+		await expectQuery(client2, { collection: "todos" }).toResolveTo([
+			todo("shared", { text: "Original" }),
+		])
+		await gatekeeper.activateGates()
+
+		// Client1 updates while client2 removes the same record
+		const updateTx = client1.transact()
+		updateTx.set("todos", todo("shared", { text: "Updated" }))
+		const update = await client1.commit(updateTx)
+		const removeTx = client2.transact()
+		removeTx.remove("todos", "shared")
+		const remove = await client2.commit(removeTx)
+
+		// Applying the removal last leaves every replica empty
+		await update.continueToCompletion()
+		await remove.continueToCompletion()
+		const client1Pull = await client1.pullFromRemote()
+		await client1Pull.continueToCompletion()
+		const client2Pull = await client2.pullFromRemote()
+		await client2Pull.continueToCompletion()
+
+		expect(client1.query({ collection: "todos" })).toEqual([])
+		expect(client2.query({ collection: "todos" })).toEqual([])
+		client1Subscription.destroy()
+		client2Subscription.destroy()
+	})
+
 	conflictTest(
 		"replays a pending local edit on top of a newer remote patch",
 		async ({ makeTodoGatekeeper, server }) => {
