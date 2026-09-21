@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest"
-import { Stream } from "../src/utils/Stream.js"
+import { Stream } from "./Stream.js"
 
 describe("Stream", () => {
 	test("subscribe receives appends until unsubscribed", () => {

@@ -10,11 +10,11 @@ import {
 	executeQueryAsync,
 	executeQuerySync,
 	executeScanWindowAsync,
-} from "../src/internal"
-import type { ScanWindowRecord } from "../src/internal"
-import type { EncodedQuery } from "../src/query/Query"
-import { collection, defineRelations, defineSchema } from "../src/schema/Schema"
-import type { SchemaToTupleSchema } from "../src/schema/Schema"
+} from "./executeQuery"
+import type { ScanWindowRecord } from "./executeQuery"
+import type { EncodedQuery } from "./Query"
+import { collection, defineRelations, defineSchema } from "../schema/Schema"
+import type { SchemaToTupleSchema } from "../schema/Schema"
 
 type User = {
 	id: string
@@ -125,7 +125,7 @@ const test = baseTest.extend<{
 	syncDb: TupleDatabaseClient<TupleSchema>
 	asyncDb: AsyncTupleDatabaseClient<TupleSchema>
 }>({
-	syncDb: async ({}, use) => {
+	syncDb: async ({ task: _task }, use) => {
 		const storage = new InMemoryTupleStorage()
 		storage.commit({ set: [...tuples] })
 		const db = new TupleDatabaseClient<TupleSchema>(new TupleDatabase(storage))
@@ -134,7 +134,7 @@ const test = baseTest.extend<{
 
 		db.close()
 	},
-	asyncDb: async ({}, use) => {
+	asyncDb: async ({ task: _task }, use) => {
 		const storage = new InMemoryTupleStorage()
 		storage.commit({ set: [...tuples] })
 		const db = new AsyncTupleDatabaseClient<TupleSchema>(

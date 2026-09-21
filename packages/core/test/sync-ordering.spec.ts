@@ -1,6 +1,5 @@
 import { describe, expect } from "vitest"
-import { todo } from "../fixtures"
-import { test } from "./fixtures"
+import { test, todo } from "./fixtures"
 
 describe("Tandem client sync ordering", () => {
 	test("shows a newer edit while the previous push is in flight", async ({
@@ -19,7 +18,7 @@ describe("Tandem client sync ordering", () => {
 		void client1.commit(secondTx)
 
 		first.assertSentBy("client1").assertWaitingFor("server")
-		expect(client1.todos()).toEqual([secondTodo])
+		expect(client1.query({ collection: "todos" })).toEqual([secondTodo])
 	})
 
 	test("makes a server-accepted edit visible before acknowledging it", async ({
@@ -38,7 +37,7 @@ describe("Tandem client sync ordering", () => {
 
 		commit.assertSentBy("server").assertWaitingFor("client1")
 		pull.assertCompleted()
-		expect(client2.todos()).toEqual([acceptedTodo])
+		expect(client2.query({ collection: "todos" })).toEqual([acceptedTodo])
 	})
 
 	test("releases a queued edit after acknowledging the previous push", async ({
@@ -63,7 +62,7 @@ describe("Tandem client sync ordering", () => {
 		first.assertCompleted()
 		expect(await first.result).toBeUndefined()
 		second.assertCompleted()
-		expect(client1.todos()).toEqual([secondTodo])
+		expect(client1.query({ collection: "todos" })).toEqual([secondTodo])
 	})
 
 	test("syncs a queued edit after the previous push is acknowledged", async ({
@@ -89,7 +88,7 @@ describe("Tandem client sync ordering", () => {
 		expect(await first.result).toBeUndefined()
 		second.assertCompleted()
 		pull.assertCompleted()
-		expect(client2.todos()).toEqual([secondTodo])
+		expect(client2.query({ collection: "todos" })).toEqual([secondTodo])
 	})
 
 	test("rejects a commit when its acknowledgement is lost", async ({
@@ -130,7 +129,7 @@ describe("Tandem client sync ordering", () => {
 		await pull.continueToCompletion()
 
 		pull.assertCompleted()
-		expect(client2.todos()).toEqual([acceptedTodo])
+		expect(client2.query({ collection: "todos" })).toEqual([acceptedTodo])
 
 		await commitSettled
 	})
