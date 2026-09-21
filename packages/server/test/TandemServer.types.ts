@@ -15,7 +15,13 @@ expectTypeOf<TandemServerError>()
 type User = { id: string; name: string }
 type Thread = { id: string; ownerId: string; title: string; rank: number }
 type Message = { id: string; threadId: string; body: string }
-type AppSchema = { users: User; threads: Thread; messages: Message }
+type Entry = { id: readonly [sessionId: string, entryId: number]; body: string }
+type AppSchema = {
+	users: User
+	threads: Thread
+	messages: Message
+	entries: Entry
+}
 
 const schema = defineSchema({
 	users: collection<User>({ fields: ["id", "name"] }),
@@ -23,6 +29,7 @@ const schema = defineSchema({
 		fields: ["id", "ownerId", "title", "rank"],
 	}),
 	messages: collection<Message>({ fields: ["id", "threadId", "body"] }),
+	entries: collection<Entry>({ fields: ["id", "body"] }),
 })
 const relations = defineRelations(schema, ({ one, many }) => ({
 	threads: {
@@ -54,6 +61,20 @@ void transaction.get("unknown", "record-1")
 
 // @ts-expect-error Transaction IDs stay correlated with their collection.
 void transaction.get("threads", 1)
+
+void transaction.get("entries", ["session-1", 1])
+void transaction.scan("entries", { prefix: ["session-1"] })
+void transaction.scan("entries", {
+	prefix: ["session-1", 1],
+	limit: 1,
+	reverse: true,
+})
+
+// @ts-expect-error Compound ID prefix parts retain their declared types.
+void transaction.scan("entries", { prefix: [1] })
+
+// @ts-expect-error A compound ID scan cannot exceed the ID tuple length.
+void transaction.scan("entries", { prefix: ["session-1", 1, "extra"] })
 
 // @ts-expect-error Transaction records must match their collection value.
 void transaction.set("threads", { id: "thread-1", name: "Ada" })

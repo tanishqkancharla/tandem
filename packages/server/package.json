@@ -32,7 +32,8 @@
 		"type-check": "tsgo --noEmit && tsgo -p tsconfig.test.json --noEmit",
 		"format": "oxfmt \"src/**/*.ts\" \"test/**/*.ts\"",
 		"lint": "oxlint src --fix && tsc --noEmit",
-		"test": "vitest run"
+		"test": "vitest run",
+		"test:e2e": "vitest run test/e2e"
 	},
 	"dependencies": {
 		"@tanishqkancharla/tandem-core": "workspace:*",

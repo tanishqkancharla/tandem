@@ -1,11 +1,16 @@
 import type {
 	AnySchema,
+	CollectionIdTuple,
 	CollectionName,
+	CollectionScanArgs,
 	RelationalQuery,
 	RelationalQueryResult,
 	AnyRelations,
 } from "@tanishqkancharla/tandem-core"
-import { executeQueryAsync } from "@tanishqkancharla/tandem-core/internal"
+import {
+	collectionIdToTuple,
+	executeQueryAsync,
+} from "@tanishqkancharla/tandem-core/internal"
 import * as errore from "errore"
 import type { AsyncTupleRootTransactionApi } from "tuple-database"
 import { TandemServerError } from "./TandemServerError"
@@ -14,13 +19,13 @@ import type { TandemTuple } from "./storage/TandemServerStorage"
 type CollectionTupleKey<
 	Schema extends AnySchema,
 	Collection extends CollectionName<Schema>,
-> = ["record", Collection, Schema[Collection]["id"]]
+> = CollectionIdTuple<Schema[Collection]["id"]>
 
 type CollectionTransactionApi<
 	Schema extends AnySchema,
 	Collection extends CollectionName<Schema>,
 > = {
-	scan(args: { prefix: ["record", Collection] }): Promise<
+	scan(args?: CollectionScanArgs<Schema[Collection]["id"]>): Promise<
 		{
 			key: CollectionTupleKey<Schema, Collection>
 			value: Schema[Collection]
@@ -41,11 +46,16 @@ function getCollectionTransaction<
 	Collection extends CollectionName<Schema>,
 >(
 	transaction: AsyncTupleRootTransactionApi<TandemTuple<Schema>>,
-	_collection: Collection,
+	collection: Collection,
 ): CollectionTransactionApi<Schema, Collection> {
 	// tuple-database's key filtering cannot reduce a mapped tuple union while
 	// Schema is generic. Narrow the transaction once per selected collection.
-	return transaction as unknown as CollectionTransactionApi<Schema, Collection>
+	const collectionRoot = transaction as unknown as {
+		subspace(
+			prefix: ["record", Collection],
+		): CollectionTransactionApi<Schema, Collection>
+	}
+	return collectionRoot.subspace(["record", collection])
 }
 
 function stageTransactionWrite(
@@ -86,10 +96,21 @@ export class TandemServerTransaction<
 	): Promise<Readonly<Schema[Collection]>[]> {
 		const transaction = getCollectionTransaction(this.tupleDbTx, collection)
 		const result = await transaction
-			.scan({
-				prefix: ["record", collection],
-			})
+			.scan()
 			.catch((cause) => new TandemServerError({ operation: "list", cause }))
+
+		if (result instanceof Error) throw result
+		return result.map(({ value }) => value)
+	}
+
+	async scan<Collection extends CollectionName<Schema>>(
+		collection: Collection,
+		args?: CollectionScanArgs<Schema[Collection]["id"]>,
+	): Promise<Readonly<Schema[Collection]>[]> {
+		const transaction = getCollectionTransaction(this.tupleDbTx, collection)
+		const result = await transaction
+			.scan(args)
+			.catch((cause) => new TandemServerError({ operation: "scan", cause }))
 
 		if (result instanceof Error) throw result
 		return result.map(({ value }) => value)
@@ -100,11 +121,10 @@ export class TandemServerTransaction<
 		id: Schema[Collection]["id"],
 	): Promise<Readonly<Schema[Collection]> | undefined> {
 		const transaction = getCollectionTransaction(this.tupleDbTx, collection)
-		const key: CollectionTupleKey<Schema, Collection> = [
-			"record",
-			collection,
-			id,
-		]
+		const key = collectionIdToTuple(id) as CollectionTupleKey<
+			Schema,
+			Collection
+		>
 		const result = await transaction
 			.get(key)
 			.catch((cause) => new TandemServerError({ operation: "get", cause }))
@@ -118,11 +138,10 @@ export class TandemServerTransaction<
 		record: Schema[Collection],
 	): this {
 		const transaction = getCollectionTransaction(this.tupleDbTx, collection)
-		const key: CollectionTupleKey<Schema, Collection> = [
-			"record",
-			collection,
-			record.id,
-		]
+		const key = collectionIdToTuple(record.id) as CollectionTupleKey<
+			Schema,
+			Collection
+		>
 		const result = stageTransactionWrite("set", () => {
 			transaction.set(key, record)
 		})
@@ -137,11 +156,10 @@ export class TandemServerTransaction<
 		updateFn: (record: Readonly<Schema[Collection]>) => Schema[Collection],
 	): Promise<this> {
 		const transaction = getCollectionTransaction(this.tupleDbTx, collection)
-		const key: CollectionTupleKey<Schema, Collection> = [
-			"record",
-			collection,
-			id,
-		]
+		const key = collectionIdToTuple(id) as CollectionTupleKey<
+			Schema,
+			Collection
+		>
 		const existing = await transaction
 			.get(key)
 			.catch((cause) => new TandemServerError({ operation: "update", cause }))
@@ -163,11 +181,10 @@ export class TandemServerTransaction<
 		id: Schema[Collection]["id"],
 	): this {
 		const transaction = getCollectionTransaction(this.tupleDbTx, collection)
-		const key: CollectionTupleKey<Schema, Collection> = [
-			"record",
-			collection,
-			id,
-		]
+		const key = collectionIdToTuple(id) as CollectionTupleKey<
+			Schema,
+			Collection
+		>
 		const result = stageTransactionWrite("remove", () => {
 			transaction.remove(key)
 		})

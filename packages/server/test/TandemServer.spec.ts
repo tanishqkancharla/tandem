@@ -35,10 +35,16 @@ type Message = {
 	createdAt: number
 }
 
+type Entry = {
+	id: readonly [sessionId: string, entryId: number]
+	body: string
+}
+
 type TestSchema = {
 	users: User
 	threads: Thread
 	messages: Message
+	entries: Entry
 }
 
 const schema = defineSchema({
@@ -49,6 +55,7 @@ const schema = defineSchema({
 	messages: collection<Message>({
 		fields: ["id", "threadId", "body", "createdAt"],
 	}),
+	entries: collection<Entry>({ fields: ["id", "body"] }),
 })
 
 const relations = defineRelations(schema, ({ one, many }) => ({
@@ -158,6 +165,75 @@ test("transactions provide typed CRUD and read their staged writes", async () =>
 
 	await server.close()
 	expect(storage.closed).toBe(true)
+})
+
+test("compound IDs support exact reads and ordered prefix scans", async () => {
+	const { server } = createServer()
+	const tx = server.transact()
+
+	tx.set("entries", { id: ["session-2", 1], body: "Other session" })
+	tx.set("entries", { id: ["session-1", 2], body: "Second" })
+	tx.set("entries", { id: ["session-1", 1], body: "First" })
+
+	expect(await tx.get("entries", ["session-1", 2])).toEqual({
+		id: ["session-1", 2],
+		body: "Second",
+	})
+	expect(await tx.scan("entries", { prefix: ["session-1"] })).toEqual([
+		{ id: ["session-1", 1], body: "First" },
+		{ id: ["session-1", 2], body: "Second" },
+	])
+	expect(
+		await tx.scan("entries", {
+			prefix: ["session-1"],
+			reverse: true,
+			limit: 1,
+		}),
+	).toEqual([{ id: ["session-1", 2], body: "Second" }])
+
+	await tx.update("entries", ["session-1", 1], (entry) => ({
+		...entry,
+		body: "Updated",
+	}))
+	tx.remove("entries", ["session-1", 2])
+	await server.commit(tx)
+
+	const verifyTx = server.transact()
+	expect(await verifyTx.scan("entries", { prefix: ["session-1"] })).toEqual([
+		{ id: ["session-1", 1], body: "Updated" },
+	])
+	await verifyTx.cancel()
+})
+
+test("compound prefix scans participate in read/write conflicts", async () => {
+	const { server } = createServer()
+	const readerTx = server.transact()
+	expect(await readerTx.scan("entries", { prefix: ["session-1"] })).toEqual([])
+
+	const writerTx = server.transact()
+	writerTx.set("entries", { id: ["session-1", 1], body: "Concurrent" })
+	await server.commit(writerTx)
+
+	readerTx.set("users", { id: "user-1", name: "Ada" })
+	await expect(server.commit(readerTx)).rejects.toThrow(
+		"Tandem server commit failed",
+	)
+})
+
+test("compound record writes invalidate query subscriptions", async () => {
+	const { server } = createServer()
+	const results: Entry[][] = []
+	const subscription = await server.subscribe(
+		{ collection: "entries" },
+		(result) => results.push(result),
+	)
+
+	const tx = server.transact()
+	tx.set("entries", { id: ["session-1", 1], body: "First" })
+	await server.commit(tx)
+
+	expect(results.at(-1)).toEqual([{ id: ["session-1", 1], body: "First" }])
+	subscription.destroy()
 })
 
 test("transaction queries include staged records and relations", async () => {

@@ -8,6 +8,7 @@ import type {
 	AnyRelations,
 	SchemaToTupleSchema,
 } from "../schema/Schema"
+import { collectionIdToTuple } from "../schema/Schema"
 import { isEqual, isObject, pick } from "../utils/objectUtils"
 import type {
 	EncodedQuery,
@@ -248,11 +249,13 @@ function scanCollectionSync<
 	db: ReadOnlyTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
 	collection: Collection,
 ): RuntimeRecord[] {
-	return db
-		.scan<
-			["record", Collection, Schema[Collection]["id"]],
-			["record", Collection]
-		>({ prefix: ["record", collection] })
+	const collectionDb = db as unknown as {
+		scan(args: { prefix: ["record", Collection] }): {
+			value: Schema[Collection]
+		}[]
+	}
+	return collectionDb
+		.scan({ prefix: ["record", collection] })
 		.map(({ value }) => value)
 }
 
@@ -270,10 +273,12 @@ async function scanCollectionAsync<
 	db: ReadOnlyAsyncTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
 	collection: Collection,
 ): Promise<RuntimeRecord[]> {
-	const tuples = await db.scan<
-		["record", Collection, Schema[Collection]["id"]],
-		["record", Collection]
-	>({ prefix: ["record", collection] })
+	const collectionDb = db as unknown as {
+		scan(args: {
+			prefix: ["record", Collection]
+		}): Promise<{ value: Schema[Collection] }[]>
+	}
+	const tuples = await collectionDb.scan({ prefix: ["record", collection] })
 	return tuples.map(({ value }) => value)
 }
 
@@ -515,12 +520,13 @@ export async function executeScanWindowAsync<
 	const collections = getQueryCollections(queries)
 	const recordsByCollection = await loadRecordsAsync(db, collections)
 	const result: ScanWindowRecord<Schema>[] = []
-	const seen = new Map<CollectionName<Schema>, Set<string | number>>()
+	const seen = new Map<CollectionName<Schema>, Set<string>>()
 	const collectRow: QueryRowCollector<Schema> = (collection, value) => {
-		const collectionIds = seen.get(collection) ?? new Set<string | number>()
-		if (collectionIds.has(value.id)) return
+		const collectionIds = seen.get(collection) ?? new Set<string>()
+		const idKey = JSON.stringify(collectionIdToTuple(value.id))
+		if (collectionIds.has(idKey)) return
 
-		collectionIds.add(value.id)
+		collectionIds.add(idKey)
 		seen.set(collection, collectionIds)
 		result.push(createScanWindowRecord(collection, value))
 	}
