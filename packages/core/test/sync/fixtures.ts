@@ -48,8 +48,10 @@ function buildHarness(
 		.build()
 }
 
+type GatekeeperHarness = ReturnType<typeof buildHarness>
+
 export const test = base.extend<{
-	gatekeeper: ReturnType<typeof buildHarness>
+	gatekeeper: GatekeeperHarness
 }>({
 	gatekeeper: async ({ server, logger, rng }, use) => {
 		const clients: TandemClient<TestsSchema>[] = []
@@ -75,5 +77,6 @@ export const test = base.extend<{
 			await client.connect()
 		}
 		await use(gatekeeper)
+		await gatekeeper.deactivateGatesAndSettle()
 	},
 })

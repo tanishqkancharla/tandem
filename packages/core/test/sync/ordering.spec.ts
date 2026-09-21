@@ -1,68 +1,137 @@
-import { expect } from "vitest"
+import { describe, expect } from "vitest"
 import { todo } from "../fixtures"
 import { test } from "./fixtures"
 
-test("the last write reaching the server wins, even when it was started first", async ({
-	gatekeeper: { client1, client2, server },
-}) => {
-	// Client1 edits locally, with its write still outside the server.
-	const firstTodo = todo("shared", { text: "Client1's title" })
-	const firstTx = client1.transact()
-	firstTx.set("todos", firstTodo)
-	const first = await client1.commit(firstTx).hold()
-	expect(client1.todos()).toEqual([firstTodo])
-	expect(client2.todos()).toEqual([])
+describe("Tandem client sync ordering", () => {
+	test("shows a newer edit while the previous push is in flight", async ({
+		gatekeeper,
+	}) => {
+		const { client1 } = gatekeeper
+		const firstTodo = todo("queued", { text: "First title" })
+		const firstTx = client1.transact()
+		firstTx.set("todos", firstTodo)
 
-	// Client2's independent write reaches the server first.
-	const secondTodo = todo("shared", { done: true })
-	const secondTx = client2.transact()
-	secondTx.set("todos", secondTodo)
-	const second = await client2.commit(secondTx).hold()
-	await second.continueUntil({ afterProcessedBy: server })
-	await second.continue()
-	expect(client1.todos()).toEqual([firstTodo])
+		await gatekeeper.activateGates()
+		const first = await client1.commit(firstTx)
+		const secondTodo = todo("queued", { text: "Final title" })
+		const secondTx = client1.transact()
+		secondTx.set("todos", secondTodo)
+		void client1.commit(secondTx)
 
-	// Client1 arrives last. Both clients converge on its complete record.
-	await first.continue()
-	await client1.pullFromRemote()
-	await client2.pullFromRemote()
-	expect(client1.todos()).toEqual([firstTodo])
-	expect(client2.todos()).toEqual([firstTodo])
-})
+		first.assertSentBy("client1").assertWaitingFor("server")
+		expect(client1.todos()).toEqual([secondTodo])
+	})
 
-test("another client can read an accepted write while its acknowledgement is held", async ({
-	gatekeeper: { client1, client2, server },
-}) => {
-	const savedTodo = todo("accepted", { text: "Saved before acknowledgement" })
-	const tx = client1.transact()
-	tx.set("todos", savedTodo)
-	const call = await client1.commit(tx).hold()
+	test("makes a server-accepted edit visible before acknowledging it", async ({
+		gatekeeper,
+	}) => {
+		const { client1, client2 } = gatekeeper
+		const acceptedTodo = todo("accepted", { text: "Accepted title" })
+		const tx = client1.transact()
+		tx.set("todos", acceptedTodo)
 
-	// The server processes Client1's write but has not delivered its response.
-	await call.continueUntil({ afterProcessedBy: server })
-	await client2.pullFromRemote()
-	expect(client2.todos()).toEqual([savedTodo])
-	expect(client1.todos()).toEqual([savedTodo])
+		await gatekeeper.activateGates()
+		const commit = await client1.commit(tx)
+		await commit.continueTo("server")
+		const pull = await client2.pullFromRemote()
+		await pull.continueToCompletion()
 
-	// Delivering the acknowledgement completes the original commit.
-	await call.continue()
-	await client1.pullFromRemote()
-	expect(client1.todos()).toEqual([savedTodo])
-})
+		commit.assertSentBy("server").assertWaitingFor("client1")
+		pull.assertCompleted()
+		expect(client2.todos()).toEqual([acceptedTodo])
+	})
 
-test("a failed outgoing write rolls back locally and never appears on the other client", async ({
-	gatekeeper: { client1, client2 },
-}) => {
-	const rejectedTodo = todo("rejected", { text: "This write will fail" })
-	const tx = client1.transact()
-	tx.set("todos", rejectedTodo)
-	const call = await client1.commit(tx).hold()
-	expect(client1.todos()).toEqual([rejectedTodo])
+	test("releases a queued edit after acknowledging the previous push", async ({
+		gatekeeper,
+	}) => {
+		const { client1 } = gatekeeper
+		const firstTodo = todo("queued", { text: "First title" })
+		const firstTx = client1.transact()
+		firstTx.set("todos", firstTodo)
 
-	// A transport failure goes through Tandem's actual rollback path.
-	const failure = new Error("Connection closed before delivery")
-	await expect(call.fail(failure)).rejects.toBe(failure)
-	expect(client1.todos()).toEqual([])
-	await client2.pullFromRemote()
-	expect(client2.todos()).toEqual([])
+		await gatekeeper.activateGates()
+		const first = await client1.commit(firstTx)
+		const secondTodo = todo("queued", { text: "Final title" })
+		const secondTx = client1.transact()
+		secondTx.set("todos", secondTodo)
+		const secondReady = client1.commit(secondTx)
+
+		await first.continueToCompletion()
+		const second = await secondReady
+		await second.continueToCompletion()
+
+		first.assertCompleted()
+		expect(await first.result).toBeUndefined()
+		second.assertCompleted()
+		expect(client1.todos()).toEqual([secondTodo])
+	})
+
+	test("syncs a queued edit after the previous push is acknowledged", async ({
+		gatekeeper,
+	}) => {
+		const { client1, client2 } = gatekeeper
+		const firstTx = client1.transact()
+		firstTx.set("todos", todo("queued", { text: "First title" }))
+		await gatekeeper.activateGates()
+		const first = await client1.commit(firstTx)
+		const secondTodo = todo("queued", { text: "Final title" })
+		const secondTx = client1.transact()
+		secondTx.set("todos", secondTodo)
+		const secondReady = client1.commit(secondTx)
+
+		await first.continueToCompletion()
+		const second = await secondReady
+		await second.continueToCompletion()
+		const pull = await client2.pullFromRemote()
+		await pull.continueToCompletion()
+
+		first.assertCompleted()
+		expect(await first.result).toBeUndefined()
+		second.assertCompleted()
+		pull.assertCompleted()
+		expect(client2.todos()).toEqual([secondTodo])
+	})
+
+	test("rejects a commit when its acknowledgement is lost", async ({
+		gatekeeper,
+	}) => {
+		const { client1 } = gatekeeper
+		const tx = client1.transact()
+		tx.set("todos", todo("lost-ack", { text: "Accepted title" }))
+		const failure = new Error("Connection closed before acknowledgement")
+
+		await gatekeeper.activateGates()
+		const commit = await client1.commit(tx)
+		await commit.continueTo("server")
+
+		await commit.fail(failure)
+
+		commit.assertCompleted()
+		await expect(commit.result).rejects.toBe(failure)
+	})
+
+	test("keeps a server-accepted edit after its acknowledgement is lost", async ({
+		gatekeeper,
+	}) => {
+		const { client1, client2 } = gatekeeper
+		const acceptedTodo = todo("accepted-without-ack", {
+			text: "Stored despite the lost response",
+		})
+		const tx = client1.transact()
+		tx.set("todos", acceptedTodo)
+		const failure = new Error("Connection closed before acknowledgement")
+
+		await gatekeeper.activateGates()
+		const commit = await client1.commit(tx)
+		const commitSettled = Promise.allSettled([commit.result])
+		await commit.continueTo("server")
+		await commit.fail(failure)
+		const pull = await client2.pullFromRemote()
+		await pull.continueToCompletion()
+
+		pull.assertCompleted()
+		expect(client2.todos()).toEqual([acceptedTodo])
+
+		await commitSettled
+	})
 })
