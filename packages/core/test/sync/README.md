@@ -11,7 +11,8 @@ writing client's Gatekeeper context and incorrectly gates another client's pull
 as part of that write. Tests still interact only with client1, client2, and server;
 they do not choose RPC methods or inspect protocol payloads.
 
-Tandem serializes pushes and pulls within each client. Holding a client's push
-also prevents that client from processing its next pull. These tests control
-ordering across clients without bypassing that queue. For example, Client2 can
-read a saved record while Client1's acknowledgement remains held.
+Tandem serializes pushes and pulls within each client. Pausing a client's push at
+a Gatekeeper boundary also prevents that client from processing its next pull.
+These tests control ordering across clients without bypassing that queue. For
+example, Client2 can read a saved record while Client1's acknowledgement remains
+at the server-to-client boundary.
