@@ -19,7 +19,7 @@ import {
 	TandemClientStorage,
 	type TandemClientStorageApi,
 	WriteOpsApi,
-} from "./storage/TandemClientStorage"
+} from "./clientStorage/TandemClientStorage"
 import { Transaction } from "./transaction/Transaction"
 import type { LoggerApi } from "./utils/Logger"
 import type { RngApi } from "./utils/randomId"

@@ -8,7 +8,7 @@ import type {
 } from "../schema/Schema"
 import { collectionIdToTuple } from "../schema/Schema"
 import type { EncodedQuery, ScanWindow } from "../query/Query"
-import { WriteOpsApi } from "../storage/TandemClientStorage"
+import { WriteOpsApi } from "../clientStorage/TandemClientStorage"
 import { partition, reverse } from "../utils/objectUtils"
 import type { Tagged } from "../utils/typeUtils"
 

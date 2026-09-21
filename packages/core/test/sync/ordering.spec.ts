@@ -1,5 +1,5 @@
 import { describe, expect } from "vitest"
-import { test, todo } from "./fixtures"
+import { test, todo } from "../fixtures"
 
 describe("Tandem client sync ordering", () => {
 	test("shows a newer edit while the previous push is in flight", async ({

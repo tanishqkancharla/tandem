@@ -9,7 +9,7 @@ import type {
 	AnyRelations,
 	RuntimeSchemaDefinition,
 } from "./schema/Schema"
-import type { TandemClientStorageApi } from "./storage/TandemClientStorage"
+import type { TandemClientStorageApi } from "./clientStorage/TandemClientStorage"
 import {
 	PatchApi,
 	SyncEngine,

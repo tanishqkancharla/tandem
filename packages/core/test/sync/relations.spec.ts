@@ -12,12 +12,8 @@ import {
 	buildGatekeeperHarness,
 	expectQuery,
 	test,
-	testsRuntimeSchema,
-	todo,
 	type DemoRng,
-	type TestsSchema,
-	type TestsTodo,
-} from "./fixtures"
+} from "../fixtures"
 
 type ThreadSchema = {
 	users: { id: string; profileId: string; name: string }
@@ -56,34 +52,6 @@ const threadRelations = defineRelations(threadSchema, ({ one, many }) => ({
 	},
 }))
 
-function createSchemaGatekeeper({
-	server,
-	logger,
-	rng,
-}: {
-	server: RemoteApi<TestsSchema>
-	logger: LoggerApi
-	rng: DemoRng
-}) {
-	const clients: TandemClient<TestsSchema>[] = []
-	const gatekeeper = buildGatekeeperHarness({
-		server,
-		createClient: (remote, label) => {
-			const client = new TandemClient<TestsSchema>({
-				remote,
-				schema: testsRuntimeSchema,
-				logger,
-				rng: rng.create(label),
-				autoConnect: false,
-				syncInterval: 0,
-			})
-			clients.push(client)
-			return client
-		},
-	})
-	return { clients, gatekeeper }
-}
-
 function createThreadGatekeeper({
 	server,
 	logger,
@@ -113,29 +81,6 @@ function createThreadGatekeeper({
 	return { clients, gatekeeper }
 }
 
-const schemaSyncTest = test.extend<{
-	schemaGatekeeper: ReturnType<typeof createSchemaGatekeeper>["gatekeeper"]
-}>({
-	schemaGatekeeper: async ({ server, logger, rng }, use) => {
-		const { clients, gatekeeper } = createSchemaGatekeeper({
-			server,
-			logger,
-			rng,
-		})
-		await using cleanup = new errore.AsyncDisposableStack()
-		await using harness = gatekeeper
-
-		for (const client of clients) {
-			await client.ready
-			await client.connect()
-			cleanup.defer(() => client.disconnect())
-		}
-
-		await use(harness)
-		await harness.deactivateGatesAndSettle()
-	},
-})
-
 const threadSyncTest = test.extend<{
 	threadGatekeeper: ReturnType<typeof createThreadGatekeeper>["gatekeeper"]
 }>({
@@ -163,130 +108,36 @@ const threadSyncTest = test.extend<{
 	},
 })
 
-describe("TandemClient sync", () => {
-	test("syncs a committed change from one client to another subscribed client", async ({
-		gatekeeper,
-	}) => {
-		const { client1, client2 } = gatekeeper
-		const seenByClient2: TestsTodo[][] = []
-		client2.subscribe({ collection: "todos" }, (result) => {
-			seenByClient2.push(result)
-		})
+type ThreadGatekeeper = ReturnType<typeof createThreadGatekeeper>["gatekeeper"]
 
-		// A commit on client1 is synced to client2's subscription
-		const tx = client1.transact()
-		tx.set(
-			"todos",
-			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
-		)
-		await (
-			await client1.commit(tx)
-		).result
+const threadConflictTest = test.extend<{
+	makeThreadGatekeeper: (args: {
+		remote: RemoteApi<ThreadSchema>
+	}) => Promise<ThreadGatekeeper>
+}>({
+	makeThreadGatekeeper: async ({ logger, rng }, use) => {
+		await using cleanup = new errore.AsyncDisposableStack()
 
-		await vi.waitFor(() => {
-			expect(seenByClient2).toEqual([
-				[todo("todo-1", { text: "Write the sync spec", priority: 2 })],
-			])
-		})
-
-		// The synced record is also queryable directly on client2
-		await expectQuery(client2, {
-			collection: "todos",
-			where: { id: "todo-1" },
-			limit: 1,
-		}).toResolveTo([
-			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
-		])
-	})
-
-	schemaSyncTest(
-		"syncs flat subscription updates unchanged when constructed with a runtime schema",
-		async ({ schemaGatekeeper }) => {
-			const { client1: schemaClient1, client2: schemaClient2 } =
-				schemaGatekeeper
-
-			const seenByClient2: TestsTodo[][] = []
-			schemaClient2.subscribe({ collection: "todos" }, (result) => {
-				seenByClient2.push(result)
+		await use(async ({ remote }) => {
+			const { clients, gatekeeper } = createThreadGatekeeper({
+				server: remote,
+				logger,
+				rng,
+			})
+			cleanup.defer(async () => {
+				await gatekeeper.deactivateGatesAndSettle()
+				await Promise.all(clients.map((client) => client.disconnect()))
+				await gatekeeper[Symbol.asyncDispose]()
 			})
 
-			// A flat commit on one schema-enabled client still reaches another flat subscription
-			const tx = schemaClient1.transact()
-			tx.set(
-				"todos",
-				todo("todo-1", { text: "Write the sync spec", priority: 2 }),
-			)
-			await (
-				await schemaClient1.commit(tx)
-			).result
-
-			await vi.waitFor(() => {
-				expect(seenByClient2).toEqual([
-					[todo("todo-1", { text: "Write the sync spec", priority: 2 })],
-				])
-			})
-
-			// The synced record remains queryable through the object query API
-			await expectQuery(schemaClient2, {
-				collection: "todos",
-				where: { id: "todo-1" },
-				limit: 1,
-			}).toResolveTo([
-				todo("todo-1", { text: "Write the sync spec", priority: 2 }),
-			])
-		},
-	)
-
-	test("syncs remote updates that move records out of subscribed where filters", async ({
-		gatekeeper,
-	}) => {
-		const { client1, client2 } = gatekeeper
-		const seenByClient2: TestsTodo[][] = []
-		client2.subscribe(
-			{ collection: "todos", where: { done: false } },
-			(result) => {
-				seenByClient2.push(result)
-			},
-		)
-
-		// A matching remote record enters the subscribed result
-		const seedTx = client1.transact()
-		seedTx.set(
-			"todos",
-			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
-		)
-		await (
-			await client1.commit(seedTx)
-		).result
-
-		await vi.waitFor(() => {
-			expect(seenByClient2).toEqual([
-				[todo("todo-1", { text: "Write the sync spec", priority: 2 })],
-			])
+			await Promise.all(clients.map((client) => client.ready))
+			await Promise.all(clients.map((client) => client.connect()))
+			return gatekeeper
 		})
+	},
+})
 
-		// Updating the record so it no longer matches removes it from the subscription
-		const completeTx = client1.transact()
-		completeTx.set(
-			"todos",
-			todo("todo-1", {
-				text: "Write the sync spec",
-				done: true,
-				priority: 2,
-			}),
-		)
-		await (
-			await client1.commit(completeTx)
-		).result
-
-		await vi.waitFor(() => {
-			expect(seenByClient2).toEqual([
-				[todo("todo-1", { text: "Write the sync spec", priority: 2 })],
-				[],
-			])
-		})
-	})
-
+describe("TandemClient relation sync", () => {
 	threadSyncTest(
 		"pulls relational snapshots after subscribing with an advanced cookie",
 		async ({ threadGatekeeper }) => {
@@ -665,6 +516,106 @@ describe("TandemClient sync", () => {
 			await expectQuery(client2, { collection: "profiles" }).toResolveTo([
 				{ id: "profile-1", displayName: "Countess Lovelace" },
 			])
+		},
+	)
+
+	threadConflictTest(
+		"replays a pending included relation edit on top of a newer remote patch",
+		async ({ makeRemote, makeThreadGatekeeper }) => {
+			const server = makeRemote({
+				schema: threadSchema,
+				relations: threadRelations,
+			})
+			const gate = Promise.withResolvers<void>()
+			let delayedClientId = ""
+			let delayedPushStarted = false
+			const delayedServer: RemoteApi<ThreadSchema> = {
+				connect: (client) => server.connect(client),
+				pull: (args) => server.pull(args),
+				push: async (args) => {
+					if (args.clientId === delayedClientId) {
+						delayedPushStarted = true
+						await gate.promise
+					}
+					return server.push(args)
+				},
+			}
+			const gatekeeper = await makeThreadGatekeeper({ remote: delayedServer })
+			const { client1, client2 } = gatekeeper
+			delayedClientId = client2.clientId
+			const threadWithMessagesQuery = {
+				collection: "threads",
+				select: { id: true },
+				with: {
+					messages: {
+						select: { body: true },
+						orderBy: { createdAt: "asc" },
+					},
+				},
+			} as const
+			const seenByClient2: { id: string; messages: { body: string }[] }[][] = []
+			client1.subscribe(threadWithMessagesQuery)
+			client2.subscribe(threadWithMessagesQuery, (result) => {
+				seenByClient2.push(result)
+			})
+
+			const seedTx = client1.transact()
+			seedTx.set("threads", {
+				id: "thread-1",
+				ownerId: "user-1",
+				title: "Active thread",
+				status: "active",
+			})
+			seedTx.set("messages", {
+				id: "message-1",
+				threadId: "thread-1",
+				body: "Original message",
+				createdAt: 1,
+			})
+			const seed = await client1.commit(seedTx)
+			await seed.result
+			await expectQuery(client2, threadWithMessagesQuery).toResolveTo([
+				{ id: "thread-1", messages: [{ body: "Original message" }] },
+			])
+			await gatekeeper.activateGates()
+
+			const localEditTx = client2.transact()
+			localEditTx.set("messages", {
+				id: "message-1",
+				threadId: "thread-1",
+				body: "Local included edit",
+				createdAt: 1,
+			})
+			const pendingCommit = await client2.commit(localEditTx)
+			const pendingPush = pendingCommit.continueTo("server")
+			await vi.waitFor(() => expect(delayedPushStarted).toBe(true))
+
+			const remoteEditTx = client1.transact()
+			remoteEditTx.set("messages", {
+				id: "message-1",
+				threadId: "thread-1",
+				body: "Remote included edit",
+				createdAt: 1,
+			})
+			const remoteEdit = await client1.commit(remoteEditTx)
+			await remoteEdit.continueToCompletion()
+			await remoteEdit.result
+			const expectedRebasedRows = [
+				{ id: "thread-1", messages: [{ body: "Local included edit" }] },
+			]
+
+			await expectQuery(client2, threadWithMessagesQuery).toResolveTo(
+				expectedRebasedRows,
+			)
+			expect(seenByClient2.at(-1)).toEqual(expectedRebasedRows)
+
+			gate.resolve()
+			await pendingPush
+			await pendingCommit.continueToCompletion()
+			await pendingCommit.result
+			await expectQuery(client1, threadWithMessagesQuery).toResolveTo(
+				expectedRebasedRows,
+			)
 		},
 	)
 })
