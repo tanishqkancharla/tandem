@@ -299,15 +299,15 @@ type Fixtures = {
 }
 
 export const test = base.extend<Fixtures>({
-	logger: async ({ task: _task }, use) => {
+	logger: async ({}, use) => {
 		await use(new Logger({ sinks: [] }))
 	},
 
-	rng: async ({ task: _task }, use) => {
+	rng: async ({}, use) => {
 		await use(createRng())
 	},
 
-	makeRemote: async ({ task: _task }, use) => {
+	makeRemote: async ({}, use) => {
 		const remotes: { close(): Promise<void> }[] = []
 
 		function makeRemote(): TandemServer<TestsSchema, {}>

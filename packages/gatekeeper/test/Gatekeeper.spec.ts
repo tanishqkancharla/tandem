@@ -115,7 +115,7 @@ function createTimerHarness(gates: { enter: boolean; exit: boolean }) {
 type TestHarness = ReturnType<typeof createHarness>
 
 const test = base.extend<{ harness: TestHarness }>({
-	harness: async ({ task: _task }, use) => {
+	harness: async ({}, use) => {
 		await using harness = createHarness()
 		await harness.activateGates()
 		await use(harness)

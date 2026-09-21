@@ -125,7 +125,7 @@ const test = baseTest.extend<{
 	syncDb: TupleDatabaseClient<TupleSchema>
 	asyncDb: AsyncTupleDatabaseClient<TupleSchema>
 }>({
-	syncDb: async ({ task: _task }, use) => {
+	syncDb: async ({}, use) => {
 		const storage = new InMemoryTupleStorage()
 		storage.commit({ set: [...tuples] })
 		const db = new TupleDatabaseClient<TupleSchema>(new TupleDatabase(storage))
@@ -134,7 +134,7 @@ const test = baseTest.extend<{
 
 		db.close()
 	},
-	asyncDb: async ({ task: _task }, use) => {
+	asyncDb: async ({}, use) => {
 		const storage = new InMemoryTupleStorage()
 		storage.commit({ set: [...tuples] })
 		const db = new AsyncTupleDatabaseClient<TupleSchema>(
