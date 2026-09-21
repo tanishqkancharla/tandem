@@ -1,6 +1,12 @@
-import { codec, collection, defineSchema } from "@tanishqkancharla/tandem-core"
+import { Gatekeeper } from "@tanishqkancharla/gatekeeper"
+import {
+	codec,
+	collection,
+	defineSchema,
+	TandemClient,
+} from "@tanishqkancharla/tandem-core"
 import { describe, expect } from "vitest"
-import { test, todo } from "./fixtures"
+import { test, todo, type TestsSchema } from "./fixtures"
 
 class EventStart {
 	constructor(readonly iso: string) {}
@@ -47,32 +53,54 @@ const testsEventRuntimeSchema = defineSchema({
 	}),
 })
 
+function buildClientGatekeeper<Client extends object>(client: Client) {
+	return new Gatekeeper().add("client", () => client).build()
+}
+
 describe("TandemClient persistence", () => {
 	test("reloads persisted records after recreating the app", async ({
-		makeClient,
+		logger,
+		makeStorage,
+		rng,
 	}) => {
-		// Commit records with the first client
-		const firstClient = await makeClient({
-			label: "persistent-client-1",
-			remote: false,
-			clientStorage: { dbName: "persisted-todos" },
-		})
+		const firstStorage = makeStorage<TestsSchema>({ dbName: "persisted-todos" })
+		await using firstGatekeeper = buildClientGatekeeper(
+			new TandemClient<TestsSchema>({
+				clientStorage: firstStorage,
+				logger,
+				rng: rng.create("persistent-client-1"),
+			}),
+		)
+		const firstClient = firstGatekeeper.client
+		await firstClient.ready
 
+		// Commit records with the first client
 		const tx = firstClient.transact()
 		tx.set(
 			"todos",
 			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
 		)
 		tx.set("todos", todo("todo-3", { text: "Fix the sync bug", priority: 3 }))
-		await firstClient.commit(tx)
-		await firstClient.flushClientStorage()
+		await (
+			await firstClient.commit(tx)
+		).result
+		await (
+			await firstClient.flushClientStorage()
+		).result
+		await firstStorage.close()
 
 		// A new client backed by the same storage sees the persisted records
-		const secondClient = await makeClient({
-			label: "persistent-client-2",
-			remote: false,
-			clientStorage: { dbName: "persisted-todos" },
-		})
+		await using secondGatekeeper = buildClientGatekeeper(
+			new TandemClient<TestsSchema>({
+				clientStorage: makeStorage<TestsSchema>({
+					dbName: "persisted-todos",
+				}),
+				logger,
+				rng: rng.create("persistent-client-2"),
+			}),
+		)
+		const secondClient = secondGatekeeper.client
+		await secondClient.ready
 
 		const persistedTodosOnReload = secondClient.query({
 			collection: "todos",
@@ -86,7 +114,7 @@ describe("TandemClient persistence", () => {
 	})
 
 	test("reloads persisted records through schema-owned codecs", async ({
-		makeClient,
+		logger,
 		makeStorage,
 		rng,
 	}) => {
@@ -95,13 +123,17 @@ describe("TandemClient persistence", () => {
 			dbName,
 			schema: testsEventRuntimeSchema,
 		})
-		const firstClient = await makeClient.withSchema({
-			label: "schema-codec-client-1",
-			remote: false,
-			schema: testsEventRuntimeSchema,
-			relations: {},
-			clientStorage: firstStorage,
-		})
+		await using firstGatekeeper = buildClientGatekeeper(
+			new TandemClient<TestsEventSchema>({
+				schema: testsEventRuntimeSchema,
+				relations: {},
+				clientStorage: firstStorage,
+				logger,
+				rng: rng.create("schema-codec-client-1"),
+			}),
+		)
+		const firstClient = firstGatekeeper.client
+		await firstClient.ready
 
 		// Commit an event whose runtime value relies on the schema-owned codec
 		const event = {
@@ -111,20 +143,28 @@ describe("TandemClient persistence", () => {
 		}
 		const tx = firstClient.transact()
 		tx.set("events", event)
-		await firstClient.commit(tx)
-		await firstClient.flushClientStorage()
+		await (
+			await firstClient.commit(tx)
+		).result
+		await (
+			await firstClient.flushClientStorage()
+		).result
 		await firstStorage.close()
 
-		const secondClient = await makeClient.withSchema({
-			label: "schema-codec-client-2",
-			remote: false,
-			schema: testsEventRuntimeSchema,
-			relations: {},
-			clientStorage: makeStorage<TestsEventSchema>({
-				dbName,
+		await using secondGatekeeper = buildClientGatekeeper(
+			new TandemClient<TestsEventSchema>({
 				schema: testsEventRuntimeSchema,
+				relations: {},
+				clientStorage: makeStorage<TestsEventSchema>({
+					dbName,
+					schema: testsEventRuntimeSchema,
+				}),
+				logger,
+				rng: rng.create("schema-codec-client-2"),
 			}),
-		})
+		)
+		const secondClient = secondGatekeeper.client
+		await secondClient.ready
 
 		// Recreated storage decodes the persisted value back to the runtime shape
 		const persistedEvents = secondClient.query({ collection: "events" })
@@ -134,7 +174,7 @@ describe("TandemClient persistence", () => {
 	})
 
 	test("keeps explicit IndexedDB codec support without a runtime schema", async ({
-		makeClient,
+		logger,
 		makeStorage,
 		rng,
 	}) => {
@@ -143,12 +183,16 @@ describe("TandemClient persistence", () => {
 			dbName,
 			codecs: { events: eventCodec },
 		})
-		const firstClient = await makeClient.withSchema<TestsEventSchema>({
-			label: "explicit-codec-client-1",
-			remote: false,
-			relations: {},
-			clientStorage: firstStorage,
-		})
+		await using firstGatekeeper = buildClientGatekeeper(
+			new TandemClient<TestsEventSchema>({
+				relations: {},
+				clientStorage: firstStorage,
+				logger,
+				rng: rng.create("explicit-codec-client-1"),
+			}),
+		)
+		const firstClient = firstGatekeeper.client
+		await firstClient.ready
 
 		// Existing explicit storage codecs still encode persisted writes
 		const event = {
@@ -158,19 +202,27 @@ describe("TandemClient persistence", () => {
 		}
 		const tx = firstClient.transact()
 		tx.set("events", event)
-		await firstClient.commit(tx)
-		await firstClient.flushClientStorage()
+		await (
+			await firstClient.commit(tx)
+		).result
+		await (
+			await firstClient.flushClientStorage()
+		).result
 		await firstStorage.close()
 
-		const secondClient = await makeClient.withSchema<TestsEventSchema>({
-			label: "explicit-codec-client-2",
-			remote: false,
-			relations: {},
-			clientStorage: makeStorage<TestsEventSchema>({
-				dbName,
-				codecs: { events: eventCodec },
+		await using secondGatekeeper = buildClientGatekeeper(
+			new TandemClient<TestsEventSchema>({
+				relations: {},
+				clientStorage: makeStorage<TestsEventSchema>({
+					dbName,
+					codecs: { events: eventCodec },
+				}),
+				logger,
+				rng: rng.create("explicit-codec-client-2"),
 			}),
-		})
+		)
+		const secondClient = secondGatekeeper.client
+		await secondClient.ready
 
 		// Recreated storage decodes through the explicit codec as before
 		const persistedEvents = secondClient.query({ collection: "events" })

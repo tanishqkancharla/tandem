@@ -6,7 +6,6 @@ import {
 	type AnySchema,
 	collection,
 	type Codec,
-	defineRelations,
 	defineSchema,
 	Logger,
 	type RelationalQuery,
@@ -17,7 +16,6 @@ import {
 	t,
 	TandemClient,
 	TandemClientIndexedDbStorage,
-	type TandemClientStorageApi,
 } from "@tanishqkancharla/tandem-core"
 import {
 	TandemServer,
@@ -99,73 +97,12 @@ export function expectQuery<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema>,
 	Query extends RelationalQuery<Schema, Relations>,
->(client: TandemClient<Schema, Relations>, query: Query) {
+>(client: Pick<TandemClient<Schema, Relations>, "query">, query: Query) {
 	return expectResolver(
 		() =>
 			client.query(query) as RelationalQueryResult<Schema, Relations, Query>,
 	)
 }
-
-export type ThreadTestUser = {
-	id: string
-	profileId: string
-	name: string
-}
-
-export type ThreadTestProfile = {
-	id: string
-	displayName: string
-}
-
-export type ThreadTestThread = {
-	id: string
-	ownerId: string
-	title: string
-	status: "active" | "archived"
-}
-
-export type ThreadTestMessage = {
-	id: string
-	threadId: string
-	body: string
-	createdAt: number
-}
-
-export type ThreadTestSchema = {
-	users: ThreadTestUser
-	profiles: ThreadTestProfile
-	threads: ThreadTestThread
-	messages: ThreadTestMessage
-}
-
-export const threadTestSchema = defineSchema({
-	users: collection<ThreadTestUser>({ fields: ["id", "profileId", "name"] }),
-	profiles: collection<ThreadTestProfile>({ fields: ["id", "displayName"] }),
-	threads: collection<ThreadTestThread>({
-		fields: ["id", "ownerId", "title", "status"],
-	}),
-	messages: collection<ThreadTestMessage>({
-		fields: ["id", "threadId", "body", "createdAt"],
-	}),
-})
-
-export const threadTestRelations = defineRelations(
-	threadTestSchema,
-	({ one, many }) => ({
-		users: {
-			profile: one("profiles", { from: "profileId", to: "id" }),
-		},
-		threads: {
-			owner: one("users", { from: "ownerId", to: "id" }),
-			messages: many("messages", { from: "id", to: "threadId" }),
-		},
-	}),
-)
-
-export type ThreadClient = TandemClient<
-	ThreadTestSchema,
-	typeof threadTestRelations
->
 
 export type DemoRng = {
 	next(prefix?: string): string
@@ -191,32 +128,10 @@ function createRng(): DemoRng {
 	}
 }
 
-function isTandemClientStorageApi<Schema extends AnySchema>(
-	value: object,
-): value is TandemClientStorageApi<Schema> {
-	return (
-		"commit" in value &&
-		typeof (value as TandemClientStorageApi<Schema>).commit === "function"
-	)
-}
-
 export type MakeStorageOptions<Schema extends AnySchema = AnySchema> = {
 	dbName?: string
 	schema?: RuntimeSchemaDefinition<Schema>
 	codecs?: Record<string, Codec<any, any>>
-}
-
-export type MakeClientOptions<
-	Schema extends AnySchema = TestsSchema,
-	Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
-> = {
-	label?: string
-	schema?: RuntimeSchemaDefinition<Schema>
-	relations?: Relations
-	remote?: RemoteApi<Schema> | false
-	clientStorage?: TandemClientStorageApi<Schema> | MakeStorageOptions<Schema>
-	autoConnect?: boolean
-	syncInterval?: number
 }
 
 export type MakeRemote = {
@@ -233,48 +148,33 @@ export type MakeStorage = {
 	): TandemClientIndexedDbStorage<Schema>
 }
 
-export type MakeClient = {
-	(
-		options?: MakeClientOptions<TestsSchema, AnyRelations<TestsSchema>>,
-	): Promise<TandemClient<TestsSchema, AnyRelations<TestsSchema>>>
-	withSchema<
-		Schema extends AnySchema = TestsSchema,
-		Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
-	>(
-		options: MakeClientOptions<Schema, Relations> & {
-			remote: RemoteApi<Schema> | false
-			relations: Relations
-		},
-	): Promise<TandemClient<Schema, Relations>>
-}
-
-type ThreadClients = {
-	client1: ThreadClient
-	client2: ThreadClient
-}
-
 // A real transport creates a fresh async context when it delivers a poke. The
 // in-process server needs the same boundary so one client's notification work
 // is not attributed to another client's active Gatekeeper call.
-class InProcessTransport implements RemoteApi<TestsSchema> {
-	constructor(private readonly server: RemoteApi<TestsSchema>) {}
+class InProcessTransport<
+	Schema extends AnySchema,
+> implements RemoteApi<Schema> {
+	constructor(private readonly server: RemoteApi<Schema>) {}
 
-	connect: RemoteApi<TestsSchema>["connect"] = (client) =>
+	connect: RemoteApi<Schema>["connect"] = (client) =>
 		this.server.connect({
 			...client,
 			poke: asyncHooks.AsyncResource.bind(client.poke),
 		})
-	push: RemoteApi<TestsSchema>["push"] = (args) => this.server.push(args)
-	pull: RemoteApi<TestsSchema>["pull"] = (args) => this.server.pull(args)
+	push: RemoteApi<Schema>["push"] = (args) => this.server.push(args)
+	pull: RemoteApi<Schema>["pull"] = (args) => this.server.pull(args)
 }
 
-function buildGatekeeperHarness(
-	server: RemoteApi<TestsSchema>,
-	createClient: (
-		remote: RemoteApi<TestsSchema>,
-		label: string,
-	) => TandemClient<TestsSchema>,
-) {
+export function buildGatekeeperHarness<
+	Schema extends AnySchema,
+	Client extends object,
+>({
+	server,
+	createClient,
+}: {
+	server: RemoteApi<Schema>
+	createClient: (remote: RemoteApi<Schema>, label: string) => Client
+}) {
 	return new Gatekeeper()
 		.add("server", () => new InProcessTransport(server))
 		.add("client1", ({ server }) => createClient(server, "client1"))
@@ -282,7 +182,17 @@ function buildGatekeeperHarness(
 		.build()
 }
 
-type GatekeeperHarness = ReturnType<typeof buildGatekeeperHarness>
+function buildDefaultGatekeeperHarness(
+	server: RemoteApi<TestsSchema>,
+	createClient: (
+		remote: RemoteApi<TestsSchema>,
+		label: string,
+	) => TandemClient<TestsSchema>,
+) {
+	return buildGatekeeperHarness({ server, createClient })
+}
+
+type GatekeeperHarness = ReturnType<typeof buildDefaultGatekeeperHarness>
 
 type Fixtures = {
 	logger: Logger
@@ -290,11 +200,6 @@ type Fixtures = {
 	server: TandemServer<TestsSchema, {}>
 	makeRemote: MakeRemote
 	makeStorage: MakeStorage
-	makeClient: MakeClient
-	client1: TandemClient<TestsSchema>
-	client2: TandemClient<TestsSchema>
-	threadClient: ThreadClient
-	threadClients: ThreadClients
 	gatekeeper: GatekeeperHarness
 }
 
@@ -384,153 +289,27 @@ export const test = base.extend<Fixtures>({
 		}
 	},
 
-	makeClient: async ({ logger, rng, server, makeStorage }, use) => {
-		const clients: {
-			client: { disconnect(): Promise<void> }
-			hasRemote: boolean
-		}[] = []
-
-		const createClient = async <
-			Schema extends AnySchema,
-			Relations extends AnyRelations<Schema>,
-		>(
-			options: MakeClientOptions<Schema, Relations>,
-			fallbackRemote?: RemoteApi<Schema>,
-		) => {
-			const {
-				autoConnect = false,
-				label = "client",
-				remote,
-				schema,
-				relations,
-				clientStorage: storageOption,
-				syncInterval = 0,
-			} = options
-
-			const resolvedRemote =
-				remote === false ? undefined : (remote ?? fallbackRemote)
-
-			const clientStorage = storageOption
-				? isTandemClientStorageApi<Schema>(storageOption)
-					? storageOption
-					: makeStorage<Schema>({
-							dbName: storageOption.dbName,
-							schema: storageOption.schema ?? schema,
-							codecs: storageOption.codecs,
-						})
-				: undefined
-
-			const client = new TandemClient<Schema, Relations>({
-				autoConnect,
-				logger,
-				rng: rng.create(label),
-				remote: resolvedRemote,
-				schema,
-				relations,
-				clientStorage,
-				syncInterval,
-			})
-
-			clients.push({ client, hasRemote: Boolean(resolvedRemote) })
-			await client.ready
-
-			return client
-		}
-
-		const makeClient = Object.assign(
-			(
-				options: MakeClientOptions<TestsSchema, AnyRelations<TestsSchema>> = {},
-			) => createClient(options, server),
-			{
-				withSchema: <
-					Schema extends AnySchema = TestsSchema,
-					Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
-				>(
-					options: MakeClientOptions<Schema, Relations> & {
-						remote: RemoteApi<Schema> | false
-						relations: Relations
-					},
-				) => createClient(options),
-			},
-		)
-
-		await use(makeClient)
-
-		for (const { client, hasRemote } of clients) {
-			if (hasRemote) {
-				await client.disconnect()
-			}
-		}
-	},
-
-	client1: async ({ makeClient }, use) => {
-		const client = await makeClient({ label: "client1" })
-		await client.connect()
-		await use(client)
-	},
-
-	client2: async ({ makeClient }, use) => {
-		const client = await makeClient({ label: "client2" })
-		await client.connect()
-		await use(client)
-	},
-
-	threadClient: async ({ makeClient }, use) => {
-		await use(
-			await makeClient.withSchema({
-				label: "thread-client",
-				schema: threadTestSchema,
-				relations: threadTestRelations,
-				remote: false,
-			}),
-		)
-	},
-
-	threadClients: async ({ makeClient, makeRemote }, use) => {
-		const remote = makeRemote({
-			schema: threadTestSchema,
-			relations: threadTestRelations,
-		})
-		const [client1, client2] = await Promise.all([
-			makeClient.withSchema({
-				label: "thread-client1",
-				schema: threadTestSchema,
-				relations: threadTestRelations,
-				remote,
-			}),
-			makeClient.withSchema({
-				label: "thread-client2",
-				schema: threadTestSchema,
-				relations: threadTestRelations,
-				remote,
-			}),
-		])
-
-		await Promise.all([client1.connect(), client2.connect()])
-		await use({ client1, client2 })
-	},
-
 	gatekeeper: async ({ server, logger, rng }, use) => {
 		const clients: TandemClient<TestsSchema>[] = []
 		await using cleanup = new errore.AsyncDisposableStack()
-		await using gatekeeper = buildGatekeeperHarness(server, (remote, label) => {
-			const client = new TandemClient<TestsSchema>({
-				remote,
-				schema: testsRuntimeSchema,
-				logger,
-				rng: rng.create(label),
-				autoConnect: false,
-				syncInterval: 0,
-			})
-			clients.push(client)
-			cleanup.defer(() => client.disconnect())
-			return client
-		})
+		await using gatekeeper = buildDefaultGatekeeperHarness(
+			server,
+			(remote, label) => {
+				const client = new TandemClient<TestsSchema>({
+					remote,
+					logger,
+					rng: rng.create(label),
+					autoConnect: false,
+					syncInterval: 0,
+				})
+				clients.push(client)
+				cleanup.defer(() => client.disconnect())
+				return client
+			},
+		)
 
 		for (const client of clients) {
 			await client.ready
-			const subscription = client.subscribe({ collection: "todos" })
-			cleanup.defer(() => subscription.destroy())
 			await client.connect()
 		}
 

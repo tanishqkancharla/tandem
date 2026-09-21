@@ -25,6 +25,7 @@ describe("Tandem client sync ordering", () => {
 		gatekeeper,
 	}) => {
 		const { client1, client2 } = gatekeeper
+		const subscription = client2.subscribe({ collection: "todos" })
 		const acceptedTodo = todo("accepted", { text: "Accepted title" })
 		const tx = client1.transact()
 		tx.set("todos", acceptedTodo)
@@ -38,6 +39,7 @@ describe("Tandem client sync ordering", () => {
 		commit.assertSentBy("server").assertWaitingFor("client1")
 		pull.assertCompleted()
 		expect(client2.query({ collection: "todos" })).toEqual([acceptedTodo])
+		subscription.destroy()
 	})
 
 	test("releases a queued edit after acknowledging the previous push", async ({
@@ -71,6 +73,7 @@ describe("Tandem client sync ordering", () => {
 		gatekeeper,
 	}) => {
 		const { client1, client2 } = gatekeeper
+		const subscription = client2.subscribe({ collection: "todos" })
 		const firstTx = client1.transact()
 		firstTx.set("todos", todo("queued", { text: "First title" }))
 		await gatekeeper.activateGates()
@@ -91,6 +94,7 @@ describe("Tandem client sync ordering", () => {
 		second.assertCompleted()
 		pull.assertCompleted()
 		expect(client2.query({ collection: "todos" })).toEqual([secondTodo])
+		subscription.destroy()
 	})
 
 	test("rejects a commit when its acknowledgement is lost", async ({
@@ -115,6 +119,7 @@ describe("Tandem client sync ordering", () => {
 		gatekeeper,
 	}) => {
 		const { client1, client2 } = gatekeeper
+		const subscription = client2.subscribe({ collection: "todos" })
 		const acceptedTodo = todo("accepted-without-ack", {
 			text: "Stored despite the lost response",
 		})
@@ -134,5 +139,6 @@ describe("Tandem client sync ordering", () => {
 		expect(client2.query({ collection: "todos" })).toEqual([acceptedTodo])
 
 		await commitSettled
+		subscription.destroy()
 	})
 })

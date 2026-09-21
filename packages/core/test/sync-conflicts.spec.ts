@@ -1,305 +1,389 @@
-import type { RemoteApi } from "@tanishqkancharla/tandem-core"
+import {
+	collection,
+	defineRelations,
+	defineSchema,
+	type LoggerApi,
+	type RemoteApi,
+	TandemClient,
+} from "@tanishqkancharla/tandem-core"
+import * as errore from "errore"
 import { describe, expect, vi } from "vitest"
 import {
+	buildGatekeeperHarness,
 	expectQuery,
 	test,
-	type TestsSchema,
-	threadTestRelations,
-	threadTestSchema,
 	todo,
+	type DemoRng,
+	type TestsSchema,
 	type TestsTodo,
-	type ThreadTestSchema,
 } from "./fixtures"
+
+type ThreadSchema = {
+	threads: {
+		id: string
+		ownerId: string
+		title: string
+		status: "active" | "archived"
+	}
+	messages: { id: string; threadId: string; body: string; createdAt: number }
+}
+
+const threadSchema = defineSchema({
+	threads: collection<ThreadSchema["threads"]>({
+		fields: ["id", "ownerId", "title", "status"],
+	}),
+	messages: collection<ThreadSchema["messages"]>({
+		fields: ["id", "threadId", "body", "createdAt"],
+	}),
+})
+
+const threadRelations = defineRelations(threadSchema, ({ many }) => ({
+	threads: {
+		messages: many("messages", { from: "id", to: "threadId" }),
+	},
+}))
+
+function createTodoGatekeeper({
+	remote,
+	logger,
+	rng,
+}: {
+	remote: RemoteApi<TestsSchema>
+	logger: LoggerApi
+	rng: DemoRng
+}) {
+	const clients: TandemClient<TestsSchema>[] = []
+	const gatekeeper = buildGatekeeperHarness({
+		server: remote,
+		createClient: (server, label) => {
+			const client = new TandemClient<TestsSchema>({
+				remote: server,
+				logger,
+				rng: rng.create(label),
+				autoConnect: false,
+				syncInterval: 0,
+			})
+			clients.push(client)
+			return client
+		},
+	})
+	return { clients, gatekeeper }
+}
+
+function createThreadGatekeeper({
+	remote,
+	logger,
+	rng,
+}: {
+	remote: RemoteApi<ThreadSchema>
+	logger: LoggerApi
+	rng: DemoRng
+}) {
+	const clients: TandemClient<ThreadSchema, typeof threadRelations>[] = []
+	const gatekeeper = buildGatekeeperHarness({
+		server: remote,
+		createClient: (server, label) => {
+			const client = new TandemClient<ThreadSchema, typeof threadRelations>({
+				remote: server,
+				schema: threadSchema,
+				relations: threadRelations,
+				logger,
+				rng: rng.create(label),
+				autoConnect: false,
+				syncInterval: 0,
+			})
+			clients.push(client)
+			return client
+		},
+	})
+	return { clients, gatekeeper }
+}
+
+type ClientName = "client1" | "client2"
+type TodoGatekeeper = ReturnType<typeof createTodoGatekeeper>["gatekeeper"]
+type ThreadGatekeeper = ReturnType<typeof createThreadGatekeeper>["gatekeeper"]
+
+const conflictTest = test.extend<{
+	makeTodoGatekeeper: (args: {
+		remote: RemoteApi<TestsSchema>
+		connect?: readonly ClientName[]
+	}) => Promise<TodoGatekeeper>
+	makeThreadGatekeeper: (args: {
+		remote: RemoteApi<ThreadSchema>
+	}) => Promise<ThreadGatekeeper>
+}>({
+	makeTodoGatekeeper: async ({ logger, rng }, use) => {
+		await using cleanup = new errore.AsyncDisposableStack()
+
+		await use(async ({ remote, connect = ["client1", "client2"] }) => {
+			const { clients, gatekeeper } = createTodoGatekeeper({
+				remote,
+				logger,
+				rng,
+			})
+			const connectedClients = clients.filter((_, index) =>
+				connect.includes(index === 0 ? "client1" : "client2"),
+			)
+			cleanup.defer(async () => {
+				await gatekeeper.deactivateGatesAndSettle()
+				await Promise.all(connectedClients.map((client) => client.disconnect()))
+				await gatekeeper[Symbol.asyncDispose]()
+			})
+
+			await Promise.all(clients.map((client) => client.ready))
+			await Promise.all(connectedClients.map((client) => client.connect()))
+			return gatekeeper
+		})
+	},
+
+	makeThreadGatekeeper: async ({ logger, rng }, use) => {
+		await using cleanup = new errore.AsyncDisposableStack()
+
+		await use(async ({ remote }) => {
+			const { clients, gatekeeper } = createThreadGatekeeper({
+				remote,
+				logger,
+				rng,
+			})
+			cleanup.defer(async () => {
+				await gatekeeper.deactivateGatesAndSettle()
+				await Promise.all(clients.map((client) => client.disconnect()))
+				await gatekeeper[Symbol.asyncDispose]()
+			})
+
+			await Promise.all(clients.map((client) => client.ready))
+			await Promise.all(clients.map((client) => client.connect()))
+			return gatekeeper
+		})
+	},
+})
 
 describe("TandemClient sync conflicts", () => {
 	test("rolls back an optimistic write when the server rejects the push", async ({
-		makeClient,
+		gatekeeper,
 	}) => {
-		const client = await makeClient({
-			label: "offline-client",
-			remote: {
-				connect: () => Promise.resolve(async () => {}),
-				pull: () => Promise.resolve({ cookie: 0 as any, patch: {} }),
-				push: () => Promise.reject(new Error("offline")),
-			},
-		})
-
+		const { client1 } = gatekeeper
 		const offlineDraft = todo("offline-todo", {
 			text: "Write while offline",
 			priority: 1,
 		})
-
 		let latestResult: TestsTodo[] | undefined
-		client.subscribe({ collection: "todos" }, (result) => {
+		client1.subscribe({ collection: "todos" }, (result) => {
 			latestResult = result
 		})
+		await gatekeeper.activateGates()
 
-		await client.connect()
-
-		// The optimistic write is visible immediately before the push resolves
-		const tx = client.transact()
+		const tx = client1.transact()
 		tx.set("todos", offlineDraft)
+		const commit = await client1.commit(tx)
 
-		const commit = client.commit(tx)
-		const optimisticTodoList = client.query({ collection: "todos" })
-
-		expect(optimisticTodoList).toEqual([offlineDraft])
+		expect(client1.query({ collection: "todos" })).toEqual([offlineDraft])
 		expect(latestResult).toEqual([offlineDraft])
 
-		// After the push fails, the optimistic write is rolled back
-		await expect(commit).rejects.toThrow("offline")
+		const failure = new Error("offline")
+		await commit.fail(failure)
 
-		const todosAfterRollback = client.query({ collection: "todos" })
-
+		await expect(commit.result).rejects.toBe(failure)
 		expect(latestResult).toEqual([])
-		expect(todosAfterRollback).toEqual([])
+		expect(client1.query({ collection: "todos" })).toEqual([])
 	})
 
-	test("keeps pending mutations queued while disconnected and pushes them after reconnect", async ({
-		makeClient,
-		server,
-	}) => {
-		const pushedMutationCounts: number[] = []
-		const remote: RemoteApi<TestsSchema> = {
-			connect: (client) => server.connect(client),
-			pull: (args) => server.pull(args),
-			push: (args) => {
-				pushedMutationCounts.push(args.mutations.length)
-				return server.push(args)
-			},
-		}
-		const client = await makeClient({
-			label: "reconnect-push-client",
-			remote,
-			autoConnect: false,
-		})
+	conflictTest(
+		"keeps pending mutations queued while disconnected and pushes them after reconnect",
+		async ({ makeTodoGatekeeper, server }) => {
+			const gatekeeper = await makeTodoGatekeeper({
+				remote: server,
+				connect: ["client2"],
+			})
+			const { client1, client2 } = gatekeeper
+			client2.subscribe({ collection: "todos" })
 
-		// Committing while disconnected does not call remote push
-		const tx = client.transact()
-		tx.set("todos", todo("todo-1", { text: "Write while disconnected" }))
-		await client.commit(tx)
+			const tx = client1.transact()
+			tx.set("todos", todo("todo-1", { text: "Write while disconnected" }))
+			const commit = await client1.commit(tx)
+			await commit.result
+			const pullBeforeConnect = await client2.pullFromRemote()
+			await pullBeforeConnect.result
 
-		expect(pushedMutationCounts).toEqual([])
+			expect(client2.query({ collection: "todos" })).toEqual([])
 
-		// Connecting later flushes the pending mutation
-		await client.connect()
+			const connect = await client1.connect()
+			await connect.result
 
-		expect(pushedMutationCounts).toEqual([1])
-	})
+			await expectQuery(client2, { collection: "todos" }).toResolveTo([
+				todo("todo-1", { text: "Write while disconnected" }),
+			])
+		},
+	)
 
-	test("replays a pending local edit on top of a newer remote patch", async ({
-		makeClient,
-		server,
-	}) => {
-		const gate = Promise.withResolvers<void>()
-		let delayedClientId = ""
-		let delayedPushStarted = false
-
-		const delayedServer: RemoteApi<TestsSchema> = {
-			connect: (client) => server.connect(client),
-			pull: (args) => server.pull(args),
-			push: async (args) => {
-				if (args.clientId === delayedClientId) {
-					delayedPushStarted = true
-					await gate.promise
-				}
-
-				return server.push(args)
-			},
-		}
-
-		const client1 = await makeClient({
-			label: "client1",
-			remote: delayedServer,
-		})
-		const client2 = await makeClient({
-			label: "client2",
-			remote: delayedServer,
-		})
-		delayedClientId = client2.clientId
-
-		client1.subscribe({ collection: "todos" })
-		client2.subscribe({ collection: "todos" })
-
-		await Promise.all([client1.connect(), client2.connect()])
-
-		// Seed a todo on client1 and wait for it to sync to client2
-		const seedTx = client1.transact()
-		seedTx.set(
-			"todos",
-			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
-		)
-		await client1.commit(seedTx)
-
-		await expectQuery(client2, {
-			collection: "todos",
-			where: { id: "todo-1" },
-			limit: 1,
-		}).toResolveTo([
-			todo("todo-1", { text: "Write the sync spec", priority: 2 }),
-		])
-
-		// Client2 edits the todo; its push is held by the gate
-		const localEditTx = client2.transact()
-		localEditTx.set(
-			"todos",
-			todo("todo-1", { text: "Local edit on client 2", priority: 2 }),
-		)
-		const pendingCommit = client2.commit(localEditTx)
-
-		await vi.waitFor(() => {
-			expect(delayedPushStarted).toBe(true)
-		})
-
-		// While client2's push is in-flight, client1 lands a competing edit
-		const remoteEditTx = client1.transact()
-		remoteEditTx.set(
-			"todos",
-			todo("todo-1", {
-				text: "Remote edit on client 1",
-				done: true,
-				priority: 5,
-			}),
-		)
-		await client1.commit(remoteEditTx)
-
-		// Client2 rebases its pending edit on top of the remote patch
-		await expectQuery(client2, {
-			collection: "todos",
-			where: { id: "todo-1" },
-			limit: 1,
-		}).toResolveTo([
-			todo("todo-1", { text: "Local edit on client 2", priority: 2 }),
-		])
-
-		// Once the gate opens, client2's push lands and client1 converges
-		gate.resolve()
-		await pendingCommit
-
-		await expectQuery(client1, {
-			collection: "todos",
-			where: { id: "todo-1" },
-			limit: 1,
-		}).toResolveTo([
-			todo("todo-1", { text: "Local edit on client 2", priority: 2 }),
-		])
-	})
-
-	test("replays a pending included relation edit on top of a newer remote patch", async ({
-		makeClient,
-		makeRemote,
-	}) => {
-		const server = makeRemote({
-			schema: threadTestSchema,
-			relations: threadTestRelations,
-		})
-		const gate = Promise.withResolvers<void>()
-		let delayedClientId = ""
-		let delayedPushStarted = false
-		const delayedServer: RemoteApi<ThreadTestSchema> = {
-			connect: (client) => server.connect(client),
-			pull: (args) => server.pull(args),
-			push: async (args) => {
-				if (args.clientId === delayedClientId) {
-					delayedPushStarted = true
-					await gate.promise
-				}
-
-				return server.push(args)
-			},
-		}
-		const client1 = await makeClient.withSchema({
-			label: "relational-replay-client1",
-			schema: threadTestSchema,
-			relations: threadTestRelations,
-			remote: delayedServer,
-		})
-		const client2 = await makeClient.withSchema({
-			label: "relational-replay-client2",
-			schema: threadTestSchema,
-			relations: threadTestRelations,
-			remote: delayedServer,
-		})
-		delayedClientId = client2.clientId
-		const threadWithMessagesQuery = {
-			collection: "threads",
-			select: { id: true },
-			with: {
-				messages: {
-					select: { body: true },
-					orderBy: { createdAt: "asc" },
+	conflictTest(
+		"replays a pending local edit on top of a newer remote patch",
+		async ({ makeTodoGatekeeper, server }) => {
+			const gate = Promise.withResolvers<void>()
+			let delayedClientId = ""
+			let delayedPushStarted = false
+			const delayedServer: RemoteApi<TestsSchema> = {
+				connect: (client) => server.connect(client),
+				pull: (args) => server.pull(args),
+				push: async (args) => {
+					if (args.clientId === delayedClientId) {
+						delayedPushStarted = true
+						await gate.promise
+					}
+					return server.push(args)
 				},
-			},
-		} as const
+			}
+			const gatekeeper = await makeTodoGatekeeper({ remote: delayedServer })
+			const { client1, client2 } = gatekeeper
+			delayedClientId = client2.clientId
+			client1.subscribe({ collection: "todos" })
+			client2.subscribe({ collection: "todos" })
 
-		await Promise.all([client1.connect(), client2.connect()])
+			const seedTx = client1.transact()
+			seedTx.set(
+				"todos",
+				todo("todo-1", { text: "Write the sync spec", priority: 2 }),
+			)
+			const seed = await client1.commit(seedTx)
+			await seed.result
+			await expectQuery(client2, { collection: "todos" }).toResolveTo([
+				todo("todo-1", { text: "Write the sync spec", priority: 2 }),
+			])
+			await gatekeeper.activateGates()
 
-		const seenByClient2: { id: string; messages: { body: string }[] }[][] = []
-		client1.subscribe(threadWithMessagesQuery)
-		client2.subscribe(threadWithMessagesQuery, (result) => {
-			seenByClient2.push(result)
-		})
+			const localEditTx = client2.transact()
+			localEditTx.set(
+				"todos",
+				todo("todo-1", { text: "Local edit on client 2", priority: 2 }),
+			)
+			const pendingCommit = await client2.commit(localEditTx)
+			const pendingPush = pendingCommit.continueTo("server")
+			await vi.waitFor(() => expect(delayedPushStarted).toBe(true))
 
-		// Seed a thread and included message on client1 and wait for client2 to sync them
-		const seedTx = client1.transact()
-		seedTx.set("threads", {
-			id: "thread-1",
-			ownerId: "user-1",
-			title: "Active thread",
-			status: "active",
-		})
-		seedTx.set("messages", {
-			id: "message-1",
-			threadId: "thread-1",
-			body: "Original message",
-			createdAt: 1,
-		})
-		await client1.commit(seedTx)
+			const remoteEditTx = client1.transact()
+			remoteEditTx.set(
+				"todos",
+				todo("todo-1", {
+					text: "Remote edit on client 1",
+					done: true,
+					priority: 5,
+				}),
+			)
+			const remoteEdit = await client1.commit(remoteEditTx)
+			await remoteEdit.continueToCompletion()
+			await remoteEdit.result
 
-		await expectQuery(client2, threadWithMessagesQuery).toResolveTo([
-			{ id: "thread-1", messages: [{ body: "Original message" }] },
-		])
+			await expectQuery(client2, { collection: "todos" }).toResolveTo([
+				todo("todo-1", { text: "Local edit on client 2", priority: 2 }),
+			])
 
-		// Client2 edits the included child record while its push is held by the gate
-		const localEditTx = client2.transact()
-		localEditTx.set("messages", {
-			id: "message-1",
-			threadId: "thread-1",
-			body: "Local included edit",
-			createdAt: 1,
-		})
-		const pendingCommit = client2.commit(localEditTx)
+			gate.resolve()
+			await pendingPush
+			await pendingCommit.continueToCompletion()
+			await pendingCommit.result
+			await expectQuery(client1, { collection: "todos" }).toResolveTo([
+				todo("todo-1", { text: "Local edit on client 2", priority: 2 }),
+			])
+		},
+	)
 
-		await vi.waitFor(() => {
-			expect(delayedPushStarted).toBe(true)
-		})
+	conflictTest(
+		"replays a pending included relation edit on top of a newer remote patch",
+		async ({ makeRemote, makeThreadGatekeeper }) => {
+			const server = makeRemote({
+				schema: threadSchema,
+				relations: threadRelations,
+			})
+			const gate = Promise.withResolvers<void>()
+			let delayedClientId = ""
+			let delayedPushStarted = false
+			const delayedServer: RemoteApi<ThreadSchema> = {
+				connect: (client) => server.connect(client),
+				pull: (args) => server.pull(args),
+				push: async (args) => {
+					if (args.clientId === delayedClientId) {
+						delayedPushStarted = true
+						await gate.promise
+					}
+					return server.push(args)
+				},
+			}
+			const gatekeeper = await makeThreadGatekeeper({ remote: delayedServer })
+			const { client1, client2 } = gatekeeper
+			delayedClientId = client2.clientId
+			const threadWithMessagesQuery = {
+				collection: "threads",
+				select: { id: true },
+				with: {
+					messages: {
+						select: { body: true },
+						orderBy: { createdAt: "asc" },
+					},
+				},
+			} as const
+			const seenByClient2: { id: string; messages: { body: string }[] }[][] = []
+			client1.subscribe(threadWithMessagesQuery)
+			client2.subscribe(threadWithMessagesQuery, (result) => {
+				seenByClient2.push(result)
+			})
 
-		// A newer remote patch lands for the same included child record
-		const remoteEditTx = client1.transact()
-		remoteEditTx.set("messages", {
-			id: "message-1",
-			threadId: "thread-1",
-			body: "Remote included edit",
-			createdAt: 1,
-		})
-		await client1.commit(remoteEditTx)
+			const seedTx = client1.transact()
+			seedTx.set("threads", {
+				id: "thread-1",
+				ownerId: "user-1",
+				title: "Active thread",
+				status: "active",
+			})
+			seedTx.set("messages", {
+				id: "message-1",
+				threadId: "thread-1",
+				body: "Original message",
+				createdAt: 1,
+			})
+			const seed = await client1.commit(seedTx)
+			await seed.result
+			await expectQuery(client2, threadWithMessagesQuery).toResolveTo([
+				{ id: "thread-1", messages: [{ body: "Original message" }] },
+			])
+			await gatekeeper.activateGates()
 
-		const expectedRebasedRows = [
-			{ id: "thread-1", messages: [{ body: "Local included edit" }] },
-		]
+			const localEditTx = client2.transact()
+			localEditTx.set("messages", {
+				id: "message-1",
+				threadId: "thread-1",
+				body: "Local included edit",
+				createdAt: 1,
+			})
+			const pendingCommit = await client2.commit(localEditTx)
+			const pendingPush = pendingCommit.continueTo("server")
+			await vi.waitFor(() => expect(delayedPushStarted).toBe(true))
 
-		// Client2 rolls back, applies the remote included record, and replays its local included edit
-		await expectQuery(client2, threadWithMessagesQuery).toResolveTo(
-			expectedRebasedRows,
-		)
-		expect(seenByClient2.at(-1)).toEqual(expectedRebasedRows)
+			const remoteEditTx = client1.transact()
+			remoteEditTx.set("messages", {
+				id: "message-1",
+				threadId: "thread-1",
+				body: "Remote included edit",
+				createdAt: 1,
+			})
+			const remoteEdit = await client1.commit(remoteEditTx)
+			await remoteEdit.continueToCompletion()
+			await remoteEdit.result
+			const expectedRebasedRows = [
+				{ id: "thread-1", messages: [{ body: "Local included edit" }] },
+			]
 
-		// Once the gate opens, client2's included edit lands and client1 converges
-		gate.resolve()
-		await pendingCommit
+			await expectQuery(client2, threadWithMessagesQuery).toResolveTo(
+				expectedRebasedRows,
+			)
+			expect(seenByClient2.at(-1)).toEqual(expectedRebasedRows)
 
-		await expectQuery(client1, threadWithMessagesQuery).toResolveTo(
-			expectedRebasedRows,
-		)
-	})
+			gate.resolve()
+			await pendingPush
+			await pendingCommit.continueToCompletion()
+			await pendingCommit.result
+			await expectQuery(client1, threadWithMessagesQuery).toResolveTo(
+				expectedRebasedRows,
+			)
+		},
+	)
 })
