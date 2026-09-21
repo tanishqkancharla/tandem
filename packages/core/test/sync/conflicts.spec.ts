@@ -64,7 +64,7 @@ const conflictTest = test.extend<{
 			)
 			cleanup.defer(async () => {
 				await gatekeeper.deactivateGatesAndSettle()
-				await Promise.all(connectedClients.map((client) => client.disconnect()))
+				await Promise.all(clients.map((client) => client.disconnect()))
 				await gatekeeper[Symbol.asyncDispose]()
 			})
 
