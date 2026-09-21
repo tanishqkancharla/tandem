@@ -59,6 +59,33 @@ class Client {
 	}
 }
 
+class QueuedClient {
+	private readonly queue: {
+		value: number
+		result: PromiseWithResolvers<number>
+	}[] = []
+	private draining?: Promise<void>
+
+	constructor(private readonly server: Pick<Server, "save">) {}
+
+	save(value: number): Promise<number> {
+		const result = Promise.withResolvers<number>()
+		this.queue.push({ value, result })
+		this.draining ??= this.drain()
+		return result.promise
+	}
+
+	private async drain(): Promise<void> {
+		while (this.queue.length > 0) {
+			const item = this.queue.shift()
+			if (!item) continue
+			const saved = await this.server.save(item.value)
+			item.result.resolve(saved)
+		}
+		this.draining = undefined
+	}
+}
+
 class ManualTimer {
 	private nextTick?: PromiseWithResolvers<void>
 
@@ -109,6 +136,14 @@ function createTimerHarness(gates: { enter: boolean; exit: boolean }) {
 			"client1",
 			({ server, client1Timer }) => new TimerClient(client1Timer, server),
 		)
+		.build()
+}
+
+function createQueuedHarness() {
+	return new Gatekeeper()
+		.add("store", () => new Store())
+		.add("server", ({ store }) => new Server(store))
+		.add("client1", ({ server }) => new QueuedClient(server))
 		.build()
 }
 
@@ -269,6 +304,25 @@ describe("Gatekeeper", () => {
 		second.assertSentBy("client1").assertWaitingFor("server")
 		expect(harness.client1.read()).toBe(20)
 		expect(harness.client1.confirmed()).toBe(10)
+	})
+
+	test("moves shared worker handoffs to the queued call that owns them", async () => {
+		await using harness = createQueuedHarness()
+		await harness.activateGates()
+		const first = await harness.client1.save(10)
+		const secondReady = harness.client1.save(20)
+
+		await first.continueTo("server")
+		await first.continueTo("store")
+		await first.continueTo("server")
+		await first.continueTo("client1")
+		const second = await secondReady
+
+		first.assertCompleted()
+		second.assertSentBy("client1").assertWaitingFor("server")
+		await second.continueToCompletion()
+		expect(await second.result).toBe(20)
+		expect(harness.store.read()).toBe(20)
 	})
 
 	test("returns a settled call handle when gates are deactivated", async ({
