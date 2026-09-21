@@ -47,6 +47,21 @@ const server = new TandemServer<TodoSchema, {}>({
 })
 ```
 
+Collections can use scalar IDs or compound tuple IDs. Compound IDs preserve
+their tuple order in storage and support typed transaction prefix scans.
+
+```ts
+type SessionEntry = {
+  id: readonly [sessionId: string, sequence: number]
+  body: string
+}
+
+const tx = server.transact()
+const sessionEntries = await tx.scan("entries", {
+  prefix: ["session-1"],
+})
+```
+
 The client still receives a transport through its `remote` option. An HTTP or
 RPC adapter forwards that unchanged `RemoteApi` contract to `TandemServer`.
 

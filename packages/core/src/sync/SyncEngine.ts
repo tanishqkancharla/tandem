@@ -5,6 +5,7 @@ import type {
 	CollectionName,
 	SchemaToTupleSchema,
 } from "../schema/Schema"
+import { collectionIdToTuple } from "../schema/Schema"
 import type {
 	InvertibleMutation,
 	Mutation,
@@ -85,12 +86,16 @@ export namespace PatchApi {
 		const remove: SchemaToTupleSchema<Schema>["key"][] = []
 
 		for (const s of patch.set ?? []) {
-			const key = ["record", s.collection, s.value.id]
+			const key = ["record", s.collection, ...collectionIdToTuple(s.value.id)]
 			set.push({ key, value: s.value } as SchemaToTupleSchema<Schema>)
 		}
 
 		for (const r of patch.remove ?? []) {
-			remove.push(["record", r.collection, r.id])
+			remove.push([
+				"record",
+				r.collection,
+				...collectionIdToTuple(r.id),
+			] as SchemaToTupleSchema<Schema>["key"])
 		}
 
 		return { set, remove }

@@ -11,6 +11,7 @@ export type TandemServerOperation =
 	| "list"
 	| "query"
 	| "remove"
+	| "scan"
 	| "set"
 	| "subscribe"
 	| "update"

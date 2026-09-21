@@ -1,7 +1,12 @@
 import crypto from "node:crypto"
 import fs from "node:fs/promises"
 import path from "node:path"
-import type { AnySchema } from "@tanishqkancharla/tandem-core"
+import type {
+	AnySchema,
+	CollectionId,
+	CollectionIdPart,
+} from "@tanishqkancharla/tandem-core"
+import { collectionIdToTuple } from "@tanishqkancharla/tandem-core/internal"
 import * as errore from "errore"
 import { InMemoryTupleStorage } from "tuple-database"
 import type { ScanStorageArgs, WriteOps } from "tuple-database"
@@ -12,8 +17,8 @@ export type TandemServerJsonFileStorageArgs = {
 }
 
 type StoredTandemTuple = {
-	key: ["record", collection: string, id: string | number]
-	value: Record<string, unknown> & { id: string | number }
+	key: ["record", collection: string, ...id: CollectionIdPart[]]
+	value: Record<string, unknown> & { id: CollectionId }
 }
 
 type FileOperation =
@@ -47,16 +52,33 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+function isCollectionIdPart(value: unknown): value is CollectionIdPart {
+	return typeof value === "string" || typeof value === "number"
+}
+
+function isCollectionId(value: unknown): value is CollectionId {
+	return (
+		isCollectionIdPart(value) ||
+		(Array.isArray(value) &&
+			value.length > 0 &&
+			value.every(isCollectionIdPart))
+	)
+}
+
 function isStoredTandemTuple(value: unknown): value is StoredTandemTuple {
 	if (!isRecord(value) || !Array.isArray(value.key)) return false
-	if (value.key.length !== 3 || value.key[0] !== "record") return false
-	if (typeof value.key[1] !== "string") return false
-	if (typeof value.key[2] !== "string" && typeof value.key[2] !== "number") {
-		return false
-	}
+	const key = value.key
+	if (key.length < 3 || key[0] !== "record") return false
+	if (typeof key[1] !== "string") return false
+	if (!key.slice(2).every(isCollectionIdPart)) return false
 	if (!isRecord(value.value)) return false
+	if (!isCollectionId(value.value.id)) return false
 
-	return value.value.id === value.key[2]
+	const idTuple = collectionIdToTuple(value.value.id)
+	return (
+		idTuple.length === key.length - 2 &&
+		idTuple.every((part, index) => part === key[index + 2])
+	)
 }
 
 function isNotFoundError(value: unknown): boolean {

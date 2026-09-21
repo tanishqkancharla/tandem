@@ -1,6 +1,35 @@
 import type { Codec } from "../utils/Codec"
 
-export type AnyCollectionSchema = Record<string, any> & { id: string | number }
+export type CollectionIdPart = string | number
+export type CollectionId =
+	| CollectionIdPart
+	| readonly [CollectionIdPart, ...CollectionIdPart[]]
+
+export type CollectionIdTuple<Id extends CollectionId> = Id extends readonly [
+	CollectionIdPart,
+	...CollectionIdPart[],
+]
+	? [...Id]
+	: [Id]
+
+type TuplePrefix<Tuple extends readonly unknown[]> = Tuple extends readonly [
+	infer Head,
+	...infer Tail,
+]
+	? [] | [Head] | [Head, ...TuplePrefix<Tail>]
+	: []
+
+export type CollectionIdPrefix<Id extends CollectionId> = TuplePrefix<
+	CollectionIdTuple<Id>
+>
+
+export type CollectionScanArgs<Id extends CollectionId> = {
+	prefix?: CollectionIdPrefix<Id>
+	limit?: number
+	reverse?: boolean
+}
+
+export type AnyCollectionSchema = Record<string, any> & { id: CollectionId }
 
 declare const collectionRecord: unique symbol
 declare const fieldValue: unique symbol
@@ -109,7 +138,7 @@ export type CollectionName<Schema extends AnySchema> = keyof Schema & string
 
 export type SchemaToTupleSchema<Schema extends AnySchema> = {
 	[C in CollectionName<Schema>]: {
-		key: ["record", collection: C, id: Schema[C]["id"]]
+		key: ["record", collection: C, ...CollectionIdTuple<Schema[C]["id"]>]
 		value: Schema[C]
 	}
 }[CollectionName<Schema>]
@@ -123,7 +152,7 @@ export type CollectionOptions<
 }
 
 export type CollectionShape = Record<string, AnyRuntimeFieldDefinition> & {
-	id: RuntimeFieldDefinition<string | number>
+	id: RuntimeFieldDefinition<CollectionId>
 }
 
 export type RecordFromShape<Shape extends CollectionShape> = {
@@ -133,7 +162,25 @@ export type RecordFromShape<Shape extends CollectionShape> = {
 		? Value
 		: never
 } & {
-	id: string | number
+	id: CollectionId
+}
+
+export function collectionIdToTuple<Id extends CollectionId>(
+	id: Id,
+): CollectionIdTuple<Id> {
+	if (typeof id === "string" || typeof id === "number") {
+		return [id] as CollectionIdTuple<Id>
+	}
+	return id.map((part) => part) as CollectionIdTuple<Id>
+}
+
+export function collectionIdsEqual(left: CollectionId, right: CollectionId) {
+	const leftTuple = collectionIdToTuple(left)
+	const rightTuple = collectionIdToTuple(right)
+	return (
+		leftTuple.length === rightTuple.length &&
+		leftTuple.every((part, index) => part === rightTuple[index])
+	)
 }
 
 export type SchemaFromCollections<

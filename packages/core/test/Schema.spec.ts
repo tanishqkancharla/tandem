@@ -144,3 +144,21 @@ type _TestSchemaToTupleSchema = Assert<
 		}
 	>
 >
+
+type _TestCompoundIdSchemaToTupleSchema = Assert<
+	TestIsEqual<
+		SchemaToTupleSchema<{
+			entries: {
+				id: readonly [sessionId: string, entryId: number]
+				text: string
+			}
+		}>,
+		{
+			key: ["record", "entries", sessionId: string, entryId: number]
+			value: {
+				id: readonly [sessionId: string, entryId: number]
+				text: string
+			}
+		}
+	>
+>

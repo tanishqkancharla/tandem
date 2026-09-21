@@ -31,7 +31,7 @@ graph TD
 
 ### Client View
 
-Each client maintains a **Client View** - a local, persistent database of your application state. This is stored as tuples in the format `["record", collection, id]` for efficient querying and synchronization.
+Each client maintains a **Client View** - a local, persistent database of your application state. This is stored as tuples in the format `["record", collection, ...idParts]` for efficient querying and synchronization. Scalar IDs contribute one part, while compound IDs contribute each ordered part so transactions can scan an ID prefix directly.
 
 - **Performance**: Reads and writes are <1ms latency
 - **Persistence**: Data survives browser restarts via IndexedDB

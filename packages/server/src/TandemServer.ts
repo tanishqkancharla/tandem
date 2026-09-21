@@ -16,6 +16,7 @@ import type {
 } from "@tanishqkancharla/tandem-core"
 import { tag, untag } from "@tanishqkancharla/tandem-core"
 import {
+	collectionIdsEqual,
 	executeQueryAsync,
 	executeScanWindowAsync,
 } from "@tanishqkancharla/tandem-core/internal"
@@ -94,7 +95,8 @@ function containsRecordKey<Schema extends AnySchema>(
 ) {
 	return records.some(
 		(record) =>
-			record.collection === target.collection && record.id === target.id,
+			record.collection === target.collection &&
+			collectionIdsEqual(record.id, target.id),
 	)
 }
 

@@ -9,7 +9,8 @@
 		"declarationMap": false,
 		"paths": {
 			"@tanishqkancharla/tandem-core": ["../core/src/index.ts"],
-			"@tanishqkancharla/tandem-core/internal": ["../core/src/internal.ts"]
+			"@tanishqkancharla/tandem-core/internal": ["../core/src/internal.ts"],
+			"@tanishqkancharla/tandem-server": ["./src/index.ts"]
 		}
 	},
 	"include": ["src/**/*.ts", "test/**/*.ts"],
