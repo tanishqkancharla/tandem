@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
-import type { TimerApi } from "@tanishqkancharla/tandem-core"
-import { TaskQueue } from "../src/utils/TaskQueue.js"
+import { TaskQueue } from "./TaskQueue.js"
+import type { TimerApi } from "./Timer.js"
 
 class ManualTimer implements TimerApi {
 	readonly delays: { ms: number; resolve: () => void }[] = []
@@ -24,8 +24,9 @@ describe("TaskQueue", () => {
 		const calls: string[] = []
 		const queue = new TaskQueue(
 			{
-				push: async () => {
+				push: () => {
 					calls.push("push")
+					return Promise.resolve()
 				},
 			},
 			25,
@@ -94,8 +95,9 @@ describe("TaskQueue", () => {
 					await gate.promise
 					calls.push("push:end")
 				},
-				pull: async () => {
+				pull: () => {
 					calls.push("pull")
+					return Promise.resolve()
 				},
 			},
 			0,

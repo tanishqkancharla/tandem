@@ -1,9 +1,6 @@
 import { describe, expect, test } from "vitest"
-import {
-	type EncodedQuery,
-	type Mutation,
-	MutationApi,
-} from "@tanishqkancharla/tandem-core"
+import type { EncodedQuery } from "../query/Query"
+import { type Mutation, MutationApi } from "./Transaction"
 
 type TestSchema = {
 	threads: { id: string; ownerId: string; title: string }
@@ -13,7 +10,7 @@ type TestSchema = {
 }
 
 function mutation(
-	collection: keyof TestSchema & string,
+	collection: keyof TestSchema,
 	value: TestSchema[keyof TestSchema],
 ): Mutation<TestSchema> {
 	return {

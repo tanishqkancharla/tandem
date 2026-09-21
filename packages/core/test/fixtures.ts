@@ -1,32 +1,58 @@
 import "fake-indexeddb/auto"
 
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { dirname, resolve } from "node:path"
-import { expect as extendableExpect } from "extendable-expect"
-import { expect as vitestExpect, test as base, vi, type Task } from "vitest"
-import { TandemClient } from "../src/TandemClient"
+import { Gatekeeper } from "@tanishqkancharla/gatekeeper"
 import {
+	type AnyRelations,
+	type AnySchema,
 	collection,
+	type Codec,
 	defineRelations,
 	defineSchema,
+	Logger,
+	type RelationalQuery,
+	type RelationalQueryResult,
+	type RemoteApi,
+	type RngApi,
+	type RuntimeSchemaDefinition,
 	t,
-} from "../src/schema/Schema"
-import { TandemClientIndexedDbStorage } from "../src/storage/TandemClientIndexedDbStorage"
-import { Logger } from "../src/utils/Logger"
-import { JsonlLoggerSink } from "../src/utils/Logger.node"
-import type { Codec } from "../src/utils/Codec"
-import { TandemServer } from "@tanishqkancharla/tandem-server"
-import type {
-	AnySchema,
-	RelationalQuery,
-	RelationalQueryResult,
-	RemoteApi,
-	RngApi,
-	AnyRelations,
-	RuntimeSchemaDefinition,
-	TandemClientStorageApi,
+	TandemClient,
+	TandemClientIndexedDbStorage,
+	type TandemClientStorageApi,
 } from "@tanishqkancharla/tandem-core"
-import { TestTandemServerStorage } from "./TandemServerStorage.fixture"
+import {
+	TandemServer,
+	type TandemServerStorageApi,
+	type TandemTuple,
+} from "@tanishqkancharla/tandem-server"
+import asyncHooks from "node:async_hooks"
+import { expect as extendableExpect } from "extendable-expect"
+import * as errore from "errore"
+import {
+	InMemoryTupleStorage,
+	type ScanStorageArgs,
+	type WriteOps,
+} from "tuple-database"
+import { expect as vitestExpect, test as base, vi } from "vitest"
+
+class TestTandemServerStorage<
+	Schema extends AnySchema,
+> implements TandemServerStorageApi<Schema> {
+	private readonly memory = new InMemoryTupleStorage()
+
+	scan(args?: ScanStorageArgs): Promise<TandemTuple<Schema>[]> {
+		return Promise.resolve(this.memory.scan(args) as TandemTuple<Schema>[])
+	}
+
+	commit(writes: WriteOps<TandemTuple<Schema>>): Promise<void> {
+		this.memory.commit(writes)
+		return Promise.resolve()
+	}
+
+	close(): Promise<void> {
+		this.memory.close()
+		return Promise.resolve()
+	}
+}
 
 export type TestsTodo = {
 	id: string
@@ -146,26 +172,6 @@ export type DemoRng = {
 	create(prefix?: string): RngApi
 }
 
-function sanitizePathSegment(value: string): string {
-	return value
-		.replace(/[^a-zA-Z0-9.-]+/g, "-")
-		.replace(/^-+|-+$/g, "")
-		.toLowerCase()
-}
-
-function getTestLogFilePath(task: Readonly<Task>): string {
-	const names: string[] = [task.name]
-	let currentSuite = task.suite
-
-	while (currentSuite) {
-		names.unshift(currentSuite.name)
-		currentSuite = currentSuite.suite
-	}
-
-	const fileName = `${names.map(sanitizePathSegment).join("__")}.jsonl`
-	return resolve(process.cwd(), "test", "logs", fileName)
-}
-
 function createRng(): DemoRng {
 	let counter = 0
 
@@ -247,6 +253,37 @@ type ThreadClients = {
 	client2: ThreadClient
 }
 
+// A real transport creates a fresh async context when it delivers a poke. The
+// in-process server needs the same boundary so one client's notification work
+// is not attributed to another client's active Gatekeeper call.
+class InProcessTransport implements RemoteApi<TestsSchema> {
+	constructor(private readonly server: RemoteApi<TestsSchema>) {}
+
+	connect: RemoteApi<TestsSchema>["connect"] = (client) =>
+		this.server.connect({
+			...client,
+			poke: asyncHooks.AsyncResource.bind(client.poke),
+		})
+	push: RemoteApi<TestsSchema>["push"] = (args) => this.server.push(args)
+	pull: RemoteApi<TestsSchema>["pull"] = (args) => this.server.pull(args)
+}
+
+function buildGatekeeperHarness(
+	server: RemoteApi<TestsSchema>,
+	createClient: (
+		remote: RemoteApi<TestsSchema>,
+		label: string,
+	) => TandemClient<TestsSchema>,
+) {
+	return new Gatekeeper()
+		.add("server", () => new InProcessTransport(server))
+		.add("client1", ({ server }) => createClient(server, "client1"))
+		.add("client2", ({ server }) => createClient(server, "client2"))
+		.build()
+}
+
+type GatekeeperHarness = ReturnType<typeof buildGatekeeperHarness>
+
 type Fixtures = {
 	logger: Logger
 	rng: DemoRng
@@ -258,37 +295,19 @@ type Fixtures = {
 	client2: TandemClient<TestsSchema>
 	threadClient: ThreadClient
 	threadClients: ThreadClients
+	gatekeeper: GatekeeperHarness
 }
 
 export const test = base.extend<Fixtures>({
-	logger: async ({ task, onTestFinished }, use) => {
-		const logFilePath = getTestLogFilePath(task)
-		mkdirSync(dirname(logFilePath), { recursive: true })
-		writeFileSync(logFilePath, "")
-
-		onTestFinished((result) => {
-			if (result.state === "fail") {
-				const logContents = readFileSync(logFilePath, "utf8")
-				console.error(`\n--- Tandem test logs: ${task.name} ---`)
-				console.error(`log file: ${logFilePath}`)
-				console.error(logContents || "(no logs captured)")
-				console.error("--- End Tandem test logs ---\n")
-				return
-			}
-
-			rmSync(logFilePath, { force: true })
-		})
-
-		await use(
-			new Logger({ sinks: new JsonlLoggerSink({ filePath: logFilePath }) }),
-		)
+	logger: async ({ task: _task }, use) => {
+		await use(new Logger({ sinks: [] }))
 	},
 
-	rng: async ({}, use) => {
+	rng: async ({ task: _task }, use) => {
 		await use(createRng())
 	},
 
-	makeRemote: async ({}, use) => {
+	makeRemote: async ({ task: _task }, use) => {
 		const remotes: { close(): Promise<void> }[] = []
 
 		function makeRemote(): TandemServer<TestsSchema, {}>
@@ -489,5 +508,33 @@ export const test = base.extend<Fixtures>({
 
 		await Promise.all([client1.connect(), client2.connect()])
 		await use({ client1, client2 })
+	},
+
+	gatekeeper: async ({ server, logger, rng }, use) => {
+		const clients: TandemClient<TestsSchema>[] = []
+		await using cleanup = new errore.AsyncDisposableStack()
+		await using gatekeeper = buildGatekeeperHarness(server, (remote, label) => {
+			const client = new TandemClient<TestsSchema>({
+				remote,
+				schema: testsRuntimeSchema,
+				logger,
+				rng: rng.create(label),
+				autoConnect: false,
+				syncInterval: 0,
+			})
+			clients.push(client)
+			cleanup.defer(() => client.disconnect())
+			return client
+		})
+
+		for (const client of clients) {
+			await client.ready
+			const subscription = client.subscribe({ collection: "todos" })
+			cleanup.defer(() => subscription.destroy())
+			await client.connect()
+		}
+
+		await use(gatekeeper)
+		await gatekeeper.deactivateGatesAndSettle()
 	},
 })

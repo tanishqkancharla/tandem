@@ -7,11 +7,11 @@ import {
 	Logger,
 	type LoggerEntry,
 	type LoggerSinkApi,
-} from "../src/utils/Logger"
-import { JsonlLoggerSink } from "../src/utils/Logger.node"
+} from "./Logger"
+import { JsonlLoggerSink } from "./Logger.node"
 
 const test = base.extend<{ tempDir: string }>({
-	tempDir: async ({}, use) => {
+	tempDir: async ({ task: _task }, use) => {
 		const dir = mkdtempSync(join(tmpdir(), "tandem-logger-"))
 		await use(dir)
 		rmSync(dir, { recursive: true, force: true })

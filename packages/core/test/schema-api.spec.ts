@@ -1,7 +1,13 @@
 import { describe, expect } from "vitest"
-import { collection, defineRelations, defineSchema, t } from "../src"
-import type { Assert, TestIsEqual } from "../src"
-import type { SchemaToTupleSchema } from "../src/schema/Schema"
+import {
+	type Assert,
+	collection,
+	defineRelations,
+	defineSchema,
+	t,
+	type TestIsEqual,
+	type SchemaToTupleSchema,
+} from "@tanishqkancharla/tandem-core"
 import { test } from "./fixtures"
 
 function makeSchema() {
