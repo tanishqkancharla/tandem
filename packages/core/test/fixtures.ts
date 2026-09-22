@@ -16,6 +16,7 @@ import {
 	t,
 	TandemClient,
 	TandemClientIndexedDbStorage,
+	type TimerApi,
 } from "@tanishqkancharla/tandem-core"
 import {
 	TandemServer,
@@ -165,6 +166,12 @@ class InProcessTransport<
 	pull: RemoteApi<Schema>["pull"] = (args) => this.server.pull(args)
 }
 
+class TestTimer implements TimerApi {
+	waitForNextTick(): Promise<void> {
+		return Promise.resolve()
+	}
+}
+
 export function buildGatekeeperHarness<
 	Schema extends AnySchema,
 	Client extends object,
@@ -179,6 +186,37 @@ export function buildGatekeeperHarness<
 		.add("server", () => new InProcessTransport(server))
 		.add("client1", ({ server }) => createClient(server, "client1"))
 		.add("client2", ({ server }) => createClient(server, "client2"))
+		.build()
+}
+
+export function buildTimerGatekeeperHarness<
+	Schema extends AnySchema,
+	Client extends object,
+>({
+	server,
+	createClient,
+}: {
+	server: RemoteApi<Schema>
+	createClient: (
+		remote: RemoteApi<Schema>,
+		label: string,
+		timer: TimerApi,
+	) => Client
+}) {
+	return new Gatekeeper()
+		.add("server", () => new InProcessTransport(server))
+		.add("client1Timer", () => new TestTimer(), {
+			gates: { enter: false, exit: true },
+		})
+		.add("client2Timer", () => new TestTimer(), {
+			gates: { enter: false, exit: true },
+		})
+		.add("client1", ({ server, client1Timer }) =>
+			createClient(server, "client1", client1Timer),
+		)
+		.add("client2", ({ server, client2Timer }) =>
+			createClient(server, "client2", client2Timer),
+		)
 		.build()
 }
 

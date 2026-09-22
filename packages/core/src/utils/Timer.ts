@@ -1,9 +1,15 @@
 export type TimerApi = {
-	delay: (ms: number) => Promise<void>
+	waitForNextTick: () => Promise<void>
 }
 
 export class Timer implements TimerApi {
-	delay(ms: number): Promise<void> {
-		return new Promise((resolve) => setTimeout(resolve, ms))
+	private readonly interval: number
+
+	constructor({ interval }: { interval: number }) {
+		this.interval = interval
+	}
+
+	waitForNextTick(): Promise<void> {
+		return new Promise((resolve) => setTimeout(resolve, this.interval))
 	}
 }

@@ -100,29 +100,19 @@ service supplies an event rather than a request-response boundary.
 | `exit: true`   | Pause a settled result before returning it to the caller.            |
 | `exit: false`  | Deliver the settled result immediately.                              |
 
-A manually controlled timer is an ordinary service with both synthetic gates
-disabled. Its unresolved promise is still visible as the client's current wait.
+A timer is an ordinary service. In tests it can resolve immediately while its
+exit gate controls when the tick is delivered to the client.
 
 ```ts
-class ManualTimer {
-	private nextTick?: PromiseWithResolvers<void>
-
+class TestTimer {
 	waitForNextTick() {
-		this.nextTick = Promise.withResolvers<void>()
-		return this.nextTick.promise
-	}
-
-	async fire() {
-		const nextTick = this.nextTick
-		this.nextTick = undefined
-		nextTick?.resolve()
-		await Promise.resolve()
+		return Promise.resolve()
 	}
 }
 
 const harness = new Gatekeeper()
-	.add("client1Timer", () => new ManualTimer(), {
-		gates: { enter: false, exit: false },
+	.add("client1Timer", () => new TestTimer(), {
+		gates: { enter: false, exit: true },
 	})
 	.add(
 		"client1",
@@ -134,22 +124,22 @@ const harness = new Gatekeeper()
 ```ts
 const call = await harness.client1.save(10)
 
-call.assertSentBy("client1").assertWaitingFor("client1Timer")
+call.assertSentBy("client1Timer").assertWaitingFor("client1")
 
-await harness.client1Timer.fire()
+await call.continueTo("client1")
 
 call.assertSentBy("client1").assertWaitingFor("server")
 ```
 
-Each client can receive its own timer service, so firing one client's timer does
-not advance another client's work.
+Each client can receive its own timer service, so delivering one client's tick
+does not advance another client's work.
 
 ## Lifecycle
 
 `deactivateGates()` releases current synthetic gates and lets subsequent calls
 run to settled handles without pausing. `deactivateGatesAndSettle()` additionally
-waits for active calls to finish. A real unresolved dependency, such as a manual
-timer that has not fired, must still be resolved by its owner.
+waits for active calls to finish. A real unresolved dependency must still be
+resolved by its owner.
 
 Disposing a harness rejects its active calls without delivering held requests or
 undoing completed effects. Service resources remain owned by their caller.

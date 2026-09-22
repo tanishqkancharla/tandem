@@ -25,7 +25,7 @@ import {
 } from "./transaction/Transaction"
 import { ConsoleLoggerSink, Logger, type LoggerApi } from "./utils/Logger"
 import { randomId, type RngApi } from "./utils/randomId"
-import { Timer, type TimerApi } from "./utils/Timer"
+import type { TimerApi } from "./utils/Timer"
 import type { AsyncUnsubscribe } from "./utils/typeUtils"
 
 export type TandemClientArgs<
@@ -39,18 +39,23 @@ export type TandemClientArgs<
 	 * persistence adapter used by the server.
 	 */
 	clientStorage?: TandemClientStorageApi<Schema>
+	/**
+	 * Milliseconds between client storage writes, or a host-provided timer.
+	 * @default 120
+	 */
+	clientStorageWriteInterval?: number | TimerApi
 	remote?: RemoteApi<Schema>
 	/**
 	 * @default ConsoleLoggerSink
 	 */
 	logger?: LoggerApi
 	rng?: RngApi
-	timer?: TimerApi
-	autoConnect?: boolean
 	/**
+	 * Milliseconds between sync batches, or a host-provided timer.
 	 * @default 150
 	 */
-	syncInterval?: number
+	syncInterval?: number | TimerApi
+	autoConnect?: boolean
 }
 
 export class TandemClient<
@@ -75,18 +80,16 @@ export class TandemClient<
 		schema,
 		relations,
 		clientStorage,
+		clientStorageWriteInterval = 120,
 		remote,
 		logger,
 		autoConnect = true,
-		syncInterval = 150,
 		rng,
-		timer,
+		syncInterval = 150,
 	}: TandemClientArgs<Schema, Relations>) {
 		this.rng = rng ?? { randomId }
 		this.clientId = this.rng.randomId() as ClientId
 		this.logger = logger ?? new Logger({ sinks: new ConsoleLoggerSink() })
-
-		const timerImpl = timer ?? new Timer()
 
 		this.syncEngine = remote
 			? new SyncEngine({
@@ -99,7 +102,6 @@ export class TandemClient<
 					autoConnect,
 					logger: this.logger.scope("sync-engine"),
 					syncInterval,
-					timer: timerImpl,
 				})
 			: undefined
 
@@ -108,6 +110,7 @@ export class TandemClient<
 			relations,
 			logger: this.logger.scope("db"),
 			clientStorage,
+			clientStorageWriteInterval,
 			rng: this.rng,
 		})
 

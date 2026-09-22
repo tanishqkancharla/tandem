@@ -16,7 +16,6 @@ export class TaskQueue<TaskName extends string> {
 
 	constructor(
 		private readonly tasks: Record<TaskName, () => Promise<void>>,
-		private readonly interval: number,
 		private readonly timer: TimerApi,
 	) {}
 
@@ -25,7 +24,7 @@ export class TaskQueue<TaskName extends string> {
 		if (queuedItem) return queuedItem.promise
 
 		const batch = this.batch ?? {
-			delay: this.timer.delay(this.interval),
+			delay: this.timer.waitForNextTick(),
 			tail: Promise.resolve(),
 			pending: 0,
 		}

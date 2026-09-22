@@ -59,29 +59,15 @@ class Client {
 	}
 }
 
-class ManualTimer {
-	private nextTick?: PromiseWithResolvers<void>
-
+class TestTimer {
 	waitForNextTick(): Promise<void> {
-		this.nextTick = Promise.withResolvers<void>()
-		return this.nextTick.promise
-	}
-
-	isWaiting(): boolean {
-		return this.nextTick !== undefined
-	}
-
-	async fire(): Promise<void> {
-		const nextTick = this.nextTick
-		this.nextTick = undefined
-		nextTick?.resolve()
-		await Promise.resolve()
+		return Promise.resolve()
 	}
 }
 
 class TimerClient {
 	constructor(
-		private readonly timer: Pick<ManualTimer, "waitForNextTick">,
+		private readonly timer: Pick<TestTimer, "waitForNextTick">,
 		private readonly server: Pick<Server, "save">,
 	) {}
 
@@ -104,7 +90,7 @@ function createTimerHarness(gates: { enter: boolean; exit: boolean }) {
 	return new Gatekeeper()
 		.add("store", () => new Store())
 		.add("server", ({ store }) => new Server(store))
-		.add("client1Timer", () => new ManualTimer(), { gates })
+		.add("client1Timer", () => new TestTimer(), { gates })
 		.add(
 			"client1",
 			({ server, client1Timer }) => new TimerClient(client1Timer, server),
@@ -322,40 +308,27 @@ describe("Gatekeeper", () => {
 		const call = await harness.client1.saveAfterNextTick(10)
 
 		call.assertSentBy("client1").assertWaitingFor("client1Timer")
-		expect(harness.client1Timer.isWaiting()).toBe(false)
 		expect(harness.store.read()).toBe(0)
 	})
 
-	test("lets a timer register its wait when its enter gate is disabled", async () => {
-		await using harness = createTimerHarness({ enter: false, exit: false })
+	test("holds a timer tick at exit until the client receives it", async () => {
+		await using harness = createTimerHarness({ enter: false, exit: true })
 		await harness.activateGates()
 
 		const call = await harness.client1.saveAfterNextTick(10)
 
-		call.assertSentBy("client1").assertWaitingFor("client1Timer")
-		expect(harness.client1Timer.isWaiting()).toBe(true)
+		call.assertSentBy("client1Timer").assertWaitingFor("client1")
 		expect(harness.store.read()).toBe(0)
 	})
 
-	test("continues directly to the next service when the timer exit gate is disabled", async () => {
-		await using harness = createTimerHarness({ enter: false, exit: false })
-		await harness.activateGates()
-		const call = await harness.client1.saveAfterNextTick(10)
-
-		await harness.client1Timer.fire()
-
-		call.assertSentBy("client1").assertWaitingFor("server")
-		expect(harness.store.read()).toBe(0)
-	})
-
-	test("holds a fired timer response when its exit gate is enabled", async () => {
+	test("delivers a timer tick by continuing its response to the client", async () => {
 		await using harness = createTimerHarness({ enter: false, exit: true })
 		await harness.activateGates()
 		const call = await harness.client1.saveAfterNextTick(10)
 
-		await harness.client1Timer.fire()
+		await call.continueTo("client1")
 
-		call.assertSentBy("client1Timer").assertWaitingFor("client1")
+		call.assertSentBy("client1").assertWaitingFor("server")
 		expect(harness.store.read()).toBe(0)
 	})
 
@@ -368,7 +341,6 @@ describe("Gatekeeper", () => {
 		await expect(call.continueToCompletion()).rejects.toThrow(
 			/another control is in progress/,
 		)
-		await harness.client1Timer.fire()
 		await progressing
 
 		call.assertSentBy("client1").assertWaitingFor("server")
