@@ -1,32 +1,32 @@
-import { Database } from "./Database"
+import { Database } from "./Database.js"
 import {
 	_encodeRelationalQuery,
 	type RelationalQuery,
 	type RelationalQueryResult,
-} from "./query/Query"
+} from "./query/Query.js"
 import type {
 	AnySchema,
 	AnyRelations,
 	RuntimeSchemaDefinition,
-} from "./schema/Schema"
-import type { TandemClientStorageApi } from "./clientStorage/TandemClientStorage"
+} from "./schema/Schema.js"
+import type { TandemClientStorageApi } from "./clientStorage/TandemClientStorage.js"
 import {
 	PatchApi,
 	SyncEngine,
 	type ClientId,
 	type Patch,
 	type RemoteApi,
-} from "./sync/SyncEngine"
+} from "./sync/SyncEngine.js"
 import {
 	MutationApi,
 	Transaction,
 	type InvertibleMutation,
 	type MutationId,
-} from "./transaction/Transaction"
-import { ConsoleLoggerSink, Logger, type LoggerApi } from "./utils/Logger"
-import { randomId, type RngApi } from "./utils/randomId"
-import type { TimerApi } from "./utils/Timer"
-import type { AsyncUnsubscribe } from "./utils/typeUtils"
+} from "./transaction/Transaction.js"
+import { ConsoleLoggerSink, Logger, type LoggerApi } from "./utils/Logger.js"
+import { randomId, type RngApi } from "./utils/randomId.js"
+import type { TimerApi } from "./utils/Timer.js"
+import type { AsyncUnsubscribe } from "./utils/typeUtils.js"
 
 export type TandemClientArgs<
 	Schema extends AnySchema,

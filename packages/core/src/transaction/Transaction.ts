@@ -5,12 +5,12 @@ import type {
 	CollectionName,
 	CollectionScanArgs,
 	SchemaToTupleSchema,
-} from "../schema/Schema"
-import { collectionIdToTuple } from "../schema/Schema"
-import type { EncodedQuery, ScanWindow } from "../query/Query"
-import { WriteOpsApi } from "../clientStorage/TandemClientStorage"
-import { partition, reverse } from "../utils/objectUtils"
-import type { Tagged } from "../utils/typeUtils"
+} from "../schema/Schema.js"
+import { collectionIdToTuple } from "../schema/Schema.js"
+import type { EncodedQuery, ScanWindow } from "../query/Query.js"
+import { WriteOpsApi } from "../clientStorage/TandemClientStorage.js"
+import { partition, reverse } from "../utils/objectUtils.js"
+import type { Tagged } from "../utils/typeUtils.js"
 
 type CollectionTupleKey<
 	Schema extends AnySchema,

@@ -1,7 +1,7 @@
 import { Gatekeeper } from "@tanishqkancharla/gatekeeper"
 import { TandemClient } from "@tanishqkancharla/tandem-core"
 import { describe, expect } from "vitest"
-import { test, testsRuntimeSchema, todo, type TestsTodo } from "./fixtures"
+import { test, testsRuntimeSchema, todo, type TestsTodo } from "./fixtures.js"
 
 describe("TandemClient local data", () => {
 	test("creates, queries, updates, and deletes records locally", async ({

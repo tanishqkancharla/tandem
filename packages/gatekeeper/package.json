@@ -16,10 +16,10 @@
 	},
 	"files": [
 		"dist",
-		"src"
+		"!dist/**/*.map"
 	],
 	"scripts": {
-		"build": "tsc",
+		"build": "rm -rf dist tsconfig.tsbuildinfo && tsc",
 		"type-check": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit",
 		"lint": "oxlint src test",
 		"format": "oxfmt src test vitest.config.ts",

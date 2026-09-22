@@ -16,7 +16,7 @@
 	"sideEffects": false,
 	"files": [
 		"dist",
-		"src"
+		"!dist/**/*.map"
 	],
 	"exports": {
 		".": {
@@ -29,7 +29,8 @@
 		"access": "public"
 	},
 	"scripts": {
-		"build": "tsc",
+		"build": "rm -rf dist tsconfig.tsbuildinfo && tsc",
+		"prepublishOnly": "pnpm run build",
 		"type-check": "tsgo --noEmit && tsgo -p tsconfig.test.json --noEmit",
 		"format": "oxfmt \"src/**/*.{ts,tsx}\" \"test/**/*.{ts,tsx}\"",
 		"lint": "oxlint src --fix && tsc --noEmit",

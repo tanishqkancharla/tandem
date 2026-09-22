@@ -5,10 +5,10 @@ import {
 } from "@tanishqkancharla/tandem-core"
 import type { RemoteApi } from "@tanishqkancharla/tandem-core"
 import { expectTypeOf } from "vitest"
-import type { TandemServerStorageApi } from "../src"
-import { TandemServer } from "../src"
+import type { TandemServerStorageApi } from "../src/index.js"
+import { TandemServer } from "../src/index.js"
 // @ts-expect-error Tagged internal errors are not part of the package API.
-import type { TandemServerError } from "../src"
+import type { TandemServerError } from "../src/index.js"
 
 expectTypeOf<TandemServerError>()
 

@@ -8,7 +8,7 @@ import {
 	TandemClient,
 } from "@tanishqkancharla/tandem-core"
 import { describe, expect } from "vitest"
-import { test } from "./fixtures"
+import { test } from "./fixtures.js"
 
 type Thread = {
 	id: string

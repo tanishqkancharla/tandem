@@ -1,4 +1,4 @@
-import type { TimerApi } from "./Timer"
+import type { TimerApi } from "./Timer.js"
 
 export class ThrottleQueue {
 	private taskPromise: Promise<void> | undefined

@@ -1,6 +1,6 @@
-export { TandemClient } from "./TandemClient"
-export type { TandemClientArgs } from "./TandemClient"
-export { SyncEngine } from "./sync/SyncEngine"
+export { TandemClient } from "./TandemClient.js"
+export type { TandemClientArgs } from "./TandemClient.js"
+export { SyncEngine } from "./sync/SyncEngine.js"
 export type {
 	ClientApi,
 	ClientId,
@@ -10,9 +10,9 @@ export type {
 	PatchSetOp,
 	RemoteApi,
 	SyncEngineArgs,
-} from "./sync/SyncEngine"
-export { PatchApi } from "./sync/SyncEngine"
-export { Transaction } from "./transaction/Transaction"
+} from "./sync/SyncEngine.js"
+export { PatchApi } from "./sync/SyncEngine.js"
+export { Transaction } from "./transaction/Transaction.js"
 export type {
 	InveribleRemoveMutationOp,
 	InveribleSetMutationOp,
@@ -23,17 +23,22 @@ export type {
 	MutationOp,
 	RemoveMutationOp,
 	SetMutationOp,
-} from "./transaction/Transaction"
-export { MutationApi } from "./transaction/Transaction"
-export { TandemClientStorage } from "./clientStorage/TandemClientStorage"
-export type { TandemClientStorageApi } from "./clientStorage/TandemClientStorage"
-export { WriteOpsApi } from "./clientStorage/TandemClientStorage"
-export { TandemClientIndexedDbStorage } from "./clientStorage/TandemClientIndexedDbStorage"
+} from "./transaction/Transaction.js"
+export { MutationApi } from "./transaction/Transaction.js"
+export { TandemClientStorage } from "./clientStorage/TandemClientStorage.js"
+export type { TandemClientStorageApi } from "./clientStorage/TandemClientStorage.js"
+export { WriteOpsApi } from "./clientStorage/TandemClientStorage.js"
+export { TandemClientIndexedDbStorage } from "./clientStorage/TandemClientIndexedDbStorage.js"
 export type {
 	AnyStorageSchema,
 	TandemClientIndexedDbStorageArgs,
-} from "./clientStorage/TandemClientIndexedDbStorage"
-export { collection, defineSchema, defineRelations, t } from "./schema/Schema"
+} from "./clientStorage/TandemClientIndexedDbStorage.js"
+export {
+	collection,
+	defineSchema,
+	defineRelations,
+	t,
+} from "./schema/Schema.js"
 export type {
 	AnyCollectionDefinition,
 	AnyCollectionSchema,
@@ -59,7 +64,7 @@ export type {
 	RuntimeSchemaDefinition,
 	SchemaFromCollections,
 	SchemaToTupleSchema,
-} from "./schema/Schema"
+} from "./schema/Schema.js"
 export type {
 	EncodedQuery,
 	EncodedWhereClause,
@@ -74,9 +79,9 @@ export type {
 	RelationalWhereOptions,
 	RelationalWithOptions,
 	ScanWindow,
-} from "./query/Query"
-export { codec, string, literal, date, object, oneOf } from "./utils/Codec"
-export type { Codec, AnyCodec, Encoded, Decoded } from "./utils/Codec"
+} from "./query/Query.js"
+export { codec, string, literal, date, object, oneOf } from "./utils/Codec.js"
+export type { Codec, AnyCodec, Encoded, Decoded } from "./utils/Codec.js"
 export {
 	Logger,
 	ConsoleLoggerSink,
@@ -86,11 +91,11 @@ export {
 	type LoggerEntry,
 	type LoggerSinkApi,
 	type LogLevel,
-} from "./utils/Logger"
-export type { RngApi } from "./utils/randomId"
-export { Stream } from "./utils/Stream"
-export type { ReadonlyStream, StreamConsumeOptions } from "./utils/Stream"
-export type { TimerApi } from "./utils/Timer"
+} from "./utils/Logger.js"
+export type { RngApi } from "./utils/randomId.js"
+export { Stream } from "./utils/Stream.js"
+export type { ReadonlyStream, StreamConsumeOptions } from "./utils/Stream.js"
+export type { TimerApi } from "./utils/Timer.js"
 export {
 	type Json,
 	type AnyFunction,
@@ -116,4 +121,4 @@ export {
 	untag,
 	type Unsubscribe,
 	type AsyncUnsubscribe,
-} from "./utils/typeUtils"
+} from "./utils/typeUtils.js"

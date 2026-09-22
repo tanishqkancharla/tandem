@@ -1,5 +1,5 @@
-import { isObject, isString, mapValues } from "./objectUtils"
-import { Assert, TestExtends } from "./typeUtils"
+import { isObject, isString, mapValues } from "./objectUtils.js"
+import { Assert, TestExtends } from "./typeUtils.js"
 
 export type Codec<I, O> = {
 	name: string

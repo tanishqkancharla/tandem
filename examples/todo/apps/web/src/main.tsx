@@ -4,8 +4,8 @@ import { MauiProvider } from "@tanishqkancharla/maui"
 import { schema } from "@tandem/example-todo-shared"
 import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
-import { App } from "./App"
-import { TodoHttpRemote } from "./TodoHttpRemote"
+import { App } from "./App.js"
+import { TodoHttpRemote } from "./TodoHttpRemote.js"
 
 const db = new TandemClient({
 	schema,

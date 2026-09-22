@@ -1,7 +1,7 @@
 import { serve } from "@hono/node-server"
 import * as errore from "errore"
 import { fileURLToPath } from "node:url"
-import { createTodoApp } from "./app"
+import { createTodoApp } from "./app.js"
 
 class TodoServerStartupError extends errore.createTaggedError({
 	name: "TodoServerStartupError",

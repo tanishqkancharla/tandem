@@ -8,7 +8,7 @@ import {
 	type TestIsEqual,
 	type SchemaToTupleSchema,
 } from "@tanishqkancharla/tandem-core"
-import { test } from "./fixtures"
+import { test } from "./fixtures.js"
 
 function makeSchema() {
 	return defineSchema({

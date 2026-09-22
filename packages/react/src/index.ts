@@ -7,4 +7,4 @@ export {
 	type TandemClientProviderProps,
 	type UseTandemQuery,
 	type UseTandemTransaction,
-} from "./TandemClientProvider"
+} from "./TandemClientProvider.js"

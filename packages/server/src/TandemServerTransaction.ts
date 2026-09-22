@@ -13,8 +13,8 @@ import {
 } from "@tanishqkancharla/tandem-core/internal"
 import * as errore from "errore"
 import type { AsyncTupleRootTransactionApi } from "tuple-database"
-import { TandemServerError } from "./TandemServerError"
-import type { TandemTuple } from "./storage/TandemServerStorage"
+import { TandemServerError } from "./TandemServerError.js"
+import type { TandemTuple } from "./storage/TandemServerStorage.js"
 
 type CollectionTupleKey<
 	Schema extends AnySchema,

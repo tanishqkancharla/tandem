@@ -7,16 +7,16 @@ import type {
 	CollectionName,
 	AnyRelations,
 	SchemaToTupleSchema,
-} from "../schema/Schema"
-import { collectionIdToTuple } from "../schema/Schema"
-import { isEqual, isObject, pick } from "../utils/objectUtils"
+} from "../schema/Schema.js"
+import { collectionIdToTuple } from "../schema/Schema.js"
+import { isEqual, isObject, pick } from "../utils/objectUtils.js"
 import type {
 	EncodedQuery,
 	Operator,
 	RelationalQuery,
 	RelationalQueryResult,
 	ScanWindow,
-} from "./Query"
+} from "./Query.js"
 
 type RuntimeRecord = Record<string, unknown>
 

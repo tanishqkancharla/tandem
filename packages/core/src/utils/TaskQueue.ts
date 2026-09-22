@@ -1,4 +1,4 @@
-import type { TimerApi } from "./Timer"
+import type { TimerApi } from "./Timer.js"
 
 type TaskItem = {
 	promise: Promise<void>

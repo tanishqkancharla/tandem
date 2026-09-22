@@ -14,7 +14,7 @@ import {
 	type DemoRng,
 	type TestsSchema,
 	type TestsTodo,
-} from "../fixtures"
+} from "../fixtures.js"
 
 function createSchemaGatekeeper({
 	server,

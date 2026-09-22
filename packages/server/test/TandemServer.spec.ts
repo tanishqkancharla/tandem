@@ -12,8 +12,8 @@ import type {
 	ScanWindow,
 } from "@tanishqkancharla/tandem-core"
 import { expect, expectTypeOf, test, vi } from "vitest"
-import { TandemServer } from "../src"
-import { TestTandemServerStorage } from "./TandemServerStorage.fixture"
+import { TandemServer } from "../src/index.js"
+import { TestTandemServerStorage } from "./TandemServerStorage.fixture.js"
 
 type User = {
 	id: string

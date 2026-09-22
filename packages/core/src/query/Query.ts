@@ -1,4 +1,8 @@
-import type { AnySchema, CollectionName, AnyRelations } from "../schema/Schema"
+import type {
+	AnySchema,
+	CollectionName,
+	AnyRelations,
+} from "../schema/Schema.js"
 
 export type FieldWhereOperators<Value> = {
 	readonly eq?: Value

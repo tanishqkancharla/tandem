@@ -1,6 +1,6 @@
 import type { KeyValuePair, ScanStorageArgs, WriteOps } from "tuple-database"
-import type { AnySchema, SchemaToTupleSchema } from "../schema/Schema"
-import { isEqual } from "../utils/objectUtils"
+import type { AnySchema, SchemaToTupleSchema } from "../schema/Schema.js"
+import { isEqual } from "../utils/objectUtils.js"
 
 export interface TandemClientStorageApi<Schema extends AnySchema> {
 	scan(args?: ScanStorageArgs): Promise<SchemaToTupleSchema<Schema>[]>

@@ -4,8 +4,8 @@ import {
 	defineSchema,
 } from "@tanishqkancharla/tandem-core"
 import { expectTypeOf } from "vitest"
-import { TandemServer, TandemServerJsonFileStorage } from "../src"
-import type { TandemTuple, TandemServerStorageApi } from "../src"
+import { TandemServer, TandemServerJsonFileStorage } from "../src/index.js"
+import type { TandemTuple, TandemServerStorageApi } from "../src/index.js"
 
 type User = { id: string; name: string }
 type Thread = { id: number; ownerId: string; title: string }

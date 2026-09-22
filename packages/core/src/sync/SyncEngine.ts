@@ -1,17 +1,17 @@
 import type { WriteOps } from "tuple-database"
-import type { EncodedQuery, ScanWindow } from "../query/Query"
+import type { EncodedQuery, ScanWindow } from "../query/Query.js"
 import type {
 	AnySchema,
 	CollectionName,
 	SchemaToTupleSchema,
-} from "../schema/Schema"
-import { collectionIdToTuple } from "../schema/Schema"
+} from "../schema/Schema.js"
+import { collectionIdToTuple } from "../schema/Schema.js"
 import type {
 	InvertibleMutation,
 	Mutation,
 	MutationId,
 	MutationOp,
-} from "../transaction/Transaction"
+} from "../transaction/Transaction.js"
 import type { LoggerApi } from "../utils/Logger.js"
 import { TaskQueue } from "../utils/TaskQueue.js"
 import { Timer, type TimerApi } from "../utils/Timer.js"

@@ -10,7 +10,10 @@ import { collectionIdToTuple } from "@tanishqkancharla/tandem-core/internal"
 import * as errore from "errore"
 import { InMemoryTupleStorage } from "tuple-database"
 import type { ScanStorageArgs, WriteOps } from "tuple-database"
-import type { TandemTuple, TandemServerStorageApi } from "./TandemServerStorage"
+import type {
+	TandemTuple,
+	TandemServerStorageApi,
+} from "./TandemServerStorage.js"
 
 export type TandemServerJsonFileStorageArgs = {
 	filePath: string

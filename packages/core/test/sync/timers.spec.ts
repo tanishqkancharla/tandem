@@ -11,7 +11,7 @@ import {
 	todo,
 	type DemoRng,
 	type TestsSchema,
-} from "../fixtures"
+} from "../fixtures.js"
 
 function createTimerGatekeeper({
 	server,

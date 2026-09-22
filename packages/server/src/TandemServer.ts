@@ -32,12 +32,12 @@ import type {
 	ReadOnlyAsyncTupleDatabaseClientApi,
 	WriteOps,
 } from "tuple-database"
-import { TandemServerError } from "./TandemServerError"
-import { TandemServerTransaction } from "./TandemServerTransaction"
+import { TandemServerError } from "./TandemServerError.js"
+import { TandemServerTransaction } from "./TandemServerTransaction.js"
 import type {
 	TandemTuple,
 	TandemServerStorageApi,
-} from "./storage/TandemServerStorage"
+} from "./storage/TandemServerStorage.js"
 
 export type TandemServerArgs<
 	Schema extends AnySchema,
