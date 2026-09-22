@@ -12,7 +12,7 @@ import {
 	expectQuery,
 	test,
 	type DemoRng,
-} from "../fixtures"
+} from "../fixtures.js"
 
 type Entry = {
 	id: readonly [sessionId: string, sequence: number]

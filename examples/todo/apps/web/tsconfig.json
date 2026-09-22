@@ -1,6 +1,9 @@
 {
 	"extends": "../../../../tsconfig.json",
 	"compilerOptions": {
+		// Vite bundles this app. Published Maui declarations are not NodeNext.
+		"module": "esnext",
+		"moduleResolution": "bundler",
 		"jsx": "react-jsx",
 		"noEmit": true,
 		"declaration": false,

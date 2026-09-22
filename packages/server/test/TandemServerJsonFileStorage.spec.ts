@@ -3,7 +3,7 @@ import os from "node:os"
 import path from "node:path"
 import { collection, defineSchema } from "@tanishqkancharla/tandem-core"
 import { expect, test as baseTest } from "vitest"
-import { TandemServer, TandemServerJsonFileStorage } from "../src"
+import { TandemServer, TandemServerJsonFileStorage } from "../src/index.js"
 
 type Todo = {
 	id: string

@@ -13,7 +13,7 @@ import {
 	expectQuery,
 	test,
 	type DemoRng,
-} from "../fixtures"
+} from "../fixtures.js"
 
 type ThreadSchema = {
 	users: { id: string; profileId: string; name: string }

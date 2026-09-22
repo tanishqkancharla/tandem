@@ -4,7 +4,7 @@ import type { ScanStorageArgs, WriteOps } from "tuple-database"
 import type {
 	TandemTuple,
 	TandemServerStorageApi,
-} from "../src/storage/TandemServerStorage"
+} from "../src/storage/TandemServerStorage.js"
 
 export class TestTandemServerStorage<
 	Schema extends AnySchema,

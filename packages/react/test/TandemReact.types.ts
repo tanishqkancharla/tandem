@@ -9,7 +9,7 @@ import {
 	useTandemTransaction,
 	type UseTandemQuery,
 	type UseTandemTransaction,
-} from "../src"
+} from "../src/index.js"
 
 type Todo = {
 	id: string

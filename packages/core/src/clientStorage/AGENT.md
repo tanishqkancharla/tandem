@@ -7,7 +7,7 @@ Persistent tuple storage with IndexedDB backend. Handles data persistence, cachi
 ## How to use
 
 ```typescript
-import { TandemClientIndexedDbStorage } from "./TandemClientIndexedDbStorage";
+import { TandemClientIndexedDbStorage } from "./TandemClientIndexedDbStorage.js";
 
 const storage = new TandemClientIndexedDbStorage({
 	dbName: "my-app",

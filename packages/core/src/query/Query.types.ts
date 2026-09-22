@@ -1,10 +1,10 @@
-import type { Relations } from "../schema/Schema"
+import type { Relations } from "../schema/Schema.js"
 import type {
 	FieldWhereOperators,
 	RelationalQueryOptions,
 	RelationalQueryResult,
-} from "./Query"
-import type { Assert, TestIsEqual } from "../utils/typeUtils"
+} from "./Query.js"
+import type { Assert, TestIsEqual } from "../utils/typeUtils.js"
 
 type _RelationalQueryTestSchema = {
 	users: { id: string; name: string }

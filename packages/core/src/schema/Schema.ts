@@ -1,4 +1,4 @@
-import type { Codec } from "../utils/Codec"
+import type { Codec } from "../utils/Codec.js"
 
 export type CollectionIdPart = string | number
 export type CollectionId =

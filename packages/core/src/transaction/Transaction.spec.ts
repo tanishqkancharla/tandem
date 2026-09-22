@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest"
-import type { EncodedQuery } from "../query/Query"
-import { type Mutation, MutationApi } from "./Transaction"
+import type { EncodedQuery } from "../query/Query.js"
+import { type Mutation, MutationApi } from "./Transaction.js"
 
 type TestSchema = {
 	threads: { id: string; ownerId: string; title: string }

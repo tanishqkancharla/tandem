@@ -12,19 +12,22 @@ import {
 	type AnyRelations,
 	type RuntimeSchemaDefinition,
 	type SchemaToTupleSchema,
-} from "./schema/Schema"
-import { type RelationalQuery, type RelationalQueryResult } from "./query/Query"
-import { executeQuerySync } from "./query/executeQuery"
+} from "./schema/Schema.js"
+import {
+	type RelationalQuery,
+	type RelationalQueryResult,
+} from "./query/Query.js"
+import { executeQuerySync } from "./query/executeQuery.js"
 import {
 	TandemClientStorage,
 	type TandemClientStorageApi,
 	WriteOpsApi,
-} from "./clientStorage/TandemClientStorage"
-import { Transaction } from "./transaction/Transaction"
-import type { LoggerApi } from "./utils/Logger"
-import type { RngApi } from "./utils/randomId"
-import { ThrottleQueue } from "./utils/ThrottleQueue"
-import { Timer, type TimerApi } from "./utils/Timer"
+} from "./clientStorage/TandemClientStorage.js"
+import { Transaction } from "./transaction/Transaction.js"
+import type { LoggerApi } from "./utils/Logger.js"
+import type { RngApi } from "./utils/randomId.js"
+import { ThrottleQueue } from "./utils/ThrottleQueue.js"
+import { Timer, type TimerApi } from "./utils/Timer.js"
 
 export type DatabaseArgs<
 	Schema extends AnySchema,

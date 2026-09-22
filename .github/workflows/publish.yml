@@ -33,6 +33,7 @@ jobs:
       - run: pnpm type-check
       - run: pnpm test
       - run: pnpm build
+      - run: pnpm test:publish-smoke
 
       - name: Publish packages
         run: |

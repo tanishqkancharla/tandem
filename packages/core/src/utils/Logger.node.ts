@@ -3,7 +3,7 @@ import {
 	serializeLogValue,
 	type LoggerEntry,
 	type LoggerSinkApi,
-} from "./Logger"
+} from "./Logger.js"
 
 export type JsonlLoggerSinkArgs = {
 	filePath: string

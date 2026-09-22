@@ -3,15 +3,15 @@
 import { deleteDB, openDB } from "idb"
 import type { DBSchema, IDBPDatabase } from "idb"
 import type { ScanStorageArgs, WriteOps } from "tuple-database"
-import { decodeTuple, encodeTuple } from "tuple-database/helpers/codec"
+import { decodeTuple, encodeTuple } from "tuple-database/helpers/codec.js"
 import type {
 	AnySchema,
 	RuntimeSchemaDefinition,
 	SchemaToTupleSchema,
-} from "../schema/Schema"
-import type { TandemClientStorageApi } from "./TandemClientStorage"
-import { Codec } from "../utils/Codec"
-import type { Json } from "../utils/typeUtils"
+} from "../schema/Schema.js"
+import type { TandemClientStorageApi } from "./TandemClientStorage.js"
+import { Codec } from "../utils/Codec.js"
+import type { Json } from "../utils/typeUtils.js"
 
 const version = 1
 

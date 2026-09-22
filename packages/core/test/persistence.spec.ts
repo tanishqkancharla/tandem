@@ -17,7 +17,7 @@ import {
 	todo,
 	type DemoRng,
 	type TestsSchema,
-} from "./fixtures"
+} from "./fixtures.js"
 
 class EventStart {
 	constructor(readonly iso: string) {}
