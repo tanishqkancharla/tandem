@@ -10,11 +10,11 @@ import {
 	executeQueryAsync,
 	executeQuerySync,
 	executeScanWindowAsync,
-} from "../src/internal"
-import type { ScanWindowRecord } from "../src/internal"
-import type { EncodedQuery } from "../src/query/Query"
-import { collection, defineRelations, defineSchema } from "../src/schema/Schema"
-import type { SchemaToTupleSchema } from "../src/schema/Schema"
+} from "./executeQuery"
+import type { ScanWindowRecord } from "./executeQuery"
+import type { EncodedQuery } from "./Query"
+import { collection, defineRelations, defineSchema } from "../schema/Schema"
+import type { SchemaToTupleSchema } from "../schema/Schema"
 
 type User = {
 	id: string

@@ -22,8 +22,6 @@ const schema = defineSchema({
 })
 
 const test = baseTest.extend<{ filePath: string }>({
-	// Vitest requires fixture callbacks to destructure their context argument.
-	// oxlint-disable-next-line no-empty-pattern
 	filePath: async ({}, use) => {
 		const directory = await fs.mkdtemp(
 			path.join(os.tmpdir(), "tandem-compound-ids-e2e-"),

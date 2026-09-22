@@ -19,12 +19,12 @@ import {
 	TandemClientStorage,
 	type TandemClientStorageApi,
 	WriteOpsApi,
-} from "./storage/TandemClientStorage"
+} from "./clientStorage/TandemClientStorage"
 import { Transaction } from "./transaction/Transaction"
 import type { LoggerApi } from "./utils/Logger"
 import type { RngApi } from "./utils/randomId"
 import { ThrottleQueue } from "./utils/ThrottleQueue"
-import { Timer } from "./utils/Timer"
+import { Timer, type TimerApi } from "./utils/Timer"
 
 export type DatabaseArgs<
 	Schema extends AnySchema,
@@ -33,6 +33,7 @@ export type DatabaseArgs<
 	schema?: RuntimeSchemaDefinition<Schema>
 	relations?: Relations
 	clientStorage?: TandemClientStorageApi<Schema>
+	clientStorageWriteInterval: number | TimerApi
 	logger: LoggerApi
 	rng: RngApi
 }
@@ -58,6 +59,7 @@ export class Database<
 		schema,
 		relations,
 		clientStorage,
+		clientStorageWriteInterval,
 		rng,
 	}: DatabaseArgs<Schema, Relations>) {
 		this.logger = logger
@@ -72,8 +74,15 @@ export class Database<
 
 		this.rng = rng
 
+		const clientStorageWriteTimer =
+			typeof clientStorageWriteInterval === "number"
+				? new Timer({ interval: clientStorageWriteInterval })
+				: clientStorageWriteInterval
 		this.ready = this.clientStorage
-			? this.loadFromStorage(this.clientStorage)
+			? this.loadFromStorage({
+					storage: this.clientStorage,
+					timer: clientStorageWriteTimer,
+				})
 			: Promise.resolve()
 	}
 
@@ -95,29 +104,31 @@ export class Database<
 	 * What if values in storage changes?
 	 * What if storage too big to load all at once?
 	 */
-	private async loadFromStorage(storage: TandemClientStorage<Schema>) {
+	private async loadFromStorage({
+		storage,
+		timer,
+	}: {
+		storage: TandemClientStorage<Schema>
+		timer: TimerApi
+	}) {
 		this.logger.info({ message: "loading from storage" })
 		const results = await storage.scan()
 		this.tupleDb.commit({ set: results })
 
 		let writeOpsQueue: WriteOps<SchemaToTupleSchema<Schema>> = {}
 
-		const clientStorageWriteQueue = new ThrottleQueue(
-			async () => {
-				this.logger.info({ message: "committing to storage" })
-				const copy = writeOpsQueue
-				writeOpsQueue = {}
-				try {
-					await storage.commit(copy)
-					this.logger.info({ message: "committed to storage" })
-				} catch (error) {
-					this.logger.error({ message: "error committing to storage", error })
-					writeOpsQueue = copy
-				}
-			},
-			120,
-			new Timer(),
-		)
+		const clientStorageWriteQueue = new ThrottleQueue(async () => {
+			this.logger.info({ message: "committing to storage" })
+			const copy = writeOpsQueue
+			writeOpsQueue = {}
+			try {
+				await storage.commit(copy)
+				this.logger.info({ message: "committed to storage" })
+			} catch (error) {
+				this.logger.error({ message: "error committing to storage", error })
+				writeOpsQueue = copy
+			}
+		}, timer)
 
 		this.clientStorageWriteQueue = clientStorageWriteQueue
 

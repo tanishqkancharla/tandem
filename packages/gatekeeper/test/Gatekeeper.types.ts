@@ -1,62 +1,71 @@
 import {
 	Gatekeeper,
-	type HeldCall,
-	type Operation,
+	type CallHandle,
 	type ServiceProxy,
 } from "@tanishqkancharla/gatekeeper"
 import { expectTypeOf } from "vitest"
-import { Client, DeliveryFailed, InvalidValue, Server } from "./services"
+
+class Server {
+	private value = 0
+
+	read(): number {
+		return this.value
+	}
+
+	save(value: number): Promise<number> {
+		this.value = value
+		return Promise.resolve(value)
+	}
+}
+
+class Client {
+	constructor(private readonly server: Pick<Server, "save">) {}
+
+	read(): number {
+		return 0
+	}
+
+	save(value: number): Promise<number> {
+		return this.server.save(value)
+	}
+}
 
 // Compile-only consumer checks. This function is never executed by Vitest.
 export async function publicApiTypes() {
 	const builder = new Gatekeeper()
-		.add("server", () => new Server())
-		.add("client1", ({ server }) => {
-			// Dependencies inside real services retain their ordinary APIs.
-			expectTypeOf(server.fetch()).toEqualTypeOf<Promise<number>>()
-			return new Client(server)
-		})
-		.add("client2", ({ server, client1 }) => {
-			expectTypeOf(client1).toEqualTypeOf<Client>()
+		.add("server", () => new Server(), { gates: { enter: false, exit: true } })
+		.add("client", ({ server }) => {
+			expectTypeOf(server).toEqualTypeOf<Server>()
 			return new Client(server)
 		})
 
-	const { client1, client2, server } = builder.build()
-	type WriteResult = number | InvalidValue | DeliveryFailed
+	const harness = builder.build()
 
-	expectTypeOf(client1).toEqualTypeOf<ServiceProxy<Client>>()
-	expectTypeOf(client1.write(1)).toEqualTypeOf<Operation<WriteResult>>()
-	expectTypeOf(await client1.write(1)).toEqualTypeOf<WriteResult>()
-	expectTypeOf(client1.read()).toEqualTypeOf<number>()
-	expectTypeOf(client1.isSaving()).toEqualTypeOf<boolean>()
+	expectTypeOf(harness.client).toEqualTypeOf<ServiceProxy<Client>>()
+	expectTypeOf(harness.client.read()).toEqualTypeOf<number>()
+	expectTypeOf(harness.client.save(1)).toEqualTypeOf<
+		Promise<CallHandle<number>>
+	>()
+	expectTypeOf(await harness.activateGates()).toEqualTypeOf<void>()
+	expectTypeOf(await harness.deactivateGates()).toEqualTypeOf<void>()
+	expectTypeOf(await harness.deactivateGatesAndSettle()).toEqualTypeOf<void>()
 
-	const call = await client1.write(1).hold()
-	expectTypeOf(call).toEqualTypeOf<HeldCall<WriteResult>>()
-	expectTypeOf(await call.continue()).toEqualTypeOf<WriteResult>()
-	expectTypeOf(
-		await call.fail(new Error("injected")),
-	).toEqualTypeOf<WriteResult>()
-	expectTypeOf(
-		await call.continueUntil({ beforeProcessedBy: server }),
-	).toEqualTypeOf<void>()
-	await call.continueUntil({ afterProcessedBy: server })
-	await call.continueUntil({ afterProcessedBy: client2 })
+	const result = await harness.client.save(1)
+	expectTypeOf(result.result).toEqualTypeOf<Promise<number>>()
+	expectTypeOf(await result.continueTo("server")).toEqualTypeOf<void>()
+	expectTypeOf(await result.continueToCompletion()).toEqualTypeOf<void>()
+	expectTypeOf(await result.fail(new Error("offline"))).toEqualTypeOf<void>()
 
 	// @ts-expect-error Public method arguments retain the service's original type.
-	await client1.write("wrong")
-	// @ts-expect-error Synchronous observations do not become controlled commands.
-	await client1.read().hold()
-	// @ts-expect-error A boundary requires one specific phase.
-	await call.continueUntil({})
-	// @ts-expect-error Before and after cannot be requested together.
-	await call.continueUntil({
-		beforeProcessedBy: server,
-		afterProcessedBy: server,
+	await harness.client.save("wrong")
+	// @ts-expect-error Synchronous observations do not become call handles.
+	harness.client.read().assertCompleted()
+	new Gatekeeper().add("server", () => new Server(), {
+		gates: {
+			// @ts-expect-error Gate settings are booleans.
+			enter: "sometimes",
+		},
 	})
-	// @ts-expect-error Raw service instances are not registered proxy identities.
-	await call.continueUntil({ beforeProcessedBy: new Server() })
-	// @ts-expect-error Fault injection takes an Error.
-	await call.fail("offline")
 	// @ts-expect-error Existing service names cannot be overwritten.
 	builder.add("server", () => new Server())
 	// @ts-expect-error Factories can only depend on previously registered services.

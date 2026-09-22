@@ -1,20 +1,21 @@
 import type { TimerApi } from "./Timer"
 
-type TaskItem<TaskName extends string> = {
-	name: TaskName
+type TaskItem = {
 	promise: Promise<void>
-	resolve: () => void
-	reject: (error: unknown) => void
+}
+
+type TaskBatch = {
+	delay: Promise<void>
+	tail: Promise<void>
+	pending: number
 }
 
 export class TaskQueue<TaskName extends string> {
-	private readonly queue: TaskItem<TaskName>[] = []
-	private readonly queuedItems = new Map<TaskName, TaskItem<TaskName>>()
-	private drainPromise?: Promise<void>
+	private readonly queuedItems = new Map<TaskName, TaskItem>()
+	private batch?: TaskBatch
 
 	constructor(
 		private readonly tasks: Record<TaskName, () => Promise<void>>,
-		private readonly interval: number,
 		private readonly timer: TimerApi,
 	) {}
 
@@ -22,49 +23,30 @@ export class TaskQueue<TaskName extends string> {
 		const queuedItem = this.queuedItems.get(name)
 		if (queuedItem) return queuedItem.promise
 
-		const item = this.createItem(name)
-		this.queuedItems.set(name, item)
-		this.queue.push(item)
-
-		this.drainPromise ??= this.drain()
-
-		return item.promise
-	}
-
-	private createItem(name: TaskName): TaskItem<TaskName> {
-		let resolve!: () => void
-		let reject!: (error: unknown) => void
-		const promise = new Promise<void>((resolvePromise, rejectPromise) => {
-			resolve = resolvePromise
-			reject = rejectPromise
-		})
-
-		return { name, promise, resolve, reject }
-	}
-
-	private async drain() {
-		try {
-			await this.timer.delay(this.interval)
-
-			while (this.queue.length > 0) {
-				const item = this.queue.shift()
-				if (!item) continue
-
-				this.queuedItems.delete(item.name)
-
-				try {
-					await this.tasks[item.name]()
-					item.resolve()
-				} catch (error) {
-					item.reject(error)
-				}
-			}
-		} finally {
-			this.drainPromise = undefined
-
-			if (this.queue.length > 0) {
-				this.drainPromise = this.drain()
-			}
+		const batch = this.batch ?? {
+			delay: this.timer.waitForNextTick(),
+			tail: Promise.resolve(),
+			pending: 0,
 		}
+		this.batch = batch
+		batch.pending += 1
+
+		const promise = Promise.all([batch.delay, batch.tail]).then(async () => {
+			this.queuedItems.delete(name)
+			await this.tasks[name]()
+		})
+		const item = { promise }
+		this.queuedItems.set(name, item)
+		batch.tail = promise.then(
+			() => undefined,
+			() => undefined,
+		)
+		const settled = () => {
+			batch.pending -= 1
+			if (batch.pending === 0 && this.batch === batch) this.batch = undefined
+		}
+		void promise.then(settled, settled)
+
+		return promise
 	}
 }

@@ -1,20 +1,20 @@
 import { describe, expect, it, vi } from "vitest"
-import type { TimerApi } from "@tanishqkancharla/tandem-core"
-import { TaskQueue } from "../src/utils/TaskQueue.js"
+import { TaskQueue } from "./TaskQueue.js"
+import type { TimerApi } from "./Timer.js"
 
 class ManualTimer implements TimerApi {
-	readonly delays: { ms: number; resolve: () => void }[] = []
+	readonly ticks: { resolve: () => void }[] = []
 
-	delay(ms: number): Promise<void> {
+	waitForNextTick(): Promise<void> {
 		return new Promise((resolve) => {
-			this.delays.push({ ms, resolve })
+			this.ticks.push({ resolve })
 		})
 	}
 
-	resolveNextDelay() {
-		const delay = this.delays.shift()
-		expect(delay).toBeDefined()
-		delay?.resolve()
+	resolveNextTick() {
+		const tick = this.ticks.shift()
+		expect(tick).toBeDefined()
+		tick?.resolve()
 	}
 }
 
@@ -24,11 +24,11 @@ describe("TaskQueue", () => {
 		const calls: string[] = []
 		const queue = new TaskQueue(
 			{
-				push: async () => {
+				push: () => {
 					calls.push("push")
+					return Promise.resolve()
 				},
 			},
-			25,
 			timer,
 		)
 
@@ -37,10 +37,10 @@ describe("TaskQueue", () => {
 		const duplicatePush = queue.enqueue("push")
 
 		expect(duplicatePush).toBe(firstPush)
-		expect(timer.delays).toEqual([{ ms: 25, resolve: expect.any(Function) }])
+		expect(timer.ticks).toEqual([{ resolve: expect.any(Function) }])
 		expect(calls).toEqual([])
 
-		timer.resolveNextDelay()
+		timer.resolveNextTick()
 		await firstPush
 
 		expect(calls).toEqual(["push"])
@@ -59,13 +59,12 @@ describe("TaskQueue", () => {
 					}
 				},
 			},
-			0,
 			timer,
 		)
 
 		// Start the first push and hold it in-flight
 		const firstPush = queue.enqueue("push")
-		timer.resolveNextDelay()
+		timer.resolveNextTick()
 		await vi.waitFor(() => {
 			expect(calls).toEqual(["push"])
 		})
@@ -94,18 +93,18 @@ describe("TaskQueue", () => {
 					await gate.promise
 					calls.push("push:end")
 				},
-				pull: async () => {
+				pull: () => {
 					calls.push("pull")
+					return Promise.resolve()
 				},
 			},
-			0,
 			timer,
 		)
 
 		// A pull queued behind an in-flight push waits for the push to finish
 		const push = queue.enqueue("push")
 		const pull = queue.enqueue("pull")
-		timer.resolveNextDelay()
+		timer.resolveNextTick()
 
 		await vi.waitFor(() => {
 			expect(calls).toEqual(["push:start"])

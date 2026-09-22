@@ -14,7 +14,7 @@ import type {
 } from "../transaction/Transaction"
 import type { LoggerApi } from "../utils/Logger.js"
 import { TaskQueue } from "../utils/TaskQueue.js"
-import type { TimerApi } from "../utils/Timer"
+import { Timer, type TimerApi } from "../utils/Timer.js"
 import type {
 	AsyncUnsubscribe,
 	Tagged,
@@ -132,9 +132,8 @@ export type SyncEngineArgs<Schema extends AnySchema> = {
 	handleRollback: SyncEngine<Schema>["handleRollback"]
 	applyPatchAt: SyncEngine<Schema>["applyPatchAt"]
 	autoConnect?: boolean
-	syncInterval: number
 	logger: SyncEngine<Schema>["logger"]
-	timer: TimerApi
+	syncInterval: number | TimerApi
 }
 
 export class SyncEngine<Schema extends AnySchema> {
@@ -162,14 +161,17 @@ export class SyncEngine<Schema extends AnySchema> {
 		this.handleRollback = args.handleRollback
 		this.applyPatchAt = args.applyPatchAt
 		this.clientId = args.clientId
+		const timer =
+			typeof args.syncInterval === "number"
+				? new Timer({ interval: args.syncInterval })
+				: args.syncInterval
 
 		this.syncQueue = new TaskQueue(
 			{
 				pull: () => this.pull(),
 				push: () => this.push(),
 			},
-			args.syncInterval,
-			args.timer,
+			timer,
 		)
 
 		if (args.autoConnect) {

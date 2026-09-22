@@ -25,14 +25,14 @@ export type {
 	SetMutationOp,
 } from "./transaction/Transaction"
 export { MutationApi } from "./transaction/Transaction"
-export { TandemClientStorage } from "./storage/TandemClientStorage"
-export type { TandemClientStorageApi } from "./storage/TandemClientStorage"
-export { WriteOpsApi } from "./storage/TandemClientStorage"
-export { TandemClientIndexedDbStorage } from "./storage/TandemClientIndexedDbStorage"
+export { TandemClientStorage } from "./clientStorage/TandemClientStorage"
+export type { TandemClientStorageApi } from "./clientStorage/TandemClientStorage"
+export { WriteOpsApi } from "./clientStorage/TandemClientStorage"
+export { TandemClientIndexedDbStorage } from "./clientStorage/TandemClientIndexedDbStorage"
 export type {
 	AnyStorageSchema,
 	TandemClientIndexedDbStorageArgs,
-} from "./storage/TandemClientIndexedDbStorage"
+} from "./clientStorage/TandemClientIndexedDbStorage"
 export { collection, defineSchema, defineRelations, t } from "./schema/Schema"
 export type {
 	AnyCollectionDefinition,

@@ -1,110 +1,167 @@
 # Gatekeeper
 
-Gatekeeper controls execution order and faults between services in Node.js tests.
-Tests drive real service methods and pause their outgoing calls by service identity.
+Gatekeeper controls execution order and faults between real in-process services
+in Node.js tests. It observes calls made through injected service proxies and can
+pause them before a receiver runs or before its result returns to the caller.
 
-The package requires Node.js 22 or later and has no dependency on Tandem. Its tests
-use small real services defined in [test/services.ts](test/services.ts).
+## Construct a harness
 
-## Read the tests first
-
-[test/Gatekeeper.spec.ts](test/Gatekeeper.spec.ts) describes the ordering contract.
-The tests call services directly, select processing boundaries by service identity,
-and assert visible values and save status. They never select an internal RPC name.
-
-```ts
-const first = await client1.write(10).hold()
-const second = await client2.write(20).hold()
-
-await second.continueUntil({ afterProcessedBy: server })
-await first.continueUntil({ afterProcessedBy: server })
-
-await second.continue()
-await first.continue()
-```
-
-Factories receive previously registered services with their ordinary interfaces.
-The test receives proxies: async calls return awaitable operations, while
-synchronous observations remain synchronous.
+Register services in dependency order. Factories receive previously registered
+services with their ordinary interfaces.
 
 ```ts
 await using harness = new Gatekeeper()
-  .add("server", () => new Server())
-  .add("client1", ({ server }) => new Client(server))
-  .add("client2", ({ server }) => new Client(server))
-  .build()
-
-const { client1, client2, server } = harness
+	.add("store", () => new Store())
+	.add("server", ({ store }) => new Server(store))
+	.add("client1", ({ server }) => new Client(server))
+	.add("client2", ({ server }) => new Client(server))
+	.build()
 ```
 
-## Completion contract
-
-| API | Completion point |
-| --- | --- |
-| `await client.method(...)` | The real operation completes, with its real result or rejection. |
-| `await client.method(...).hold()` | Local work, including async preparation, reaches its first outgoing call to another registered service. That call is held before the receiver processes it. |
-| `await call.continueUntil({ beforeProcessedBy: service })` | The next matching event is ready, but the service has not processed it. |
-| `await call.continueUntil({ afterProcessedBy: service })` | The service processes that event, but its response remains undelivered. |
-| `await call.continue()` | This call's holds are released and its original operation completes. |
-| `await call.fail(error)` | The held interaction rejects; the real caller handles that rejection and determines the operation's result. |
-
-Call `.hold()` immediately on the returned operation, before awaiting anything
-else. It arms the outgoing gates synchronously, then waits for the first handoff.
-Otherwise the operation runs normally. Awaiting a normally consumed operation
-again returns the same result without executing it again.
-
-An after-processing failure preserves the receiver's completed effects. An
-application that catches the injected rejection can return an error value or a
-recovery result; Gatekeeper must preserve that outcome. Unexpected unhandled
-rejections also remain rejections.
-
-Requesting the boundary where a call is already held leaves it in place and
-resolves immediately. Progression leaves other calls' holds intact. `hold()` and
-`continueUntil()` wait for real dependencies until the requested boundary is
-reached. Gatekeeper does not detect
-dependency deadlocks; a test that never releases a required gate reaches the
-ordinary test timeout.
-
-For example, when a client queues its second write behind the first response:
+Gates begin deactivated, so setup calls run to completion without pausing. Every
+asynchronous harness call still returns a `CallHandle`; while gates are inactive,
+that handle is already settled. Activate gates immediately before the action
+under test:
 
 ```ts
-const secondReady = client1.write(20).hold()
-await first.continue()
-const second = await secondReady
-await second.continue()
+await harness.activateGates()
+
+const call = await harness.client1.save(10)
+
+call.assertSentBy("client1").assertWaitingFor("server")
 ```
 
-Detectable misuse rejects with a descriptive `GatekeeperError`, exported from the
-package entry point:
+The services remain real and stateful. Gatekeeper only controls communication
+between their registered proxies.
 
-- `hold()` rejects if the operation completes without an outgoing service call.
-  Returning to the test is not an external service call. Local effects already
-  performed remain real.
-- `continueUntil()` rejects if the operation completes without reaching its
-  requested boundary. Effects performed while advancing remain real.
-- Controls on a completed call reject instead of repeating or silently ignoring
-  the action.
-- Holding an already consumed operation, overlapping controls, or choosing a
-  service from another harness rejects without advancing the held request.
+## Step through a call
 
-An operation that rejects before its first outgoing call preserves its original
-rejection. Dependency waits alone are not evidence of misuse or a deadlock.
+`continueTo(name)` delivers the current handoff to that service and advances
+until the call reaches its next gate or completes.
 
-Ordinary calls preserve the early completion behavior of `Promise.all()` and
-`Promise.race()`; remaining requests keep running. If a held operation completes
-with other requests still gated, those gates stay in place until disposal.
-Completed handles cannot release them. Calling `continue()` or `fail()` before
-completion releases the operation's remaining gates as part of that control.
+```ts
+const call = await harness.client1.save(10)
 
-The harness owns its gates, not the service instances. Disposal rejects pending
-controls and intercepted requests without delivering held requests or undoing
-completed effects. It is safe to dispose more than once. Callers manage their own
-service resources, timers, and background work; disposal cannot cancel arbitrary
-JavaScript already executing inside a service.
+call.assertSentBy("client1").assertWaitingFor("server")
 
-## Run checks
+await call.continueTo("server")
+call.assertSentBy("server").assertWaitingFor("store")
 
-From the repository root:
+await call.continueTo("store")
+call.assertSentBy("store").assertWaitingFor("server")
+
+await call.continueTo("server")
+call.assertSentBy("server").assertWaitingFor("client1")
+
+await call.continueTo("client1")
+call.assertCompleted()
+expect(await call.result).toBe(10)
+```
+
+Use `continueToCompletion()` when intermediate boundaries are irrelevant. It
+releases this call without releasing independent calls.
+
+```ts
+await call.continueToCompletion()
+
+call.assertCompleted()
+expect(await call.result).toBe(10)
+```
+
+`result` is the original public operation's result. It retains application
+return values and rejection identity.
+
+## Inject a failure
+
+`fail(error)` rejects the current handoff. The real caller receives that
+rejection and runs its ordinary recovery behavior.
+
+```ts
+const call = await harness.client1.save(10)
+const failure = new Error("Server is unreachable")
+
+await call.fail(failure)
+
+call.assertCompleted()
+await expect(call.result).rejects.toBe(failure)
+```
+
+Failing an exit gate preserves effects the receiving service already completed.
+
+## Configure service gates
+
+Services gate entry and exit by default. Configure either direction when a
+service supplies an event rather than a request-response boundary.
+
+| Configuration  | Behavior                                                             |
+| -------------- | -------------------------------------------------------------------- |
+| `enter: true`  | Pause before the service processes the call.                         |
+| `enter: false` | Let the service begin immediately and observe its real pending work. |
+| `exit: true`   | Pause a settled result before returning it to the caller.            |
+| `exit: false`  | Deliver the settled result immediately.                              |
+
+A timer is an ordinary service. In tests it can resolve immediately while its
+exit gate controls when the tick is delivered to the client.
+
+```ts
+class TestTimer {
+	waitForNextTick() {
+		return Promise.resolve()
+	}
+}
+
+const harness = new Gatekeeper()
+	.add("client1Timer", () => new TestTimer(), {
+		gates: { enter: false, exit: true },
+	})
+	.add(
+		"client1",
+		({ server, client1Timer }) => new Client({ server, timer: client1Timer }),
+	)
+	.build()
+```
+
+```ts
+const call = await harness.client1.save(10)
+
+call.assertSentBy("client1Timer").assertWaitingFor("client1")
+
+await call.continueTo("client1")
+
+call.assertSentBy("client1").assertWaitingFor("server")
+```
+
+Each client can receive its own timer service, so delivering one client's tick
+does not advance another client's work.
+
+## Lifecycle
+
+`deactivateGates()` releases current synthetic gates and lets subsequent calls
+run to settled handles without pausing. `deactivateGatesAndSettle()` additionally
+waits for active calls to finish. A real unresolved dependency must still be
+resolved by its owner.
+
+Disposing a harness rejects its active calls without delivering held requests or
+undoing completed effects. Service resources remain owned by their caller.
+
+## Runtime and type contract
+
+Synchronous service methods remain synchronous observations. Every asynchronous
+test-facing call returns a `CallHandle<Result>`. With gates active, the handle is
+returned when the call reaches its first controlled boundary. With gates
+inactive—or when an active call completes without a service handoff—the returned
+handle is already settled. The operation's value or rejection is always exposed
+through `call.result`.
+
+Calls between registered services must return promises. Direct calls through raw
+service references bypass Gatekeeper. Async context associates nested service
+calls with their originating public operation.
+
+Gatekeeper requires Node.js 22 or later.
+
+## Checks
+
+Run from the repository root:
 
 ```sh
 pnpm --filter @tanishqkancharla/gatekeeper type-check
@@ -113,36 +170,6 @@ pnpm --filter @tanishqkancharla/gatekeeper lint
 pnpm --filter @tanishqkancharla/gatekeeper test
 ```
 
-The test command runs the ordering and [lifecycle tests](test/lifecycle.spec.ts).
-Compile-only consumer tests in [test/Gatekeeper.types.ts](test/Gatekeeper.types.ts) are checked
-by `type-check`, including method arguments, result types, builder dependencies,
-and valid boundary selectors.
-
-## Scope
-
-Factories run synchronously and receive dependency proxies with ordinary service
-types. Methods use their real instances as `this`, including private fields.
-Synchronous observations and properties remain available directly from tests.
-Calls between registered services must return promises. A synchronous dependency
-method produces a control error when invoked; its synchronous effects cannot be
-rolled back. Own methods that are both non-configurable and non-writable cannot
-be proxied and produce a descriptive error.
-
-Node's async context associates each intercepted call with its originating
-operation. Gates control calls made through the injected proxies. Direct calls
-through raw service references bypass interception. Promise-returning methods and
-their awaited work are the supported unit of execution; detached background work
-and batches shared across separate operations have no scheduling contract.
-
-The example client deliberately serializes writes but allows independent reads.
-These are actual properties of that example, not concurrency manufactured by
-Gatekeeper. Services with different dependencies may need other operations to
-progress before they can reach the same requested boundary.
-
-Gatekeeper provides no clock control or network transport interception. Services
-may wrap network transports themselves, but the gates surround service calls.
-
-The initial proxy typing covers ordinary, non-overloaded async methods. Generic
-method correlations and overloaded signatures need a separate type design; the
-current mapped type does not preserve them. This does not constrain Gatekeeper
-to a particular application domain.
+The runtime contract lives in [`test/Gatekeeper.spec.ts`](test/Gatekeeper.spec.ts).
+Compile-only consumer inference checks live in
+[`test/Gatekeeper.types.ts`](test/Gatekeeper.types.ts).

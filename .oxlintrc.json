@@ -8,6 +8,21 @@
 		"typeAware": true
 	},
 	"ignorePatterns": ["**/dist/**", "**/node_modules/**"],
+	"overrides": [
+		{
+			"files": [
+				"**/*.spec.ts",
+				"**/*.spec.tsx",
+				"**/*.test.ts",
+				"**/*.test.tsx",
+				"**/test/**/*.ts",
+				"**/test/**/*.tsx"
+			],
+			"rules": {
+				"eslint/no-empty-pattern": "off"
+			}
+		}
+	],
 	"rules": {
 		"eslint/no-unused-vars": [
 			"warn",
