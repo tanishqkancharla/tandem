@@ -59,7 +59,7 @@ The shadow is the record-level result of pushes that entered the server. After e
 - No migrations or backfills.
 - No new Gatekeeper API, timer, or transport.
 - No crash, restart, or durable sync cursors. Pending mutations, the cookie, and the server revision stay in memory.
-- No `clientStorage`, subscriptions, or poke scheduling. Clients stay unsubscribed so a poke cannot pull inside another client's call.
+- No `clientStorage`. The fuzzer does not draw `subscribe` or schedule pokes. Setup subscribes once, before the draws, so pulls have a todos scan window.
 - No second in-flight call on the same client. Cross-client interleaving is the case this test adds.
 - No filesystem faults and no third client.
 
@@ -89,7 +89,7 @@ Land the seed loop and the end-state check before adding faults. A wrong shadow 
 +└── shadow.apply # after continueTo("server") on a commit
 ```
 
-One live call per client. Ids are `"a"` and `"b"`. Skip `remove` when that client does not already have the id: `Transaction.remove` records no op, and `commit` then never calls the server. Do not subscribe. The poke still runs, but its scan window is empty, so it does not change records. The shadow ignores it.
+One live call per client. Ids are `"a"` and `"b"`. Skip `remove` when that client does not already have the id: `Transaction.remove` records no op, and `commit` then never calls the server. Subscribe once in setup, before `activateGates()`, so the scan window is the todos collection. `pullFromRemote` only returns records inside that window, and a poke on an empty window still clears `lastMutationId`. The draw loop does not subscribe again.
 
 ```
 type Op = { id: "a" | "b", type: "set", text } | { id: "a" | "b", type: "remove" }
@@ -145,12 +145,12 @@ shadow.apply(op):
 
 `mulberry32` is a few lines in the test file. No new dependency. Seeds `1`, `2`, and `3` run inside one test. Copy the `timerTest` fixture from `timers.spec.ts`, pass that timer as `syncInterval`, and leave `clientStorage` unset. Connect both clients before `activateGates()`.
 
-- [ ] Add `packages/core/test/sync/fuzz.spec.ts` with a local `mulberry32` and the timer harness fixture.
-- [ ] Drive only `commit` and `pullFromRemote` through the proxies. Step every gate forward. Never call `subscribe`.
-- [ ] Update the shadow only after `continueTo("server")` on a commit.
-- [ ] Drain any call still held at the timer or server by stepping those same gates, so a late push is in the shadow.
-- [ ] Pull both clients to completion and expect each `query({ collection: "todos" })`, sorted by id, to equal `settledTodos(shadow)` and `server.query`.
-- [ ] Run `pnpm --filter @tanishqkancharla/tandem-core test -- test/sync/fuzz.spec.ts`.
+- [x] Add `packages/core/test/sync/fuzz.spec.ts` with a local `mulberry32` and the timer harness fixture.
+- [x] Drive only `commit` and `pullFromRemote` through the proxies. Step every gate forward. Subscribe once before the draws so the scan window is the todos collection.
+- [x] Update the shadow only after `continueTo("server")` on a commit.
+- [x] Drain any call still held at the timer or server by stepping those same gates, so a late push is in the shadow.
+- [x] Pull both clients to completion and expect each `query({ collection: "todos" })`, sorted by id, to equal `settledTodos(shadow)` and `server.query`.
+- [x] Run `pnpm --filter @tanishqkancharla/tandem-core test -- test/sync/fuzz.spec.ts`.
 
 ### Phase 2: Drop handoffs and go offline
 
