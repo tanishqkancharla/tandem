@@ -89,30 +89,61 @@ Land the seed loop and the end-state check before adding faults. A wrong shadow 
 +└── shadow.apply # after continueTo("server") on a commit
 ```
 
-The timer exit is `assertSentBy("client1Timer").assertWaitingFor("client1")`. Deliver it with `continueTo("client1")`. The server enter is `assertSentBy("client1").assertWaitingFor("server")`. `continueTo("server")` runs `server.push` and holds the acknowledgement. Apply the op to the shadow at that point, then `continueTo("client1")` to deliver the ack.
+One live call per client. Ids are `"a"` and `"b"`. Skip `remove` when that client does not already have the id: `Transaction.remove` records no op, and `commit` then never calls the server. Do not subscribe. The poke still runs, but its scan window is empty, so it does not change records. The shadow ignores it.
 
-Do not subscribe. `InProcessTransport` still pokes, and that pull is not a `CallHandle`. An empty scan window does not change records. The shadow ignores it.
+```
+type Op = { id: "a" | "b", type: "set", text } | { id: "a" | "b", type: "remove" }
+type Live = { client, kind: "commit" | "pull", op?, call }
 
-Keep one live call per client. Use todo ids `"a"` and `"b"` so the two clients overwrite the same records. Skip `remove` when that id is absent on that client, because `Transaction.remove` records no op and `commit` then never calls the server.
+runSeed(seed):
+  random = mulberry32(seed)
+  shadow = Map
+  live = {}
 
-```ts
-type Op = { id: "a" | "b"; type: "set"; text: string } | { id: "a" | "b"; type: "remove" }
+  repeat 12 times:
+    client = client1 or client2
+    if live[client]:
+      step(live[client])          # one gate
+      if call completed: delete live[client]
+    else:
+      started = start(client)     # commit or pull
+      if started: live[client] = started
 
-function runSeed(seed: number) {
-	const random = mulberry32(seed)
-	const shadow = new Map<string, TestsTodo>()
-	// 12 draws. Each draw starts one idle client's commit or pull,
-	// or advances that client's live CallHandle by one gate.
-	// On commit, after continueTo("server"):
-	//   set → shadow.set(id, todo); remove → shadow.delete(id)
-}
+  for each remaining live: deliver(live)   # rest of the gates
+  for each client:
+    deliver({ kind: "pull", call: client.pullFromRemote() })
+  expect client1.query, client2.query, and server.query
+    == shadow values sorted by id
 
-function settledTodos(shadow: Map<string, TestsTodo>) {
-	return [...shadow.values()].sort((left, right) => left.id.localeCompare(right.id))
-}
+start(client):
+  if random draw is pull:
+    return { kind: "pull", call: client.pullFromRemote() }
+  op = { id: "a" or "b", type: "set", text: "${seed}-${step}" }
+       or { id, type: "remove" } when that id is in client.query
+  tx = client.transact()
+  op.type == "set"    → tx.set("todos", todo(op.id, { text }))
+  op.type == "remove" → tx.remove("todos", op.id)
+  return { kind: "commit", op, call: client.commit(tx) }
+
+step(live):                    # phase 1 always delivers
+  name, timer = live.client, live.client + "Timer"
+  sent by timer, waiting for name:
+    continueTo(name)           # tick. server has not run
+  sent by name, waiting for server:
+    continueTo("server")       # server.push runs, ack stays held
+    if live.kind == "commit": shadow.apply(live.op)
+  sent by server, waiting for name:
+    continueTo(name)           # ack
+
+deliver(live):
+  while call is not completed: step(live)
+
+shadow.apply(op):
+  set    → shadow.set(id, todo)
+  remove → shadow.delete(id)
 ```
 
-Copy the `timerTest` fixture from `timers.spec.ts` into `fuzz.spec.ts`. Pass the harness timer as `syncInterval`. Leave `clientStorage` unset. Connect both clients before `activateGates()`. Run seeds `1`, `2`, and `3` in one test.
+`mulberry32` is a few lines in the test file. No new dependency. Seeds `1`, `2`, and `3` run inside one test. Copy the `timerTest` fixture from `timers.spec.ts`, pass that timer as `syncInterval`, and leave `clientStorage` unset. Connect both clients before `activateGates()`.
 
 - [ ] Add `packages/core/test/sync/fuzz.spec.ts` with a local `mulberry32` and the timer harness fixture.
 - [ ] Drive only `commit` and `pullFromRemote` through the proxies. Step every gate forward. Never call `subscribe`.
@@ -141,7 +172,49 @@ Add the two outcomes a push can have besides success. `fail` while the call is w
        └── handleRollback # local only; the heal pull restores it
 ```
 
+Phase 2 replaces the body of `step` and adds two idle draws. `fail` while the call is waiting for the server leaves the shadow alone. `fail` while the acknowledgement is held does not undo the shadow update from the previous gate.
+
 `disconnect` is not a failed push. The next commit ticks the timer and then returns without calling the server. Those ops stay in a per-client list. `connect` pulls and then pushes that list. Do not `fail` inside `connect`. Other calls stay held while it runs, so applying the list when `connect.result` resolves matches the server.
+
+```
+step(live):
+  sent by timer, waiting for client:
+    continueTo(client)                 # never fail a tick
+  sent by client, waiting for server:
+    if fail:
+      void call.result.catch(ignore)
+      call.fail(Error("dropped"))      # shadow unchanged
+    else:
+      continueTo("server")
+      if commit: shadow.apply(op)
+  sent by server, waiting for client:
+    if fail:
+      void call.result.catch(ignore)
+      call.fail(Error("ack dropped"))  # shadow already has the op
+    else:
+      continueTo(client)
+
+start(client) also draws, when idle:
+  connected    → set | remove | pull | disconnect
+  disconnected → set | remove | connect
+
+on disconnect:                       # no live call
+  await client.disconnect().result   # settled, no server handoff
+  offline[client] = true
+
+on commit while offline:
+  continueTo(client)                 # timer, then push returns
+  call is completed
+  queued[client].push(op)            # shadow not yet
+
+on connect:
+  call = client.connect()
+  while not completed: continueTo(whatever it is waiting for)
+  await call.result
+  for op of queued[client]: shadow.apply(op)
+  queued[client] = []
+  offline[client] = false
+```
 
 ```callstack
  client1.disconnect [[packages/core/src/TandemClient.ts#TandemClient.disconnect]]
@@ -159,7 +232,19 @@ Add the two outcomes a push can have besides success. `fail` while the call is w
        └── SyncEngine.push # shadow applies the list after result resolves
 ```
 
-Attach `void call.result.catch(() => {})` when a call is failed so the rejection is observed. Heal by connecting anyone offline, stepping every remaining commit or pull until it completes, recording a commit that enters the server, then pulling both clients. The same three seeds and the same equality check cover this phase.
+Heal is the phase 1 drain, plus one extra pass for anyone still offline:
+
+```
+heal:
+  for each client where offline[client]:
+    on connect                         # applies queued ops to the shadow
+  for each remaining live: deliver(live)
+  for each client:
+    deliver({ kind: "pull", call: client.pullFromRemote() })
+  expect queries == shadow
+```
+
+The same three seeds and the same equality check cover this phase.
 
 - [ ] When a commit or pull is `assertWaitingFor("server")`, either `continueTo("server")` or `fail`. A failed commit does not change the shadow.
 - [ ] When the server is `assertWaitingFor(client)`, either deliver the ack or `fail`. A commit that already entered the server stays in the shadow.
