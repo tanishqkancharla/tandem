@@ -20,7 +20,7 @@ Follow this format and structure:
    - [ ] Run `pnpm type-check` to ensure all TypeScript types are correct
    - [ ] Run `pnpm build` to ensure all packages compile successfully
    - [ ] Run `pnpm lint` to verify no linting errors
-   - [ ] Ensure all written code adheres to the quality documentation in AGENT.md
+   - [ ] Ensure all written code adheres to the quality documentation in AGENTS.md
    - [ ] Update this spec to mark all tasks as completed
    ```
 

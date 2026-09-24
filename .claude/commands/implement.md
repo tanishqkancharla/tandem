@@ -16,7 +16,7 @@ You are tasked with implementing a feature/fix based on a provided spec sheet. F
 
 - **ALWAYS** run `get_diagnostics` on edited files to check for errors
 - **CRITICAL**: Do not introduce any new errors or warnings from your code
-- Follow all patterns and conventions documented in AGENT.md
+- Follow all patterns and conventions documented in AGENTS.md
 - Use existing libraries, utilities, and patterns from the codebase
 - Maintain consistent code style with surrounding code
 
@@ -65,7 +65,7 @@ You are tasked with implementing a feature/fix based on a provided spec sheet. F
 1. Confirm you have access to the spec sheet to implement
 2. Read the entire spec to understand the scope
 3. Ask for clarification if any requirements are ambiguous
-4. Check AGENT.md for any specific guidelines related to the feature area
+4. Check AGENTS.md for any specific guidelines related to the feature area
 
 ## Success Criteria
 
