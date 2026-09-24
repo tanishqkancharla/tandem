@@ -118,7 +118,6 @@ currently lives in the `TandemServer` process and resets when it restarts.
     - [x] Decide exact `select`, `where`, `orderBy`, `limit`, and `offset` syntax
     - [x] Decide relation result shape for `many-to-one` vs `one-to-many`
   - [x] Type inference for relational queries
-    - Spec: `specs/type-inference-for-relational-queries.md`
     - [x] Infer selected scalar fields
     - [x] Infer nested `with` results
     - [x] Preserve relation cardinality: `many-to-one` as object/null, `one-to-many` as array/collection
@@ -143,7 +142,6 @@ currently lives in the `TandemServer` process and resets when it restarts.
     - [x] Remove `q`/`QueryBuilder` from the public API
     - [x] Keep internal encoding/execution helpers private
   - [x] Sync relational subscriptions through remote
-    - Spec: `specs/sync-relational-subscriptions-through-remote.md`
     - [x] Include relation include-tree in scan windows
     - [x] Remote pull returns records needed for requested relations
     - [x] Remote poke/intersection logic accounts for child collections that affect subscribed relational queries
