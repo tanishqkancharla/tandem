@@ -15,7 +15,11 @@ import {
 	type TandemTuple,
 } from "@tanishqkancharla/tandem-server"
 import asyncHooks from "node:async_hooks"
-import { InMemoryTupleStorage, type ScanStorageArgs, type WriteOps } from "tuple-database"
+import {
+	InMemoryTupleStorage,
+	type ScanStorageArgs,
+	type WriteOps,
+} from "tuple-database"
 import { SimPrng } from "./SimPrng.js"
 
 export interface DstTodo {
@@ -176,11 +180,15 @@ export class DstSimulation {
 			}
 
 			// In Gatekeeper, calling commit through the harness proxy returns a CallHandle
-			const commitHandle = (await harnessClient.commit(tx)) as unknown as CallHandle<void>
+			const commitHandle = (await harnessClient.commit(
+				tx,
+			)) as unknown as CallHandle<void>
 
 			const shouldInjectFault = faultRate > 0 && this.rng.boolean(faultRate)
 			if (shouldInjectFault) {
-				const faultError = new Error(`Simulated Network/Push Fault at step ${step}`)
+				const faultError = new Error(
+					`Simulated Network/Push Fault at step ${step}`,
+				)
 				this.trace.push({
 					step,
 					action: "INJECT_FAULT",
@@ -204,18 +212,23 @@ export class DstSimulation {
 		await gatekeeper.deactivateGatesAndSettle()
 
 		// Ensure both clients pull latest changes from the server
-		await (await gatekeeper.client1.pullFromRemote()).result
-		await (await gatekeeper.client2.pullFromRemote()).result
+		await (
+			await gatekeeper.client1.pullFromRemote()
+		).result
+		await (
+			await gatekeeper.client2.pullFromRemote()
+		).result
 
 		// Verify Invariants: Eventual Consistency between both clients
-		const client1State = (rawClients[0].query({ collection: "todos" }) as DstTodo[]).sort((a, b) =>
-			a.id.localeCompare(b.id),
-		)
-		const client2State = (rawClients[1].query({ collection: "todos" }) as DstTodo[]).sort((a, b) =>
-			a.id.localeCompare(b.id),
-		)
+		const client1State = (
+			rawClients[0].query({ collection: "todos" }) as DstTodo[]
+		).sort((a, b) => a.id.localeCompare(b.id))
+		const client2State = (
+			rawClients[1].query({ collection: "todos" }) as DstTodo[]
+		).sort((a, b) => a.id.localeCompare(b.id))
 
-		const converged = JSON.stringify(client1State) === JSON.stringify(client2State)
+		const converged =
+			JSON.stringify(client1State) === JSON.stringify(client2State)
 
 		// Teardown
 		for (const client of rawClients) {
@@ -223,7 +236,7 @@ export class DstSimulation {
 		}
 		await server.close()
 
-		const debugDetails = { client1State, client2State }; return { debugDetails,
+		return {
 			seed: this.options.seed,
 			stepsCompleted: this.options.steps,
 			trace: this.trace,

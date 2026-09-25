@@ -4,6 +4,9 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
+		"type-check": "tsgo --noEmit && tsgo -p tsconfig.test.json --noEmit",
+		"format": "oxfmt \"*.ts\"",
+		"lint": "oxlint .",
 		"test": "vitest run"
 	},
 	"dependencies": {
