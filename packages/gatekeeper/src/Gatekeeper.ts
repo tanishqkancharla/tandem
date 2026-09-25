@@ -56,6 +56,13 @@ export class CallHandle<Result> {
 	}
 }
 
+export type PendingCall = {
+	readonly handle: CallHandle<unknown>
+	readonly label: string
+	readonly sentBy: string
+	readonly waitingFor: string
+}
+
 type AsyncMethodResult<Method> = Method extends (
 	...args: infer Args
 ) => PromiseLike<infer Result>
@@ -70,6 +77,7 @@ export type Harness<Services extends Record<string, object>> =
 	AsyncDisposable & {
 		[Name in keyof Services]: ServiceProxy<Services[Name]>
 	} & {
+		pendingCalls(): readonly PendingCall[]
 		activateGates(): Promise<void>
 		deactivateGates(): Promise<void>
 		deactivateGatesAndSettle(): Promise<void>
@@ -179,6 +187,7 @@ class Runtime {
 			harness[registration.name] = this.proxy(service, true)
 		}
 
+		harness.pendingCalls = () => this.pendingCalls()
 		harness.activateGates = () => this.activateGates()
 		harness.deactivateGates = () => this.deactivateGates()
 		harness.deactivateGatesAndSettle = () => this.deactivateGatesAndSettle()
@@ -246,6 +255,11 @@ class Runtime {
 
 	forget(call: Call): void {
 		this.calls.delete(call)
+	}
+
+	private pendingCalls(): readonly PendingCall[] {
+		this.assertUsable()
+		return [...this.calls].flatMap((call) => call.pendingCall() ?? [])
 	}
 
 	private activateGates(): Promise<void> {
@@ -545,6 +559,20 @@ class Call {
 		throw new GatekeeperError({
 			detail: `${this.label}: expected call to be completed`,
 		})
+	}
+
+	pendingCall(): PendingCall | undefined {
+		if (this.outcome || this.controlError || this.controlling) return undefined
+		const interaction = this.currentInteraction()
+		if (interaction?.phase !== "enter" && interaction?.phase !== "exit") {
+			return undefined
+		}
+		return {
+			handle: this.handle,
+			label: this.label,
+			sentBy: interaction.sentBy.name,
+			waitingFor: interaction.waitingFor.name,
+		}
 	}
 
 	continueTo(serviceName: string): Promise<void> {

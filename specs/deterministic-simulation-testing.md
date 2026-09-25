@@ -56,7 +56,7 @@ step():
   check the cheap invariant
 ```
 
-Enabled events include starting a mutation, advancing an in-flight call to its next boundary, delivering a response, dropping it, killing a client, and restarting one over the same durable storage. The critical dependency is that Gatekeeper can currently report none of this: `Runtime.calls` and `Call.interactions` are private and `currentInteraction` is private, so nothing outside the runtime can enumerate what is pending or ask where a call is stopped. That has to be exposed before the loop can exist.
+Enabled events include starting a mutation, advancing an in-flight call to its next boundary, delivering a response, dropping it, killing a client, and restarting one over the same durable storage. The critical dependency is that Gatekeeper can currently report none of this. `Runtime` and `Call` are not exported, and `Call.currentInteraction()` is private, so nothing outside the module can enumerate what is pending or ask where a call is stopped. That has to be exposed before the loop can exist.
 
 ```mermaid
 flowchart TD
@@ -137,34 +137,35 @@ The package cannot currently fail CI, and nothing else in this spec can be trust
 
 ### Phase 2: Let the DST see what is in flight
 
-An enabled-event loop needs to know which calls exist and where each one is stopped. The runtime tracks both, but keeps them private, so `CallHandle` can only be driven blindly. This phase adds read-only introspection and changes no scheduling behavior.
+An enabled-event loop needs to know which calls are paused and where. The runtime tracks both, but `Runtime` and `Call` are internal to the module, so a consumer can only drive handles it already holds. This phase adds read-only introspection and changes no scheduling behavior.
+
+A call is controlled one boundary at a time: `continueTo` and `fail` act only on the call's current stop, the most recent interaction held at a gate. So the harness reports one entry per paused call, not one per paused interaction. Every entry it returns is something the loop can act on.
 
 ```callstack
  Runtime.build [[packages/gatekeeper/src/Gatekeeper.ts#Runtime.build]]
--└── harness.activateGates = () => this.activateGates()
-+└── harness.pendingCalls = () => this.pendingCalls()
-+└── harness.activateGates = () => this.activateGates()
-
- CallHandle [[packages/gatekeeper/src/Gatekeeper.ts#CallHandle]]
- └── result
-+├── pendingCalls: () => readonly PendingCall[]
- └── continueTo(serviceName)
++├── harness.pendingCalls = () => this.pendingCalls()
+ └── harness.activateGates = () => this.activateGates()
 ```
 
 ```
-PendingCall = { id, label, sentBy, waitingFor }
+PendingCall = { handle, label, sentBy, waitingFor }
 
-pendingCalls():
-  for each call the runtime still owns
-    for each interaction held at an enter or exit stop
-      report { id, label, sentBy, waitingFor }
+harness.pendingCalls():
+  for each call the runtime still owns, in creation order
+    skip it if it has completed, was cancelled, or a control is running
+    skip it unless its current interaction is held at enter or exit
+    report { handle, label, sentBy, waitingFor }
 ```
 
-- [ ] Add a `PendingCall` type to `Gatekeeper.ts` carrying `id`, `label`, `sentBy`, and `waitingFor`.
-- [ ] Add a `pendingCalls()` method on `Call` that reports its interactions held at a stop, leaving `currentInteraction` private.
-- [ ] Add `Runtime.pendingCalls()` and expose it as `harness.pendingCalls()` in the `Harness` type.
-- [ ] Add a gatekeeper test asserting a nested client→server call appears as pending with the expected sender and receiver before `continueTo` is called.
-- [ ] Run `pnpm --filter @tanishqkancharla/gatekeeper test` and `pnpm type-check`.
+A call whose current interaction is processing inside a service without an enter gate is not listed. Only the service can finish that work, so there is nothing for the loop to release.
+
+- [x] Add an exported `PendingCall` type carrying the call's `handle`, `label`, `sentBy`, and `waitingFor`.
+- [x] Add a `Call.pendingCall()` helper that returns its current stop when it is held at enter or exit, leaving `currentInteraction` private.
+- [x] Add `Runtime.pendingCalls()` and expose it as `harness.pendingCalls()` in the `Harness` type.
+- [x] Add a gatekeeper test showing a nested server→store handoff and a second client's request both listed with their senders and receivers.
+- [x] Add a gatekeeper test that drives every call to completion using only `harness.pendingCalls()`, the way the event loop will.
+- [x] Add a type-level check for `harness.pendingCalls()` and document it in the gatekeeper README.
+- [x] Run `pnpm --filter @tanishqkancharla/gatekeeper test` and `pnpm type-check`.
 
 ### Phase 3: Make the run a pure function of the seed
 
@@ -301,7 +302,7 @@ dst:run --replay tmp/failure-123.jsonl
 - [`dst/SimPrng.ts`](../dst/SimPrng.ts) — SplitMix32 generator. Becomes the source for every random choice and for `RngApi`.
 - [`dst/dst.spec.ts`](../dst/dst.spec.ts) — Three fixed-seed cases that assert only `converged`.
 - [`dst/package.json`](../dst/package.json) — Has only `test`. Needs `type-check` and a `tsconfig.json` to join the workspace graphs.
-- [`packages/gatekeeper/src/Gatekeeper.ts`](../packages/gatekeeper/src/Gatekeeper.ts) — Owns execution order. `Runtime.calls` and `Call.interactions` are private, which blocks enabled events until Phase 2 exposes them.
+- [`packages/gatekeeper/src/Gatekeeper.ts`](../packages/gatekeeper/src/Gatekeeper.ts) — Owns execution order. `Runtime` and `Call` are internal to the module, so a harness consumer can only drive handles it already holds. Phase 2 adds `harness.pendingCalls()`.
 - [`packages/core/src/TandemClient.ts`](../packages/core/src/TandemClient.ts) — Already accepts `rng`, and types `syncInterval` and `clientStorageWriteInterval` as `number | TimerApi`. The determinism seams exist; the prototype ignores them.
 - [`packages/core/src/sync/SyncEngine.ts`](../packages/core/src/sync/SyncEngine.ts) — `queuePush` and `queuePull` serialize sync work behind a timer, which is why the clock must be simulated rather than real.
 - [`packages/core/src/utils/Logger.ts`](../packages/core/src/utils/Logger.ts) — `Logger` with `sinks`, `scope`, `addSink`, and `destroy`. The trace sink plugs in here.
