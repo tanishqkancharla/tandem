@@ -1,162 +1,132 @@
 ---
 name: generate-spec
-description: Create a spec sheet for the given feature/fix request in specs/ directory. Use when planning a significant new feature or complex fix.
+description: Keep a living spec in specs/ that shows what is planned and what is already in the tree. Serve it with diffmap, and keep it updated while you plan and implement. Use this when the user wants to spec, plan, implement from a spec, update a spec, or explain work that is already committed.
 ---
 
-Create a spec sheet for the given feature/fix request in specs/ directory.
+# Living spec
 
-Ultrathink. Follow the following steps:
+This markdown file is the spec for the work. It should stay true to the repo. It should show what is already there, and what is still planned. Use the same file for the whole job. Keep editing that file. Do not start a second walkthrough later.
 
-## Understand existing code
+Put the file at `specs/<short-kebab-case-name>.md`. Look up the current paths before you write. Do not keep asking questions. Write the page. Ask a question only when the answer would change how you split the work into phases.
 
-Use code search sub-agents and `grep` as much as possible to deeply understand all of the relevant code. Be smart about your code search: start with where you think it might be, and if that inspires different places to read, follow up with sub-agents to do so. Each sub-agent should give you back information, and potentially other files to read or searches that might be relevant.
+When they change the plan, or when they ask you to implement, update **this file** so it still matches. Do that after the code lands too. If they only want a walkthrough of what a pull request did, and no spec exists yet, put that file under `tmp/`.
 
-## Understand external documentation/libraries
+## Serve and share
 
-If external libraries are involved, always look up and research their relevant documentation as well. Tend to adhere strictly to the examples and best practices provided by the external libraries.
+Run these commands from the repo root:
 
-## Ask critical guiding questions
+```sh
+npx @tanishqkancharla/diffmap list
+npx @tanishqkancharla/diffmap serve specs/<name>.md
+```
 
-After completing the research steps above, pause and ask the user any critical guiding questions before writing the spec. The feature/fix request will not always be completely defined. There may be logical errors, ambiguous requirements, or important clarifications required. Examples:
+`npx @tanishqkancharla/diffmap specs/<name>.md` does the same thing as `serve`. If `list` already shows that file, use the URL it already printed. Do not start a second server. Leave the server running. Tell them the file path and the URL. Do not open the browser unless they ask.
 
-- "To store this data, we could either add a new table or extend the existing X table. The new table keeps concerns separate but adds a join; extending X is simpler but couples the concepts. Which do you prefer?"
-- "There are two ways to surface this to the user: a modal dialog or an inline panel. The modal is more disruptive but harder to miss; the inline panel is less intrusive but easier to overlook. Which feels right?"
-- "We need to sync this state. We could poll on an interval or use a WebSocket. Polling is simpler to implement but adds latency; WebSocket is real-time but more complex. Which trade-off do you want?"
+**Close server** sends a request to `/__diffmap/shutdown`. The server also stops after 24 hours with no use. A hosted gist and a GitHub viewer have no local server, so they do not show this button.
 
-Present the options you see, explain the trade-offs briefly, and let the user decide. If the feature request is fully defined and the path forward is obvious, skip the questions and write the spec directly. Practice good judgement.
+Share the spec when they want other people to read it:
 
-## Establish goals and non-goals
+```sh
+npx @tanishqkancharla/diffmap share specs/<name>.md
+```
 
-After research and any clarifying questions, establish explicit goals and non-goals for the spec. These come directly from the user. If the user did not provide them in the initial prompt, suggest a set of goals and non-goals and ask for confirmation before proceeding.
+That command prints `https://diffmap.dev/g/<id>`. The gist is unlisted, but it is not private. A spec on a pull request is available at `https://diffmap.dev/<owner>/<repo>/pull/<n>/specs/<name>.md`. That URL stays on one commit. Do not start a local server when you share.
 
-Goals are high-level end-user stories that describe what should be true when the spec is complete. Example: "user sets up a Gmail trigger and it works as expected."
+## What to put in the file
 
-Non-goals clarify what is deliberately out of scope. Example: "don't worry about migration or backfills."
+Start with a title. Then write the problem and the solution. Put the system flows in those two sections. Then write the goals, the non-goals, and the phases. Put **References** at the bottom.
 
-By default, always include "no migrations or backfills" as a non-goal unless the user explicitly requests them.
+**Planned.** Sketch how you will implement the work. Mermaid diagrams, call stacks, and pseudocode can all tell the story. In a call stack, `-` means the current code and `+` means the proposed code. Use each diagram where it fits. That can be in the problem, in the solution, or in a phase. Put the diagram next to the sentences it explains. Also link the current source with `[[path]]` or `[[path#symbol]]`. Use other code blocks when they help. Point links at code that exists now. If a symbol is not written yet, leave it unlinked. Do not invent a `source-diff`.
 
-The spec must include these sections near the top, before the implementation plan.
+**Done.** After the code for a phase is committed, paste a real `git diff` of the named files into a `source-diff:id:path` block. Include the `diff --git`, `---`, `+++`, and `@@` lines. Then point that phase's stack rows and mermaid `%% ref` lines at the changed lines, instead of at the whole file. Change `[[path]]` and `[[path#symbol]]` into `[[id:new:12-18]]` or `[[id:old:…]]`. The Diff panel should open the change, not only the file. One spec can mix work that is still planned with work that is already done.
 
-## Reason critically about the spec
+A bad `source-diff` makes the whole page blank. If the patch would be invalid, skip it and say so. For a file that git is not tracking yet, run `git diff --no-index -- /dev/null <path>`. An exit code of 1 means the files differ.
 
-Before writing the spec, think through the implementation with a "bicycle before car" mindset. Spec the simplest version that works end-to-end and delivers real value. Do not spec the scalable, polished, extensible version.
+````md
+# <Feature>
 
-### Scope
-
-Cut any phase that is not required for the core functionality to work. If you can remove a phase and a real user can still use the feature, it does not belong in v1. Infrastructure, abstraction layers, configuration systems, and polish are almost never v1 work.
-
-### Testing
-
-Each phase's success criteria should verify the thing most likely to go wrong, not the thing most likely to go right. A test that a Zod schema parses valid input is low-value. A test that filtering logic excludes wrong results is high-value. Ask: "What would make me revert this phase?" Test that.
-
-If a phase does not have a clear way to verify it works, the phase is poorly scoped. Restructure it so it produces something testable: extract a pure function, expose an interface, write to an observable output. Design for testability in the spec, not after implementation.
-
-### End-to-end verification
-
-Agents have access to CLI tools for running tests and project scripts. Specs should leverage these where appropriate.
-
-When a phase involves runtime behavior, prefer success criteria that verify end-to-end behavior with the project's existing scripts and test commands rather than only relying on unit tests.
-
-### Common failure modes
-
-- Adding extensibility or configurability nobody asked for
-- Creating abstractions before there are two concrete cases
-- Testing that code exists rather than testing that it behaves correctly
-- Phases that are pure refactoring or setup with no user-facing progress
-
-## Write an effective spec
-
-Specs should always have the following form:
-
-```markdown
 ## Problem overview
 
-A couple plain English sentences describing the problem: either a bug, or a feature request, or a refactor to be done with motivation
+<Write what is going wrong.>
+
+```callstack
+ requestHandler [[src/request.ts#requestHandler]]
+ └── existingService [[src/service.ts#existingService]]
+```
+
+Empty names fall through to the service.
 
 ## Solution overview
 
-A couple plain English sentences describing the proposed solution.
+Validate the input, and then make the same call.
+
+```mermaid
+flowchart TD
+    A[Entry] --> V[validateInput]
+    V --> B[Result]
+    %% ref node:A [[src/request.ts#requestHandler]]
+```
+
+An empty name stops. Anything else is the record.
+
+```
+validateInput(record):
+  empty name → Error
+  else → record
+```
 
 ## Goals
 
-High-level end-user stories that must be true when the spec is complete.
-
 ## Non-goals
-
-What is deliberately out of scope. Always includes "no migrations or backfills" unless the user requested them.
-
-## Future work
-
-Items identified during implementation that are valuable but non-blocking. Big features, refactors, or cleanup that can be done after the spec is complete. Only added during implementation, not during initial spec creation.
-
-## Important files/docs/websites for implementation
-
-A list of all the files that are involved in the implementation. Also included should be any docs files or external links to documentation. Each doc should be annotated with a brief sentence about what it is (and if its not obvious, why it's relevant).
 
 ## Implementation
 
-A phased plan where each phase represents a single commit-sized change (<100 lines). Each phase should be independently committable and leave the codebase in a working state.
-Each phase heading must be followed by a short one- to two-sentence description that explains the intent of the phase and what changes after it lands.
+### Phase 1: <Commit-sized outcome>
+
+<Write one or two sentences. Say what this phase does and why it exists.>
+
+```callstack
+ requestHandler [[src/request.ts#requestHandler]]
+-└── existingService [[src/service.ts#existingService]]
++└── validateInput
+    └── existingService [[src/service.ts#existingService]]
 ```
 
-Each implementation phase must include success criteria as task items alongside the implementation tasks. Success criteria are verifiable assertions: quick checks ("ensure X is in package.json"), unit tests to write and run, or manual user stories. They should be the minimum set needed to confirm the phase is correctly done.
+That new step sits between the handler and the service.
 
-When a phase is centered on writing or changing code paths, include a short TypeScript code sample in that phase. The sample should show caller-facing interfaces and/or key implementation pieces using high-level descriptive function names. Keep each sample under 30 lines and treat it as a sketch, not production-ready code.
-
-If a phase is documentation-only, infra-only, or otherwise not code-centric, skip the code sample for that phase.
-
-````markdown
-### Phase 1: Add gender and age fields to the provider search input schema
-
-Define the new input contract first so later query changes are constrained by a typed shape. Keep this phase focused on schema changes and validation coverage.
-
-```ts
-type SearchProvidersInput = {
-	gender?: "M" | "F"
-	ageFilter?: { min_age?: number; max_age?: number }
-}
-
-function buildSearchProvidersInputSchema() {
-	return z.object({
-		gender: z.enum(["M", "F"]).optional(),
-		ageFilter: z
-			.object({
-				min_age: z.number().int().optional(),
-				max_age: z.number().int().optional(),
-			})
-			.optional(),
-	})
-}
+```mermaid
+flowchart LR
+    A[requestHandler] --> V[validateInput]
+    V --> B[existingService]
+    %% ref node:A [[src/request.ts#requestHandler]]
+    %% ref node:B [[src/service.ts#existingService]]
 ```
+
+Reject an empty name before the service runs.
+
+```
+validateInput(record):
+  empty name → Error
+  else → record
+```
+
+- [ ] Make the concrete change. Name the files and the symbols.
+- [ ] Connect it to the code that calls it.
+- [ ] Run `<focused check>`.
+
+## References
+
+- [`src/request.ts`](../src/request.ts) — This file handles the request.
 ````
 
-- [ ] Add `gender` parameter to `searchProvidersInput` schema in `apps/api/src/tools/searchProviders.ts` as optional `z.enum(["M", "F"])`
-- [ ] Add `ageFilter` parameter using structured object with optional `min_age` and `max_age` integer fields
-- [ ] Verify `pnpm run typecheck` passes with the new fields
-- [ ] Add a unit test that parses input with `gender: "M"` and `ageFilter: { min_age: 30 }` without throwing
+Each phase starts with one or two sentences. Say what the phase does and why it exists. Do not fill the phase with repeated filler. In the problem, the solution, and each phase, put mermaid diagrams, call stacks, and pseudocode next to the sentences they explain. Pick the diagram that fits that part of the story. Any of them can go in any of those sections. The template above is one example. It is not a rule that each kind of diagram has its own section.
 
-### Phase 2: Implement gender and age filtering logic
+Keep each phase small enough to commit on its own. About 200 lines is a good size. Link a mermaid node with `%% ref node:<id> [[path#symbol]]`. Link an edge with `%% ref edge:<index> [[…]]`. In a call stack, use `└──` and `├──` to show the tree. Use the unified diff signs to mark current lines and proposed lines. A `#` comment on a line should say the purpose, the return value, or a side effect. Do not add a comment that only repeats the name.
 
-Apply the schema fields to query construction so users see behavior changes in runtime results. Validate filtering semantics with focused tests that fail on wrong inclusions.
+`[[path/to/file.ts#symbolName]]` links to a TypeScript or JavaScript declaration that exists now. If the name is ambiguous, use a longer form such as `[[src/store.ts#Store.save]]`. Use `[[path]]` or `[[path#L12-L30]]` for a whole file or a range of lines. Leave those as file links until the change is committed. After you paste the `source-diff:id:path` block, rewrite them to `[[id:old:start-end]]` or `[[id:new:12]]`. Do the same for mermaid `%% ref` lines. Do not invent those ids or line ranges.
 
-```ts
-async function searchProviders(input: SearchProvidersInput) {
-	const query = createProviderQuery()
-	const withGender = applyGenderFilter(query, input.gender)
-	const withAgeRange = applyAgeRangeFilter(withGender, input.ageFilter)
-	return runProviderQuery(withAgeRange)
-}
-```
+The full syntax is in the [diffmap README](https://github.com/tanishqkancharla/diffmap#link-call-stacks-to-source-changes), the [annotations](https://github.com/tanishqkancharla/diffmap/blob/main/fixtures/annotations.md) fixture, and the [diagrams](https://github.com/tanishqkancharla/diffmap/blob/main/fixtures/references.md) fixture.
 
-- [ ] Add gender filtering logic to the database query using `eq(providers.gender, gender)` when gender is provided
-- [ ] Add age range filtering logic using `gte(providers.age, min_age)` and `lte(providers.age, max_age)` when age filters are provided
-- [ ] Add a unit test querying with `gender: "F"` and assert only female providers are returned
-- [ ] Add a unit test querying with `ageFilter: { min_age: 30, max_age: 50 }` and assert results are within range
+A `mermaid` fence draws a diagram. A `callstack` fence draws stack rows. A `source-diff:id:path` fence puts a real git patch in the Diff panel. A fence in another language draws a code block. Use that for pseudocode and for types. An `html` fence draws HTML from this file, and the viewer trusts it.
 
-```
-
-### What to avoid in the spec
-
-- Avoid introducing new infrastructure, abstractions, or optimization work unless explicitly required for the requested outcome.
-- Avoid refactor-only phases that do not produce user-visible or test-visible progress.
-```
+HTML in an `html` fence is not sanitized. Use that fence only in files you wrote.
