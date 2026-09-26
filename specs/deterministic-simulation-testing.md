@@ -231,6 +231,7 @@ Choosing among these is what exposes ordering bugs. Running a whole commit insid
 - [ ] Define the `DstEvent` union covering `mutate`, `advance`, `drop`, `killClient`, and `restartClient`, each carrying the fields the trace needs.
 - [ ] Build `advance` and `drop` events from `harness.pendingCalls()`, so each event carries the handle it acts on and no separate handle map is needed. Give each call a stable trace name from its label and creation order.
 - [ ] Implement `enabledEvents()` to return only currently possible events, never offering `advance` or `drop` for a call with no pending interaction, and never offering `drop` on a timer handoff.
+- [ ] Make poke-driven pulls schedulable. `InProcessTransport` binds `poke` to the async context `connect` was called from, so the DST connects through the unwrapped client, and every pull a poke triggers runs outside any Gatekeeper call where the loop cannot see or order it. Deliver pokes as their own gated calls, for example by giving the transport a per-client poke service.
 - [ ] Split the fault taxonomy into `DstNetworkFault` for a dropped response and `DstAckLossFault` for a response the client never sees, so the model can tell "server rejected" from "server accepted, client did not hear".
 - [ ] Add a test asserting a run reaches a state where two calls are pending at once, which the current prototype cannot produce.
 - [ ] Run `pnpm --filter tandem-dst test`.

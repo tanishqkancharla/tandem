@@ -99,11 +99,34 @@ export interface DstRunOptions {
 	faultRate?: number
 }
 
-export interface DstTraceRecord {
-	step: number
-	action: string
-	detail?: Record<string, unknown>
-}
+const clientNames = ["client1", "client2"] as const
+type DstClientName = (typeof clientNames)[number]
+
+export type DstTraceRecord =
+	| {
+			type: "set"
+			step: number
+			client: DstClientName
+			mutationId: string
+			item: DstTodo
+	  }
+	| {
+			type: "remove"
+			step: number
+			client: DstClientName
+			mutationId: string
+			id: string
+	  }
+	| { type: "deliverTick"; step: number; client: DstClientName }
+	| {
+			type: "fault"
+			step: number
+			client: DstClientName
+			sentBy: string
+			waitingFor: string
+			error: string
+	  }
+	| { type: "complete"; step: number; client: DstClientName }
 
 export class DstSimulation {
 	readonly rng: SimPrng
@@ -130,9 +153,9 @@ export class DstSimulation {
 			rng: this.rng.createRngApi("server"),
 		})
 
-		const rawClients: TandemClient<DstSchema>[] = []
+		const unwrappedClients = new Map<DstClientName, TandemClient<DstSchema>>()
 		const createClient = (
-			label: string,
+			label: DstClientName,
 			remote: RemoteApi<DstSchema>,
 			timer: TimerApi,
 		) => {
@@ -145,11 +168,11 @@ export class DstSimulation {
 				syncInterval: timer,
 				clientStorageWriteInterval: timer,
 			})
-			rawClients.push(client)
+			unwrappedClients.set(label, client)
 			return client
 		}
 
-		const gatekeeper = new Gatekeeper()
+		await using gatekeeper = new Gatekeeper()
 			.add("server", () => new InProcessTransport(server))
 			.add("client1Timer", () => new DstTimer(), timerGates)
 			.add("client2Timer", () => new DstTimer(), timerGates)
@@ -161,10 +184,13 @@ export class DstSimulation {
 			)
 			.build()
 
-		// Initialize & connect clients
-		for (const client of rawClients) {
+		for (const name of clientNames) {
+			const client = gatekeeper[name]
 			await client.ready
-			await client.connect()
+			// The transport binds poke to the caller's async context. Connecting
+			// through the harness would bind every later poke-driven pull to this
+			// finished connect call, which Gatekeeper rejects once gates are active.
+			await unwrappedClients.get(name)!.connect()
 			client.subscribe({ collection: "todos" })
 		}
 
@@ -177,21 +203,21 @@ export class DstSimulation {
 		const faultRate = this.options.faultRate ?? 0
 
 		for (let step = 0; step < this.options.steps; step++) {
-			const isClient1 = this.rng.boolean(0.5)
-			const harnessClient = isClient1 ? gatekeeper.client1 : gatekeeper.client2
-			const rawClient = isClient1 ? rawClients[0] : rawClients[1]
-			const clientName = isClient1 ? "client1" : "client2"
+			const clientName = this.rng.pick(clientNames)
+			const client = gatekeeper[clientName]
 
 			const id = this.rng.pick(poolOfIds)
 			const isDelete = this.rng.boolean(0.2)
 
-			const tx = rawClient.transact()
+			const tx = client.transact()
 			if (isDelete) {
 				tx.remove("todos", id)
 				this.trace.push({
+					type: "remove",
 					step,
-					action: "MUTATION_DELETE",
-					detail: { client: clientName, mutationId: tx.tupleDbTx.id, id },
+					client: clientName,
+					mutationId: tx.tupleDbTx.id,
+					id,
 				})
 			} else {
 				const item: DstTodo = {
@@ -202,87 +228,71 @@ export class DstSimulation {
 				}
 				tx.set("todos", item)
 				this.trace.push({
+					type: "set",
 					step,
-					action: "MUTATION_SET",
-					detail: { client: clientName, mutationId: tx.tupleDbTx.id, item },
+					client: clientName,
+					mutationId: tx.tupleDbTx.id,
+					item,
 				})
 			}
 
-			// In Gatekeeper, calling commit through the harness proxy returns a CallHandle
-			const commitHandle = (await harnessClient.commit(
-				tx,
-			)) as unknown as CallHandle<void>
+			const commit = await client.commit(tx)
 
-			const shouldInjectFault = faultRate > 0 && this.rng.boolean(faultRate)
-			if (shouldInjectFault) {
+			if (faultRate > 0 && this.rng.boolean(faultRate)) {
 				// Faults model lost network messages, so deliver this client's timer
 				// ticks until the call is held at a handoff with the server.
-				for (
-					let pending = findPending(commitHandle);
-					pending && isTimerHandoff(pending);
-					pending = findPending(commitHandle)
-				) {
-					await commitHandle.continueTo(pending.waitingFor)
-					this.trace.push({
-						step,
-						action: "DELIVER_TICK",
-						detail: { client: clientName },
-					})
+				let boundary = findPending(commit)
+				while (boundary && isTimerHandoff(boundary)) {
+					await commit.continueTo(boundary.waitingFor)
+					this.trace.push({ type: "deliverTick", step, client: clientName })
+					boundary = findPending(commit)
 				}
 
-				const faultError = new Error(
-					`Simulated Network/Push Fault at step ${step}`,
-				)
-				const boundary = findPending(commitHandle)
-				this.trace.push({
-					step,
-					action: "INJECT_FAULT",
-					detail: {
+				if (boundary) {
+					const error = new Error(
+						`Simulated Network/Push Fault at step ${step}`,
+					)
+					this.trace.push({
+						type: "fault",
+						step,
 						client: clientName,
-						sentBy: boundary?.sentBy,
-						waitingFor: boundary?.waitingFor,
-						error: faultError.message,
-					},
-				})
-				await commitHandle.fail(faultError)
-				// Catch the expected rejection
-				await commitHandle.result.catch(() => {})
-			} else {
-				// Deterministic advancement: complete this call through the gates
-				await commitHandle.continueToCompletion()
-				this.trace.push({
-					step,
-					action: "STEP_COMPLETE",
-					detail: { client: clientName },
-				})
+						sentBy: boundary.sentBy,
+						waitingFor: boundary.waitingFor,
+						error: error.message,
+					})
+					await commit.fail(error)
+					await commit.result.catch(() => {})
+					continue
+				}
 			}
+
+			await commit.continueToCompletion()
+			this.trace.push({ type: "complete", step, client: clientName })
 		}
 
-		// --- PHASE 2: Quiesce & Converge ---
 		await gatekeeper.deactivateGatesAndSettle()
 
-		// Ensure both clients pull latest changes from the server
-		await (
-			await gatekeeper.client1.pullFromRemote()
-		).result
-		await (
-			await gatekeeper.client2.pullFromRemote()
-		).result
-
-		// Verify Invariants: Eventual Consistency between both clients
-		const client1State = (
-			rawClients[0].query({ collection: "todos" }) as DstTodo[]
-		).sort((a, b) => a.id.localeCompare(b.id))
-		const client2State = (
-			rawClients[1].query({ collection: "todos" }) as DstTodo[]
-		).sort((a, b) => a.id.localeCompare(b.id))
-
+		const states = []
+		for (const name of clientNames) {
+			const client = gatekeeper[name]
+			await (
+				await client.pullFromRemote()
+			).result
+			states.push(
+				(client.query({ collection: "todos" }) as DstTodo[]).sort((a, b) =>
+					a.id.localeCompare(b.id),
+				),
+			)
+		}
+		const [client1State, client2State] = states
 		const converged =
 			JSON.stringify(client1State) === JSON.stringify(client2State)
+		const clientIds = clientNames.map((name) => gatekeeper[name].clientId)
 
-		// Teardown
-		for (const client of rawClients) {
-			await client.disconnect()
+		for (const name of clientNames) {
+			await (
+				await gatekeeper[name].disconnect()
+			).result
 		}
 		await server.close()
 
@@ -290,7 +300,7 @@ export class DstSimulation {
 			seed: this.options.seed,
 			stepsCompleted: this.options.steps,
 			trace: this.trace,
-			clientIds: rawClients.map((client) => client.clientId),
+			clientIds,
 			converged,
 			finalCount: client1State.length,
 		}
