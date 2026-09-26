@@ -23,7 +23,7 @@ flowchart LR
     Q -->|"yes"| PASS["converged: true"]
     Q -->|"no"| FAIL["converged: false"]
     S["server state"] -.->|"never compared"| Q
-    %% ref node:S [[packages/server/src/TandemServer.ts#TandemServer]]
+    %% ref node:S [[packages/server/src/TandemServer.ts#TandemServer.constructor]]
     %% ref node:Q [[dst/DstSimulation.ts#DstSimulation.execute]]
 ```
 
@@ -169,41 +169,38 @@ A call whose current interaction is processing inside a service without an enter
 
 ### Phase 3: Make the run a pure function of the seed
 
-The prototype passes `syncInterval: 0` and no `rng`, so ids come from `Math.random` and sync work is driven by real `setTimeout`. Both seams already exist on the client; this phase uses them.
+The prototype passes `syncInterval: 0` and no `rng`, so ids come from `Math.random` and sync work is driven by real `setTimeout`. The client already accepts both an `RngApi` and a `TimerApi`; this phase supplies seeded ones and closes the one gap Tandem could not reach on its own.
+
+That gap is inside `tuple-database`. Its listener ids and fallback transaction ids come from `uuid.v4()`, which reads `crypto.randomUUID`, so seeding `Math.random` would not touch them. Listener ids matter: `subscribe` stores each listener under `[prefix, id]` and a write scans that range, so listeners on the same prefix fire in id order. Tandem now depends on a fork, [`tanishqkancharla/tuple-database`](https://github.com/tanishqkancharla/tuple-database), whose databases take an `rng` option. It is pinned by commit on the fork's `release` branch, which holds the built package at its root.
 
 ```callstack
- DstRun.createClients dst/DstRun.ts
--└── new TandemClient({ remote, schema, logger, autoConnect: false, syncInterval: 0 })
-+└── new TandemClient({
-+        remote,
-+        schema,
-+        logger,
-+        rng: this.rng.createRngApi(label),
-+        syncInterval: this.clock.createTimerApi(),
-+        clientStorageWriteInterval: this.clock.createTimerApi(),
-+        autoConnect: false,
-+    })
+ Database constructor [[packages/core/src/Database.ts#Database.constructor]]
++└── new TupleDatabase(new InMemoryTupleStorage(), { rng })
+
+ TandemServer constructor [[packages/server/src/TandemServer.ts#TandemServer.constructor]]
++├── new AsyncTupleDatabase(storage, { rng: args.rng })
++└── transact() → this.tupleDb.transact(this.rng?.randomId())
 ```
 
-`TandemClientArgs` already types both intervals as `number | TimerApi` and already accepts an `rng`, so a simulated clock and a seeded id source drop in without touching the client.
+Time does not get its own clock. Each client receives a timer service registered in the Gatekeeper harness with `{ enter: false, exit: true }`, the pattern `buildTimerGatekeeperHarness` already uses in core's tests. A tick is then an ordinary held handoff, listed by `harness.pendingCalls()` as `sentBy: "client1Timer", waitingFor: "client1"`, so Phase 4's loop delivers ticks the same way it delivers pushes. A separate simulated clock would reintroduce a second scheduler.
 
 ```
-SimPrng:
-  nextUint32, next, int, pick     ← already there
-+ createRngApi(prefix)             → RngApi whose randomId draws from the seed
+seed → SimPrng
+  ├── rng for the server        (transaction and listener ids)
+  ├── rng per client            (client, transaction, mutation, listener ids)
+  └── choices made by the loop
 
-SimClock:
-+ virtual tick counter
-+ queue of due timers
-+ createTimerApi() → TimerApi that resolves only when the sim advances
-+ advance(), drain()
+per client: timer service in the harness → syncInterval and clientStorageWriteInterval
+trace records: keyed by step, no wall-clock time
 ```
 
-- [ ] Add `SimPrng.createRngApi(prefix)` returning an `RngApi` whose `randomId` draws from the generator, so every client and transaction id derives from the seed.
-- [ ] Add `SimClock` owning a virtual tick counter and a queue of due timers, with `createTimerApi()`, `advance()`, and a bounded `drain()`.
-- [ ] Add a self-check that fails the run if `Math.random` or a real `setTimeout` is reached from client or server code during a step, so determinism cannot silently regress.
-- [ ] Drive `Logger` timestamps from the simulated clock so the JSONL trace has reproducible ordering.
-- [ ] Add a test asserting two runs at the same seed produce byte-identical traces, and that a third run at a different seed does not.
+- [x] Fork `tuple-database` so `TupleDatabase` and `AsyncTupleDatabase` accept `{ rng }` for listener and fallback transaction ids, and pin Tandem to the fork's `release` build.
+- [x] Pass the client's `rng` into its `TupleDatabase`, and add an optional `rng?: RngApi` to `TandemServer` for its database and transaction ids.
+- [x] Remove the unused `@triplit/tuple-database` dependency from core.
+- [ ] Add `SimPrng.createRngApi(label)` and give one to the server and to each client.
+- [ ] Register a timer service per client in the DST harness with `{ enter: false, exit: true }`, used for both `syncInterval` and `clientStorageWriteInterval`.
+- [ ] Key trace records by step and drop wall-clock timestamps.
+- [ ] Add a test asserting two runs at the same seed produce identical traces, and that a different seed does not.
 
 ### Phase 4: Replace the commit loop with an enabled-event loop
 
@@ -304,6 +301,7 @@ dst:run --replay tmp/failure-123.jsonl
 - [`dst/package.json`](../dst/package.json) — Has only `test`. Needs `type-check` and a `tsconfig.json` to join the workspace graphs.
 - [`packages/gatekeeper/src/Gatekeeper.ts`](../packages/gatekeeper/src/Gatekeeper.ts) — Owns execution order. `Runtime` and `Call` are internal to the module, so a harness consumer can only drive handles it already holds. Phase 2 adds `harness.pendingCalls()`.
 - [`packages/core/src/TandemClient.ts`](../packages/core/src/TandemClient.ts) — Already accepts `rng`, and types `syncInterval` and `clientStorageWriteInterval` as `number | TimerApi`. The determinism seams exist; the prototype ignores them.
+- [`tanishqkancharla/tuple-database`](https://github.com/tanishqkancharla/tuple-database) — Fork of `ccorcos/tuple-database` (unmaintained since 2023). Adds the `rng` option; `release-git.sh` builds `master` onto the `release` branch that Tandem pins by commit.
 - [`packages/core/src/sync/SyncEngine.ts`](../packages/core/src/sync/SyncEngine.ts) — `queuePush` and `queuePull` serialize sync work behind a timer, which is why the clock must be simulated rather than real.
 - [`packages/core/src/utils/Logger.ts`](../packages/core/src/utils/Logger.ts) — `Logger` with `sinks`, `scope`, `addSink`, and `destroy`. The trace sink plugs in here.
 - [`packages/core/src/utils/Logger.node.ts`](../packages/core/src/utils/Logger.node.ts) — `JsonlLoggerSink`, implemented and unit-tested but not re-exported from the core entry point. Must be exported before `dst` can use it.
