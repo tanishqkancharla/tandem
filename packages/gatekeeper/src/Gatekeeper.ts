@@ -56,6 +56,20 @@ export class CallHandle<Result> {
 	}
 }
 
+export type GatekeeperListener = {
+	/** Start a call delivering this event to its listener. Returns immediately. */
+	emit(): void
+}
+
+export type GatekeeperEvents = {
+	/** Register a listener owned by the service being built or currently running. */
+	on(name: string, listener: () => Promise<void>): GatekeeperListener
+}
+
+export type ServiceFactoryContext = {
+	events: GatekeeperEvents
+}
+
 export type PendingCall = {
 	readonly handle: CallHandle<unknown>
 	readonly label: string
@@ -88,7 +102,7 @@ export class Gatekeeper<Services extends Record<string, object> = {}> {
 
 	add<Name extends string, Service extends object>(
 		name: Name extends keyof Services ? never : Name,
-		factory: (services: Services) => Service,
+		factory: (services: Services, context: ServiceFactoryContext) => Service,
 		options: ServiceOptions = {},
 	): Gatekeeper<Services & Record<Name, Service>> {
 		if (
@@ -105,7 +119,7 @@ export class Gatekeeper<Services extends Record<string, object> = {}> {
 			...this.registrations,
 			{
 				name,
-				factory: (services) => factory(services as Services),
+				factory: (services, context) => factory(services as Services, context),
 				gates: {
 					enter: options.gates?.enter ?? true,
 					exit: options.gates?.exit ?? true,
@@ -122,7 +136,10 @@ export class Gatekeeper<Services extends Record<string, object> = {}> {
 
 type Registration = {
 	name: string
-	factory: (services: Record<string, object>) => object
+	factory: (
+		services: Record<string, object>,
+		context: ServiceFactoryContext,
+	) => object
 	gates: Required<ServiceGates>
 }
 
@@ -158,6 +175,11 @@ function unwrap(outcome: Outcome): unknown {
 
 class Runtime {
 	readonly calls = new Set<Call>()
+	private readonly services = new Map<string, Service>()
+	private readonly events: GatekeeperEvents = {
+		on: (name, listener) => this.listen(name, listener),
+	}
+	private building?: string
 	private gatesActive = false
 	private disposed = false
 	private disposal?: Promise<void>
@@ -167,7 +189,12 @@ class Runtime {
 		const harness: Record<string | symbol, unknown> = Object.create(null)
 
 		for (const registration of registrations) {
-			const instance = registration.factory(Object.freeze({ ...dependencies }))
+			this.building = registration.name
+			const instance = registration.factory(
+				Object.freeze({ ...dependencies }),
+				{ events: this.events },
+			)
+			this.building = undefined
 			if (
 				instance === null ||
 				typeof instance !== "object" ||
@@ -183,6 +210,7 @@ class Runtime {
 				instance,
 				gates: registration.gates,
 			}
+			this.services.set(service.name, service)
 			dependencies[registration.name] = this.proxy(service, false)
 			harness[registration.name] = this.proxy(service, true)
 		}
@@ -244,6 +272,42 @@ class Runtime {
 		})
 	}
 
+	private listen(
+		name: string,
+		listener: () => Promise<void>,
+	): GatekeeperListener {
+		this.assertUsable()
+		const owner = this.building ?? context.getStore()?.service.name
+		if (!owner) {
+			throw new GatekeeperError({
+				detail: `events.on("${name}") must be called by a service`,
+			})
+		}
+		return { emit: () => this.emit(owner, name, listener) }
+	}
+
+	private emit(
+		ownerName: string,
+		name: string,
+		listener: () => Promise<void>,
+	): void {
+		this.assertUsable()
+		const label = `${ownerName}.${name}`
+		const sender = context.getStore()?.service
+		if (!sender) {
+			throw new GatekeeperError({
+				detail: `${label}: events must be emitted by a service`,
+			})
+		}
+		const call = new Call({ runtime: this, label })
+		this.calls.add(call)
+		call.deliverEvent({
+			sender,
+			receiver: this.services.get(ownerName)!,
+			invoke: listener,
+		})
+	}
+
 	private assertUsable(): void {
 		if (this.disposed)
 			throw new GatekeeperError({ detail: "Harness is disposed" })
@@ -300,6 +364,8 @@ type InteractionArgs = {
 	sender: Service
 	receiver: Service
 	invoke: () => unknown
+	/** Events have no reply, so their result is never held at the exit gate. */
+	oneWay?: boolean
 }
 
 type InteractionPhase = "enter" | "processing" | "exit" | "delivered"
@@ -415,6 +481,7 @@ class Interaction {
 		if (
 			this.args.call.runtime.isGating() &&
 			this.args.receiver.gates.exit &&
+			!this.args.oneWay &&
 			!this.args.call.runsToCompletion
 		) {
 			this.phase = "exit"
@@ -503,14 +570,27 @@ class Call {
 		return this.publicResult.promise
 	}
 
+	deliverEvent(args: {
+		sender: Service
+		receiver: Service
+		invoke: () => unknown
+	}): void {
+		void this.interact({ ...args, oneWay: true }).then(
+			(value) => this.finish({ ok: true, value }),
+			(error: unknown) => this.finish({ ok: false, error }),
+		)
+	}
+
 	interact({
 		sender,
 		receiver,
 		invoke,
+		oneWay,
 	}: {
 		sender: Service
 		receiver: Service
 		invoke: () => unknown
+		oneWay?: boolean
 	}): Promise<unknown> {
 		if (this.controlError) return Promise.reject(this.controlError)
 		if (this.outcome) {
@@ -525,6 +605,7 @@ class Call {
 			sender,
 			receiver,
 			invoke,
+			oneWay,
 		})
 		this.interactions.add(interaction)
 		this.expose()

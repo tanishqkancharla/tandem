@@ -111,6 +111,62 @@ A call appears once, at its current boundary, because `continueTo` and `fail`
 act only on that boundary. Completed calls, calls with a control in progress,
 and work still processing inside a service without an enter gate are not listed.
 
+## Deliver events
+
+A service call is a request with a reply, and every handoff belongs to the call
+that made it. Some messages instead start new work on another service, like a
+server notifying clients of a change. Factories receive `events` for these.
+
+```ts
+class Client {
+	private seen = 0
+	private readonly changed: GatekeeperListener
+
+	constructor(
+		private readonly server: Server,
+		events: GatekeeperEvents,
+	) {
+		// Owned by this client, because its factory is running.
+		this.changed = events.on("changed", async () => {
+			this.seen = await this.server.read()
+		})
+	}
+
+	connect() {
+		return this.server.subscribe(() => this.changed.emit())
+	}
+}
+
+const harness = new Gatekeeper()
+	.add("server", () => new Server())
+	.add("client1", ({ server }, { events }) => new Client(server, events))
+	.add("client2", ({ server }, { events }) => new Client(server, events))
+	.build()
+```
+
+A listener belongs to the service whose factory registers it, or to the running
+service when registered during a call. `emit()` returns immediately and starts a
+new call labeled `<owner>.<name>`, held at the owner's enter gate. The emitting
+service is its sender and never waits for or observes the outcome.
+
+```ts
+const save = await harness.client1.save(10)
+await save.continueTo("server") // the server notifies both clients
+
+harness.pendingCalls()
+// [
+//   { label: "client1.save",    sentBy: "server", waitingFor: "client1" },
+//   { label: "client1.changed", sentBy: "server", waitingFor: "client1" },
+//   { label: "client2.changed", sentBy: "server", waitingFor: "client2" },
+// ]
+```
+
+`continueTo(owner)` runs the listener, and its service calls are gated inside the
+event's call. `fail(error)` loses the event, so the listener never runs. Events
+have no reply, so a listener's result is not held at the exit gate. While gates
+are inactive, listeners run without pausing. Listeners must return promises, so
+Gatekeeper knows when their work is done.
+
 ## Configure service gates
 
 Services gate entry and exit by default. Configure either direction when a

@@ -1,6 +1,8 @@
 import {
 	Gatekeeper,
 	type CallHandle,
+	type GatekeeperEvents,
+	type GatekeeperListener,
 	type PendingCall,
 	type ServiceProxy,
 } from "@tanishqkancharla/gatekeeper"
@@ -35,8 +37,14 @@ class Client {
 export async function publicApiTypes() {
 	const builder = new Gatekeeper()
 		.add("server", () => new Server(), { gates: { enter: false, exit: true } })
-		.add("client", ({ server }) => {
+		.add("client", ({ server }, { events }) => {
 			expectTypeOf(server).toEqualTypeOf<Server>()
+			expectTypeOf(events).toEqualTypeOf<GatekeeperEvents>()
+			expectTypeOf(
+				events.on("changed", () => Promise.resolve()),
+			).toEqualTypeOf<GatekeeperListener>()
+			// @ts-expect-error Listeners return promises so Gatekeeper knows when they finish.
+			events.on("changed", () => undefined)
 			return new Client(server)
 		})
 

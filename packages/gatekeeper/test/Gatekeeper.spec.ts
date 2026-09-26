@@ -1,4 +1,9 @@
-import { Gatekeeper } from "@tanishqkancharla/gatekeeper"
+import {
+	Gatekeeper,
+	type GatekeeperEvents,
+	type GatekeeperListener,
+	type PendingCall,
+} from "@tanishqkancharla/gatekeeper"
 import { describe, expect, test as base } from "vitest"
 
 interface StoreApi {
@@ -440,5 +445,146 @@ describe("Gatekeeper", () => {
 		await expect(call.result).rejects.toThrow(
 			/calls between services must return promises/,
 		)
+	})
+})
+
+class NotifyingServer {
+	private value = 0
+	private readonly subscribers = new Set<() => void>()
+
+	subscribe(notify: () => void) {
+		this.subscribers.add(notify)
+		return Promise.resolve()
+	}
+
+	read() {
+		return Promise.resolve(this.value)
+	}
+
+	save(value: number) {
+		this.value = value
+		for (const notify of this.subscribers) notify()
+		return Promise.resolve(value)
+	}
+}
+
+class SubscribedClient {
+	private seen = 0
+	private readonly changed: GatekeeperListener
+
+	constructor(
+		private readonly server: Pick<
+			NotifyingServer,
+			"subscribe" | "read" | "save"
+		>,
+		events: GatekeeperEvents,
+	) {
+		this.changed = events.on("changed", async () => {
+			this.seen = await this.server.read()
+		})
+	}
+
+	connect() {
+		return this.server.subscribe(() => this.changed.emit())
+	}
+
+	save(value: number) {
+		return this.server.save(value)
+	}
+
+	seenValue() {
+		return this.seen
+	}
+}
+
+async function createNotifyingHarness() {
+	const harness = new Gatekeeper()
+		.add("server", () => new NotifyingServer())
+		.add(
+			"client1",
+			({ server }, { events }) => new SubscribedClient(server, events),
+		)
+		.add(
+			"client2",
+			({ server }, { events }) => new SubscribedClient(server, events),
+		)
+		.build()
+	await (
+		await harness.client1.connect()
+	).result
+	await (
+		await harness.client2.connect()
+	).result
+	return harness
+}
+
+function describePending(harness: { pendingCalls(): readonly PendingCall[] }) {
+	return harness
+		.pendingCalls()
+		.map(({ label, sentBy, waitingFor }) => ({ label, sentBy, waitingFor }))
+}
+
+describe("Gatekeeper events", () => {
+	test("delivers an emitted event as its own call to each listener", async () => {
+		await using harness = await createNotifyingHarness()
+		await harness.activateGates()
+		const save = await harness.client1.save(10)
+
+		await save.continueTo("server")
+
+		expect(describePending(harness)).toEqual([
+			{ label: "client1.save", sentBy: "server", waitingFor: "client1" },
+			{ label: "client1.changed", sentBy: "server", waitingFor: "client1" },
+			{ label: "client2.changed", sentBy: "server", waitingFor: "client2" },
+		])
+	})
+
+	test("advances an event independently of the call that emitted it", async () => {
+		await using harness = await createNotifyingHarness()
+		await harness.activateGates()
+		const save = await harness.client1.save(10)
+		await save.continueTo("server")
+		const changed = harness
+			.pendingCalls()
+			.find((pending) => pending.label === "client2.changed")!
+
+		await changed.handle.continueTo("client2")
+
+		// The listener's own service calls are gated inside the event's call.
+		changed.handle.assertSentBy("client2").assertWaitingFor("server")
+
+		await changed.handle.continueToCompletion()
+
+		expect(harness.client2.seenValue()).toBe(10)
+		save.assertSentBy("server").assertWaitingFor("client1")
+	})
+
+	test("a failed event never reaches its listener", async () => {
+		await using harness = await createNotifyingHarness()
+		await harness.activateGates()
+		const save = await harness.client1.save(10)
+		await save.continueTo("server")
+		const changed = harness
+			.pendingCalls()
+			.find((pending) => pending.label === "client2.changed")!
+
+		await changed.handle.fail(new Error("Notification was lost"))
+		await harness.deactivateGatesAndSettle()
+
+		expect(harness.client2.seenValue()).toBe(0)
+		expect(harness.client1.seenValue()).toBe(10)
+		expect(await save.result).toBe(10)
+	})
+
+	test("delivers events without holding them while gates are inactive", async () => {
+		await using harness = await createNotifyingHarness()
+
+		await (
+			await harness.client1.save(10)
+		).result
+		await harness.deactivateGatesAndSettle()
+
+		expect(harness.client1.seenValue()).toBe(10)
+		expect(harness.client2.seenValue()).toBe(10)
 	})
 })
