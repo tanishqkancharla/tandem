@@ -24,14 +24,18 @@ describe("Deterministic Simulation Testing (DST)", () => {
 		expect(result.converged).toBe(true)
 	})
 
-	it("produces identical execution traces with the same seed", async () => {
-		const sim1 = new DstSimulation({ seed: 42, steps: 30 })
-		const result1 = await sim1.execute()
+	it("reproduces a run exactly from its seed, including every generated id", async () => {
+		const options = { seed: 42, steps: 30, faultRate: 0.1 }
 
-		const sim2 = new DstSimulation({ seed: 42, steps: 30 })
-		const result2 = await sim2.execute()
+		const first = await new DstSimulation(options).execute()
+		const second = await new DstSimulation(options).execute()
+		const otherSeed = await new DstSimulation({
+			...options,
+			seed: 43,
+		}).execute()
 
-		expect(result1.trace).toEqual(result2.trace)
-		expect(result1.finalCount).toBe(result2.finalCount)
+		expect(second).toEqual(first)
+		expect(otherSeed.trace).not.toEqual(first.trace)
+		expect(otherSeed.clientIds).not.toEqual(first.clientIds)
 	})
 })

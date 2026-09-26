@@ -1,5 +1,9 @@
 import "fake-indexeddb/auto"
-import { Gatekeeper, type CallHandle } from "@tanishqkancharla/gatekeeper"
+import {
+	Gatekeeper,
+	type CallHandle,
+	type PendingCall,
+} from "@tanishqkancharla/gatekeeper"
 import {
 	collection,
 	defineSchema,
@@ -8,6 +12,7 @@ import {
 	type RuntimeSchemaDefinition,
 	t,
 	TandemClient,
+	type TimerApi,
 } from "@tanishqkancharla/tandem-core"
 import {
 	TandemServer,
@@ -72,6 +77,22 @@ class InProcessTransport implements RemoteApi<DstSchema> {
 	pull: RemoteApi<DstSchema>["pull"] = (args) => this.server.pull(args)
 }
 
+/**
+ * Registered as a Gatekeeper service with only its exit gate, so a tick is a
+ * held handoff to its client rather than a real timeout.
+ */
+class DstTimer implements TimerApi {
+	waitForNextTick(): Promise<void> {
+		return Promise.resolve()
+	}
+}
+
+const timerGates = { gates: { enter: false, exit: true } }
+
+function isTimerHandoff({ sentBy, waitingFor }: PendingCall): boolean {
+	return sentBy.endsWith("Timer") || waitingFor.endsWith("Timer")
+}
+
 export interface DstRunOptions {
 	seed: number
 	steps: number
@@ -96,6 +117,7 @@ export class DstSimulation {
 		seed: number
 		stepsCompleted: number
 		trace: readonly DstTraceRecord[]
+		clientIds: readonly string[]
 		converged: boolean
 		finalCount: number
 	}> {
@@ -105,34 +127,38 @@ export class DstSimulation {
 			schema: dstSchemaDefinition,
 			relations: {},
 			storage: serverStorage,
+			rng: this.rng.createRngApi("server"),
 		})
 
 		const rawClients: TandemClient<DstSchema>[] = []
+		const createClient = (
+			label: string,
+			remote: RemoteApi<DstSchema>,
+			timer: TimerApi,
+		) => {
+			const client = new TandemClient<DstSchema>({
+				remote,
+				schema: dstSchemaDefinition,
+				logger,
+				rng: this.rng.createRngApi(label),
+				autoConnect: false,
+				syncInterval: timer,
+				clientStorageWriteInterval: timer,
+			})
+			rawClients.push(client)
+			return client
+		}
 
 		const gatekeeper = new Gatekeeper()
 			.add("server", () => new InProcessTransport(server))
-			.add("client1", ({ server }) => {
-				const client = new TandemClient<DstSchema>({
-					remote: server,
-					schema: dstSchemaDefinition,
-					logger,
-					autoConnect: false,
-					syncInterval: 0,
-				})
-				rawClients.push(client)
-				return client
-			})
-			.add("client2", ({ server }) => {
-				const client = new TandemClient<DstSchema>({
-					remote: server,
-					schema: dstSchemaDefinition,
-					logger,
-					autoConnect: false,
-					syncInterval: 0,
-				})
-				rawClients.push(client)
-				return client
-			})
+			.add("client1Timer", () => new DstTimer(), timerGates)
+			.add("client2Timer", () => new DstTimer(), timerGates)
+			.add("client1", ({ server, client1Timer }) =>
+				createClient("client1", server, client1Timer),
+			)
+			.add("client2", ({ server, client2Timer }) =>
+				createClient("client2", server, client2Timer),
+			)
 			.build()
 
 		// Initialize & connect clients
@@ -143,6 +169,9 @@ export class DstSimulation {
 		}
 
 		await gatekeeper.activateGates()
+
+		const findPending = (handle: CallHandle<unknown>) =>
+			gatekeeper.pendingCalls().find((pending) => pending.handle === handle)
 
 		const poolOfIds = ["item-1", "item-2", "item-3"]
 		const faultRate = this.options.faultRate ?? 0
@@ -162,7 +191,7 @@ export class DstSimulation {
 				this.trace.push({
 					step,
 					action: "MUTATION_DELETE",
-					detail: { client: clientName, id },
+					detail: { client: clientName, mutationId: tx.tupleDbTx.id, id },
 				})
 			} else {
 				const item: DstTodo = {
@@ -175,7 +204,7 @@ export class DstSimulation {
 				this.trace.push({
 					step,
 					action: "MUTATION_SET",
-					detail: { client: clientName, item },
+					detail: { client: clientName, mutationId: tx.tupleDbTx.id, item },
 				})
 			}
 
@@ -186,13 +215,34 @@ export class DstSimulation {
 
 			const shouldInjectFault = faultRate > 0 && this.rng.boolean(faultRate)
 			if (shouldInjectFault) {
+				// Faults model lost network messages, so deliver this client's timer
+				// ticks until the call is held at a handoff with the server.
+				for (
+					let pending = findPending(commitHandle);
+					pending && isTimerHandoff(pending);
+					pending = findPending(commitHandle)
+				) {
+					await commitHandle.continueTo(pending.waitingFor)
+					this.trace.push({
+						step,
+						action: "DELIVER_TICK",
+						detail: { client: clientName },
+					})
+				}
+
 				const faultError = new Error(
 					`Simulated Network/Push Fault at step ${step}`,
 				)
+				const boundary = findPending(commitHandle)
 				this.trace.push({
 					step,
 					action: "INJECT_FAULT",
-					detail: { client: clientName, error: faultError.message },
+					detail: {
+						client: clientName,
+						sentBy: boundary?.sentBy,
+						waitingFor: boundary?.waitingFor,
+						error: faultError.message,
+					},
 				})
 				await commitHandle.fail(faultError)
 				// Catch the expected rejection
@@ -240,6 +290,7 @@ export class DstSimulation {
 			seed: this.options.seed,
 			stepsCompleted: this.options.steps,
 			trace: this.trace,
+			clientIds: rawClients.map((client) => client.clientId),
 			converged,
 			finalCount: client1State.length,
 		}

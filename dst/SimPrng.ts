@@ -1,3 +1,5 @@
+import type { RngApi } from "@tanishqkancharla/tandem-core"
+
 /**
  * Deterministic PRNG implementation (SplitMix32)
  */
@@ -48,5 +50,16 @@ export class SimPrng {
 			throw new Error("Cannot pick from empty array")
 		}
 		return items[this.int(0, items.length - 1)]
+	}
+
+	/**
+	 * Id source for one participant. It draws from its own stream, seeded from
+	 * this one, so the ids a participant consumes do not shift the run's choices.
+	 */
+	createRngApi(label: string): RngApi {
+		const stream = new SimPrng(this.nextUint32())
+		return {
+			randomId: () => `${label}-${stream.nextUint32().toString(36)}`,
+		}
 	}
 }

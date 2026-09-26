@@ -197,10 +197,14 @@ trace records: keyed by step, no wall-clock time
 - [x] Fork `tuple-database` so `TupleDatabase` and `AsyncTupleDatabase` accept `{ rng }` for listener and fallback transaction ids, and pin Tandem to the fork's `release` build.
 - [x] Pass the client's `rng` into its `TupleDatabase`, and add an optional `rng?: RngApi` to `TandemServer` for its database and transaction ids.
 - [x] Remove the unused `@triplit/tuple-database` dependency from core.
-- [ ] Add `SimPrng.createRngApi(label)` and give one to the server and to each client.
-- [ ] Register a timer service per client in the DST harness with `{ enter: false, exit: true }`, used for both `syncInterval` and `clientStorageWriteInterval`.
-- [ ] Key trace records by step and drop wall-clock timestamps.
-- [ ] Add a test asserting two runs at the same seed produce identical traces, and that a different seed does not.
+- [x] Add `SimPrng.createRngApi(label)` and give one to the server and to each client. Each participant draws from its own stream seeded from the run's generator, so the ids it consumes do not shift the run's choices.
+- [x] Register a timer service per client in the DST harness with `{ enter: false, exit: true }`, used for both `syncInterval` and `clientStorageWriteInterval`.
+- [x] Key trace records by step with no wall-clock timestamps. The prototype's records already carried none; they now also record each mutation id, and the result records each client id.
+- [x] Add a test asserting two runs at the same seed produce identical results, including every generated id, and that a different seed changes both the trace and the ids.
+
+Gating timers changed where the prototype's faults land. A commit's first held handoff is now often its client's sync tick, so `fail()` rejected the tick instead of the push. Faults model lost network messages, so the prototype now delivers timer ticks through `harness.pendingCalls()` until the call is held at a server handoff, and records that boundary on the fault.
+
+Rejecting a tick also exposed a sharp edge in `TaskQueue`: it removes a queued task only after the tick resolves, so a rejected tick leaves that task queued forever and every later `enqueue` returns the same rejection. Real timers never reject, so this is not reachable in production, but Phase 4's enabled events must never offer `fail` on a timer handoff.
 
 ### Phase 4: Replace the commit loop with an enabled-event loop
 
@@ -225,8 +229,8 @@ Choosing among these is what exposes ordering bugs. Running a whole commit insid
 
 - [ ] Delete `dst/DstScheduler.ts` and the inline loop in `DstSimulation.ts`.
 - [ ] Define the `DstEvent` union covering `mutate`, `advance`, `drop`, `killClient`, and `restartClient`, each carrying the fields the trace needs.
-- [ ] Track every `CallHandle` the run creates in a map keyed by the id from Phase 2, so an event can name the handle it advances.
-- [ ] Implement `enabledEvents()` to return only currently possible events, never offering `advance` or `drop` for a call with no pending interaction.
+- [ ] Build `advance` and `drop` events from `harness.pendingCalls()`, so each event carries the handle it acts on and no separate handle map is needed. Give each call a stable trace name from its label and creation order.
+- [ ] Implement `enabledEvents()` to return only currently possible events, never offering `advance` or `drop` for a call with no pending interaction, and never offering `drop` on a timer handoff.
 - [ ] Split the fault taxonomy into `DstNetworkFault` for a dropped response and `DstAckLossFault` for a response the client never sees, so the model can tell "server rejected" from "server accepted, client did not hear".
 - [ ] Add a test asserting a run reaches a state where two calls are pending at once, which the current prototype cannot produce.
 - [ ] Run `pnpm --filter tandem-dst test`.
