@@ -1,0 +1,813 @@
+{
+	"options": {
+		"seed": 12345,
+		"steps": 50
+	},
+	"seed": 12345,
+	"stepsCompleted": 50,
+	"trace": [
+		{
+			"type": "set",
+			"step": 0,
+			"client": "client2",
+			"mutationId": "client2-1kj6ze2",
+			"item": {
+				"id": "item-3",
+				"text": "Note item-3 (rev 0)",
+				"done": false,
+				"priority": 5
+			}
+		},
+		{
+			"type": "complete",
+			"step": 0,
+			"client": "client2"
+		},
+		{
+			"type": "set",
+			"step": 1,
+			"client": "client2",
+			"mutationId": "client2-f463vf",
+			"item": {
+				"id": "item-1",
+				"text": "Note item-1 (rev 1)",
+				"done": false,
+				"priority": 2
+			}
+		},
+		{
+			"type": "complete",
+			"step": 1,
+			"client": "client2"
+		},
+		{
+			"type": "set",
+			"step": 2,
+			"client": "client2",
+			"mutationId": "client2-1ywqzuj",
+			"item": {
+				"id": "item-3",
+				"text": "Note item-3 (rev 2)",
+				"done": true,
+				"priority": 5
+			}
+		},
+		{
+			"type": "complete",
+			"step": 2,
+			"client": "client2"
+		},
+		{
+			"type": "remove",
+			"step": 3,
+			"client": "client2",
+			"mutationId": "client2-8cps6i",
+			"id": "item-1"
+		},
+		{
+			"type": "complete",
+			"step": 3,
+			"client": "client2"
+		},
+		{
+			"type": "set",
+			"step": 4,
+			"client": "client1",
+			"mutationId": "client1-26etxh",
+			"item": {
+				"id": "item-1",
+				"text": "Note item-1 (rev 4)",
+				"done": false,
+				"priority": 2
+			}
+		},
+		{
+			"type": "complete",
+			"step": 4,
+			"client": "client1"
+		},
+		{
+			"type": "set",
+			"step": 5,
+			"client": "client1",
+			"mutationId": "client1-12v4zr",
+			"item": {
+				"id": "item-1",
+				"text": "Note item-1 (rev 5)",
+				"done": true,
+				"priority": 1
+			}
+		},
+		{
+			"type": "complete",
+			"step": 5,
+			"client": "client1"
+		},
+		{
+			"type": "set",
+			"step": 6,
+			"client": "client2",
+			"mutationId": "client2-1f3kn9b",
+			"item": {
+				"id": "item-1",
+				"text": "Note item-1 (rev 6)",
+				"done": true,
+				"priority": 5
+			}
+		},
+		{
+			"type": "complete",
+			"step": 6,
+			"client": "client2"
+		},
+		{
+			"type": "remove",
+			"step": 7,
+			"client": "client1",
+			"mutationId": "client1-li7071",
+			"id": "item-1"
+		},
+		{
+			"type": "complete",
+			"step": 7,
+			"client": "client1"
+		},
+		{
+			"type": "set",
+			"step": 8,
+			"client": "client2",
+			"mutationId": "client2-1s728gs",
+			"item": {
+				"id": "item-3",
+				"text": "Note item-3 (rev 8)",
+				"done": false,
+				"priority": 2
+			}
+		},
+		{
+			"type": "complete",
+			"step": 8,
+			"client": "client2"
+		},
+		{
+			"type": "set",
+			"step": 9,
+			"client": "client1",
+			"mutationId": "client1-vfid2t",
+			"item": {
+				"id": "item-3",
+				"text": "Note item-3 (rev 9)",
+				"done": false,
+				"priority": 4
+			}
+		},
+		{
+			"type": "complete",
+			"step": 9,
+			"client": "client1"
+		},
+		{
+			"type": "set",
+			"step": 10,
+			"client": "client1",
+			"mutationId": "client1-1ahhvy0",
+			"item": {
+				"id": "item-1",
+				"text": "Note item-1 (rev 10)",
+				"done": false,
+				"priority": 5
+			}
+		},
+		{
+			"type": "complete",
+			"step": 10,
+			"client": "client1"
+		},
+		{
+			"type": "set",
+			"step": 11,
+			"client": "client1",
+			"mutationId": "client1-lpkuod",
+			"item": {
+				"id": "item-2",
+				"text": "Note item-2 (rev 11)",
+				"done": false,
+				"priority": 5
+			}
+		},
+		{
+			"type": "complete",
+			"step": 11,
+			"client": "client1"
+		},
+		{
+			"type": "set",
+			"step": 12,
+			"client": "client1",
+			"mutationId": "client1-129grzy",
+			"item": {
+				"id": "item-1",
+				"text": "Note item-1 (rev 12)",
+				"done": true,
+				"priority": 2
+			}
+		},
+		{
+			"type": "complete",
+			"step": 12,
+			"client": "client1"
+		},
+		{
+			"type": "remove",
+			"step": 13,
+			"client": "client1",
+			"mutationId": "client1-1rdm9md",
+			"id": "item-1"
+		},
+		{
+			"type": "complete",
+			"step": 13,
+			"client": "client1"
+		},
+		{
+			"type": "remove",
+			"step": 14,
+			"client": "client1",
+			"mutationId": "client1-llijw8",
+			"id": "item-2"
+		},
+		{
+			"type": "complete",
+			"step": 14,
+			"client": "client1"
+		},
+		{
+			"type": "set",
+			"step": 15,
+			"client": "client1",
+			"mutationId": "client1-b7jnyr",
+			"item": {
+				"id": "item-2",
+				"text": "Note item-2 (rev 15)",
+				"done": true,
+				"priority": 2
+			}
+		},
+		{
+			"type": "complete",
+			"step": 15,
+			"client": "client1"
+		},
+		{
+			"type": "remove",
+			"step": 16,
+			"client": "client1",
+			"mutationId": "client1-10ojdv",
+			"id": "item-2"
+		},
+		{
+			"type": "complete",
+			"step": 16,
+			"client": "client1"
+		},
+		{
+			"type": "set",
+			"step": 17,
+			"client": "client2",
+			"mutationId": "client2-1nk2wds",
+			"item": {
+				"id": "item-2",
+				"text": "Note item-2 (rev 17)",
+				"done": true,
+				"priority": 4
+			}
+		},
+		{
+			"type": "complete",
+			"step": 17,
+			"client": "client2"
+		},
+		{
+			"type": "remove",
+			"step": 18,
+			"client": "client2",
+			"mutationId": "client2-1ogodo2",
+			"id": "item-2"
+		},
+		{
+			"type": "complete",
+			"step": 18,
+			"client": "client2"
+		},
+		{
+			"type": "remove",
+			"step": 19,
+			"client": "client1",
+			"mutationId": "client1-17w8ldr",
+			"id": "item-3"
+		},
+		{
+			"type": "complete",
+			"step": 19,
+			"client": "client1"
+		},
+		{
+			"type": "set",
+			"step": 20,
+			"client": "client2",
+			"mutationId": "client2-c57q8g",
+			"item": {
+				"id": "item-2",
+				"text": "Note item-2 (rev 20)",
+				"done": true,
+				"priority": 1
+			}
+		},
+		{
+			"type": "complete",
+			"step": 20,
+			"client": "client2"
+		},
+		{
+			"type": "set",
+			"step": 21,
+			"client": "client2",
+			"mutationId": "client2-kjx65i",
+			"item": {
+				"id": "item-1",
+				"text": "Note item-1 (rev 21)",
+				"done": false,
+				"priority": 5
+			}
+		},
+		{
+			"type": "complete",
+			"step": 21,
+			"client": "client2"
+		},
+		{
+			"type": "set",
+			"step": 22,
+			"client": "client2",
+			"mutationId": "client2-1rru641",
+			"item": {
+				"id": "item-1",
+				"text": "Note item-1 (rev 22)",
+				"done": true,
+				"priority": 2
+			}
+		},
+		{
+			"type": "complete",
+			"step": 22,
+			"client": "client2"
+		},
+		{
+			"type": "set",
+			"step": 23,
+			"client": "client1",
+			"mutationId": "client1-10wj2fs",
+			"item": {
+				"id": "item-1",
+				"text": "Note item-1 (rev 23)",
+				"done": false,
+				"priority": 1
+			}
+		},
+		{
+			"type": "complete",
+			"step": 23,
+			"client": "client1"
+		},
+		{
+			"type": "set",
+			"step": 24,
+			"client": "client2",
+			"mutationId": "client2-1j0an1n",
+			"item": {
+				"id": "item-2",
+				"text": "Note item-2 (rev 24)",
+				"done": false,
+				"priority": 3
+			}
+		},
+		{
+			"type": "complete",
+			"step": 24,
+			"client": "client2"
+		},
+		{
+			"type": "set",
+			"step": 25,
+			"client": "client1",
+			"mutationId": "client1-1pp8au7",
+			"item": {
+				"id": "item-1",
+				"text": "Note item-1 (rev 25)",
+				"done": false,
+				"priority": 3
+			}
+		},
+		{
+			"type": "complete",
+			"step": 25,
+			"client": "client1"
+		},
+		{
+			"type": "set",
+			"step": 26,
+			"client": "client1",
+			"mutationId": "client1-qmbv28",
+			"item": {
+				"id": "item-2",
+				"text": "Note item-2 (rev 26)",
+				"done": false,
+				"priority": 4
+			}
+		},
+		{
+			"type": "complete",
+			"step": 26,
+			"client": "client1"
+		},
+		{
+			"type": "remove",
+			"step": 27,
+			"client": "client1",
+			"mutationId": "client1-1akbdyv",
+			"id": "item-3"
+		},
+		{
+			"type": "complete",
+			"step": 27,
+			"client": "client1"
+		},
+		{
+			"type": "set",
+			"step": 28,
+			"client": "client2",
+			"mutationId": "client2-380f4q",
+			"item": {
+				"id": "item-3",
+				"text": "Note item-3 (rev 28)",
+				"done": false,
+				"priority": 1
+			}
+		},
+		{
+			"type": "complete",
+			"step": 28,
+			"client": "client2"
+		},
+		{
+			"type": "set",
+			"step": 29,
+			"client": "client1",
+			"mutationId": "client1-11lv3c6",
+			"item": {
+				"id": "item-2",
+				"text": "Note item-2 (rev 29)",
+				"done": false,
+				"priority": 1
+			}
+		},
+		{
+			"type": "complete",
+			"step": 29,
+			"client": "client1"
+		},
+		{
+			"type": "set",
+			"step": 30,
+			"client": "client2",
+			"mutationId": "client2-1dy7b4z",
+			"item": {
+				"id": "item-1",
+				"text": "Note item-1 (rev 30)",
+				"done": true,
+				"priority": 2
+			}
+		},
+		{
+			"type": "complete",
+			"step": 30,
+			"client": "client2"
+		},
+		{
+			"type": "set",
+			"step": 31,
+			"client": "client2",
+			"mutationId": "client2-19ab74a",
+			"item": {
+				"id": "item-1",
+				"text": "Note item-1 (rev 31)",
+				"done": false,
+				"priority": 2
+			}
+		},
+		{
+			"type": "complete",
+			"step": 31,
+			"client": "client2"
+		},
+		{
+			"type": "set",
+			"step": 32,
+			"client": "client1",
+			"mutationId": "client1-m4808f",
+			"item": {
+				"id": "item-2",
+				"text": "Note item-2 (rev 32)",
+				"done": true,
+				"priority": 1
+			}
+		},
+		{
+			"type": "complete",
+			"step": 32,
+			"client": "client1"
+		},
+		{
+			"type": "set",
+			"step": 33,
+			"client": "client1",
+			"mutationId": "client1-t5q0zq",
+			"item": {
+				"id": "item-2",
+				"text": "Note item-2 (rev 33)",
+				"done": true,
+				"priority": 1
+			}
+		},
+		{
+			"type": "complete",
+			"step": 33,
+			"client": "client1"
+		},
+		{
+			"type": "set",
+			"step": 34,
+			"client": "client2",
+			"mutationId": "client2-1vtvadj",
+			"item": {
+				"id": "item-3",
+				"text": "Note item-3 (rev 34)",
+				"done": true,
+				"priority": 4
+			}
+		},
+		{
+			"type": "complete",
+			"step": 34,
+			"client": "client2"
+		},
+		{
+			"type": "set",
+			"step": 35,
+			"client": "client2",
+			"mutationId": "client2-1hcsv5z",
+			"item": {
+				"id": "item-3",
+				"text": "Note item-3 (rev 35)",
+				"done": false,
+				"priority": 5
+			}
+		},
+		{
+			"type": "complete",
+			"step": 35,
+			"client": "client2"
+		},
+		{
+			"type": "set",
+			"step": 36,
+			"client": "client2",
+			"mutationId": "client2-ix8y9a",
+			"item": {
+				"id": "item-2",
+				"text": "Note item-2 (rev 36)",
+				"done": false,
+				"priority": 3
+			}
+		},
+		{
+			"type": "complete",
+			"step": 36,
+			"client": "client2"
+		},
+		{
+			"type": "set",
+			"step": 37,
+			"client": "client2",
+			"mutationId": "client2-14kcr84",
+			"item": {
+				"id": "item-3",
+				"text": "Note item-3 (rev 37)",
+				"done": true,
+				"priority": 4
+			}
+		},
+		{
+			"type": "complete",
+			"step": 37,
+			"client": "client2"
+		},
+		{
+			"type": "set",
+			"step": 38,
+			"client": "client1",
+			"mutationId": "client1-1ckkecv",
+			"item": {
+				"id": "item-3",
+				"text": "Note item-3 (rev 38)",
+				"done": true,
+				"priority": 5
+			}
+		},
+		{
+			"type": "complete",
+			"step": 38,
+			"client": "client1"
+		},
+		{
+			"type": "remove",
+			"step": 39,
+			"client": "client2",
+			"mutationId": "client2-d188k7",
+			"id": "item-2"
+		},
+		{
+			"type": "complete",
+			"step": 39,
+			"client": "client2"
+		},
+		{
+			"type": "set",
+			"step": 40,
+			"client": "client1",
+			"mutationId": "client1-1lydjlz",
+			"item": {
+				"id": "item-3",
+				"text": "Note item-3 (rev 40)",
+				"done": false,
+				"priority": 5
+			}
+		},
+		{
+			"type": "complete",
+			"step": 40,
+			"client": "client1"
+		},
+		{
+			"type": "set",
+			"step": 41,
+			"client": "client1",
+			"mutationId": "client1-a5jkwm",
+			"item": {
+				"id": "item-2",
+				"text": "Note item-2 (rev 41)",
+				"done": true,
+				"priority": 5
+			}
+		},
+		{
+			"type": "complete",
+			"step": 41,
+			"client": "client1"
+		},
+		{
+			"type": "set",
+			"step": 42,
+			"client": "client2",
+			"mutationId": "client2-1alt36s",
+			"item": {
+				"id": "item-1",
+				"text": "Note item-1 (rev 42)",
+				"done": false,
+				"priority": 2
+			}
+		},
+		{
+			"type": "complete",
+			"step": 42,
+			"client": "client2"
+		},
+		{
+			"type": "remove",
+			"step": 43,
+			"client": "client1",
+			"mutationId": "client1-rmniq2",
+			"id": "item-2"
+		},
+		{
+			"type": "complete",
+			"step": 43,
+			"client": "client1"
+		},
+		{
+			"type": "remove",
+			"step": 44,
+			"client": "client1",
+			"mutationId": "client1-r69725",
+			"id": "item-1"
+		},
+		{
+			"type": "complete",
+			"step": 44,
+			"client": "client1"
+		},
+		{
+			"type": "remove",
+			"step": 45,
+			"client": "client2",
+			"mutationId": "client2-bvuayu",
+			"id": "item-1"
+		},
+		{
+			"type": "complete",
+			"step": 45,
+			"client": "client2"
+		},
+		{
+			"type": "remove",
+			"step": 46,
+			"client": "client2",
+			"mutationId": "client2-1bvcf91",
+			"id": "item-3"
+		},
+		{
+			"type": "complete",
+			"step": 46,
+			"client": "client2"
+		},
+		{
+			"type": "set",
+			"step": 47,
+			"client": "client2",
+			"mutationId": "client2-s9kycb",
+			"item": {
+				"id": "item-1",
+				"text": "Note item-1 (rev 47)",
+				"done": true,
+				"priority": 1
+			}
+		},
+		{
+			"type": "complete",
+			"step": 47,
+			"client": "client2"
+		},
+		{
+			"type": "set",
+			"step": 48,
+			"client": "client1",
+			"mutationId": "client1-1bop4yq",
+			"item": {
+				"id": "item-1",
+				"text": "Note item-1 (rev 48)",
+				"done": true,
+				"priority": 4
+			}
+		},
+		{
+			"type": "complete",
+			"step": 48,
+			"client": "client1"
+		},
+		{
+			"type": "remove",
+			"step": 49,
+			"client": "client2",
+			"mutationId": "client2-1wafqzw",
+			"id": "item-1"
+		},
+		{
+			"type": "complete",
+			"step": 49,
+			"client": "client2"
+		}
+	],
+	"clientIds": [
+		"client1-sov3vh",
+		"client2-s6u6t4"
+	],
+	"states": {
+		"server": [],
+		"client1": [
+			{
+				"id": "item-1",
+				"text": "Note item-1 (rev 48)",
+				"done": true,
+				"priority": 4
+			},
+			{
+				"id": "item-3",
+				"text": "Note item-3 (rev 40)",
+				"done": false,
+				"priority": 5
+			}
+		],
+		"client2": []
+	},
+	"converged": false
+}

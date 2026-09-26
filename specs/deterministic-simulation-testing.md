@@ -182,7 +182,7 @@ That gap is inside `tuple-database`. Its listener ids and fallback transaction i
 +└── transact() → this.tupleDb.transact(this.rng?.randomId())
 ```
 
-Time does not get its own clock. Each client receives a timer service registered in the Gatekeeper harness with `{ enter: false, exit: true }`, the pattern `buildTimerGatekeeperHarness` already uses in core's tests. A tick is then an ordinary held handoff, listed by `harness.pendingCalls()` as `sentBy: "client1Timer", waitingFor: "client1"`, so Phase 4's loop delivers ticks the same way it delivers pushes. A separate simulated clock would reintroduce a second scheduler.
+Time does not get its own clock. Each client receives a timer service registered in the Gatekeeper harness with `{ enter: false, exit: true }`, the pattern `buildTimerGatekeeperHarness` already uses in core's tests. A tick is then an ordinary held handoff, listed by `harness.pendingCalls()` as `sentBy: "client1Timer", waitingFor: "client1"`, so Phase 5's loop delivers ticks the same way it delivers pushes. A separate simulated clock would reintroduce a second scheduler.
 
 ```
 seed → SimPrng
@@ -204,9 +204,60 @@ trace records: keyed by step, no wall-clock time
 
 Gating timers changed where the prototype's faults land. A commit's first held handoff is now often its client's sync tick, so `fail()` rejected the tick instead of the push. Faults model lost network messages, so the prototype now delivers timer ticks through `harness.pendingCalls()` until the call is held at a server handoff, and records that boundary on the fault.
 
-Rejecting a tick also exposed a sharp edge in `TaskQueue`: it removes a queued task only after the tick resolves, so a rejected tick leaves that task queued forever and every later `enqueue` returns the same rejection. Real timers never reject, so this is not reachable in production, but Phase 4's enabled events must never offer `fail` on a timer handoff.
+Rejecting a tick also exposed a sharp edge in `TaskQueue`: it removes a queued task only after the tick resolves, so a rejected tick leaves that task queued forever and every later `enqueue` returns the same rejection. Real timers never reject, so this is not reachable in production, but Phase 5's enabled events must never offer `fail` on a timer handoff.
 
-### Phase 4: Replace the commit loop with an enabled-event loop
+### Phase 4: Deliver pokes as gated events
+
+A server poke is not a reply to anything. It starts new work on another client. Gatekeeper can only add handoffs to the call already running, so the DST transport binds `poke` with `AsyncResource.bind` to the context `connect` was called from. That forces `connect` to bypass the harness, and every pull a poke triggers runs outside any Gatekeeper call, where the loop can neither see nor order it. This phase gives Gatekeeper a way for one service to start a call on another, and routes pokes through it.
+
+```
+harness factories receive (services, { events })
+
+events.on(name, listener) → listener handle
+  owner  = service that registered it (the factory being built, or the running service)
+handle.emit()
+  sender = service running when emit is called
+  starts a new top-level call "<owner>.<name>", held at the owner's enter gate
+  pendingCalls() lists it as { sentBy: sender, waitingFor: owner }
+  returns immediately; the sender never waits and never sees the outcome
+continueTo(owner) → runs the listener; its service calls are gated inside that call
+fail(error)       → the event is lost; the listener never runs
+gates off         → the listener runs at once
+```
+
+The server already pokes each connected client separately, so pokes are per client without Gatekeeper knowing about clients. The listener must be owned by the client, but `InProcessTransport` is the `server` service, so its `connect` runs as `server`. Each client's factory therefore wraps the remote it is given and registers the listener there. The server's existing loop calls each client's `poke`, which is that client's `handle.emit()`.
+
+```callstack
+ InProcessTransport.connect dst/DstSimulation.ts
+-└── server.connect({ ...client, poke: AsyncResource.bind(client.poke) })
++└── server.connect(client)
+
+ remoteWithPokeEvents dst/DstSimulation.ts            (runs in each client's factory)
++├── const pokeEvent = events.on("poke", () => poke())
++└── connect(client) → server.connect({ ...client, poke: () => pokeEvent.emit() })
+
+ ClientApi [[packages/core/src/sync/SyncEngine.ts#ClientApi]]
+-└── poke: () => void
++└── poke: () => Promise<void>    SyncEngine's handler returns this.queuePull().catch(log)
+```
+
+Gatekeeper rejects a call that makes service calls without returning a promise, because it cannot tell when the call ends. The client's poke handler currently starts a pull and returns nothing, so `ClientApi.poke` returns the pull's promise. The server ignores the result and the promise never rejects, so its behavior is unchanged.
+
+An event has no reply, so its listener's result is never held at the exit gate. `subscribe` is synchronous but queues a pull inside its own call, so the DST pulls once after subscribing, before gates activate. Otherwise that pull would try to add a handoff to the completed `subscribe` call.
+
+Holding pokes also exposed that `converged` compared the two clients only. It now compares every client against the server, and the result carries each participant's final state. The first held-poke run then found a sync bug; see [Known sync bugs](#known-sync-bugs).
+
+- [x] Pass `{ events }` to harness factories as a second argument, with `events.on(name, listener)` returning `{ emit }`. `off` is left out until something needs it.
+- [x] Record a listener's owner from the factory being built or the running service, and start each `emit()` as a new top-level call held at the owner's enter gate, labeled `<owner>.<name>`.
+- [x] Add gatekeeper tests: one emit fans out to per-listener calls that are advanced independently of the emitting call, and failing an event call means its listener never runs.
+- [x] Add type-level checks for `events` and document it in the gatekeeper README.
+- [x] Change `ClientApi.poke` to return `Promise<void>`, and have `SyncEngine`'s handler return its pull.
+- [x] Route the DST's pokes through `events` from each client's factory, connect through the harness, and remove `AsyncResource.bind` and `unwrappedClients`.
+- [x] Compare every client against the server at the end of a run, and return each participant's final state.
+- [x] Record the failing run as a known failure instead of fixing the sync bug in this phase.
+- [x] Run `pnpm type-check` and `pnpm test`.
+
+### Phase 5: Replace the commit loop with an enabled-event loop
 
 This is the core change. The prototype picks a client and runs its commit to completion; `DstScheduler.stepOne` does the same and is never called. Both go away, replaced by one scheduler that asks Gatekeeper what is possible and advances exactly one thing.
 
@@ -230,13 +281,12 @@ Choosing among these is what exposes ordering bugs. Running a whole commit insid
 - [ ] Delete `dst/DstScheduler.ts` and the inline loop in `DstSimulation.ts`.
 - [ ] Define the `DstEvent` union covering `mutate`, `advance`, `drop`, `killClient`, and `restartClient`, each carrying the fields the trace needs.
 - [ ] Build `advance` and `drop` events from `harness.pendingCalls()`, so each event carries the handle it acts on and no separate handle map is needed. Give each call a stable trace name from its label and creation order.
-- [ ] Implement `enabledEvents()` to return only currently possible events, never offering `advance` or `drop` for a call with no pending interaction, and never offering `drop` on a timer handoff.
-- [ ] Make poke-driven pulls schedulable. `InProcessTransport` binds `poke` to the async context `connect` was called from, so the DST connects through the unwrapped client, and every pull a poke triggers runs outside any Gatekeeper call where the loop cannot see or order it. Deliver pokes as their own gated calls, for example by giving the transport a per-client poke service.
+- [ ] Implement `enabledEvents()` to return only currently possible events, never offering `advance` or `drop` for a call with no pending interaction, and never offering `drop` on a timer handoff. Offer `drop` on a poke, which models a lost notification.
 - [ ] Split the fault taxonomy into `DstNetworkFault` for a dropped response and `DstAckLossFault` for a response the client never sees, so the model can tell "server rejected" from "server accepted, client did not hear".
 - [ ] Add a test asserting a run reaches a state where two calls are pending at once, which the current prototype cannot produce.
 - [ ] Run `pnpm --filter tandem-dst test`.
 
-### Phase 5: Decide correctness with a reference model
+### Phase 6: Decide correctness with a reference model
 
 Comparing the two clients to each other proves nothing. The model has to know which writes the server accepted and which remain optimistic on each client, and it has to tolerate legitimate disagreement while calls are in flight.
 
@@ -261,7 +311,7 @@ The `acked, ack dropped` path is the one the current fault injection cannot expr
 - [ ] Replace the `converged` boolean with the model verdict, and make a mismatch throw a tagged error carrying expected and actual state.
 - [ ] Add a test that a deliberately wrong expectation fails with a readable diff, and that a run with faults still converges.
 
-### Phase 6: Emit a failure artifact and replay it
+### Phase 7: Emit a failure artifact and replay it
 
 The trace is returned on success and lost on failure, so nothing about a failing run survives the process. It has to be written as it happens, and it has to be replayable.
 
@@ -281,7 +331,7 @@ The trace is returned on success and lost on failure, so nothing about a failing
 - [ ] Add a test that generates a failing run, replays its artifact, and asserts the replay reproduces the same failure. This is the regression harness the PR gate depends on.
 - [ ] Run `pnpm --filter tandem-dst test` and `pnpm type-check`.
 
-### Phase 7: Wire the CLI and CI
+### Phase 8: Wire the CLI and CI
 
 The per-PR goal is a bounded run seeded from the PR number, fast enough that nobody waits on it, with a nightly sweep that is broader. The seed has to be printed on every run, or a CI failure is not reproducible by hand.
 
@@ -296,6 +346,33 @@ dst:run --replay tmp/failure-123.jsonl
 - [ ] Add a `schedule` workflow running a couple dozen independently seeded runs at a few hundred steps each, publishing the seeds so a nightly failure can be re-run locally.
 - [ ] Review the three cases in `dst/dst.spec.ts` and delete any that only assert `converged`, replacing them with seed-driven runs and a replay regression.
 - [ ] Run `pnpm test`, `pnpm type-check`, and `pnpm lint`.
+
+## Known sync bugs
+
+The DST records sync engine bugs it finds rather than fixing them inline, so building the simulation is not blocked on sync engine changes. Each bug has a recorded run in [`dst/known-failures/`](../dst/known-failures/) and a test marked `.fails`, which starts failing once the bug is fixed.
+
+### An acknowledged write survives its deletion
+
+Found by `seed-12345.json` and reproduced through the public API by the `(known bug)` test in `packages/core/test/sync/conflicts.spec.ts`. A client writes a record, misses its pokes, and another client deletes the record before the first client pulls. The pull returns an empty patch that carries the acknowledgement, and the client keeps the deleted record forever.
+
+```
+server.pull:  removes = syncedKeys - records   # syncedKeys holds only keys the server sent,
+                                               # never keys the client pushed
+client.applyPatchAt:
+              patch is empty → return          # skips the rebase before looking at the ack
+```
+
+Related gaps from the same reading of the code, not yet reproduced:
+
+- `syncedKeys` lives in memory keyed by client id. After a server restart it is empty, so the next pull sends no removes and records deleted meanwhile stay on the client.
+- A record the client pushed that another client then moves out of a filtered window is kept for the same reason as a delete.
+- An offline update to a record another client deleted resurrects it on the server.
+
+Replicache's row-version strategy, Triplit, and LiveStore each avoid the first gap differently: a per-cookie client view record with a reset on an unknown cookie, a client-supplied checkpoint of held ids, and a global event log.
+
+## Future work
+
+- **A global event log.** Sync an ordered log of mutations instead of scan-window snapshots, as LiveStore does. Deletes become ordinary events, a client's acknowledged writes are part of the confirmed log, and the gaps above disappear by construction. This is a sync engine refactor, so it is out of scope for the DST, which should make it safer to attempt.
 
 ## References
 

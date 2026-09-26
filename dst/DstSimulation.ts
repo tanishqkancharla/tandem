@@ -2,9 +2,11 @@ import "fake-indexeddb/auto"
 import {
 	Gatekeeper,
 	type CallHandle,
+	type GatekeeperEvents,
 	type PendingCall,
 } from "@tanishqkancharla/gatekeeper"
 import {
+	type ClientApi,
 	collection,
 	defineSchema,
 	Logger,
@@ -19,7 +21,6 @@ import {
 	type TandemServerStorageApi,
 	type TandemTuple,
 } from "@tanishqkancharla/tandem-server"
-import asyncHooks from "node:async_hooks"
 import {
 	InMemoryTupleStorage,
 	type ScanStorageArgs,
@@ -69,12 +70,35 @@ class InProcessTransport implements RemoteApi<DstSchema> {
 	constructor(private readonly server: RemoteApi<DstSchema>) {}
 
 	connect: RemoteApi<DstSchema>["connect"] = (client) =>
-		this.server.connect({
-			...client,
-			poke: asyncHooks.AsyncResource.bind(client.poke),
-		})
+		this.server.connect(client)
 	push: RemoteApi<DstSchema>["push"] = (args) => this.server.push(args)
 	pull: RemoteApi<DstSchema>["pull"] = (args) => this.server.pull(args)
+}
+
+/**
+ * A client's view of the server in which each poke arrives as a Gatekeeper
+ * event owned by that client, so the run can deliver, delay, or drop it.
+ */
+function remoteWithPokeEvents(
+	server: RemoteApi<DstSchema>,
+	events: GatekeeperEvents,
+): RemoteApi<DstSchema> {
+	let poke: ClientApi["poke"] = () => Promise.resolve()
+	const pokeEvent = events.on("poke", () => poke())
+	return {
+		connect: (client) => {
+			poke = client.poke
+			return server.connect({
+				...client,
+				poke: () => {
+					pokeEvent.emit()
+					return Promise.resolve()
+				},
+			})
+		},
+		push: (args) => server.push(args),
+		pull: (args) => server.pull(args),
+	}
 }
 
 /**
@@ -101,6 +125,8 @@ export interface DstRunOptions {
 
 const clientNames = ["client1", "client2"] as const
 type DstClientName = (typeof clientNames)[number]
+
+export type DstFinalStates = Record<"server" | DstClientName, DstTodo[]>
 
 export type DstTraceRecord =
 	| {
@@ -141,8 +167,8 @@ export class DstSimulation {
 		stepsCompleted: number
 		trace: readonly DstTraceRecord[]
 		clientIds: readonly string[]
+		states: DstFinalStates
 		converged: boolean
-		finalCount: number
 	}> {
 		const logger = new Logger({ sinks: [] })
 		const serverStorage = new InMemoryServerStorage()
@@ -153,13 +179,12 @@ export class DstSimulation {
 			rng: this.rng.createRngApi("server"),
 		})
 
-		const unwrappedClients = new Map<DstClientName, TandemClient<DstSchema>>()
 		const createClient = (
 			label: DstClientName,
 			remote: RemoteApi<DstSchema>,
 			timer: TimerApi,
-		) => {
-			const client = new TandemClient<DstSchema>({
+		) =>
+			new TandemClient<DstSchema>({
 				remote,
 				schema: dstSchemaDefinition,
 				logger,
@@ -168,30 +193,40 @@ export class DstSimulation {
 				syncInterval: timer,
 				clientStorageWriteInterval: timer,
 			})
-			unwrappedClients.set(label, client)
-			return client
-		}
 
 		await using gatekeeper = new Gatekeeper()
 			.add("server", () => new InProcessTransport(server))
 			.add("client1Timer", () => new DstTimer(), timerGates)
 			.add("client2Timer", () => new DstTimer(), timerGates)
-			.add("client1", ({ server, client1Timer }) =>
-				createClient("client1", server, client1Timer),
+			.add("client1", ({ server, client1Timer }, { events }) =>
+				createClient(
+					"client1",
+					remoteWithPokeEvents(server, events),
+					client1Timer,
+				),
 			)
-			.add("client2", ({ server, client2Timer }) =>
-				createClient("client2", server, client2Timer),
+			.add("client2", ({ server, client2Timer }, { events }) =>
+				createClient(
+					"client2",
+					remoteWithPokeEvents(server, events),
+					client2Timer,
+				),
 			)
 			.build()
 
 		for (const name of clientNames) {
 			const client = gatekeeper[name]
 			await client.ready
-			// The transport binds poke to the caller's async context. Connecting
-			// through the harness would bind every later poke-driven pull to this
-			// finished connect call, which Gatekeeper rejects once gates are active.
-			await unwrappedClients.get(name)!.connect()
+			await (
+				await client.connect()
+			).result
 			client.subscribe({ collection: "todos" })
+			// subscribe returns synchronously but queues a pull inside its own call.
+			// Finish that pull before gates activate, or it would try to add a
+			// handoff to the completed subscribe call.
+			await (
+				await client.pullFromRemote()
+			).result
 		}
 
 		await gatekeeper.activateGates()
@@ -272,21 +307,25 @@ export class DstSimulation {
 
 		await gatekeeper.deactivateGatesAndSettle()
 
-		const states = []
+		const byId = (a: DstTodo, b: DstTodo) => a.id.localeCompare(b.id)
 		for (const name of clientNames) {
-			const client = gatekeeper[name]
 			await (
-				await client.pullFromRemote()
+				await gatekeeper[name].pullFromRemote()
 			).result
-			states.push(
-				(client.query({ collection: "todos" }) as DstTodo[]).sort((a, b) =>
-					a.id.localeCompare(b.id),
-				),
-			)
 		}
-		const [client1State, client2State] = states
-		const converged =
-			JSON.stringify(client1State) === JSON.stringify(client2State)
+		const states: DstFinalStates = {
+			server: [...(await server.query({ collection: "todos" }))].sort(byId),
+			client1: [
+				...(gatekeeper.client1.query({ collection: "todos" }) as DstTodo[]),
+			].sort(byId),
+			client2: [
+				...(gatekeeper.client2.query({ collection: "todos" }) as DstTodo[]),
+			].sort(byId),
+		}
+		const serverState = JSON.stringify(states.server)
+		const converged = clientNames.every(
+			(name) => JSON.stringify(states[name]) === serverState,
+		)
 		const clientIds = clientNames.map((name) => gatekeeper[name].clientId)
 
 		for (const name of clientNames) {
@@ -301,8 +340,8 @@ export class DstSimulation {
 			stepsCompleted: this.options.steps,
 			trace: this.trace,
 			clientIds,
+			states,
 			converged,
-			finalCount: client1State.length,
 		}
 	}
 }

@@ -1,5 +1,6 @@
 import type {
 	AnySchema,
+	ClientApi,
 	ClientId,
 	CollectionName,
 	Cookie,
@@ -71,7 +72,7 @@ type SyncedRecordKey<
 
 type SyncClientState<Schema extends AnySchema> = {
 	lastMutationId?: MutationId
-	poke?: () => void
+	poke?: ClientApi["poke"]
 	scanWindowKey?: string
 	syncedRecordKeys?: SyncedRecordKey<Schema>[]
 }
