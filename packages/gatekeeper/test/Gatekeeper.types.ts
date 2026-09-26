@@ -1,6 +1,7 @@
 import {
 	Gatekeeper,
 	type CallHandle,
+	type PendingCall,
 	type ServiceProxy,
 } from "@tanishqkancharla/gatekeeper"
 import { expectTypeOf } from "vitest"
@@ -46,6 +47,7 @@ export async function publicApiTypes() {
 	expectTypeOf(harness.client.save(1)).toEqualTypeOf<
 		Promise<CallHandle<number>>
 	>()
+	expectTypeOf(harness.pendingCalls()).toEqualTypeOf<readonly PendingCall[]>()
 	expectTypeOf(await harness.activateGates()).toEqualTypeOf<void>()
 	expectTypeOf(await harness.deactivateGates()).toEqualTypeOf<void>()
 	expectTypeOf(await harness.deactivateGatesAndSettle()).toEqualTypeOf<void>()

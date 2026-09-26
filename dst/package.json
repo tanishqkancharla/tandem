@@ -1,0 +1,25 @@
+{
+	"name": "tandem-dst",
+	"version": "0.0.1",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"type-check": "tsgo --noEmit && tsgo -p tsconfig.test.json --noEmit",
+		"format": "oxfmt \"*.ts\"",
+		"lint": "oxlint .",
+		"test": "vitest run"
+	},
+	"dependencies": {
+		"@tanishqkancharla/gatekeeper": "workspace:*",
+		"@tanishqkancharla/tandem-core": "workspace:*",
+		"@tanishqkancharla/tandem-server": "workspace:*",
+		"errore": "^0.14.1",
+		"tuple-database": "github:tanishqkancharla/tuple-database#ebe6b84edbc1371d0eb611cf5ca28d2f76be38db"
+	},
+	"devDependencies": {
+		"@types/node": "^20.14.2",
+		"fake-indexeddb": "^6.2.5",
+		"typescript": "^5.7.2",
+		"vitest": "^1.1.0"
+	}
+}

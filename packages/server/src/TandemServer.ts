@@ -10,6 +10,7 @@ import type {
 	RelationalQuery,
 	RelationalQueryResult,
 	RemoteApi,
+	RngApi,
 	ScanWindow,
 	AnyRelations,
 	RuntimeSchemaDefinition,
@@ -46,6 +47,7 @@ export type TandemServerArgs<
 	schema: RuntimeSchemaDefinition<Schema>
 	relations: Relations
 	storage: TandemServerStorageApi<NoInfer<Schema>>
+	rng?: RngApi
 }
 
 export type TandemServerSubscription<Result> = {
@@ -133,17 +135,27 @@ export class TandemServer<
 	private readonly subscriptions = new Set<() => void>()
 	private readonly syncClients = new Map<ClientId, SyncClientState<Schema>>()
 	private readonly tupleDb: AsyncTupleDatabaseClient<TandemTuple<Schema>>
+	private readonly rng?: RngApi
 	private revision = 0
 
 	constructor(args: TandemServerArgs<Schema, Relations>) {
 		this.relations = args.relations
+		this.rng = args.rng
 		this.tupleDb = new AsyncTupleDatabaseClient<TandemTuple<Schema>>(
-			new AsyncTupleDatabase(tandemStorageToTupleDatabaseStorage(args.storage)),
+			new AsyncTupleDatabase(
+				tandemStorageToTupleDatabaseStorage(args.storage),
+				{
+					rng: args.rng,
+				},
+			),
 		)
 	}
 
 	transact(): TandemServerTransaction<Schema, Relations> {
-		return new TandemServerTransaction(this.tupleDb.transact(), this.relations)
+		return new TandemServerTransaction(
+			this.tupleDb.transact(this.rng?.randomId()),
+			this.relations,
+		)
 	}
 
 	async commit(

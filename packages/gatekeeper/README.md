@@ -88,6 +88,29 @@ await expect(call.result).rejects.toBe(failure)
 
 Failing an exit gate preserves effects the receiving service already completed.
 
+## Inspect pending calls
+
+`pendingCalls()` lists every call currently held at an enter or exit gate, in
+the order the calls started. Each entry carries the call's handle and the
+boundary it can be advanced from, so a driver can choose what happens next
+without keeping its own record of outstanding calls.
+
+```ts
+const first = await harness.client1.save(10)
+const second = await harness.client2.save(20)
+await first.continueTo("server")
+
+harness.pendingCalls()
+// [
+//   { handle: first, label: "client1.save", sentBy: "server", waitingFor: "store" },
+//   { handle: second, label: "client2.save", sentBy: "client2", waitingFor: "server" },
+// ]
+```
+
+A call appears once, at its current boundary, because `continueTo` and `fail`
+act only on that boundary. Completed calls, calls with a control in progress,
+and work still processing inside a service without an enter gate are not listed.
+
 ## Configure service gates
 
 Services gate entry and exit by default. Configure either direction when a

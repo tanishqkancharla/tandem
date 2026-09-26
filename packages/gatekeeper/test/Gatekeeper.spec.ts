@@ -200,6 +200,52 @@ describe("Gatekeeper", () => {
 		expect(harness.store.read()).toBe(20)
 	})
 
+	test("lists each held call at the boundary it can be advanced from", async ({
+		harness,
+	}) => {
+		const first = await harness.client1.save(10)
+		const second = await harness.client2.save(20)
+
+		await first.continueTo("server")
+
+		expect(harness.pendingCalls()).toEqual([
+			{
+				handle: first,
+				label: "client1.save",
+				sentBy: "server",
+				waitingFor: "store",
+			},
+			{
+				handle: second,
+				label: "client2.save",
+				sentBy: "client2",
+				waitingFor: "server",
+			},
+		])
+	})
+
+	test("drives every call to completion using only the pending list", async ({
+		harness,
+	}) => {
+		const first = await harness.client1.save(10)
+		const second = await harness.client2.save(20)
+
+		for (
+			let pending = harness.pendingCalls();
+			pending.length > 0;
+			pending = harness.pendingCalls()
+		) {
+			const [next] = pending
+			await next.handle.continueTo(next.waitingFor)
+		}
+
+		first.assertCompleted()
+		second.assertCompleted()
+		expect(harness.client1.confirmed()).toBe(10)
+		expect(harness.client2.confirmed()).toBe(20)
+		expect(harness.store.read()).toBe(20)
+	})
+
 	test("fails before the receiving service processes a handoff", async ({
 		harness,
 	}) => {

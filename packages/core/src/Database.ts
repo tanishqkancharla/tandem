@@ -45,9 +45,7 @@ export class Database<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
 > {
-	private readonly tupleDb = new TupleDatabaseClient<
-		SchemaToTupleSchema<Schema>
-	>(new TupleDatabase(new InMemoryTupleStorage()))
+	private readonly tupleDb: TupleDatabaseClient<SchemaToTupleSchema<Schema>>
 
 	private readonly clientStorage?: TandemClientStorage<Schema>
 	private readonly logger: LoggerApi
@@ -76,6 +74,9 @@ export class Database<
 			: undefined
 
 		this.rng = rng
+		this.tupleDb = new TupleDatabaseClient(
+			new TupleDatabase(new InMemoryTupleStorage(), { rng }),
+		)
 
 		const clientStorageWriteTimer =
 			typeof clientStorageWriteInterval === "number"
