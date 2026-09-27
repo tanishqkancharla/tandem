@@ -259,34 +259,59 @@ Holding pokes also exposed that `converged` compared the two clients only. It no
 
 ### Phase 5: Replace the commit loop with an enabled-event loop
 
-This is the core change. The prototype picks a client and runs its commit to completion; `DstScheduler.stepOne` does the same and is never called. Both go away, replaced by one scheduler that asks Gatekeeper what is possible and advances exactly one thing.
-
-```callstack
- DstScheduler.stepOne [[dst/DstScheduler.ts#DstScheduler]]
--└── handle.continueToCompletion()
-+└── DstRun.step()
-```
+This is the core change. The prototype picked a client and ran its commit to completion; `DstScheduler.stepOne` did the same and was never called. Both are gone, replaced by one loop that asks Gatekeeper what is possible and applies exactly one event per step.
 
 ```
-enabledEvents():
-  mutate     → a connected client that can start a write
-  advance    → a pending call stopped at a boundary
-  drop       → a pending call whose response can be lost
-  killClient → a connected client
-  restart    → a dead client with surviving local storage
+step():
+  pending = harness.pendingCalls()
+  with probability faultRate, if a non-timer handoff is held:
+    drop   → fail it with a DstFaultError
+  else if nothing is in flight, or fewer than 4 calls are and a coin says so:
+    mutate → a random client sets or removes a random record
+  else:
+    advance → continueTo(waitingFor) on a random pending call
+  let promise continuations settle
 ```
 
-Choosing among these is what exposes ordering bugs. Running a whole commit inside one step removes most of them, which is why the current three tests pass while the risk stays unmeasured.
+A step never waits for a call to reach its next boundary. `continueTo`, `fail`, and a harness `commit` all resolve only when their call reaches one, and that can depend on another held call: a commit's push waits in the client's `TaskQueue` behind a pull held in a different call. Awaiting them deadlocked the loop. So a step starts the control and moves on. While the control is in motion, its call is left out of `pendingCalls()`, and it reappears at its next boundary. The run awaits every control after gates deactivate.
 
-- [ ] Delete `dst/DstScheduler.ts` and the inline loop in `DstSimulation.ts`.
-- [ ] Define the `DstEvent` union covering `mutate`, `advance`, `drop`, `killClient`, and `restartClient`, each carrying the fields the trace needs.
-- [ ] Build `advance` and `drop` events from `harness.pendingCalls()`, so each event carries the handle it acts on and no separate handle map is needed. Give each call a stable trace name from its label and creation order.
-- [ ] Implement `enabledEvents()` to return only currently possible events, never offering `advance` or `drop` for a call with no pending interaction, and never offering `drop` on a timer handoff. Offer `drop` on a poke, which models a lost notification.
-- [ ] Split the fault taxonomy into `DstNetworkFault` for a dropped response and `DstAckLossFault` for a response the client never sees, so the model can tell "server rejected" from "server accepted, client did not hear".
-- [ ] Add a test asserting a run reaches a state where two calls are pending at once, which the current prototype cannot produce.
+Dropping a handoff is classified by where it was lost, which decides what the sender can know:
+
+```
+pokeLost      a poke call's first boundary; the listener never runs
+requestLost   waitingFor is the server; the server never saw the request
+responseLost  otherwise; the receiver processed the request and the reply was lost
+              (for a push: the server has the write and the client does not know)
+```
+
+Calls get stable trace names like `client1.commit#3`, assigned in creation order the first time a call is listed, so names do not depend on the choices made.
+
+- [x] Delete `dst/DstScheduler.ts` and the inline commit loop in `DstSimulation.ts`.
+- [x] Model the trace as `set`, `remove`, `advance`, and `drop` records, each carrying the call name and boundary it acted on.
+- [x] Build `advance` and `drop` from `harness.pendingCalls()`, so each event carries the handle it acts on and no separate handle map is needed.
+- [x] Never offer `drop` on a timer handoff, and classify drops as `pokeLost`, `requestLost`, or `responseLost`, passing a tagged `DstFaultError` to `fail()`. This replaces the planned `DstNetworkFault` and `DstAckLossFault` classes: the kind field carries the same distinction.
+- [x] Start controls without awaiting them, so a step cannot deadlock on a call that waits for another held call.
+- [x] Add a test asserting a run holds two or more calls at once, which the prototype could not produce. Runs hold up to seven.
+- [x] Record the three sync bugs the loop found as known failures, with a test that each recording still reproduces exactly.
+- [x] Run `pnpm --filter tandem-dst test`.
+
+### Phase 6: Crash and restart clients over durable storage
+
+A client that dies with writes in flight and restarts from its local storage is the case sync engines most often get wrong, and the loop cannot reach it yet. Every client lives for the whole run, holds no durable storage, and is a fixed service instance in the Gatekeeper harness.
+
+```
+enabledEvents() adds:
+  killClient    → a live client: drop its in-flight calls, disconnect, forget the instance
+  restartClient → a dead client: a new TandemClient over the same storage and client id
+```
+
+- [ ] Give each client `TandemClientIndexedDbStorage` over `fake-indexeddb`, with its write interval driven by the client's gated timer.
+- [ ] Let the harness replace a client's service instance, or model each client incarnation as its own service, so a restarted client is gated like the original.
+- [ ] Add `killClient` and `restartClient` events, cancelling a dead client's in-flight calls and reconnecting and resubscribing a restarted one.
+- [ ] Add a test that a client killed with a write in flight restarts from storage and converges.
 - [ ] Run `pnpm --filter tandem-dst test`.
 
-### Phase 6: Decide correctness with a reference model
+### Phase 7: Decide correctness with a reference model
 
 Comparing the two clients to each other proves nothing. The model has to know which writes the server accepted and which remain optimistic on each client, and it has to tolerate legitimate disagreement while calls are in flight.
 
@@ -311,7 +336,7 @@ The `acked, ack dropped` path is the one the current fault injection cannot expr
 - [ ] Replace the `converged` boolean with the model verdict, and make a mismatch throw a tagged error carrying expected and actual state.
 - [ ] Add a test that a deliberately wrong expectation fails with a readable diff, and that a run with faults still converges.
 
-### Phase 7: Emit a failure artifact and replay it
+### Phase 8: Emit a failure artifact and replay it
 
 The trace is returned on success and lost on failure, so nothing about a failing run survives the process. It has to be written as it happens, and it has to be replayable.
 
@@ -331,7 +356,7 @@ The trace is returned on success and lost on failure, so nothing about a failing
 - [ ] Add a test that generates a failing run, replays its artifact, and asserts the replay reproduces the same failure. This is the regression harness the PR gate depends on.
 - [ ] Run `pnpm --filter tandem-dst test` and `pnpm type-check`.
 
-### Phase 8: Wire the CLI and CI
+### Phase 9: Wire the CLI and CI
 
 The per-PR goal is a bounded run seeded from the PR number, fast enough that nobody waits on it, with a nightly sweep that is broader. The seed has to be printed on every run, or a CI failure is not reproducible by hand.
 
@@ -342,33 +367,30 @@ dst:run --replay tmp/failure-123.jsonl
 
 - [ ] Add a `dst:run` script to the root `package.json` delegating to a `dst/src/cli.ts` entry that parses `--seed`, `--steps`, `--fault-rate`, and `--replay`.
 - [ ] Derive the default per-PR seed as a stable hash of the PR number, keep an explicit `--seed` override for local replay, and print the seed on every run.
-- [ ] Add a `pull_request` workflow running a small step budget at the derived seed plus the fixed regression seed set, uploading any trace artifact on failure.
+- [ ] Add a `pull_request` workflow running a small step budget at the derived seed plus the fixed regression seed set, uploading any trace artifact on failure. While the known sync bugs are open, a derived seed fails often, so decide whether that run blocks merges or only reports.
 - [ ] Add a `schedule` workflow running a couple dozen independently seeded runs at a few hundred steps each, publishing the seeds so a nightly failure can be re-run locally.
-- [ ] Review the three cases in `dst/dst.spec.ts` and delete any that only assert `converged`, replacing them with seed-driven runs and a replay regression.
+- [ ] Review the fixed-seed cases in `dst/dst.spec.ts` once seed-driven runs and replay exist, keeping only those that add coverage.
 - [ ] Run `pnpm test`, `pnpm type-check`, and `pnpm lint`.
 
 ## Known sync bugs
 
-The DST records sync engine bugs it finds rather than fixing them inline, so building the simulation is not blocked on sync engine changes. Each bug has a recorded run in [`dst/known-failures/`](../dst/known-failures/) and a test marked `.fails`, which starts failing once the bug is fixed.
+The DST records sync engine bugs it finds rather than fixing them inline, so building the simulation is not blocked on sync engine changes. Each bug has a recording in [`dst/known-failures/`](../dst/known-failures/), where the README walks through its trace, and a test marked `.fails` that starts failing once the bug is fixed. The three are independent: fixing A leaves B and C failing.
 
-### An acknowledged write survives its deletion
+| Bug | Side | Minimal run | Symptom |
+|---|---|---|---|
+| A. An empty patch drops its acknowledgement | client | seed 2, 30 steps | acknowledged writes stay speculative and are replayed forever |
+| B. The server does not count keys a client pushed | server | seed 84, 20 steps | a record survives its deletion on the client that created it |
+| C. A lost push response rolls back an accepted write | client | seed 44, 20 steps, faults 0.1 | older writes are replayed over newer server data |
 
-Found by `seed-12345.json` and reproduced through the public API by the `(known bug)` test in `packages/core/test/sync/conflicts.spec.ts`. A client writes a record, misses its pokes, and another client deletes the record before the first client pulls. The pull returns an empty patch that carries the acknowledgement, and the client keeps the deleted record forever.
+With the current loop at 300 steps, 6% of seeds fail with no faults, 13% at a fault rate of 0.1, and 33% at 0.3.
 
-```
-server.pull:  removes = syncedKeys - records   # syncedKeys holds only keys the server sent,
-                                               # never keys the client pushed
-client.applyPatchAt:
-              patch is empty → return          # skips the rebase before looking at the ack
-```
-
-Related gaps from the same reading of the code, not yet reproduced:
+Related gaps from reading the code, not yet reproduced:
 
 - `syncedKeys` lives in memory keyed by client id. After a server restart it is empty, so the next pull sends no removes and records deleted meanwhile stay on the client.
-- A record the client pushed that another client then moves out of a filtered window is kept for the same reason as a delete.
+- A record the client pushed that another client then moves out of a filtered window is kept for the same reason as B.
 - An offline update to a record another client deleted resurrects it on the server.
 
-Replicache's row-version strategy, Triplit, and LiveStore each avoid the first gap differently: a per-cookie client view record with a reset on an unknown cookie, a client-supplied checkpoint of held ids, and a global event log.
+Replicache's row-version strategy, Triplit, and LiveStore each avoid A and B differently: a per-cookie client view record with a reset on an unknown cookie, a client-supplied checkpoint of held ids, and a global event log.
 
 ## Future work
 
@@ -376,11 +398,11 @@ Replicache's row-version strategy, Triplit, and LiveStore each avoid the first g
 
 ## References
 
-- [`dst/DstSimulation.ts`](../dst/DstSimulation.ts) — The prototype loop this spec replaces. Its inline step loop and `DstTraceRecord` go away.
-- [`dst/DstScheduler.ts`](../dst/DstScheduler.ts) — Dead code today: nothing imports it. Replaced rather than revived, because its `stepOne` runs calls to completion and it cannot see enabled events.
+- [`dst/DstSimulation.ts`](../dst/DstSimulation.ts) — The simulation: the gated harness, the enabled-event loop, and the final comparison of every client against the server.
 - [`dst/SimPrng.ts`](../dst/SimPrng.ts) — SplitMix32 generator. Becomes the source for every random choice and for `RngApi`.
-- [`dst/dst.spec.ts`](../dst/dst.spec.ts) — Three fixed-seed cases that assert only `converged`.
-- [`dst/package.json`](../dst/package.json) — Has only `test`. Needs `type-check` and a `tsconfig.json` to join the workspace graphs.
+- [`dst/dst.spec.ts`](../dst/dst.spec.ts) — Fixed-seed convergence, concurrency, and determinism checks, plus the known-failure recordings.
+- [`dst/known-failures/`](../dst/known-failures/) — Recorded runs for open sync bugs, with a README walking through each trace.
+- [`dst/package.json`](../dst/package.json) — Joins the workspace's `type-check`, `lint`, `format`, and `test` graphs.
 - [`packages/gatekeeper/src/Gatekeeper.ts`](../packages/gatekeeper/src/Gatekeeper.ts) — Owns execution order. `Runtime` and `Call` are internal to the module, so a harness consumer can only drive handles it already holds. Phase 2 adds `harness.pendingCalls()`.
 - [`packages/core/src/TandemClient.ts`](../packages/core/src/TandemClient.ts) — Already accepts `rng`, and types `syncInterval` and `clientStorageWriteInterval` as `number | TimerApi`. The determinism seams exist; the prototype ignores them.
 - [`tanishqkancharla/tuple-database`](https://github.com/tanishqkancharla/tuple-database) — Fork of `ccorcos/tuple-database` (unmaintained since 2023). Adds the `rng` option; `release-git.sh` builds `master` onto the `release` branch that Tandem pins by commit.

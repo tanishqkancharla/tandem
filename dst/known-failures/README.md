@@ -1,26 +1,57 @@
 # Known failures
 
-Runs the simulation found that fail because of sync engine bugs we have not fixed yet. Each file is the full `DstSimulation` result for one run: its options, the step-keyed trace, the generated ids, and the final state of the server and every client. A matching test in `../dst.spec.ts` is marked `it.fails`, so it starts failing once the bug is fixed.
+Runs the simulation found that fail because of sync engine bugs we have not fixed yet. Each file holds a run's `options` and its full `result`: the step-keyed trace, generated ids, and the final state of the server and every client.
 
-A trace replays only with the simulation code that produced it. Until the replay runner exists, re-record a file whenever the simulation loop changes.
+`dst.spec.ts` checks every recording two ways. "reproduces every recorded known failure" reruns each one and requires an identical result, so a recording that no longer matches the simulation fails loudly and must be re-recorded. And each bug has a test marked `it.fails`, which starts failing once the bug is fixed; then delete the recording and drop `.fails`.
 
-## `seed-12345.json`: an acknowledged write survives its deletion
+The three bugs are independent: applying the fix for A still leaves B and C failing.
 
-`{ seed: 12345, steps: 50 }`, no faults. At the end the server and client2 are empty, but client1 still holds `item-1` and `item-3`:
+## A. An empty patch drops its acknowledgement: `seed-2-empty-patch-drops-ack.json`
 
-- step 40: client1 sets `item-3`; step 46: client2 removes it.
-- step 48: client1 sets `item-1`; step 49: client2 removes it.
+`{ seed: 2, steps: 30 }`, no faults. At the end client2 is missing `item-2`, which the server has.
 
-This loop holds every poke until the run quiesces, so client1 never pulls between its write and client2's delete. Its final pull then returns an empty patch that carries the acknowledgement of its writes:
+- steps 0 and 2: client2 sets and then removes `item-2`; both pushes are applied, so the server's window is empty.
+- client2's next pull returns `{ set: [], remove: [], ack }`. The ack is consumed on the server.
+- step 28: client1 sets `item-2` again.
 
 ```
-server.pull:  records = {}                          # the window is empty
-              removes = syncedKeys - records = {}   # syncedKeys holds only keys the server sent,
-                                                    # never keys client1 pushed
-              → { set: [], remove: [], ack }
 client.applyPatchAt:
-              patch is empty → return               # skips the rebase, so the
-                                                    # acknowledged writes are never undone
+  patch is empty → return        # before looking at the ack, so the remove stays speculative
+later pulls:
+  undo speculative, apply patch, replay speculative
+                                 # the ack is gone, so the stale remove is replayed forever
 ```
 
-The same bug is reproduced through the public API by the `(known bug)` test in `packages/core/test/sync/conflicts.spec.ts`. See "Known sync bugs" in `specs/deterministic-simulation-testing.md`.
+Also reproduced through the public API by the `(known bug)` test in `packages/core/test/sync/conflicts.spec.ts`, where a lost poke lets a deleted write survive.
+
+## B. The server does not count keys a client pushed: `seed-84-pushed-keys-not-synced.json`
+
+`{ seed: 84, steps: 20 }`, no faults. At the end client2 still holds `item-3 (rev 1)`, which the server does not have.
+
+- step 1: client2 creates `item-3`. The server never sends it back to client2 before later writes remove it (client1 at step 4, client2 at step 11).
+- When client2 rebases over its acknowledged remove, undoing it restores the value it captured locally, `rev 1`.
+
+```
+server.pull:
+  removes = syncedKeys - records   # syncedKeys holds only keys the server sent,
+                                   # never keys the client pushed, so no remove follows
+```
+
+This still fails with A fixed, and it causes most no-fault failures: 9 of 150 seeds at 300 steps.
+
+## C. A lost push response rolls back an accepted write: `seed-44-lost-response-rollback.json`
+
+`{ seed: 44, steps: 20, faultRate: 0.1 }`. At the end client2 shows its own `item-1 (rev 1)` while the server and client1 have `rev 6`.
+
+- steps 0 and 1: client2 writes `item-1`; the push is applied, but client2 has not pulled yet.
+- step 11: client2's push of `item-3` is applied, so the server's ack for client2 now names that mutation.
+- step 19: the push's response is dropped (`responseLost`).
+
+```
+push fails → rollback([item-3 write])     # treats a lost response as a rejection, and removes
+                                          # the accepted mutation from speculativeMutations
+next pull: { set: [item-1 rev 6, item-3 rev 7], ack: <item-3 mutation> }
+  findIndex(ack) = -1                     # the acknowledged id is gone, so every older write
+                                          # counts as unacknowledged
+  replay [item-1 rev 0, item-1 rev 1]     # over the server's rev 6, and they stay speculative
+```

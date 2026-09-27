@@ -26,6 +26,7 @@ import {
 	type ScanStorageArgs,
 	type WriteOps,
 } from "tuple-database"
+import * as errore from "errore"
 import { SimPrng } from "./SimPrng.js"
 
 export interface DstTodo {
@@ -128,6 +129,22 @@ type DstClientName = (typeof clientNames)[number]
 
 export type DstFinalStates = Record<"server" | DstClientName, DstTodo[]>
 
+/** Where a dropped handoff was lost, which decides what its sender can know. */
+export type DstFaultKind =
+	/** The receiver never saw the request. */
+	| "requestLost"
+	/** The receiver processed the request, but its reply never arrived. */
+	| "responseLost"
+	/** A server poke never reached its client. */
+	| "pokeLost"
+
+export class DstFaultError extends errore.createTaggedError({
+	name: "DstFaultError",
+	message: "$call: $kind",
+}) {}
+
+type DstBoundary = { call: string; sentBy: string; waitingFor: string }
+
 export type DstTraceRecord =
 	| {
 			type: "set"
@@ -143,16 +160,28 @@ export type DstTraceRecord =
 			mutationId: string
 			id: string
 	  }
-	| { type: "deliverTick"; step: number; client: DstClientName }
-	| {
-			type: "fault"
-			step: number
-			client: DstClientName
-			sentBy: string
-			waitingFor: string
-			error: string
-	  }
-	| { type: "complete"; step: number; client: DstClientName }
+	| ({ type: "advance"; step: number } & DstBoundary)
+	| ({ type: "drop"; step: number; fault: DstFaultKind } & DstBoundary)
+
+/** A new mutation starts only while fewer calls than this are in flight. */
+const maxCallsInFlight = 4
+/** How often a step starts a mutation rather than advancing a pending call. */
+const mutateRate = 0.35
+
+function faultKind(
+	{ label, waitingFor }: PendingCall,
+	eventDelivered: boolean,
+): DstFaultKind {
+	// A poke call first stops at the poke itself; after delivery its boundaries
+	// belong to the pull the poke started.
+	if (label.endsWith(".poke") && !eventDelivered) return "pokeLost"
+	return waitingFor === "server" ? "requestLost" : "responseLost"
+}
+
+/** Lets promise continuations settle so the next step sees stable boundaries. */
+function settle(): Promise<void> {
+	return new Promise((resolve) => setImmediate(resolve))
+}
 
 export class DstSimulation {
 	readonly rng: SimPrng
@@ -169,6 +198,7 @@ export class DstSimulation {
 		clientIds: readonly string[]
 		states: DstFinalStates
 		converged: boolean
+		maxPendingCalls: number
 	}> {
 		const logger = new Logger({ sinks: [] })
 		const serverStorage = new InMemoryServerStorage()
@@ -231,21 +261,30 @@ export class DstSimulation {
 
 		await gatekeeper.activateGates()
 
-		const findPending = (handle: CallHandle<unknown>) =>
-			gatekeeper.pendingCalls().find((pending) => pending.handle === handle)
+		const callNames = new Map<CallHandle<unknown>, string>()
+		const deliveredEvents = new Set<CallHandle<unknown>>()
+		const labelCounts = new Map<string, number>()
+		const nameCall = (pending: PendingCall): string => {
+			const existing = callNames.get(pending.handle)
+			if (existing) return existing
+			const count = (labelCounts.get(pending.label) ?? 0) + 1
+			labelCounts.set(pending.label, count)
+			const name = `${pending.label}#${count}`
+			callNames.set(pending.handle, name)
+			return name
+		}
+		const boundary = (pending: PendingCall): DstBoundary => ({
+			call: nameCall(pending),
+			sentBy: pending.sentBy,
+			waitingFor: pending.waitingFor,
+		})
 
-		const poolOfIds = ["item-1", "item-2", "item-3"]
-		const faultRate = this.options.faultRate ?? 0
-
-		for (let step = 0; step < this.options.steps; step++) {
+		const mutate = (step: number) => {
 			const clientName = this.rng.pick(clientNames)
 			const client = gatekeeper[clientName]
-
 			const id = this.rng.pick(poolOfIds)
-			const isDelete = this.rng.boolean(0.2)
-
 			const tx = client.transact()
-			if (isDelete) {
+			if (this.rng.boolean(0.2)) {
 				tx.remove("todos", id)
 				this.trace.push({
 					type: "remove",
@@ -270,42 +309,54 @@ export class DstSimulation {
 					item,
 				})
 			}
+			// The handle arrives only once the commit reaches a boundary, which may
+			// wait on another held call. Its call shows up in pendingCalls() then.
+			inFlight.push(client.commit(tx))
+		}
 
-			const commit = await client.commit(tx)
+		const poolOfIds = ["item-1", "item-2", "item-3"]
+		const faultRate = this.options.faultRate ?? 0
+		// Controls resolve when their call reaches its next boundary, which can
+		// depend on other held calls, so a step starts them without waiting.
+		const inFlight: Promise<unknown>[] = []
+		let maxPendingCalls = 0
 
-			if (faultRate > 0 && this.rng.boolean(faultRate)) {
-				// Faults model lost network messages, so deliver this client's timer
-				// ticks until the call is held at a handoff with the server.
-				let boundary = findPending(commit)
-				while (boundary && isTimerHandoff(boundary)) {
-					await commit.continueTo(boundary.waitingFor)
-					this.trace.push({ type: "deliverTick", step, client: clientName })
-					boundary = findPending(commit)
-				}
+		for (let step = 0; step < this.options.steps; step++) {
+			const pending = gatekeeper.pendingCalls()
+			// Name calls in creation order so trace names do not depend on choices.
+			for (const call of pending) nameCall(call)
+			maxPendingCalls = Math.max(maxPendingCalls, pending.length)
+			// Faults model lost network messages, never a timer that fails to tick.
+			const droppable = pending.filter((call) => !isTimerHandoff(call))
 
-				if (boundary) {
-					const error = new Error(
-						`Simulated Network/Push Fault at step ${step}`,
-					)
-					this.trace.push({
-						type: "fault",
-						step,
-						client: clientName,
-						sentBy: boundary.sentBy,
-						waitingFor: boundary.waitingFor,
-						error: error.message,
-					})
-					await commit.fail(error)
-					await commit.result.catch(() => {})
-					continue
-				}
+			if (
+				faultRate > 0 &&
+				droppable.length > 0 &&
+				this.rng.boolean(faultRate)
+			) {
+				const target = this.rng.pick(droppable)
+				const kind = faultKind(target, deliveredEvents.has(target.handle))
+				const record = boundary(target)
+				this.trace.push({ type: "drop", step, fault: kind, ...record })
+				inFlight.push(
+					target.handle.fail(new DstFaultError({ call: record.call, kind })),
+				)
+			} else if (
+				pending.length === 0 ||
+				(pending.length < maxCallsInFlight && this.rng.boolean(mutateRate))
+			) {
+				mutate(step)
+			} else {
+				const target = this.rng.pick(pending)
+				this.trace.push({ type: "advance", step, ...boundary(target) })
+				deliveredEvents.add(target.handle)
+				inFlight.push(target.handle.continueTo(target.waitingFor))
 			}
-
-			await commit.continueToCompletion()
-			this.trace.push({ type: "complete", step, client: clientName })
+			await settle()
 		}
 
 		await gatekeeper.deactivateGatesAndSettle()
+		await Promise.all(inFlight)
 
 		const byId = (a: DstTodo, b: DstTodo) => a.id.localeCompare(b.id)
 		for (const name of clientNames) {
@@ -342,6 +393,7 @@ export class DstSimulation {
 			clientIds,
 			states,
 			converged,
+			maxPendingCalls,
 		}
 	}
 }

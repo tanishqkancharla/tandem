@@ -1,40 +1,45 @@
+import { readdirSync, readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
-import { DstSimulation } from "./DstSimulation.js"
+import { type DstRunOptions, DstSimulation } from "./DstSimulation.js"
 
-describe("Deterministic Simulation Testing (DST)", () => {
-	it("reaches eventual consistency across 50 simulated steps with random interleavings", async () => {
-		const sim = new DstSimulation({
-			seed: 12346,
-			steps: 50,
-			faultRate: 0,
-		})
+type KnownFailure = {
+	options: DstRunOptions
+	result: Awaited<ReturnType<DstSimulation["execute"]>>
+}
 
-		const result = await sim.execute()
+const knownFailuresDir = new URL("./known-failures/", import.meta.url)
+
+function knownFailure(name: string): KnownFailure {
+	return JSON.parse(
+		readFileSync(new URL(`${name}.json`, knownFailuresDir), "utf8"),
+	) as KnownFailure
+}
+
+describe("Deterministic simulation testing", () => {
+	it("converges with interleaved calls and no faults", async () => {
+		const result = await new DstSimulation({ seed: 1, steps: 300 }).execute()
+
 		expect(result.converged).toBe(true)
 	})
 
-	// Known sync bug, recorded in known-failures/seed-12345.json. client1 keeps a
-	// write that client2 deleted while client1's pokes were held. This test starts
-	// failing once the bug is fixed; then drop `.fails`.
-	it.fails("converges when a client misses pokes while its write is deleted (known bug)", async () => {
-		const result = await new DstSimulation({ seed: 12345, steps: 50 }).execute()
+	it("converges when requests, responses, and pokes are dropped", async () => {
+		const result = await new DstSimulation({
+			seed: 1,
+			steps: 300,
+			faultRate: 0.1,
+		}).execute()
 
 		expect(result.converged).toBe(true)
 	})
 
-	it("remains consistent when random network/push faults are injected", async () => {
-		const sim = new DstSimulation({
-			seed: 67890,
-			steps: 60,
-			faultRate: 0.1, // 10% fault injection
-		})
+	it("keeps several calls in flight at once", async () => {
+		const result = await new DstSimulation({ seed: 1, steps: 300 }).execute()
 
-		const result = await sim.execute()
-		expect(result.converged).toBe(true)
+		expect(result.maxPendingCalls).toBeGreaterThanOrEqual(2)
 	})
 
 	it("reproduces a run exactly from its seed, including every generated id", async () => {
-		const options = { seed: 42, steps: 30, faultRate: 0.1 }
+		const options = { seed: 42, steps: 300, faultRate: 0.1 }
 
 		const first = await new DstSimulation(options).execute()
 		const second = await new DstSimulation(options).execute()
@@ -46,5 +51,41 @@ describe("Deterministic Simulation Testing (DST)", () => {
 		expect(second).toEqual(first)
 		expect(otherSeed.trace).not.toEqual(first.trace)
 		expect(otherSeed.clientIds).not.toEqual(first.clientIds)
+	})
+
+	// Each recording must reproduce exactly. A mismatch means the simulation
+	// changed and the recording must be re-recorded, or the bug was fixed.
+	it("reproduces every recorded known failure", async () => {
+		const names = readdirSync(knownFailuresDir)
+			.filter((file) => file.endsWith(".json"))
+			.map((file) => file.replace(/\.json$/, ""))
+
+		for (const name of names) {
+			const { options, result } = knownFailure(name)
+
+			expect(await new DstSimulation(options).execute(), name).toEqual(result)
+		}
+	})
+
+	// Known sync bugs, documented in known-failures/README.md. Each test starts
+	// failing once its bug is fixed; then drop `.fails` and the recording.
+	describe("known sync bugs", () => {
+		it.fails("an empty patch keeps its acknowledgement", async () => {
+			const { options } = knownFailure("seed-2-empty-patch-drops-ack")
+
+			expect((await new DstSimulation(options).execute()).converged).toBe(true)
+		})
+
+		it.fails("a record deleted after its creator pushed it leaves that creator", async () => {
+			const { options } = knownFailure("seed-84-pushed-keys-not-synced")
+
+			expect((await new DstSimulation(options).execute()).converged).toBe(true)
+		})
+
+		it.fails("a lost push response keeps writes the server accepted", async () => {
+			const { options } = knownFailure("seed-44-lost-response-rollback")
+
+			expect((await new DstSimulation(options).execute()).converged).toBe(true)
+		})
 	})
 })
