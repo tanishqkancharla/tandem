@@ -39,7 +39,7 @@
 	"dependencies": {
 		"@tanishqkancharla/tandem-core": "workspace:*",
 		"errore": "^0.14.1",
-		"tuple-database": "^2.2.4"
+		"tuple-database": "github:tanishqkancharla/tuple-database#ebe6b84edbc1371d0eb611cf5ca28d2f76be38db"
 	},
 	"devDependencies": {
 		"@types/node": "^20.14.2",

@@ -230,6 +230,63 @@ describe("TandemClient sync conflicts", () => {
 		},
 	)
 
+	// Known sync bug: an empty patch that carries an acknowledgement skips the
+	// rebase, so the deleted write survives. Drop `.fails` once it is fixed.
+	conflictTest.fails(
+		"drops an acknowledged write that another client deleted while its pokes were lost (known bug)",
+		async ({ makeTodoGatekeeper, server }) => {
+			let losePokesFor: string | undefined
+			const remote: RemoteApi<TestsSchema> = {
+				connect: (client) =>
+					server.connect({
+						...client,
+						poke: () =>
+							client.clientId === losePokesFor
+								? Promise.resolve()
+								: client.poke(),
+					}),
+				push: (args) => server.push(args),
+				pull: (args) => server.pull(args),
+			}
+			const { client1, client2 } = await makeTodoGatekeeper({ remote })
+			const client1Subscription = client1.subscribe({ collection: "todos" })
+			const client2Subscription = client2.subscribe({ collection: "todos" })
+			await (
+				await client1.pullFromRemote()
+			).result
+			await (
+				await client2.pullFromRemote()
+			).result
+			losePokesFor = client1.clientId
+
+			// client1 writes a todo but never hears the poke for its own push
+			const create = client1.transact()
+			create.set("todos", todo("todo-1", { text: "Short-lived" }))
+			await (
+				await client1.commit(create)
+			).result
+			await expectQuery(client2, { collection: "todos" }).toResolveTo([
+				todo("todo-1", { text: "Short-lived" }),
+			])
+
+			// client2 deletes it, leaving nothing in the window
+			const remove = client2.transact()
+			remove.remove("todos", "todo-1")
+			await (
+				await client2.commit(remove)
+			).result
+
+			// client1's next pull acknowledges its write against the empty window
+			await (
+				await client1.pullFromRemote()
+			).result
+
+			expect(client1.query({ collection: "todos" })).toEqual([])
+			client1Subscription.destroy()
+			client2Subscription.destroy()
+		},
+	)
+
 	test("converges after both clients edit the same record concurrently", async ({
 		gatekeeper,
 	}) => {

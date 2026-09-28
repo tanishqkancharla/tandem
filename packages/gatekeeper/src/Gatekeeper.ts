@@ -56,6 +56,27 @@ export class CallHandle<Result> {
 	}
 }
 
+export type GatekeeperListener = {
+	/** Start a call delivering this event to its listener. Returns immediately. */
+	emit(): void
+}
+
+export type GatekeeperEvents = {
+	/** Register a listener owned by the service being built or currently running. */
+	on(name: string, listener: () => Promise<void>): GatekeeperListener
+}
+
+export type ServiceFactoryContext = {
+	events: GatekeeperEvents
+}
+
+export type PendingCall = {
+	readonly handle: CallHandle<unknown>
+	readonly label: string
+	readonly sentBy: string
+	readonly waitingFor: string
+}
+
 type AsyncMethodResult<Method> = Method extends (
 	...args: infer Args
 ) => PromiseLike<infer Result>
@@ -70,6 +91,9 @@ export type Harness<Services extends Record<string, object>> =
 	AsyncDisposable & {
 		[Name in keyof Services]: ServiceProxy<Services[Name]>
 	} & {
+		pendingCalls(): readonly PendingCall[]
+		crash(name: Extract<keyof Services, string>): Promise<void>
+		restart(name: Extract<keyof Services, string>): Promise<void>
 		activateGates(): Promise<void>
 		deactivateGates(): Promise<void>
 		deactivateGatesAndSettle(): Promise<void>
@@ -80,7 +104,7 @@ export class Gatekeeper<Services extends Record<string, object> = {}> {
 
 	add<Name extends string, Service extends object>(
 		name: Name extends keyof Services ? never : Name,
-		factory: (services: Services) => Service,
+		factory: (services: Services, context: ServiceFactoryContext) => Service,
 		options: ServiceOptions = {},
 	): Gatekeeper<Services & Record<Name, Service>> {
 		if (
@@ -97,7 +121,7 @@ export class Gatekeeper<Services extends Record<string, object> = {}> {
 			...this.registrations,
 			{
 				name,
-				factory: (services) => factory(services as Services),
+				factory: (services, context) => factory(services as Services, context),
 				gates: {
 					enter: options.gates?.enter ?? true,
 					exit: options.gates?.exit ?? true,
@@ -114,14 +138,25 @@ export class Gatekeeper<Services extends Record<string, object> = {}> {
 
 type Registration = {
 	name: string
-	factory: (services: Record<string, object>) => object
+	factory: (
+		services: Record<string, object>,
+		context: ServiceFactoryContext,
+	) => object
 	gates: Required<ServiceGates>
 }
 
+/** One incarnation of a registered service. A restart creates a new one. */
 type Service = {
 	name: string
 	instance: object
 	gates: Required<ServiceGates>
+	crashed: boolean
+}
+
+type ServiceSlot = {
+	registration: Registration
+	dependencies: Readonly<Record<string, object>>
+	current?: Service
 }
 
 type Outcome = { ok: true; value: unknown } | { ok: false; error: unknown }
@@ -150,6 +185,11 @@ function unwrap(outcome: Outcome): unknown {
 
 class Runtime {
 	readonly calls = new Set<Call>()
+	private readonly slots = new Map<string, ServiceSlot>()
+	private readonly events: GatekeeperEvents = {
+		on: (name, listener) => this.listen(name, listener),
+	}
+	private building?: Service
 	private gatesActive = false
 	private disposed = false
 	private disposal?: Promise<void>
@@ -159,26 +199,19 @@ class Runtime {
 		const harness: Record<string | symbol, unknown> = Object.create(null)
 
 		for (const registration of registrations) {
-			const instance = registration.factory(Object.freeze({ ...dependencies }))
-			if (
-				instance === null ||
-				typeof instance !== "object" ||
-				isPromiseLike(instance)
-			) {
-				throw new GatekeeperError({
-					detail: `${registration.name}: factory must return a service object synchronously`,
-				})
+			const slot: ServiceSlot = {
+				registration,
+				dependencies: Object.freeze({ ...dependencies }),
 			}
-
-			const service: Service = {
-				name: registration.name,
-				instance,
-				gates: registration.gates,
-			}
-			dependencies[registration.name] = this.proxy(service, false)
-			harness[registration.name] = this.proxy(service, true)
+			this.slots.set(registration.name, slot)
+			this.startService(slot)
+			dependencies[registration.name] = this.proxy(slot, false)
+			harness[registration.name] = this.proxy(slot, true)
 		}
 
+		harness.pendingCalls = () => this.pendingCalls()
+		harness.crash = (name: string) => this.crash(name)
+		harness.restart = (name: string) => this.restart(name)
 		harness.activateGates = () => this.activateGates()
 		harness.deactivateGates = () => this.deactivateGates()
 		harness.deactivateGatesAndSettle = () => this.deactivateGatesAndSettle()
@@ -187,9 +220,43 @@ class Runtime {
 		return harness
 	}
 
-	private proxy(service: Service, external: boolean): object {
-		return new Proxy(service.instance, {
+	private startService(slot: ServiceSlot): void {
+		const { registration } = slot
+		const service: Service = {
+			name: registration.name,
+			instance: {},
+			gates: registration.gates,
+			crashed: false,
+		}
+		this.building = service
+		const instance = registration.factory(slot.dependencies, {
+			events: this.events,
+		})
+		this.building = undefined
+		if (
+			instance === null ||
+			typeof instance !== "object" ||
+			isPromiseLike(instance)
+		) {
+			throw new GatekeeperError({
+				detail: `${registration.name}: factory must return a service object synchronously`,
+			})
+		}
+		service.instance = instance
+		slot.current = service
+	}
+
+	private running(slot: ServiceSlot): Service {
+		if (slot.current) return slot.current
+		throw new GatekeeperError({
+			detail: `${slot.registration.name} has crashed`,
+		})
+	}
+
+	private proxy(slot: ServiceSlot, external: boolean): object {
+		return new Proxy(this.running(slot).instance, {
 			get: (_target, key) => {
+				const service = this.running(slot)
 				const value: unknown = Reflect.get(
 					service.instance,
 					key,
@@ -201,6 +268,10 @@ class Runtime {
 					this.assertUsable()
 					const invoke = () => Reflect.apply(value, service.instance, args)
 					const parent = context.getStore()
+
+					// A crashed instance's code can keep running, but nothing it
+					// calls leaves it: the call never settles and is not tracked.
+					if (parent?.service.crashed) return new Promise(() => {})
 
 					if (parent) {
 						if (parent.runtime !== this) {
@@ -225,14 +296,79 @@ class Runtime {
 					const call = new Call({
 						runtime: this,
 						label: `${service.name}.${String(key)}`,
+						root: service,
 					})
 					this.calls.add(call)
 					return call.start({ service, invoke })
 				}
 			},
-			set: (_target, key, value: unknown) =>
-				Reflect.set(service.instance, key, value, service.instance),
+			set: (_target, key, value: unknown) => {
+				const service = this.running(slot)
+				return Reflect.set(service.instance, key, value, service.instance)
+			},
 		})
+	}
+
+	private listen(
+		name: string,
+		listener: () => Promise<void>,
+	): GatekeeperListener {
+		this.assertUsable()
+		const owner = this.building ?? context.getStore()?.service
+		if (!owner) {
+			throw new GatekeeperError({
+				detail: `events.on("${name}") must be called by a service`,
+			})
+		}
+		return { emit: () => this.emit(owner, name, listener) }
+	}
+
+	private emit(
+		owner: Service,
+		name: string,
+		listener: () => Promise<void>,
+	): void {
+		this.assertUsable()
+		const label = `${owner.name}.${name}`
+		const sender = context.getStore()?.service
+		if (!sender) {
+			throw new GatekeeperError({
+				detail: `${label}: events must be emitted by a service`,
+			})
+		}
+		// A crashed instance sends nothing, and nobody hears a crashed listener.
+		if (sender.crashed || owner.crashed) return
+		const call = new Call({ runtime: this, label, root: owner })
+		this.calls.add(call)
+		call.deliverEvent({ sender, receiver: owner, invoke: listener })
+	}
+
+	private slot(name: string): ServiceSlot {
+		const slot = this.slots.get(name)
+		if (slot) return slot
+		throw new GatekeeperError({ detail: `Unknown service: ${name}` })
+	}
+
+	private async crash(name: string): Promise<void> {
+		this.assertUsable()
+		const slot = this.slot(name)
+		const service = this.running(slot)
+		service.crashed = true
+		slot.current = undefined
+		for (const call of this.calls) call.serviceCrashed(service)
+		await Promise.resolve()
+	}
+
+	private async restart(name: string): Promise<void> {
+		this.assertUsable()
+		const slot = this.slot(name)
+		if (slot.current) {
+			throw new GatekeeperError({
+				detail: `${name} is running; crash it before restarting it`,
+			})
+		}
+		this.startService(slot)
+		await Promise.resolve()
 	}
 
 	private assertUsable(): void {
@@ -246,6 +382,11 @@ class Runtime {
 
 	forget(call: Call): void {
 		this.calls.delete(call)
+	}
+
+	private pendingCalls(): readonly PendingCall[] {
+		this.assertUsable()
+		return [...this.calls].flatMap((call) => call.pendingCall() ?? [])
 	}
 
 	private activateGates(): Promise<void> {
@@ -286,6 +427,8 @@ type InteractionArgs = {
 	sender: Service
 	receiver: Service
 	invoke: () => unknown
+	/** Events have no reply, so their result is never held at the exit gate. */
+	oneWay?: boolean
 }
 
 type InteractionPhase = "enter" | "processing" | "exit" | "delivered"
@@ -394,6 +537,22 @@ class Interaction {
 		)
 	}
 
+	/** Applies a crash to this handoff, so it can never wait on a dead service. */
+	serviceCrashed(service: Service): void {
+		if (this.phase === "delivered") return
+		if (this.args.receiver === service && this.phase !== "exit") {
+			// A request or event addressed to a crashed service fails, as a refused
+			// connection would, so a live sender is never left waiting.
+			this.deliver({
+				ok: false,
+				error: new GatekeeperError({ detail: `${service.name} has crashed` }),
+			})
+			return
+		}
+		// Its reply is addressed to the crashed sender, so nobody receives it.
+		if (this.args.sender === service && this.phase === "exit") this.drop()
+	}
+
 	private processed(outcome: Outcome): void {
 		if (this.phase === "delivered") return
 		this.outcome = outcome
@@ -401,6 +560,8 @@ class Interaction {
 		if (
 			this.args.call.runtime.isGating() &&
 			this.args.receiver.gates.exit &&
+			!this.args.oneWay &&
+			!this.args.sender.crashed &&
 			!this.args.call.runsToCompletion
 		) {
 			this.phase = "exit"
@@ -413,15 +574,27 @@ class Interaction {
 
 	private deliver(outcome: Outcome): void {
 		if (this.phase === "delivered") return
+		// A reply to a crashed sender reaches nobody.
+		if (this.args.sender.crashed) {
+			this.drop()
+			return
+		}
 		this.phase = "delivered"
 		this.args.call.remove(this)
 		this.response.resolve(outcome)
+	}
+
+	private drop(): void {
+		this.phase = "delivered"
+		this.args.call.remove(this)
 	}
 }
 
 type CallArgs = {
 	runtime: Runtime
 	label: string
+	/** The service whose top-level call this is; if it crashes, the call is orphaned. */
+	root: Service
 }
 
 class Call {
@@ -432,6 +605,8 @@ class Call {
 	runsToCompletion = false
 
 	private readonly label: string
+	private readonly root: Service
+	private orphaned = false
 	private readonly resultResolver = Promise.withResolvers<Outcome>()
 	private readonly publicResult = Promise.withResolvers<CallHandle<unknown>>()
 	private readonly drainedResolver = Promise.withResolvers<void>()
@@ -442,9 +617,10 @@ class Call {
 	private controlling = false
 	private controlError?: GatekeeperError
 
-	constructor({ runtime, label }: CallArgs) {
+	constructor({ runtime, label, root }: CallArgs) {
 		this.runtime = runtime
 		this.label = label
+		this.root = root
 		this.result = this.resultResolver.promise.then(unwrap)
 		this.result.catch(() => {})
 		this.drained = this.drainedResolver.promise
@@ -489,14 +665,27 @@ class Call {
 		return this.publicResult.promise
 	}
 
+	deliverEvent(args: {
+		sender: Service
+		receiver: Service
+		invoke: () => unknown
+	}): void {
+		void this.interact({ ...args, oneWay: true }).then(
+			(value) => this.finish({ ok: true, value }),
+			(error: unknown) => this.finish({ ok: false, error }),
+		)
+	}
+
 	interact({
 		sender,
 		receiver,
 		invoke,
+		oneWay,
 	}: {
 		sender: Service
 		receiver: Service
 		invoke: () => unknown
+		oneWay?: boolean
 	}): Promise<unknown> {
 		if (this.controlError) return Promise.reject(this.controlError)
 		if (this.outcome) {
@@ -511,6 +700,7 @@ class Call {
 			sender,
 			receiver,
 			invoke,
+			oneWay,
 		})
 		this.interactions.add(interaction)
 		this.expose()
@@ -545,6 +735,20 @@ class Call {
 		throw new GatekeeperError({
 			detail: `${this.label}: expected call to be completed`,
 		})
+	}
+
+	pendingCall(): PendingCall | undefined {
+		if (this.outcome || this.controlError || this.controlling) return undefined
+		const interaction = this.currentInteraction()
+		if (interaction?.phase !== "enter" && interaction?.phase !== "exit") {
+			return undefined
+		}
+		return {
+			handle: this.handle,
+			label: this.label,
+			sentBy: interaction.sentBy.name,
+			waitingFor: interaction.waitingFor.name,
+		}
 	}
 
 	continueTo(serviceName: string): Promise<void> {
@@ -594,7 +798,30 @@ class Call {
 	remove(interaction: Interaction): void {
 		this.interactions.delete(interaction)
 		this.changed()
+		this.finishOrphan()
 		this.finishDraining()
+	}
+
+	serviceCrashed(service: Service): void {
+		for (const interaction of this.interactions) {
+			interaction.serviceCrashed(service)
+		}
+		if (this.root === service) this.orphaned = true
+		this.finishOrphan()
+	}
+
+	/**
+	 * A crashed service's call can still hold requests it sent. Once none remain,
+	 * it fails, so nothing waits on a result a dead instance will never produce.
+	 */
+	private finishOrphan(): void {
+		if (!this.orphaned || this.interactions.size > 0) return
+		this.finish({
+			ok: false,
+			error: new GatekeeperError({
+				detail: `${this.label}: ${this.root.name} crashed`,
+			}),
+		})
 	}
 
 	changed(): void {

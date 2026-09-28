@@ -88,6 +88,115 @@ await expect(call.result).rejects.toBe(failure)
 
 Failing an exit gate preserves effects the receiving service already completed.
 
+## Inspect pending calls
+
+`pendingCalls()` lists every call currently held at an enter or exit gate, in
+the order the calls started. Each entry carries the call's handle and the
+boundary it can be advanced from, so a driver can choose what happens next
+without keeping its own record of outstanding calls.
+
+```ts
+const first = await harness.client1.save(10)
+const second = await harness.client2.save(20)
+await first.continueTo("server")
+
+harness.pendingCalls()
+// [
+//   { handle: first, label: "client1.save", sentBy: "server", waitingFor: "store" },
+//   { handle: second, label: "client2.save", sentBy: "client2", waitingFor: "server" },
+// ]
+```
+
+A call appears once, at its current boundary, because `continueTo` and `fail`
+act only on that boundary. Completed calls, calls with a control in progress,
+and work still processing inside a service without an enter gate are not listed.
+
+## Deliver events
+
+A service call is a request with a reply, and every handoff belongs to the call
+that made it. Some messages instead start new work on another service, like a
+server notifying clients of a change. Factories receive `events` for these.
+
+```ts
+class Client {
+	private seen = 0
+	private readonly changed: GatekeeperListener
+
+	constructor(
+		private readonly server: Server,
+		events: GatekeeperEvents,
+	) {
+		// Owned by this client, because its factory is running.
+		this.changed = events.on("changed", async () => {
+			this.seen = await this.server.read()
+		})
+	}
+
+	connect() {
+		return this.server.subscribe(() => this.changed.emit())
+	}
+}
+
+const harness = new Gatekeeper()
+	.add("server", () => new Server())
+	.add("client1", ({ server }, { events }) => new Client(server, events))
+	.add("client2", ({ server }, { events }) => new Client(server, events))
+	.build()
+```
+
+A listener belongs to the service whose factory registers it, or to the running
+service when registered during a call. `emit()` returns immediately and starts a
+new call labeled `<owner>.<name>`, held at the owner's enter gate. The emitting
+service is its sender and never waits for or observes the outcome.
+
+```ts
+const save = await harness.client1.save(10)
+await save.continueTo("server") // the server notifies both clients
+
+harness.pendingCalls()
+// [
+//   { label: "client1.save",    sentBy: "server", waitingFor: "client1" },
+//   { label: "client1.changed", sentBy: "server", waitingFor: "client1" },
+//   { label: "client2.changed", sentBy: "server", waitingFor: "client2" },
+// ]
+```
+
+`continueTo(owner)` runs the listener, and its service calls are gated inside the
+event's call. `fail(error)` loses the event, so the listener never runs. Events
+have no reply, so a listener's result is not held at the exit gate. While gates
+are inactive, listeners run without pausing. Listeners must return promises, so
+Gatekeeper knows when their work is done.
+
+## Crash and restart a service
+
+`crash(name)` kills a service's current instance at whatever point it has
+reached, and `restart(name)` runs its factory again. The harness handle and every
+dependency proxy then reach the new instance. Keep anything that must survive a
+crash, such as durable storage, in its own service.
+
+```ts
+const save = await harness.client1.save(10)
+
+await harness.crash("client1")
+await save.continueTo("server") // the request was already sent, so it still arrives
+
+await harness.restart("client1")
+harness.client1.read() // a fresh instance
+```
+
+A crash applies these rules, so nothing waits on the dead instance:
+
+| Handoff                                          | After the crash                                      |
+| ------------------------------------------------ | ---------------------------------------------------- |
+| A request the service already sent               | Still deliverable; its reply is dropped              |
+| A request or event addressed to the service      | Fails with a crash error, like a refused connection  |
+| A reply addressed to the service                 | Dropped                                              |
+| Anything the dead instance calls afterwards      | Never settles and is not tracked                     |
+| The service's own top-level calls                | Fail once no deliverable request remains in them     |
+
+The dead instance's code can keep running in memory; it just cannot reach
+anything. Calling a crashed service through the harness throws until it restarts.
+
 ## Configure service gates
 
 Services gate entry and exit by default. Configure either direction when a

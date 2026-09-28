@@ -26,7 +26,8 @@ export type Cookie = Tagged<"Cookie", number | string>
 
 export type ClientApi = {
 	clientId: ClientId
-	poke: () => void
+	/** Settles when the pull the poke started has finished. Never rejects. */
+	poke: () => Promise<void>
 }
 
 export type RemoteApi<Schema extends AnySchema> = {
@@ -188,7 +189,7 @@ export class SyncEngine<Schema extends AnySchema> {
 			clientId: this.clientId,
 			poke: () => {
 				this.logger.info({ message: "received poke from remote" })
-				void this.queuePull().catch((error) => {
+				return this.queuePull().catch((error) => {
 					this.logger.error({ message: "error pulling from remote", error })
 				})
 			},

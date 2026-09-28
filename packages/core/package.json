@@ -46,12 +46,11 @@
 		"test": "vitest run"
 	},
 	"dependencies": {
-		"@triplit/tuple-database": "^2.2.33",
 		"@types/lodash-es": "^4.17.12",
 		"errore": "^0.14.1",
 		"idb": "^8.0.3",
 		"lodash-es": "^4.17.21",
-		"tuple-database": "^2.2.4"
+		"tuple-database": "github:tanishqkancharla/tuple-database#ebe6b84edbc1371d0eb611cf5ca28d2f76be38db"
 	},
 	"devDependencies": {
 		"extendable-expect": "^1.0.5",

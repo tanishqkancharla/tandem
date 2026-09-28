@@ -543,11 +543,10 @@ test("push acknowledgement is visible to the pull started by its poke", async ()
 		Promise.withResolvers<Awaited<ReturnType<RemoteApi<TestSchema>["pull"]>>>()
 	const disconnect = await server.connect({
 		clientId,
-		poke: () => {
-			void server
+		poke: () =>
+			server
 				.pull({ clientId, cookie: initial.cookie, scanWindow })
-				.then(pokedPull.resolve, pokedPull.reject)
-		},
+				.then(pokedPull.resolve, pokedPull.reject),
 	})
 
 	await server.push({

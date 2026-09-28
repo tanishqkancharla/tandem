@@ -1,6 +1,9 @@
 import {
 	Gatekeeper,
 	type CallHandle,
+	type GatekeeperEvents,
+	type GatekeeperListener,
+	type PendingCall,
 	type ServiceProxy,
 } from "@tanishqkancharla/gatekeeper"
 import { expectTypeOf } from "vitest"
@@ -34,8 +37,14 @@ class Client {
 export async function publicApiTypes() {
 	const builder = new Gatekeeper()
 		.add("server", () => new Server(), { gates: { enter: false, exit: true } })
-		.add("client", ({ server }) => {
+		.add("client", ({ server }, { events }) => {
 			expectTypeOf(server).toEqualTypeOf<Server>()
+			expectTypeOf(events).toEqualTypeOf<GatekeeperEvents>()
+			expectTypeOf(
+				events.on("changed", () => Promise.resolve()),
+			).toEqualTypeOf<GatekeeperListener>()
+			// @ts-expect-error Listeners return promises so Gatekeeper knows when they finish.
+			events.on("changed", () => undefined)
 			return new Client(server)
 		})
 
@@ -46,7 +55,12 @@ export async function publicApiTypes() {
 	expectTypeOf(harness.client.save(1)).toEqualTypeOf<
 		Promise<CallHandle<number>>
 	>()
+	expectTypeOf(harness.pendingCalls()).toEqualTypeOf<readonly PendingCall[]>()
 	expectTypeOf(await harness.activateGates()).toEqualTypeOf<void>()
+	expectTypeOf(await harness.crash("client")).toEqualTypeOf<void>()
+	expectTypeOf(await harness.restart("client")).toEqualTypeOf<void>()
+	// @ts-expect-error Only registered services can crash.
+	await harness.crash("missing")
 	expectTypeOf(await harness.deactivateGates()).toEqualTypeOf<void>()
 	expectTypeOf(await harness.deactivateGatesAndSettle()).toEqualTypeOf<void>()
 

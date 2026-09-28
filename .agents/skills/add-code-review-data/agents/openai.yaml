@@ -1,0 +1,4 @@
+interface:
+  display_name: "Add code review data"
+  short_description: "Import a code change plus its explanation into code-review-data"
+  default_prompt: "Use $add-code-review-data to import this task's code change and review into cashew-labs/code-review-data as one self-contained case."

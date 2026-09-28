@@ -178,6 +178,12 @@ export class TandemClient<
 		const tx = this.db.makeTupleDbTransaction()
 		tx.write(inverted)
 		tx.commit()
+
+		// Remove the rolled-back mutations from speculativeMutations so they are not re-applied on subsequent patches
+		const rollbackIds = new Set(mutationsToRollback.map((m) => m.id))
+		this.speculativeMutations = this.speculativeMutations.filter(
+			(m) => !rollbackIds.has(m.id),
+		)
 	}
 
 	query<Query extends RelationalQuery<Schema, Relations>>(
