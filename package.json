@@ -15,6 +15,7 @@
 		"check-affected": "turbo run lint format test type-check --affected",
 		"clean": "turbo run clean",
 		"dev": "turbo run dev",
+		"dst:run": "pnpm --filter tandem-dst run dst",
 		"format": "turbo run format",
 		"lint": "turbo run lint",
 		"test": "turbo run test",

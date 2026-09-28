@@ -7,7 +7,8 @@
 		"type-check": "tsgo --noEmit && tsgo -p tsconfig.test.json --noEmit",
 		"format": "oxfmt \"*.ts\"",
 		"lint": "oxlint .",
-		"test": "vitest run"
+		"test": "vitest run",
+		"dst": "tsx cli.ts"
 	},
 	"dependencies": {
 		"@tanishqkancharla/gatekeeper": "workspace:*",
@@ -18,6 +19,7 @@
 	},
 	"devDependencies": {
 		"@types/node": "^20.14.2",
+		"tsx": "^4.23.13",
 		"typescript": "^5.7.2",
 		"vitest": "^1.1.0"
 	}

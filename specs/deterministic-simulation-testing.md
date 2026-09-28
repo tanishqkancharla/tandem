@@ -102,7 +102,7 @@ Every choice and gate decision is appended to a JSONL trace as it happens, so a 
 - Cheap invariants run after every step; full comparison runs at checkpoints and at quiescence.
 - A failing run writes a JSONL artifact with seed, options, commit, ordered events, and final state, and that artifact replays without randomness.
 - `dst` is inside the type-check and test graphs.
-- A bounded run finishes in seconds on every PR, seeded from the PR number, plus a fixed regression seed set.
+- A nightly sweep runs hundreds of seeds and keeps a replayable artifact for every failure, and recorded failures replay in the regular test suite.
 - A client can be killed and restarted, reading back its durable local storage.
 
 ## Non-goals
@@ -399,21 +399,30 @@ Known failures are now artifacts, and each has one test: replaying it must reach
 - [x] Store known failures as artifacts, each replayed to its recorded violation.
 - [x] Run `pnpm type-check` and `pnpm test`.
 
-### Phase 9: Wire the CLI and CI
+### Phase 9: Wire the CLI and a nightly sweep
 
-The per-PR goal is a bounded run seeded from the PR number, fast enough that nobody waits on it, with a nightly sweep that is broader. The seed has to be printed on every run, or a CI failure is not reproducible by hand.
+A seed and an artifact are only useful if a person can reproduce a failure by hand, and the simulation only finds new bugs if it runs over many seeds. A command runs, replays, and sweeps; a nightly workflow sweeps hundreds of seeds and keeps the artifacts of the ones that fail. There is no per-pull-request run: while the known sync bugs are open, a random seed violates the model too often to gate a merge.
 
 ```
-dst:run --seed 123 --steps 400 --fault-rate 0.1
-dst:run --replay tmp/dst-123.jsonl
+pnpm dst:run --seed 123 --steps 300 [--fault-rate 0.1] [--crash-rate 0.02] [--out path]
+    prints the seed, writes the artifact, prints the violation and the replay command; exits 1 on a violation
+pnpm dst:run --replay path.jsonl
+    replays an artifact; exits 1 on a violation or a divergence
+pnpm dst:run --runs 200 --seed 2026092800 --steps 500 [--out-dir tmp/dst] [--fail-on-violation]
+    sweeps consecutive seeds, keeps artifacts only for failing runs, and replays each one
 ```
 
-- [ ] Add a `dst:run` script to the root `package.json` delegating to a `dst/cli.ts` entry that parses `--seed`, `--steps`, `--fault-rate`, `--crash-rate`, and `--replay`, writes each run's artifact through `jsonlFileSink`, and exits non-zero on a violation or divergence.
-- [ ] Derive the default per-PR seed as a stable hash of the PR number, keep an explicit `--seed` override for local replay, and print the seed on every run.
-- [ ] Add a `pull_request` workflow running a small step budget at the derived seed plus the fixed regression seed set, uploading any trace artifact on failure. While the known sync bugs are open, a derived seed fails often, so decide whether that run blocks merges or only reports.
-- [ ] Add a `schedule` workflow running a couple dozen independently seeded runs at a few hundred steps each, publishing the seeds so a nightly failure can be re-run locally.
-- [ ] Review the fixed-seed cases in `dst/dst.spec.ts` once seed-driven runs and replay exist, keeping only those that add coverage.
-- [ ] Run `pnpm test`, `pnpm type-check`, and `pnpm lint`.
+Paths resolve against the directory the command was run from, not the package directory pnpm runs the script in. The CLI is a thin wrapper over `dst/DstCli.ts`, which holds the sweep and its reporting. A run that throws is reported as a harness error instead of ending the sweep.
+
+`.github/workflows/dst-nightly.yml` runs every night and on demand, with a base seed of today's date unless one is given. It sweeps 200 seeds of 500 steps in four configurations: no faults, faults, crashes, and both. Each writes a summary to the job and uploads the artifacts of failing runs. Violations do not fail the job while the known bugs are open; it fails when the harness breaks, meaning a run throws or a failing run does not replay to the same violation. Adding `--fail-on-violation` makes violations fail it too.
+
+- [x] Add a `dst:run` script to the root `package.json`, delegating to `dst/cli.ts` through `tsx`, with single-run, replay, and sweep modes. Every run prints its seed and writes its artifact through `jsonlFileSink`.
+- [x] Resolve paths against the invoking directory, and exit non-zero on a violation, divergence, or harness error.
+- [x] Add a nightly and manually triggered workflow sweeping four configurations, publishing a job summary with the seeds, and uploading failing runs' artifacts.
+- [x] Fail the nightly only on harness errors while the known bugs are open, behind a `--fail-on-violation` switch.
+- [x] Add a test that a sweep keeps and replays only failing runs' artifacts. The command itself is a thin wrapper, exercised by the nightly workflow rather than a subprocess test.
+- [x] Review the fixed-seed cases in `dst/dst.spec.ts`: each covers a distinct behavior, so all stay.
+- [x] Run `pnpm test`, `pnpm type-check`, and `pnpm lint`.
 
 ## Known sync bugs
 
@@ -448,6 +457,8 @@ Replicache and Triplit avoid D by persisting their pending mutations. Replicache
 - [`dst/known-failures/`](../dst/known-failures/) — Artifacts for open sync bugs, each replayed to its recorded violation, with a README walking through each trace.
 - [`dst/DstWorld.ts`](../dst/DstWorld.ts) — The simulated system both drivers share: harness, storage, model, crash and restart, and applying one event.
 - [`dst/DstReplay.ts`](../dst/DstReplay.ts) — The JSONL artifact format, its sinks, and the replay.
+- [`dst/cli.ts`](../dst/cli.ts) and [`dst/DstCli.ts`](../dst/DstCli.ts) — The `dst:run` command: single runs, replays, and sweeps.
+- [`.github/workflows/dst-nightly.yml`](../.github/workflows/dst-nightly.yml) — The nightly sweep.
 - [`dst/ReferenceModel.ts`](../dst/ReferenceModel.ts) — What the server and each client should hold after every step.
 - [`dst/package.json`](../dst/package.json) — Joins the workspace's `type-check`, `lint`, `format`, and `test` graphs.
 - [`packages/gatekeeper/src/Gatekeeper.ts`](../packages/gatekeeper/src/Gatekeeper.ts) — Owns execution order. `Runtime` and `Call` are internal to the module, so a harness consumer can only drive handles it already holds. Phase 2 adds `harness.pendingCalls()`.

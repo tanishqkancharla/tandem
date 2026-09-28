@@ -1,0 +1,71 @@
+name: DST nightly
+
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "Base seed; defaults to today's date"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    name: sweep (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: no-faults
+            args: ""
+          - name: faults
+            args: "--fault-rate 0.1"
+          - name: crashes
+            args: "--crash-rate 0.02"
+          - name: faults-and-crashes
+            args: "--fault-rate 0.1 --crash-rate 0.02"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      - name: Choose the base seed
+        id: seed
+        env:
+          SEED_INPUT: ${{ inputs.seed }}
+        run: |
+          SEED="$SEED_INPUT"
+          if [ -z "$SEED" ]; then SEED="$(date -u +%Y%m%d)000"; fi
+          echo "base seed: $SEED"
+          echo "value=$SEED" >> "$GITHUB_OUTPUT"
+
+      # Violations are reported in the job summary and uploaded, but do not fail
+      # the job while the known sync bugs are open. The job fails when the harness
+      # itself breaks: a run throws, or a failing run does not replay. Add
+      # --fail-on-violation once the known bugs are fixed.
+      - name: Sweep
+        run: >-
+          pnpm dst:run --runs 200 --steps 500 ${{ matrix.args }}
+          --seed ${{ steps.seed.outputs.value }} --out-dir tmp/dst
+
+      - name: Upload failing runs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dst-${{ matrix.name }}-${{ steps.seed.outputs.value }}
+          path: tmp/dst
+          if-no-files-found: ignore
+          retention-days: 14
