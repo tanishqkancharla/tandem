@@ -57,6 +57,10 @@ export async function publicApiTypes() {
 	>()
 	expectTypeOf(harness.pendingCalls()).toEqualTypeOf<readonly PendingCall[]>()
 	expectTypeOf(await harness.activateGates()).toEqualTypeOf<void>()
+	expectTypeOf(await harness.crash("client")).toEqualTypeOf<void>()
+	expectTypeOf(await harness.restart("client")).toEqualTypeOf<void>()
+	// @ts-expect-error Only registered services can crash.
+	await harness.crash("missing")
 	expectTypeOf(await harness.deactivateGates()).toEqualTypeOf<void>()
 	expectTypeOf(await harness.deactivateGatesAndSettle()).toEqualTypeOf<void>()
 

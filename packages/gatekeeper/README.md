@@ -167,6 +167,36 @@ have no reply, so a listener's result is not held at the exit gate. While gates
 are inactive, listeners run without pausing. Listeners must return promises, so
 Gatekeeper knows when their work is done.
 
+## Crash and restart a service
+
+`crash(name)` kills a service's current instance at whatever point it has
+reached, and `restart(name)` runs its factory again. The harness handle and every
+dependency proxy then reach the new instance. Keep anything that must survive a
+crash, such as durable storage, in its own service.
+
+```ts
+const save = await harness.client1.save(10)
+
+await harness.crash("client1")
+await save.continueTo("server") // the request was already sent, so it still arrives
+
+await harness.restart("client1")
+harness.client1.read() // a fresh instance
+```
+
+A crash applies these rules, so nothing waits on the dead instance:
+
+| Handoff                                          | After the crash                                      |
+| ------------------------------------------------ | ---------------------------------------------------- |
+| A request the service already sent               | Still deliverable; its reply is dropped              |
+| A request or event addressed to the service      | Fails with a crash error, like a refused connection  |
+| A reply addressed to the service                 | Dropped                                              |
+| Anything the dead instance calls afterwards      | Never settles and is not tracked                     |
+| The service's own top-level calls                | Fail once no deliverable request remains in them     |
+
+The dead instance's code can keep running in memory; it just cannot reach
+anything. Calling a crashed service through the harness throws until it restarts.
+
 ## Configure service gates
 
 Services gate entry and exit by default. Configure either direction when a

@@ -1,590 +1,693 @@
 import {
-	Gatekeeper,
-	type GatekeeperEvents,
-	type GatekeeperListener,
-	type PendingCall,
-} from "@tanishqkancharla/gatekeeper"
-import { describe, expect, test as base } from "vitest"
+  Gatekeeper,
+  type GatekeeperEvents,
+  type GatekeeperListener,
+  type PendingCall,
+} from "@tanishqkancharla/gatekeeper";
+import { describe, expect, test as base } from "vitest";
 
 interface StoreApi {
-	write(value: number): Promise<number>
+  write(value: number): Promise<number>;
 }
 
 class Store implements StoreApi {
-	private value = 0
+  private value = 0;
 
-	read() {
-		return this.value
-	}
+  read() {
+    return this.value;
+  }
 
-	write(value: number) {
-		this.value = value
-		return Promise.resolve(value)
-	}
+  write(value: number) {
+    this.value = value;
+    return Promise.resolve(value);
+  }
 }
 
 class Server {
-	constructor(private readonly store: StoreApi) {}
+  constructor(private readonly store: StoreApi) {}
 
-	save(value: number) {
-		return this.store.write(value)
-	}
+  save(value: number) {
+    return this.store.write(value);
+  }
 }
 
 class Client {
-	private visibleValue = 0
-	private confirmedValue = 0
-	private previousSave: Promise<void> = Promise.resolve()
+  private visibleValue = 0;
+  private confirmedValue = 0;
+  private previousSave: Promise<void> = Promise.resolve();
 
-	constructor(private readonly server: Pick<Server, "save">) {}
+  constructor(private readonly server: Pick<Server, "save">) {}
 
-	read() {
-		return this.visibleValue
-	}
+  read() {
+    return this.visibleValue;
+  }
 
-	confirmed() {
-		return this.confirmedValue
-	}
+  confirmed() {
+    return this.confirmedValue;
+  }
 
-	save(value: number) {
-		this.visibleValue = value
-		const pending = this.previousSave
-			.then(() => this.server.save(value))
-			.then((saved) => {
-				this.confirmedValue = saved
-				return saved
-			})
-		// The public promise preserves the result; this private chain only serializes
-		// later saves and must continue after either outcome.
-		this.previousSave = pending.then(
-			() => undefined,
-			() => undefined,
-		)
-		return pending
-	}
+  save(value: number) {
+    this.visibleValue = value;
+    const pending = this.previousSave
+      .then(() => this.server.save(value))
+      .then((saved) => {
+        this.confirmedValue = saved;
+        return saved;
+      });
+    // The public promise preserves the result; this private chain only serializes
+    // later saves and must continue after either outcome.
+    this.previousSave = pending.then(
+      () => undefined,
+      () => undefined,
+    );
+    return pending;
+  }
 }
 
 class TestTimer {
-	waitForNextTick(): Promise<void> {
-		return Promise.resolve()
-	}
+  waitForNextTick(): Promise<void> {
+    return Promise.resolve();
+  }
 }
 
 class TimerClient {
-	constructor(
-		private readonly timer: Pick<TestTimer, "waitForNextTick">,
-		private readonly server: Pick<Server, "save">,
-	) {}
+  constructor(
+    private readonly timer: Pick<TestTimer, "waitForNextTick">,
+    private readonly server: Pick<Server, "save">,
+  ) {}
 
-	async saveAfterNextTick(value: number): Promise<number> {
-		await this.timer.waitForNextTick()
-		return await this.server.save(value)
-	}
+  async saveAfterNextTick(value: number): Promise<number> {
+    await this.timer.waitForNextTick();
+    return await this.server.save(value);
+  }
 }
 
 function createHarness() {
-	return new Gatekeeper()
-		.add("store", () => new Store())
-		.add("server", ({ store }) => new Server(store))
-		.add("client1", ({ server }) => new Client(server))
-		.add("client2", ({ server }) => new Client(server))
-		.build()
+  return new Gatekeeper()
+    .add("store", () => new Store())
+    .add("server", ({ store }) => new Server(store))
+    .add("client1", ({ server }) => new Client(server))
+    .add("client2", ({ server }) => new Client(server))
+    .build();
 }
 
 function createTimerHarness(gates: { enter: boolean; exit: boolean }) {
-	return new Gatekeeper()
-		.add("store", () => new Store())
-		.add("server", ({ store }) => new Server(store))
-		.add("client1Timer", () => new TestTimer(), { gates })
-		.add(
-			"client1",
-			({ server, client1Timer }) => new TimerClient(client1Timer, server),
-		)
-		.build()
+  return new Gatekeeper()
+    .add("store", () => new Store())
+    .add("server", ({ store }) => new Server(store))
+    .add("client1Timer", () => new TestTimer(), { gates })
+    .add(
+      "client1",
+      ({ server, client1Timer }) => new TimerClient(client1Timer, server),
+    )
+    .build();
 }
 
-type TestHarness = ReturnType<typeof createHarness>
+type TestHarness = ReturnType<typeof createHarness>;
 
 const test = base.extend<{ harness: TestHarness }>({
-	harness: async ({}, use) => {
-		await using harness = createHarness()
-		await harness.activateGates()
-		await use(harness)
-	},
-})
+  harness: async ({}, use) => {
+    await using harness = createHarness();
+    await harness.activateGates();
+    await use(harness);
+  },
+});
 
 /** The services are real and stateful; only communication timing and failures are controlled. */
 describe("Gatekeeper", () => {
-	test("holds the first handoff before the server processes it", async ({
-		harness,
-	}) => {
-		const call = await harness.client1.save(10)
-
-		call.assertSentBy("client1").assertWaitingFor("server")
-		expect(harness.client1.read()).toBe(10)
-		expect(harness.client1.confirmed()).toBe(0)
-		expect(harness.store.read()).toBe(0)
-	})
-
-	test("advances the request to the server's next handoff", async ({
-		harness,
-	}) => {
-		const call = await harness.client1.save(10)
-
-		await call.continueTo("server")
-
-		call.assertSentBy("server").assertWaitingFor("store")
-		expect(harness.store.read()).toBe(0)
-	})
-
-	test("processes the store write before returning its result", async ({
-		harness,
-	}) => {
-		const call = await harness.client1.save(10)
-		await call.continueTo("server")
-
-		await call.continueTo("store")
-
-		call.assertSentBy("store").assertWaitingFor("server")
-		expect(harness.store.read()).toBe(10)
-		expect(harness.client1.confirmed()).toBe(0)
-	})
-
-	test("returns through the server before delivering to the client", async ({
-		harness,
-	}) => {
-		const call = await harness.client1.save(10)
-		await call.continueTo("server")
-		await call.continueTo("store")
-
-		await call.continueTo("server")
-
-		call.assertSentBy("server").assertWaitingFor("client1")
-		expect(harness.client1.confirmed()).toBe(0)
-	})
-
-	test("delivers the result to the original client", async ({ harness }) => {
-		const call = await harness.client1.save(10)
-		await call.continueTo("server")
-		await call.continueTo("store")
-		await call.continueTo("server")
-
-		await call.continueTo("client1")
-
-		call.assertCompleted()
-		expect(await call.result).toBe(10)
-		expect(harness.client1.confirmed()).toBe(10)
-	})
-
-	test("can allow one call to run through all of its gates", async ({
-		harness,
-	}) => {
-		const call = await harness.client1.save(10)
-
-		await call.continueToCompletion()
-
-		call.assertCompleted()
-		expect(await call.result).toBe(10)
-		expect(harness.client1.confirmed()).toBe(10)
-		expect(harness.store.read()).toBe(10)
-	})
-
-	test("controls either client without releasing the other client's call", async ({
-		harness,
-	}) => {
-		const first = await harness.client1.save(10)
-		const second = await harness.client2.save(20)
-
-		await second.continueToCompletion()
-
-		first.assertSentBy("client1").assertWaitingFor("server")
-		second.assertCompleted()
-		expect(await second.result).toBe(20)
-		expect(harness.client2.confirmed()).toBe(20)
-		expect(harness.client1.confirmed()).toBe(0)
-		expect(harness.store.read()).toBe(20)
-	})
-
-	test("lists each held call at the boundary it can be advanced from", async ({
-		harness,
-	}) => {
-		const first = await harness.client1.save(10)
-		const second = await harness.client2.save(20)
-
-		await first.continueTo("server")
-
-		expect(harness.pendingCalls()).toEqual([
-			{
-				handle: first,
-				label: "client1.save",
-				sentBy: "server",
-				waitingFor: "store",
-			},
-			{
-				handle: second,
-				label: "client2.save",
-				sentBy: "client2",
-				waitingFor: "server",
-			},
-		])
-	})
-
-	test("drives every call to completion using only the pending list", async ({
-		harness,
-	}) => {
-		const first = await harness.client1.save(10)
-		const second = await harness.client2.save(20)
-
-		for (
-			let pending = harness.pendingCalls();
-			pending.length > 0;
-			pending = harness.pendingCalls()
-		) {
-			const [next] = pending
-			await next.handle.continueTo(next.waitingFor)
-		}
-
-		first.assertCompleted()
-		second.assertCompleted()
-		expect(harness.client1.confirmed()).toBe(10)
-		expect(harness.client2.confirmed()).toBe(20)
-		expect(harness.store.read()).toBe(20)
-	})
-
-	test("fails before the receiving service processes a handoff", async ({
-		harness,
-	}) => {
-		const call = await harness.client1.save(10)
-		const failure = new Error("Server is unreachable")
-
-		await call.fail(failure)
-
-		call.assertCompleted()
-		await expect(call.result).rejects.toBe(failure)
-		expect(harness.store.read()).toBe(0)
-	})
-
-	test("fails a processed result before it reaches the calling service", async ({
-		harness,
-	}) => {
-		const call = await harness.client1.save(10)
-		await call.continueTo("server")
-		await call.continueTo("store")
-		const failure = new Error("Store response was lost")
-
-		await call.fail(failure)
-
-		call.assertSentBy("server").assertWaitingFor("client1")
-		expect(harness.store.read()).toBe(10)
-	})
-
-	test("delivers a failed result to the original client", async ({
-		harness,
-	}) => {
-		const call = await harness.client1.save(10)
-		await call.continueTo("server")
-		await call.continueTo("store")
-		const failure = new Error("Store response was lost")
-		await call.fail(failure)
-
-		await call.continueTo("client1")
-
-		call.assertCompleted()
-		await expect(call.result).rejects.toBe(failure)
-		expect(harness.store.read()).toBe(10)
-	})
-
-	test("waits for a queued call to reach its own first handoff", async ({
-		harness,
-	}) => {
-		const first = await harness.client1.save(10)
-		const secondReady = harness.client1.save(20)
-
-		await first.continueToCompletion()
-		const second = await secondReady
-
-		second.assertSentBy("client1").assertWaitingFor("server")
-		expect(harness.client1.read()).toBe(20)
-		expect(harness.client1.confirmed()).toBe(10)
-	})
-
-	test("returns a settled call handle when gates are deactivated", async ({
-		harness,
-	}) => {
-		await harness.deactivateGates()
-
-		const call = await harness.client1.save(10)
-
-		call.assertCompleted()
-		expect(await call.result).toBe(10)
-		expect(harness.client1.confirmed()).toBe(10)
-		expect(harness.store.read()).toBe(10)
-	})
-
-	test("releases held calls and waits for them when gates are deactivated", async ({
-		harness,
-	}) => {
-		const call = await harness.client1.save(10)
-
-		await harness.deactivateGatesAndSettle()
-
-		call.assertCompleted()
-		expect(await call.result).toBe(10)
-		expect(harness.client1.confirmed()).toBe(10)
-		expect(harness.store.read()).toBe(10)
-	})
-
-	test("disposal rejects a held call without processing it", async () => {
-		const store = new Store()
-		const harness = new Gatekeeper()
-			.add("store", () => store)
-			.add("server", ({ store }) => new Server(store))
-			.add("client1", ({ server }) => new Client(server))
-			.build()
-		await harness.activateGates()
-		const call = await harness.client1.save(10)
-		const result = expect(call.result).rejects.toThrow(/disposed/i)
-
-		await harness[Symbol.asyncDispose]()
-
-		await result
-		expect(store.read()).toBe(0)
-		expect(harness.store.read).toThrow(/disposed/i)
-	})
-
-	test("holds a timer wait before entry when its enter gate is enabled", async () => {
-		await using harness = createTimerHarness({ enter: true, exit: false })
-		await harness.activateGates()
-
-		const call = await harness.client1.saveAfterNextTick(10)
-
-		call.assertSentBy("client1").assertWaitingFor("client1Timer")
-		expect(harness.store.read()).toBe(0)
-	})
-
-	test("holds a timer tick at exit until the client receives it", async () => {
-		await using harness = createTimerHarness({ enter: false, exit: true })
-		await harness.activateGates()
-
-		const call = await harness.client1.saveAfterNextTick(10)
-
-		call.assertSentBy("client1Timer").assertWaitingFor("client1")
-		expect(harness.store.read()).toBe(0)
-	})
-
-	test("delivers a timer tick by continuing its response to the client", async () => {
-		await using harness = createTimerHarness({ enter: false, exit: true })
-		await harness.activateGates()
-		const call = await harness.client1.saveAfterNextTick(10)
-
-		await call.continueTo("client1")
-
-		call.assertSentBy("client1").assertWaitingFor("server")
-		expect(harness.store.read()).toBe(0)
-	})
-
-	test("rejects overlapping controls without releasing the call", async () => {
-		await using harness = createTimerHarness({ enter: true, exit: false })
-		await harness.activateGates()
-		const call = await harness.client1.saveAfterNextTick(10)
-
-		const progressing = call.continueTo("client1Timer")
-		await expect(call.continueToCompletion()).rejects.toThrow(
-			/another control is in progress/,
-		)
-		await progressing
-
-		call.assertSentBy("client1").assertWaitingFor("server")
-		expect(harness.store.read()).toBe(0)
-	})
-
-	test("returns a settled call handle without a service handoff", async () => {
-		await using harness = new Gatekeeper()
-			.add("calculator", () => ({
-				double: (value: number) => Promise.resolve(value * 2),
-			}))
-			.build()
-		await harness.activateGates()
-
-		const call = await harness.calculator.double(5)
-
-		call.assertCompleted()
-		expect(await call.result).toBe(10)
-	})
-
-	test("preserves an application rejection before any service handoff", async () => {
-		const failure = new Error("Calculation failed")
-		await using harness = new Gatekeeper()
-			.add("calculator", () => ({
-				double: (_value: number) => Promise.reject(failure),
-			}))
-			.build()
-		await harness.activateGates()
-
-		const call = await harness.calculator.double(5)
-
-		call.assertCompleted()
-		await expect(call.result).rejects.toBe(failure)
-	})
-
-	test("rejects synchronous calls between gated services", async () => {
-		await using harness = new Gatekeeper()
-			.add("store", () => ({ read: () => 10 }))
-			.add("client", ({ store }) => ({
-				read: () => Promise.resolve(store.read()),
-			}))
-			.build()
-		await harness.activateGates()
-		const call = await harness.client.read()
-
-		await expect(call.continueTo("store")).rejects.toThrow(
-			/calls between services must return promises/,
-		)
-
-		call.assertCompleted()
-		await expect(call.result).rejects.toThrow(
-			/calls between services must return promises/,
-		)
-	})
-})
+  test("holds the first handoff before the server processes it", async ({
+    harness,
+  }) => {
+    const call = await harness.client1.save(10);
+
+    call.assertSentBy("client1").assertWaitingFor("server");
+    expect(harness.client1.read()).toBe(10);
+    expect(harness.client1.confirmed()).toBe(0);
+    expect(harness.store.read()).toBe(0);
+  });
+
+  test("advances the request to the server's next handoff", async ({
+    harness,
+  }) => {
+    const call = await harness.client1.save(10);
+
+    await call.continueTo("server");
+
+    call.assertSentBy("server").assertWaitingFor("store");
+    expect(harness.store.read()).toBe(0);
+  });
+
+  test("processes the store write before returning its result", async ({
+    harness,
+  }) => {
+    const call = await harness.client1.save(10);
+    await call.continueTo("server");
+
+    await call.continueTo("store");
+
+    call.assertSentBy("store").assertWaitingFor("server");
+    expect(harness.store.read()).toBe(10);
+    expect(harness.client1.confirmed()).toBe(0);
+  });
+
+  test("returns through the server before delivering to the client", async ({
+    harness,
+  }) => {
+    const call = await harness.client1.save(10);
+    await call.continueTo("server");
+    await call.continueTo("store");
+
+    await call.continueTo("server");
+
+    call.assertSentBy("server").assertWaitingFor("client1");
+    expect(harness.client1.confirmed()).toBe(0);
+  });
+
+  test("delivers the result to the original client", async ({ harness }) => {
+    const call = await harness.client1.save(10);
+    await call.continueTo("server");
+    await call.continueTo("store");
+    await call.continueTo("server");
+
+    await call.continueTo("client1");
+
+    call.assertCompleted();
+    expect(await call.result).toBe(10);
+    expect(harness.client1.confirmed()).toBe(10);
+  });
+
+  test("can allow one call to run through all of its gates", async ({
+    harness,
+  }) => {
+    const call = await harness.client1.save(10);
+
+    await call.continueToCompletion();
+
+    call.assertCompleted();
+    expect(await call.result).toBe(10);
+    expect(harness.client1.confirmed()).toBe(10);
+    expect(harness.store.read()).toBe(10);
+  });
+
+  test("controls either client without releasing the other client's call", async ({
+    harness,
+  }) => {
+    const first = await harness.client1.save(10);
+    const second = await harness.client2.save(20);
+
+    await second.continueToCompletion();
+
+    first.assertSentBy("client1").assertWaitingFor("server");
+    second.assertCompleted();
+    expect(await second.result).toBe(20);
+    expect(harness.client2.confirmed()).toBe(20);
+    expect(harness.client1.confirmed()).toBe(0);
+    expect(harness.store.read()).toBe(20);
+  });
+
+  test("lists each held call at the boundary it can be advanced from", async ({
+    harness,
+  }) => {
+    const first = await harness.client1.save(10);
+    const second = await harness.client2.save(20);
+
+    await first.continueTo("server");
+
+    expect(harness.pendingCalls()).toEqual([
+      {
+        handle: first,
+        label: "client1.save",
+        sentBy: "server",
+        waitingFor: "store",
+      },
+      {
+        handle: second,
+        label: "client2.save",
+        sentBy: "client2",
+        waitingFor: "server",
+      },
+    ]);
+  });
+
+  test("drives every call to completion using only the pending list", async ({
+    harness,
+  }) => {
+    const first = await harness.client1.save(10);
+    const second = await harness.client2.save(20);
+
+    for (
+      let pending = harness.pendingCalls();
+      pending.length > 0;
+      pending = harness.pendingCalls()
+    ) {
+      const [next] = pending;
+      await next.handle.continueTo(next.waitingFor);
+    }
+
+    first.assertCompleted();
+    second.assertCompleted();
+    expect(harness.client1.confirmed()).toBe(10);
+    expect(harness.client2.confirmed()).toBe(20);
+    expect(harness.store.read()).toBe(20);
+  });
+
+  test("fails before the receiving service processes a handoff", async ({
+    harness,
+  }) => {
+    const call = await harness.client1.save(10);
+    const failure = new Error("Server is unreachable");
+
+    await call.fail(failure);
+
+    call.assertCompleted();
+    await expect(call.result).rejects.toBe(failure);
+    expect(harness.store.read()).toBe(0);
+  });
+
+  test("fails a processed result before it reaches the calling service", async ({
+    harness,
+  }) => {
+    const call = await harness.client1.save(10);
+    await call.continueTo("server");
+    await call.continueTo("store");
+    const failure = new Error("Store response was lost");
+
+    await call.fail(failure);
+
+    call.assertSentBy("server").assertWaitingFor("client1");
+    expect(harness.store.read()).toBe(10);
+  });
+
+  test("delivers a failed result to the original client", async ({
+    harness,
+  }) => {
+    const call = await harness.client1.save(10);
+    await call.continueTo("server");
+    await call.continueTo("store");
+    const failure = new Error("Store response was lost");
+    await call.fail(failure);
+
+    await call.continueTo("client1");
+
+    call.assertCompleted();
+    await expect(call.result).rejects.toBe(failure);
+    expect(harness.store.read()).toBe(10);
+  });
+
+  test("waits for a queued call to reach its own first handoff", async ({
+    harness,
+  }) => {
+    const first = await harness.client1.save(10);
+    const secondReady = harness.client1.save(20);
+
+    await first.continueToCompletion();
+    const second = await secondReady;
+
+    second.assertSentBy("client1").assertWaitingFor("server");
+    expect(harness.client1.read()).toBe(20);
+    expect(harness.client1.confirmed()).toBe(10);
+  });
+
+  test("returns a settled call handle when gates are deactivated", async ({
+    harness,
+  }) => {
+    await harness.deactivateGates();
+
+    const call = await harness.client1.save(10);
+
+    call.assertCompleted();
+    expect(await call.result).toBe(10);
+    expect(harness.client1.confirmed()).toBe(10);
+    expect(harness.store.read()).toBe(10);
+  });
+
+  test("releases held calls and waits for them when gates are deactivated", async ({
+    harness,
+  }) => {
+    const call = await harness.client1.save(10);
+
+    await harness.deactivateGatesAndSettle();
+
+    call.assertCompleted();
+    expect(await call.result).toBe(10);
+    expect(harness.client1.confirmed()).toBe(10);
+    expect(harness.store.read()).toBe(10);
+  });
+
+  test("disposal rejects a held call without processing it", async () => {
+    const store = new Store();
+    const harness = new Gatekeeper()
+      .add("store", () => store)
+      .add("server", ({ store }) => new Server(store))
+      .add("client1", ({ server }) => new Client(server))
+      .build();
+    await harness.activateGates();
+    const call = await harness.client1.save(10);
+    const result = expect(call.result).rejects.toThrow(/disposed/i);
+
+    await harness[Symbol.asyncDispose]();
+
+    await result;
+    expect(store.read()).toBe(0);
+    expect(harness.store.read).toThrow(/disposed/i);
+  });
+
+  test("holds a timer wait before entry when its enter gate is enabled", async () => {
+    await using harness = createTimerHarness({ enter: true, exit: false });
+    await harness.activateGates();
+
+    const call = await harness.client1.saveAfterNextTick(10);
+
+    call.assertSentBy("client1").assertWaitingFor("client1Timer");
+    expect(harness.store.read()).toBe(0);
+  });
+
+  test("holds a timer tick at exit until the client receives it", async () => {
+    await using harness = createTimerHarness({ enter: false, exit: true });
+    await harness.activateGates();
+
+    const call = await harness.client1.saveAfterNextTick(10);
+
+    call.assertSentBy("client1Timer").assertWaitingFor("client1");
+    expect(harness.store.read()).toBe(0);
+  });
+
+  test("delivers a timer tick by continuing its response to the client", async () => {
+    await using harness = createTimerHarness({ enter: false, exit: true });
+    await harness.activateGates();
+    const call = await harness.client1.saveAfterNextTick(10);
+
+    await call.continueTo("client1");
+
+    call.assertSentBy("client1").assertWaitingFor("server");
+    expect(harness.store.read()).toBe(0);
+  });
+
+  test("rejects overlapping controls without releasing the call", async () => {
+    await using harness = createTimerHarness({ enter: true, exit: false });
+    await harness.activateGates();
+    const call = await harness.client1.saveAfterNextTick(10);
+
+    const progressing = call.continueTo("client1Timer");
+    await expect(call.continueToCompletion()).rejects.toThrow(
+      /another control is in progress/,
+    );
+    await progressing;
+
+    call.assertSentBy("client1").assertWaitingFor("server");
+    expect(harness.store.read()).toBe(0);
+  });
+
+  test("returns a settled call handle without a service handoff", async () => {
+    await using harness = new Gatekeeper()
+      .add("calculator", () => ({
+        double: (value: number) => Promise.resolve(value * 2),
+      }))
+      .build();
+    await harness.activateGates();
+
+    const call = await harness.calculator.double(5);
+
+    call.assertCompleted();
+    expect(await call.result).toBe(10);
+  });
+
+  test("preserves an application rejection before any service handoff", async () => {
+    const failure = new Error("Calculation failed");
+    await using harness = new Gatekeeper()
+      .add("calculator", () => ({
+        double: (_value: number) => Promise.reject(failure),
+      }))
+      .build();
+    await harness.activateGates();
+
+    const call = await harness.calculator.double(5);
+
+    call.assertCompleted();
+    await expect(call.result).rejects.toBe(failure);
+  });
+
+  test("rejects synchronous calls between gated services", async () => {
+    await using harness = new Gatekeeper()
+      .add("store", () => ({ read: () => 10 }))
+      .add("client", ({ store }) => ({
+        read: () => Promise.resolve(store.read()),
+      }))
+      .build();
+    await harness.activateGates();
+    const call = await harness.client.read();
+
+    await expect(call.continueTo("store")).rejects.toThrow(
+      /calls between services must return promises/,
+    );
+
+    call.assertCompleted();
+    await expect(call.result).rejects.toThrow(
+      /calls between services must return promises/,
+    );
+  });
+});
 
 class NotifyingServer {
-	private value = 0
-	private readonly subscribers = new Set<() => void>()
+  private value = 0;
+  private readonly subscribers = new Set<() => void>();
 
-	subscribe(notify: () => void) {
-		this.subscribers.add(notify)
-		return Promise.resolve()
-	}
+  subscribe(notify: () => void) {
+    this.subscribers.add(notify);
+    return Promise.resolve();
+  }
 
-	read() {
-		return Promise.resolve(this.value)
-	}
+  read() {
+    return Promise.resolve(this.value);
+  }
 
-	save(value: number) {
-		this.value = value
-		for (const notify of this.subscribers) notify()
-		return Promise.resolve(value)
-	}
+  save(value: number) {
+    this.value = value;
+    for (const notify of this.subscribers) notify();
+    return Promise.resolve(value);
+  }
 }
 
 class SubscribedClient {
-	private seen = 0
-	private readonly changed: GatekeeperListener
+  private seen = 0;
+  private readonly changed: GatekeeperListener;
 
-	constructor(
-		private readonly server: Pick<
-			NotifyingServer,
-			"subscribe" | "read" | "save"
-		>,
-		events: GatekeeperEvents,
-	) {
-		this.changed = events.on("changed", async () => {
-			this.seen = await this.server.read()
-		})
-	}
+  constructor(
+    private readonly server: Pick<
+      NotifyingServer,
+      "subscribe" | "read" | "save"
+    >,
+    events: GatekeeperEvents,
+  ) {
+    this.changed = events.on("changed", async () => {
+      this.seen = await this.server.read();
+    });
+  }
 
-	connect() {
-		return this.server.subscribe(() => this.changed.emit())
-	}
+  connect() {
+    return this.server.subscribe(() => this.changed.emit());
+  }
 
-	save(value: number) {
-		return this.server.save(value)
-	}
+  save(value: number) {
+    return this.server.save(value);
+  }
 
-	seenValue() {
-		return this.seen
-	}
+  seenValue() {
+    return this.seen;
+  }
 }
 
 async function createNotifyingHarness() {
-	const harness = new Gatekeeper()
-		.add("server", () => new NotifyingServer())
-		.add(
-			"client1",
-			({ server }, { events }) => new SubscribedClient(server, events),
-		)
-		.add(
-			"client2",
-			({ server }, { events }) => new SubscribedClient(server, events),
-		)
-		.build()
-	await (
-		await harness.client1.connect()
-	).result
-	await (
-		await harness.client2.connect()
-	).result
-	return harness
+  const harness = new Gatekeeper()
+    .add("server", () => new NotifyingServer())
+    .add(
+      "client1",
+      ({ server }, { events }) => new SubscribedClient(server, events),
+    )
+    .add(
+      "client2",
+      ({ server }, { events }) => new SubscribedClient(server, events),
+    )
+    .build();
+  await (
+    await harness.client1.connect()
+  ).result;
+  await (
+    await harness.client2.connect()
+  ).result;
+  return harness;
 }
 
 function describePending(harness: { pendingCalls(): readonly PendingCall[] }) {
-	return harness
-		.pendingCalls()
-		.map(({ label, sentBy, waitingFor }) => ({ label, sentBy, waitingFor }))
+  return harness
+    .pendingCalls()
+    .map(({ label, sentBy, waitingFor }) => ({ label, sentBy, waitingFor }));
 }
 
 describe("Gatekeeper events", () => {
-	test("delivers an emitted event as its own call to each listener", async () => {
-		await using harness = await createNotifyingHarness()
-		await harness.activateGates()
-		const save = await harness.client1.save(10)
+  test("delivers an emitted event as its own call to each listener", async () => {
+    await using harness = await createNotifyingHarness();
+    await harness.activateGates();
+    const save = await harness.client1.save(10);
 
-		await save.continueTo("server")
+    await save.continueTo("server");
 
-		expect(describePending(harness)).toEqual([
-			{ label: "client1.save", sentBy: "server", waitingFor: "client1" },
-			{ label: "client1.changed", sentBy: "server", waitingFor: "client1" },
-			{ label: "client2.changed", sentBy: "server", waitingFor: "client2" },
-		])
-	})
+    expect(describePending(harness)).toEqual([
+      { label: "client1.save", sentBy: "server", waitingFor: "client1" },
+      { label: "client1.changed", sentBy: "server", waitingFor: "client1" },
+      { label: "client2.changed", sentBy: "server", waitingFor: "client2" },
+    ]);
+  });
 
-	test("advances an event independently of the call that emitted it", async () => {
-		await using harness = await createNotifyingHarness()
-		await harness.activateGates()
-		const save = await harness.client1.save(10)
-		await save.continueTo("server")
-		const changed = harness
-			.pendingCalls()
-			.find((pending) => pending.label === "client2.changed")!
+  test("advances an event independently of the call that emitted it", async () => {
+    await using harness = await createNotifyingHarness();
+    await harness.activateGates();
+    const save = await harness.client1.save(10);
+    await save.continueTo("server");
+    const changed = harness
+      .pendingCalls()
+      .find((pending) => pending.label === "client2.changed")!;
 
-		await changed.handle.continueTo("client2")
+    await changed.handle.continueTo("client2");
 
-		// The listener's own service calls are gated inside the event's call.
-		changed.handle.assertSentBy("client2").assertWaitingFor("server")
+    // The listener's own service calls are gated inside the event's call.
+    changed.handle.assertSentBy("client2").assertWaitingFor("server");
 
-		await changed.handle.continueToCompletion()
+    await changed.handle.continueToCompletion();
 
-		expect(harness.client2.seenValue()).toBe(10)
-		save.assertSentBy("server").assertWaitingFor("client1")
-	})
+    expect(harness.client2.seenValue()).toBe(10);
+    save.assertSentBy("server").assertWaitingFor("client1");
+  });
 
-	test("a failed event never reaches its listener", async () => {
-		await using harness = await createNotifyingHarness()
-		await harness.activateGates()
-		const save = await harness.client1.save(10)
-		await save.continueTo("server")
-		const changed = harness
-			.pendingCalls()
-			.find((pending) => pending.label === "client2.changed")!
+  test("a failed event never reaches its listener", async () => {
+    await using harness = await createNotifyingHarness();
+    await harness.activateGates();
+    const save = await harness.client1.save(10);
+    await save.continueTo("server");
+    const changed = harness
+      .pendingCalls()
+      .find((pending) => pending.label === "client2.changed")!;
 
-		await changed.handle.fail(new Error("Notification was lost"))
-		await harness.deactivateGatesAndSettle()
+    await changed.handle.fail(new Error("Notification was lost"));
+    await harness.deactivateGatesAndSettle();
 
-		expect(harness.client2.seenValue()).toBe(0)
-		expect(harness.client1.seenValue()).toBe(10)
-		expect(await save.result).toBe(10)
-	})
+    expect(harness.client2.seenValue()).toBe(0);
+    expect(harness.client1.seenValue()).toBe(10);
+    expect(await save.result).toBe(10);
+  });
 
-	test("delivers events without holding them while gates are inactive", async () => {
-		await using harness = await createNotifyingHarness()
+  test("delivers events without holding them while gates are inactive", async () => {
+    await using harness = await createNotifyingHarness();
 
-		await (
-			await harness.client1.save(10)
-		).result
-		await harness.deactivateGatesAndSettle()
+    await (
+      await harness.client1.save(10)
+    ).result;
+    await harness.deactivateGatesAndSettle();
 
-		expect(harness.client1.seenValue()).toBe(10)
-		expect(harness.client2.seenValue()).toBe(10)
-	})
-})
+    expect(harness.client1.seenValue()).toBe(10);
+    expect(harness.client2.seenValue()).toBe(10);
+  });
+});
+
+describe("Gatekeeper crashes", () => {
+  test("delivers a request a crashed service already sent and drops the reply", async ({
+    harness,
+  }) => {
+    const save = await harness.client1.save(10);
+
+    await harness.crash("client1");
+
+    expect(describePending(harness)).toEqual([
+      { label: "client1.save", sentBy: "client1", waitingFor: "server" },
+    ]);
+    await save.continueTo("server");
+    await save.continueTo("store");
+    await save.continueTo("server");
+    expect(harness.store.read()).toBe(10);
+    expect(harness.pendingCalls()).toEqual([]);
+    await expect(save.result).rejects.toThrow(/client1 crashed/);
+  });
+
+  test("drops a handoff waiting for a crashed service so settling does not wait on it", async () => {
+    await using harness = createTimerHarness({ enter: false, exit: true });
+    await harness.activateGates();
+    const call = await harness.client1.saveAfterNextTick(10);
+
+    await harness.crash("client1");
+    await harness.deactivateGatesAndSettle();
+
+    await expect(call.result).rejects.toThrow(/client1 crashed/);
+    expect(harness.store.read()).toBe(0);
+  });
+
+  test("never delivers calls a crashed instance makes after it crashed", async () => {
+    await using harness = new Gatekeeper()
+      .add("store", () => new Store())
+      .add("server", ({ store }) => new Server(store))
+      .add("client", ({ server }) => ({
+        // Resumes when the test resolves `signal`, standing in for a real timer
+        // or IO callback that Gatekeeper does not control.
+        saveWhen: (signal: Promise<number>) =>
+          signal.then((value) => server.save(value)),
+      }))
+      .build();
+    const signal = Promise.withResolvers<number>();
+    const calling = harness.client.saveWhen(signal.promise);
+
+    await harness.crash("client");
+    signal.resolve(10);
+    await harness.deactivateGatesAndSettle();
+
+    await expect((await calling).result).rejects.toThrow(/client crashed/);
+    expect(harness.store.read()).toBe(0);
+  });
+
+  test("restarts a crashed service from its factory behind the same handle", async () => {
+    await using harness = createHarness();
+    await (
+      await harness.client1.save(10)
+    ).result;
+
+    await harness.crash("client1");
+
+    expect(() => harness.client1.read()).toThrow(/client1 has crashed/);
+    await harness.restart("client1");
+    expect(harness.client1.read()).toBe(0);
+    await (
+      await harness.client1.save(20)
+    ).result;
+    expect(harness.client1.confirmed()).toBe(20);
+    expect(harness.store.read()).toBe(20);
+    await expect(harness.restart("client1")).rejects.toThrow(/is running/);
+  });
+
+  test("loses an event addressed to a crashed listener", async () => {
+    await using harness = await createNotifyingHarness();
+    await harness.activateGates();
+    await harness.crash("client2");
+    const save = await harness.client1.save(10);
+
+    await save.continueTo("server");
+
+    expect(describePending(harness)).toEqual([
+      { label: "client1.save", sentBy: "server", waitingFor: "client1" },
+      { label: "client1.changed", sentBy: "server", waitingFor: "client1" },
+    ]);
+  });
+
+  test("delivers events to the listener a restarted instance registers", async () => {
+    await using harness = await createNotifyingHarness();
+    await harness.crash("client2");
+    await harness.restart("client2");
+    await (
+      await harness.client2.connect()
+    ).result;
+
+    await (
+      await harness.client1.save(10)
+    ).result;
+    await harness.deactivateGatesAndSettle();
+
+    expect(harness.client2.seenValue()).toBe(10);
+  });
+});
