@@ -1,0 +1,32 @@
+{"kind":"header","format":1,"options":{"seed":216,"steps":30}}
+{"kind":"event","type":"set","client":"client1","item":{"id":"item-3","text":"Note item-3 (rev 0)","done":true,"priority":5},"step":0,"mutationId":"client1.0-n5dqrl"}
+{"kind":"event","type":"set","client":"client2","item":{"id":"item-1","text":"Note item-1 (rev 1)","done":false,"priority":2},"step":1,"mutationId":"client2.0-123pxi0"}
+{"kind":"event","type":"set","client":"client1","item":{"id":"item-1","text":"Note item-1 (rev 2)","done":false,"priority":4},"step":2,"mutationId":"client1.0-1y1mxsk"}
+{"kind":"event","type":"advance","step":3,"call":"client1.commit#1","sentBy":"client1Timer","waitingFor":"client1"}
+{"kind":"event","type":"advance","step":4,"call":"client2.commit#1","sentBy":"client2Timer","waitingFor":"client2"}
+{"kind":"event","type":"advance","step":5,"call":"client2.commit#1","sentBy":"client2","waitingFor":"server"}
+{"kind":"event","type":"advance","step":6,"call":"client1.poke#1","sentBy":"server","waitingFor":"client1"}
+{"kind":"event","type":"set","client":"client1","item":{"id":"item-2","text":"Note item-2 (rev 7)","done":false,"priority":2},"step":7,"mutationId":"client1.0-kaioxv"}
+{"kind":"event","type":"advance","step":8,"call":"client2.commit#1","sentBy":"server","waitingFor":"client2"}
+{"kind":"event","type":"advance","step":9,"call":"client2.poke#1","sentBy":"server","waitingFor":"client2"}
+{"kind":"event","type":"advance","step":10,"call":"client1.commit#1","sentBy":"client1","waitingFor":"server"}
+{"kind":"event","type":"advance","step":11,"call":"client2.poke#2","sentBy":"server","waitingFor":"client2"}
+{"kind":"event","type":"advance","step":12,"call":"client2.poke#1","sentBy":"client2Timer","waitingFor":"client2"}
+{"kind":"event","type":"advance","step":13,"call":"client1.commit#1","sentBy":"server","waitingFor":"client1"}
+{"kind":"event","type":"remove","client":"client1","id":"item-1","step":14,"mutationId":"client1.0-1f0kkqv"}
+{"kind":"event","type":"advance","step":15,"call":"client1.poke#1","sentBy":"client1","waitingFor":"server"}
+{"kind":"event","type":"set","client":"client1","item":{"id":"item-3","text":"Note item-3 (rev 16)","done":false,"priority":1},"step":16,"mutationId":"client1.0-843il2"}
+{"kind":"event","type":"remove","client":"client1","id":"item-1","step":17,"mutationId":"client1.0-5l1ehq"}
+{"kind":"event","type":"advance","step":18,"call":"client1.poke#2","sentBy":"server","waitingFor":"client1"}
+{"kind":"event","type":"advance","step":19,"call":"client1.poke#1","sentBy":"server","waitingFor":"client1"}
+{"kind":"event","type":"advance","step":20,"call":"client1.commit#2","sentBy":"client1","waitingFor":"server"}
+{"kind":"event","type":"advance","step":21,"call":"client2.poke#3","sentBy":"server","waitingFor":"client2"}
+{"kind":"event","type":"set","client":"client1","item":{"id":"item-2","text":"Note item-2 (rev 22)","done":false,"priority":5},"step":22,"mutationId":"client1.0-192xkge"}
+{"kind":"event","type":"set","client":"client2","item":{"id":"item-2","text":"Note item-2 (rev 23)","done":true,"priority":1},"step":23,"mutationId":"client2.0-8f94j2"}
+{"kind":"event","type":"advance","step":24,"call":"client1.poke#3","sentBy":"server","waitingFor":"client1"}
+{"kind":"event","type":"remove","client":"client2","id":"item-1","step":25,"mutationId":"client2.0-1jfe8pe"}
+{"kind":"event","type":"set","client":"client2","item":{"id":"item-3","text":"Note item-3 (rev 26)","done":false,"priority":2},"step":26,"mutationId":"client2.0-aannpq"}
+{"kind":"event","type":"set","client":"client2","item":{"id":"item-3","text":"Note item-3 (rev 27)","done":false,"priority":3},"step":27,"mutationId":"client2.0-iet8tw"}
+{"kind":"event","type":"set","client":"client1","item":{"id":"item-1","text":"Note item-1 (rev 28)","done":true,"priority":3},"step":28,"mutationId":"client1.0-1v6ci5"}
+{"kind":"event","type":"set","client":"client1","item":{"id":"item-2","text":"Note item-2 (rev 29)","done":false,"priority":5},"step":29,"mutationId":"client1.0-1gmuq8w"}
+{"kind":"outcome","stepsCompleted":30,"violation":{"kind":"clientState","step":"quiescence","client":"client2","expected":[{"id":"item-2","text":"Note item-2 (rev 23)","done":true,"priority":1},{"id":"item-3","text":"Note item-3 (rev 27)","done":false,"priority":3}],"actual":[{"id":"item-1","text":"Note item-1 (rev 1)","done":false,"priority":2},{"id":"item-2","text":"Note item-2 (rev 23)","done":true,"priority":1},{"id":"item-3","text":"Note item-3 (rev 27)","done":false,"priority":3}]},"states":{"server":[{"id":"item-2","text":"Note item-2 (rev 23)","done":true,"priority":1},{"id":"item-3","text":"Note item-3 (rev 27)","done":false,"priority":3}],"client1":[{"id":"item-2","text":"Note item-2 (rev 23)","done":true,"priority":1},{"id":"item-3","text":"Note item-3 (rev 27)","done":false,"priority":3}],"client2":[{"id":"item-1","text":"Note item-1 (rev 1)","done":false,"priority":2},{"id":"item-2","text":"Note item-2 (rev 23)","done":true,"priority":1},{"id":"item-3","text":"Note item-3 (rev 27)","done":false,"priority":3}]},"clientIds":["client1.0-1kw5cjb","client2.0-y52wek"]}

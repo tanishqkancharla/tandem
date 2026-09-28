@@ -53,13 +53,24 @@ export class SimPrng {
 	}
 
 	/**
-	 * Id source for one participant. It draws from its own stream, seeded from
-	 * this one, so the ids a participant consumes do not shift the run's choices.
+	 * Id source for one participant incarnation, derived from the seed and its
+	 * name alone. Ids never depend on the run's choices, so a replay that makes
+	 * no choices still generates the same ids.
 	 */
-	createRngApi(label: string): RngApi {
-		const stream = new SimPrng(this.nextUint32())
+	static idSource(seed: number, name: string): RngApi {
+		const stream = new SimPrng(hash(`${seed}:${name}`))
 		return {
-			randomId: () => `${label}-${stream.nextUint32().toString(36)}`,
+			randomId: () => `${name}-${stream.nextUint32().toString(36)}`,
 		}
 	}
+}
+
+/** FNV-1a over UTF-16 code units. */
+function hash(text: string): number {
+	let value = 0x811c9dc5
+	for (let index = 0; index < text.length; index++) {
+		value ^= text.charCodeAt(index)
+		value = Math.imul(value, 0x01000193) >>> 0
+	}
+	return value
 }

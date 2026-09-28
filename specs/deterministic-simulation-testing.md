@@ -333,48 +333,71 @@ Each client subscribes in its factory, as an app does at startup; until it conne
 
 ### Phase 7: Decide correctness with a reference model
 
-Comparing the two clients to each other proves nothing. The model has to know which writes the server accepted and which remain optimistic on each client, and it has to tolerate legitimate disagreement while calls are in flight.
+Comparing clients to the server once at the end finds a bug late and cannot tell a bug from ordinary lag while calls are in flight. `dst/ReferenceModel.ts` holds what each participant should hold, built from what the run observes rather than from Tandem's internals, and the run checks every client against it after every step.
 
-```mermaid
-flowchart LR
-    A["client commits tx"] --> B["model.pending[client] += ops"]
-    B --> C{"server outcome"}
-    C -->|"acked"| D["accepted += ops"]
-    C -->|"acked, ack dropped"| E["accepted += ops, client still pending"]
-    C -->|"rejected"| F["client rolls back"]
-    D --> G["quiescence check"]
-    E --> G
-    %% ref node:F [[packages/core/src/TandemClient.ts#TandemClient.rollback]]
+```
+accepted            writes the server committed          (from the DST transport's push)
+received[client]    the last server state it received     (from its remote wrapper's pull)
+pending[client]     its writes not yet acknowledged       (from mutations; cleared by a pull's ack)
+
+after every step:   client == received[client] + pending[client], replayed in order
+at quiescence:      also server == accepted, and every pending list is empty
 ```
 
-The `acked, ack dropped` path is the one the current fault injection cannot express, and it is the case that matters most: the server has the write, the client does not know, and convergence depends on a later pull landing correctly.
+A pull response updates `received` only when the server re-read the window, which it does whenever the client's cookie is stale, and then it carries the whole window. A write leaves `pending` only when a pull acknowledges it.
 
-- [ ] Add `dst/ReferenceModel.ts` holding server-accepted writes and a per-client map of pending optimistic writes.
-- [ ] Feed the model from observed outcomes: a completed push moves writes from pending to accepted, a dropped acknowledgement moves them to accepted while leaving them pending on the client, a rejection discards them.
-- [ ] Add a cheap per-step invariant that needs no pull: an acknowledged write never disappears, and each client's local state equals the model composed of accepted writes plus that client's pending writes.
-- [ ] Add `assertConverged()` for quiescence: after faults stop and gates drain, every pending set is empty and all clients, the server, and the model agree.
-- [ ] Replace the `converged` boolean with the model verdict, and make a mismatch throw a tagged error carrying expected and actual state.
-- [ ] Add a test that a deliberately wrong expectation fails with a readable diff, and that a run with faults still converges.
+The model encodes the expected behavior, not the current one:
+
+- A client shows the last server state it received plus its own unacknowledged writes.
+- Every write reaches the server unless the server rejects it. A push that fails in transit, request or response, does not discard its writes.
+- A write a client stored before crashing still reaches the server after it restarts. Tandem does not implement this yet; see bug D.
+- Removing a record the client does not show records no operation, so it is not a write.
+
+A crash forgets that client's `received` and `pending`, and the restarted client is checked from its first pull onward. The run stops at the first violation, so a recorded trace ends at the step where the bug happened. The result's `violation` replaces the old `converged` flag: `clientState` with the step, client, and expected and actual state; `serverState`; or `writeNeverAccepted`. It is returned as data rather than thrown, so a known failure can be recorded whole.
+
+- [x] Add `dst/ReferenceModel.ts` holding server-accepted writes and, per client, the last received state and pending writes.
+- [x] Feed the model from the DST transport's committed pushes, each client's received pulls and their acknowledgements, and the loop's own writes and crashes.
+- [x] Check every client after every step, and at quiescence also check the server and that no write was left unaccepted.
+- [x] Replace `converged` with `violation`, carrying the step and the expected and actual state, and stop the run at the first one.
+- [x] Add a test that a run stops at the step a client disagrees with the model. The known-failure tests now assert that no violation occurs.
+- [x] Re-record the known failures, which now end at the step where each bug happens.
 
 ### Phase 8: Emit a failure artifact and replay it
 
-The trace is returned on success and lost on failure, so nothing about a failing run survives the process. It has to be written as it happens, and it has to be replayable.
+A failure is only useful if it survives the process and can be rerun as a regression test. Rerunning a seed is not enough: any change to how the runner chooses events changes what a seed does. So a run writes the events it applied, and a replay re-applies exactly those events with no random choices.
 
-```callstack
- DstRun.execute dst/DstRun.ts
--└── return { seed, stepsCompleted, trace, converged }
-+└── await this.trace.flush()
-+    └── on failure, write seed, commit, options,
-+        ordered events, final states, and the error
+The simulation is split so both drivers share one system. `DstWorld` owns the harness, storage, model, crash and restart, and applying one event. `DstSimulation` chooses events at random. `replay` reads them from an artifact.
+
+```
+artifact (JSONL, written line by line through a sink):
+  { kind: "header", format: 1, options }
+  { kind: "event", type: "set" | "remove" | "advance" | "drop" | "crash" | "restart", step, ... }
+  { kind: "outcome", stepsCompleted, violation, states, clientIds }
+
+replay(artifact):
+  for each step up to stepsCompleted
+    name the pending calls exactly as the run did
+    apply the recorded event, if any
+      the call must be held, the client able to write, crash, or restart,
+      and the resulting record must match, including generated ids
+      otherwise stop with a divergence at that step
+    check the model; stop at a violation
+  finish exactly as the run did
 ```
 
-- [ ] Export `JsonlLoggerSink` and `JsonlLoggerSinkArgs` from `packages/core/src/index.ts`; they are implemented and unit-tested but not currently public.
-- [ ] Add a `DstTraceSink` implementing `LoggerSinkApi` that appends one record per line to the run's trace file, and attach it to the run's `Logger`.
-- [ ] Extend the trace record to a typed union carrying the seed, step, chosen event, gate label, sender, receiver, injected fault, and observed outcome, so a record is self-describing.
-- [ ] Add `DstRunner.replay(artifact)` that reads a JSONL artifact and re-applies each event through the public `TandemClient` and `TandemServer` APIs with no RNG, asserting the recorded outcome each time.
-- [ ] Emit the artifact from a `catch` so it is written whether the failure came from an invariant, a convergence check, or an unexpected throw inside `execute`.
-- [ ] Add a test that generates a failing run, replays its artifact, and asserts the replay reproduces the same failure. This is the regression harness the PR gate depends on.
-- [ ] Run `pnpm --filter tandem-dst test` and `pnpm type-check`.
+Replay needs the same ids without the run's choices, so ids no longer draw from the chooser's generator. `SimPrng.idSource(seed, name)` derives each participant incarnation's id stream from a hash of the seed and its name, such as `client2.1` for client2's second incarnation.
+
+A sink writes each line as it happens, so a run that hangs or throws leaves every line it wrote. `jsonlFileSink(path)` appends to a file; `memorySink()` keeps lines for tests. This replaces the planned `DstTraceSink` on the run's `Logger`, so `JsonlLoggerSink` stays unexported.
+
+Known failures are now artifacts, and each has one test: replaying it must reach its recorded violation. The test fails when the bug is fixed or when the recording no longer applies, and either case needs a person. This replaces both the `.fails` tests and the check that re-ran each recording's seed.
+
+- [x] Split the simulation into `DstWorld`, the random `DstSimulation`, and `replay`, sharing one way to apply an event.
+- [x] Derive id streams from the seed and participant incarnation, so ids do not depend on the run's choices.
+- [x] Write a JSONL artifact line by line through a sink: header, events, outcome.
+- [x] Replay an artifact with no random choices, stopping with a divergence when an event cannot apply exactly as recorded.
+- [x] Test that a failing run's artifact replays to the same violation, and that a replay reports where it leaves the recorded path.
+- [x] Store known failures as artifacts, each replayed to its recorded violation.
+- [x] Run `pnpm type-check` and `pnpm test`.
 
 ### Phase 9: Wire the CLI and CI
 
@@ -382,10 +405,10 @@ The per-PR goal is a bounded run seeded from the PR number, fast enough that nob
 
 ```
 dst:run --seed 123 --steps 400 --fault-rate 0.1
-dst:run --replay tmp/failure-123.jsonl
+dst:run --replay tmp/dst-123.jsonl
 ```
 
-- [ ] Add a `dst:run` script to the root `package.json` delegating to a `dst/src/cli.ts` entry that parses `--seed`, `--steps`, `--fault-rate`, and `--replay`.
+- [ ] Add a `dst:run` script to the root `package.json` delegating to a `dst/cli.ts` entry that parses `--seed`, `--steps`, `--fault-rate`, `--crash-rate`, and `--replay`, writes each run's artifact through `jsonlFileSink`, and exits non-zero on a violation or divergence.
 - [ ] Derive the default per-PR seed as a stable hash of the PR number, keep an explicit `--seed` override for local replay, and print the seed on every run.
 - [ ] Add a `pull_request` workflow running a small step budget at the derived seed plus the fixed regression seed set, uploading any trace artifact on failure. While the known sync bugs are open, a derived seed fails often, so decide whether that run blocks merges or only reports.
 - [ ] Add a `schedule` workflow running a couple dozen independently seeded runs at a few hundred steps each, publishing the seeds so a nightly failure can be re-run locally.
@@ -399,11 +422,11 @@ The DST records sync engine bugs it finds rather than fixing them inline, so bui
 | Bug | Side | Minimal run | Symptom |
 |---|---|---|---|
 | A. An empty patch drops its acknowledgement | client | seed 2, 30 steps | acknowledged writes stay speculative and are replayed forever |
-| B. The server does not count keys a client pushed | server | seed 102, 10 steps | a record survives its deletion on the client that created it |
-| C. A lost push response rolls back an accepted write | client | seed 288, 10 steps, faults 0.1 | older writes are replayed over newer server data |
-| D. A crash loses writes that were stored but not pushed | client | seed 25, 15 steps, crashes 0.1 | a restarted client shows a write the server never receives |
+| B. The server does not count keys a client pushed | server | seed 216, 30 steps | a record survives its deletion on the client that created it |
+| C. A push that fails in transit is treated as a rejection | client | seed 2, 10 steps, faults 0.1 | the write is discarded; after a lost response, older writes are also replayed over newer data |
+| D. A crash loses writes that were stored but not pushed | client | seed 13, 15 steps, crashes 0.1 | a restarted client shows a write the server never receives |
 
-With the current loop at 300 steps, about 5% of seeds fail with no faults or crashes, 11% at a fault rate of 0.1, and 14% at a crash rate of 0.02.
+Checked against the reference model at 300 steps, about 25% of seeds violate it with no faults or crashes, nearly all do at a fault rate of 0.1 because of C, and about 37% do at a crash rate of 0.02.
 
 Related gaps from reading the code, not yet reproduced:
 
@@ -419,10 +442,13 @@ Replicache and Triplit avoid D by persisting their pending mutations. Replicache
 
 ## References
 
-- [`dst/DstSimulation.ts`](../dst/DstSimulation.ts) — The simulation: the gated harness, the enabled-event loop, and the final comparison of every client against the server.
-- [`dst/SimPrng.ts`](../dst/SimPrng.ts) — SplitMix32 generator. Becomes the source for every random choice and for `RngApi`.
+- [`dst/DstSimulation.ts`](../dst/DstSimulation.ts) — The random runner: chooses one possible event per step and writes the artifact.
+- [`dst/SimPrng.ts`](../dst/SimPrng.ts) — SplitMix32 generator for the run's choices, and `idSource` for id streams derived from the seed and a participant's name.
 - [`dst/dst.spec.ts`](../dst/dst.spec.ts) — Fixed-seed convergence, concurrency, and determinism checks, plus the known-failure recordings.
-- [`dst/known-failures/`](../dst/known-failures/) — Recorded runs for open sync bugs, with a README walking through each trace.
+- [`dst/known-failures/`](../dst/known-failures/) — Artifacts for open sync bugs, each replayed to its recorded violation, with a README walking through each trace.
+- [`dst/DstWorld.ts`](../dst/DstWorld.ts) — The simulated system both drivers share: harness, storage, model, crash and restart, and applying one event.
+- [`dst/DstReplay.ts`](../dst/DstReplay.ts) — The JSONL artifact format, its sinks, and the replay.
+- [`dst/ReferenceModel.ts`](../dst/ReferenceModel.ts) — What the server and each client should hold after every step.
 - [`dst/package.json`](../dst/package.json) — Joins the workspace's `type-check`, `lint`, `format`, and `test` graphs.
 - [`packages/gatekeeper/src/Gatekeeper.ts`](../packages/gatekeeper/src/Gatekeeper.ts) — Owns execution order. `Runtime` and `Call` are internal to the module, so a harness consumer can only drive handles it already holds. Phase 2 adds `harness.pendingCalls()`.
 - [`packages/core/src/TandemClient.ts`](../packages/core/src/TandemClient.ts) — Already accepts `rng`, and types `syncInterval` and `clientStorageWriteInterval` as `number | TimerApi`. The determinism seams exist; the prototype ignores them.

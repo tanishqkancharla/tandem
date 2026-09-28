@@ -1,50 +1,57 @@
-import { readdirSync, readFileSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
-import { type DstRunOptions, DstSimulation } from "./DstSimulation.js"
+import {
+	type DstArtifact,
+	formatArtifact,
+	memorySink,
+	parseArtifact,
+	replay,
+} from "./DstReplay.js"
+import { DstSimulation } from "./DstSimulation.js"
 
-type KnownFailure = {
-	options: DstRunOptions
-	result: Awaited<ReturnType<DstSimulation["execute"]>>
-}
-
-const knownFailuresDir = new URL("./known-failures/", import.meta.url)
-
-function knownFailure(name: string): KnownFailure {
-	return JSON.parse(
-		readFileSync(new URL(`${name}.json`, knownFailuresDir), "utf8"),
-	) as KnownFailure
+function knownFailure(name: string): DstArtifact {
+	return parseArtifact(
+		readFileSync(new URL(`./known-failures/${name}.jsonl`, import.meta.url), {
+			encoding: "utf8",
+		}),
+	)
 }
 
 describe("Deterministic simulation testing", () => {
-	it("converges with interleaved calls and no faults", async () => {
-		const result = await new DstSimulation({ seed: 1, steps: 300 }).execute()
+	it("agrees with the reference model with interleaved calls and no faults", async () => {
+		const result = await new DstSimulation({ seed: 3, steps: 300 }).execute()
 
-		expect(result.converged).toBe(true)
+		expect(result.violation).toBeUndefined()
 	})
 
-	it("converges when requests, responses, and pokes are dropped", async () => {
-		const result = await new DstSimulation({
-			seed: 1,
-			steps: 300,
-			faultRate: 0.1,
-		}).execute()
+	it("stops at the first step a client disagrees with the model", async () => {
+		const { options } = knownFailure("seed-2-lost-push-rolls-back")
 
-		expect(result.converged).toBe(true)
+		const result = await new DstSimulation(options).execute()
+
+		expect(result.violation).toMatchObject({
+			kind: "clientState",
+			step: 3,
+			client: "client2",
+			actual: [],
+		})
+		expect(result.stepsCompleted).toBe(4)
+		expect(result.trace.at(-1)?.step).toBe(3)
 	})
 
 	it("restarts crashed clients from their storage and converges", async () => {
 		const result = await new DstSimulation({
-			seed: 1,
+			seed: 3,
 			steps: 300,
 			crashRate: 0.02,
 		}).execute()
 
 		expect(result.trace.filter(({ type }) => type === "crash")).not.toEqual([])
-		expect(result.converged).toBe(true)
+		expect(result.violation).toBeUndefined()
 	})
 
 	it("keeps several calls in flight at once", async () => {
-		const result = await new DstSimulation({ seed: 1, steps: 300 }).execute()
+		const result = await new DstSimulation({ seed: 3, steps: 300 }).execute()
 
 		expect(result.maxPendingCalls).toBeGreaterThanOrEqual(2)
 	})
@@ -64,45 +71,71 @@ describe("Deterministic simulation testing", () => {
 		expect(otherSeed.clientIds).not.toEqual(first.clientIds)
 	})
 
-	// Each recording must reproduce exactly. A mismatch means the simulation
-	// changed and the recording must be re-recorded, or the bug was fixed.
-	it("reproduces every recorded known failure", async () => {
-		const names = readdirSync(knownFailuresDir)
-			.filter((file) => file.endsWith(".json"))
-			.map((file) => file.replace(/\.json$/, ""))
+	it("replays a failing run's artifact to the same violation", async () => {
+		const sink = memorySink()
+		const run = await new DstSimulation({
+			seed: 2,
+			steps: 300,
+			faultRate: 0.1,
+			crashRate: 0.02,
+		}).execute(sink)
 
-		for (const name of names) {
-			const { options, result } = knownFailure(name)
+		const replayed = await replay(parseArtifact(formatArtifact(sink.lines)))
 
-			expect(await new DstSimulation(options).execute(), name).toEqual(result)
-		}
+		expect(run.violation).toBeDefined()
+		expect(replayed).toEqual({
+			stepsCompleted: run.stepsCompleted,
+			violation: run.violation,
+			divergence: undefined,
+		})
 	})
 
-	// Known sync bugs, documented in known-failures/README.md. Each test starts
-	// failing once its bug is fixed; then drop `.fails` and the recording.
+	it("reports where a replay leaves the recorded path", async () => {
+		const artifact = knownFailure("seed-2-lost-push-rolls-back")
+		const advance = artifact.trace.find(({ type }) => type === "advance")!
+		const altered: DstArtifact = {
+			...artifact,
+			trace: artifact.trace.map((record) =>
+				record === advance ? { ...record, call: "client2.commit#9" } : record,
+			),
+		}
+
+		const replayed = await replay(altered)
+
+		expect(replayed.divergence).toMatchObject({
+			step: advance.step,
+			reason: "client2.commit#9 is not held at a boundary",
+		})
+	})
+
+	// Known sync bugs, documented in known-failures/README.md. Each replay must
+	// still reach its recorded violation. When a bug is fixed, or the recording
+	// no longer applies, the test fails; then delete the recording.
 	describe("known sync bugs", () => {
-		it.fails("an empty patch keeps its acknowledgement", async () => {
-			const { options } = knownFailure("seed-2-empty-patch-drops-ack")
+		it.each([
+			[
+				"A: an empty patch drops its acknowledgement",
+				"seed-2-empty-patch-drops-ack",
+			],
+			[
+				"B: the server does not count keys a client pushed",
+				"seed-216-pushed-keys-not-synced",
+			],
+			[
+				"C: a push that fails in transit is treated as a rejection",
+				"seed-2-lost-push-rolls-back",
+			],
+			[
+				"D: a crash loses writes that were stored but not pushed",
+				"seed-13-crash-loses-outbox",
+			],
+		])("%s", async (_bug, name) => {
+			const artifact = knownFailure(name)
 
-			expect((await new DstSimulation(options).execute()).converged).toBe(true)
-		})
+			const replayed = await replay(artifact)
 
-		it.fails("a record deleted after its creator pushed it leaves that creator", async () => {
-			const { options } = knownFailure("seed-102-pushed-keys-not-synced")
-
-			expect((await new DstSimulation(options).execute()).converged).toBe(true)
-		})
-
-		it.fails("a lost push response keeps writes the server accepted", async () => {
-			const { options } = knownFailure("seed-288-lost-response-rollback")
-
-			expect((await new DstSimulation(options).execute()).converged).toBe(true)
-		})
-
-		it.fails("a crash before a write is pushed still pushes it after restart", async () => {
-			const { options } = knownFailure("seed-25-crash-loses-outbox")
-
-			expect((await new DstSimulation(options).execute()).converged).toBe(true)
+			expect(replayed.divergence).toBeUndefined()
+			expect(replayed.violation).toEqual(artifact.outcome?.violation)
 		})
 	})
 })

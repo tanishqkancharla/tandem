@@ -1,0 +1,6 @@
+{"kind":"header","format":1,"options":{"seed":2,"steps":10,"faultRate":0.1}}
+{"kind":"event","type":"remove","client":"client2","id":"item-1","step":0,"mutationId":"client2.0-rzpsrf"}
+{"kind":"event","type":"set","client":"client2","item":{"id":"item-2","text":"Note item-2 (rev 1)","done":false,"priority":1},"step":1,"mutationId":"client2.0-1dn4lns"}
+{"kind":"event","type":"advance","step":2,"call":"client2.commit#1","sentBy":"client2Timer","waitingFor":"client2"}
+{"kind":"event","type":"drop","step":3,"fault":"requestLost","call":"client2.commit#1","sentBy":"client2","waitingFor":"server"}
+{"kind":"outcome","stepsCompleted":4,"violation":{"kind":"clientState","step":3,"client":"client2","expected":[{"id":"item-2","text":"Note item-2 (rev 1)","done":false,"priority":1}],"actual":[]},"states":{"server":[],"client1":[],"client2":[]},"clientIds":["client1.0-t5xshe","client2.0-c092i5"]}
