@@ -32,6 +32,17 @@ describe("Deterministic simulation testing", () => {
 		expect(result.converged).toBe(true)
 	})
 
+	it("restarts crashed clients from their storage and converges", async () => {
+		const result = await new DstSimulation({
+			seed: 1,
+			steps: 300,
+			crashRate: 0.02,
+		}).execute()
+
+		expect(result.trace.filter(({ type }) => type === "crash")).not.toEqual([])
+		expect(result.converged).toBe(true)
+	})
+
 	it("keeps several calls in flight at once", async () => {
 		const result = await new DstSimulation({ seed: 1, steps: 300 }).execute()
 
@@ -77,13 +88,19 @@ describe("Deterministic simulation testing", () => {
 		})
 
 		it.fails("a record deleted after its creator pushed it leaves that creator", async () => {
-			const { options } = knownFailure("seed-84-pushed-keys-not-synced")
+			const { options } = knownFailure("seed-102-pushed-keys-not-synced")
 
 			expect((await new DstSimulation(options).execute()).converged).toBe(true)
 		})
 
 		it.fails("a lost push response keeps writes the server accepted", async () => {
-			const { options } = knownFailure("seed-44-lost-response-rollback")
+			const { options } = knownFailure("seed-288-lost-response-rollback")
+
+			expect((await new DstSimulation(options).execute()).converged).toBe(true)
+		})
+
+		it.fails("a crash before a write is pushed still pushes it after restart", async () => {
+			const { options } = knownFailure("seed-25-crash-loses-outbox")
 
 			expect((await new DstSimulation(options).execute()).converged).toBe(true)
 		})

@@ -164,9 +164,6 @@ importers:
       '@types/node':
         specifier: ^20.14.2
         version: 20.19.9
-      fake-indexeddb:
-        specifier: ^6.2.5
-        version: 6.2.5
       typescript:
         specifier: ^5.7.2
         version: 5.8.3

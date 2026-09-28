@@ -297,19 +297,39 @@ Calls get stable trace names like `client1.commit#3`, assigned in creation order
 
 ### Phase 6: Crash and restart clients over durable storage
 
-A client that dies with writes in flight and restarts from its local storage is the case sync engines most often get wrong, and the loop cannot reach it yet. Every client lives for the whole run, holds no durable storage, and is a fixed service instance in the Gatekeeper harness.
+A client that dies with writes in flight and restarts from its local storage is the case sync engines most often get wrong. A crash is a property of the harness, not of the client: Gatekeeper builds every service, hands out every connection between services, and tracks every handoff. So crash and restart are Gatekeeper primitives, and the DST only decides when to use them.
 
 ```
-enabledEvents() adds:
-  killClient    → a live client: drop its in-flight calls, disconnect, forget the instance
-  restartClient → a dead client: a new TandemClient over the same storage and client id
+harness.crash(name)
+  a request the service already sent          still deliverable; its reply is dropped
+  a request or event addressed to it          fails with a crash error, like a refused connection
+  a reply addressed to it                     dropped
+  anything the dead instance calls afterwards never settles and is not tracked
+  its own top-level calls                     fail once no deliverable request remains in them
+
+harness.restart(name)
+  runs the service's factory again; the harness handle and every dependency proxy
+  reach the new instance, and events it registers are its own
 ```
 
-- [ ] Give each client `TandemClientIndexedDbStorage` over `fake-indexeddb`, with its write interval driven by the client's gated timer.
-- [ ] Let the harness replace a client's service instance, or model each client incarnation as its own service, so a restarted client is gated like the original.
-- [ ] Add `killClient` and `restartClient` events, cancelling a dead client's in-flight calls and reconnecting and resubscribing a restarted one.
-- [ ] Add a test that a client killed with a write in flight restarts from storage and converges.
-- [ ] Run `pnpm --filter tandem-dst test`.
+The dead instance's code keeps running in memory, but it cannot reach anything, and nothing waits on it, so a run always settles. Anything that must survive a crash lives in its own service. Each client's storage is a `DstClientStorage` service: in-memory tuples that round-trip through JSON, so a write is a gated handoff and a crash can land before or after it.
+
+```
+new Gatekeeper()
+  .add("client1Storage", () => new DstClientStorage())       survives client1's crashes
+  .add("client1", ({ server, client1Timer, client1Storage }) => createClient(...))
+```
+
+A restarted client gets a new client id. `TandemClient` persists only materialized tuples: not its id, cookie, or pending mutations. The DST models the product as it is, which is how it found [bug D](#known-sync-bugs).
+
+Each client subscribes in its factory, as an app does at startup; until it connects, the pull that queues is a no-op. Booting then awaits `ready` and connects through the harness, so the first real pull runs inside the gated `connect` call. A dropped connect leaves the client offline until quiescence, when the run restarts every crashed client and reconnects every offline one before comparing. Crash-free runs draw no extra randomness, so their seeds replay unchanged.
+
+- [x] Add `harness.crash(name)` and `harness.restart(name)` to Gatekeeper, with runtime tests for each rule above, type-level checks, and a README section.
+- [x] Give each client an in-memory `DstClientStorage` service with JSON round-tripping, so storage survives crashes and each write is gated.
+- [x] Add `crash` and `restart` events to the loop, driven by `crashRate` and a fixed restart rate.
+- [x] Add a test that a run with crashes and restarts converges.
+- [x] Record the crash bug the loop found as a known failure.
+- [x] Run `pnpm type-check` and `pnpm test`.
 
 ### Phase 7: Decide correctness with a reference model
 
@@ -374,15 +394,16 @@ dst:run --replay tmp/failure-123.jsonl
 
 ## Known sync bugs
 
-The DST records sync engine bugs it finds rather than fixing them inline, so building the simulation is not blocked on sync engine changes. Each bug has a recording in [`dst/known-failures/`](../dst/known-failures/), where the README walks through its trace, and a test marked `.fails` that starts failing once the bug is fixed. The three are independent: fixing A leaves B and C failing.
+The DST records sync engine bugs it finds rather than fixing them inline, so building the simulation is not blocked on sync engine changes. Each bug has a recording in [`dst/known-failures/`](../dst/known-failures/), where the README walks through its trace, and a test marked `.fails` that starts failing once the bug is fixed. The four are independent: fixing A leaves B, C, and D failing.
 
 | Bug | Side | Minimal run | Symptom |
 |---|---|---|---|
 | A. An empty patch drops its acknowledgement | client | seed 2, 30 steps | acknowledged writes stay speculative and are replayed forever |
-| B. The server does not count keys a client pushed | server | seed 84, 20 steps | a record survives its deletion on the client that created it |
-| C. A lost push response rolls back an accepted write | client | seed 44, 20 steps, faults 0.1 | older writes are replayed over newer server data |
+| B. The server does not count keys a client pushed | server | seed 102, 10 steps | a record survives its deletion on the client that created it |
+| C. A lost push response rolls back an accepted write | client | seed 288, 10 steps, faults 0.1 | older writes are replayed over newer server data |
+| D. A crash loses writes that were stored but not pushed | client | seed 25, 15 steps, crashes 0.1 | a restarted client shows a write the server never receives |
 
-With the current loop at 300 steps, 6% of seeds fail with no faults, 13% at a fault rate of 0.1, and 33% at 0.3.
+With the current loop at 300 steps, about 5% of seeds fail with no faults or crashes, 11% at a fault rate of 0.1, and 14% at a crash rate of 0.02.
 
 Related gaps from reading the code, not yet reproduced:
 
@@ -390,7 +411,7 @@ Related gaps from reading the code, not yet reproduced:
 - A record the client pushed that another client then moves out of a filtered window is kept for the same reason as B.
 - An offline update to a record another client deleted resurrects it on the server.
 
-Replicache's row-version strategy, Triplit, and LiveStore each avoid A and B differently: a per-cookie client view record with a reset on an unknown cookie, a client-supplied checkpoint of held ids, and a global event log.
+Replicache and Triplit avoid D by persisting their pending mutations. Replicache's row-version strategy, Triplit, and LiveStore each avoid A and B differently: a per-cookie client view record with a reset on an unknown cookie, a client-supplied checkpoint of held ids, and a global event log.
 
 ## Future work
 
@@ -409,7 +430,7 @@ Replicache's row-version strategy, Triplit, and LiveStore each avoid A and B dif
 - [`packages/core/src/sync/SyncEngine.ts`](../packages/core/src/sync/SyncEngine.ts) — `queuePush` and `queuePull` serialize sync work behind a timer, which is why the clock must be simulated rather than real.
 - [`packages/core/src/utils/Logger.ts`](../packages/core/src/utils/Logger.ts) — `Logger` with `sinks`, `scope`, `addSink`, and `destroy`. The trace sink plugs in here.
 - [`packages/core/src/utils/Logger.node.ts`](../packages/core/src/utils/Logger.node.ts) — `JsonlLoggerSink`, implemented and unit-tested but not re-exported from the core entry point. Must be exported before `dst` can use it.
-- [`packages/core/src/clientStorage/TandemClientIndexedDbStorage.ts`](../packages/core/src/clientStorage/TandemClientIndexedDbStorage.ts) — `dbName`-keyed durable client storage. Kill and restart is a new client over the same `dbName` under `fake-indexeddb`.
+- [`packages/core/src/clientStorage/TandemClientStorage.ts`](../packages/core/src/clientStorage/TandemClientStorage.ts) — The client storage interface the DST's in-memory `DstClientStorage` implements. Client storage persists materialized tuples only, which is the root of bug D.
 - [`packages/core/test/fixtures.ts`](../packages/core/test/fixtures.ts) — Canonical patterns the DST should follow rather than reinvent: `InProcessTransport` binding `poke` through `async_hooks`, `rng.create(label)`, and `await using` harness disposal.
 - [FoundationDB simulation docs](https://apple.github.io/foundationdb/testing.html) — Establishes the seed-plus-oracle model this spec follows.
 - [FoundationDB client testing](https://apple.github.io/foundationdb/client-testing.html) — Covers the split between simulation and ordinary end-to-end tests.

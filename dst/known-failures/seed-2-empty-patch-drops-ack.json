@@ -11,7 +11,7 @@
 				"type": "set",
 				"step": 0,
 				"client": "client2",
-				"mutationId": "client2-48v3ir",
+				"mutationId": "client2-19i0y9n",
 				"item": {
 					"id": "item-2",
 					"text": "Note item-2 (rev 0)",
@@ -30,14 +30,14 @@
 				"type": "remove",
 				"step": 2,
 				"client": "client2",
-				"mutationId": "client2-19i0y9n",
+				"mutationId": "client2-11pt8i2",
 				"id": "item-2"
 			},
 			{
 				"type": "remove",
 				"step": 3,
 				"client": "client1",
-				"mutationId": "client1-4koiw2",
+				"mutationId": "client1-18fkyu9",
 				"id": "item-3"
 			},
 			{
@@ -51,7 +51,7 @@
 				"type": "set",
 				"step": 5,
 				"client": "client1",
-				"mutationId": "client1-14gb0wn",
+				"mutationId": "client1-9gkhgl",
 				"item": {
 					"id": "item-1",
 					"text": "Note item-1 (rev 5)",
@@ -189,7 +189,7 @@
 				"type": "set",
 				"step": 24,
 				"client": "client1",
-				"mutationId": "client1-1g2fxsu",
+				"mutationId": "client1-1b0p6mg",
 				"item": {
 					"id": "item-3",
 					"text": "Note item-3 (rev 24)",
@@ -201,14 +201,14 @@
 				"type": "remove",
 				"step": 25,
 				"client": "client2",
-				"mutationId": "client2-2d7dy2",
+				"mutationId": "client2-1bx5eds",
 				"id": "item-3"
 			},
 			{
 				"type": "set",
 				"step": 26,
 				"client": "client1",
-				"mutationId": "client1-1b0p6mg",
+				"mutationId": "client1-rkxx96",
 				"item": {
 					"id": "item-3",
 					"text": "Note item-3 (rev 26)",
@@ -227,7 +227,7 @@
 				"type": "set",
 				"step": 28,
 				"client": "client1",
-				"mutationId": "client1-rkxx96",
+				"mutationId": "client1-qcxym4",
 				"item": {
 					"id": "item-2",
 					"text": "Note item-2 (rev 28)",
