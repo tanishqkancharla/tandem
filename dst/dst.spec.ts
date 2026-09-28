@@ -1,5 +1,8 @@
-import { readFileSync } from "node:fs"
-import { describe, expect, it } from "vitest"
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { describe, expect, it, onTestFinished } from "vitest"
+import { sweep } from "./DstCli.js"
 import {
 	type DstArtifact,
 	formatArtifact,
@@ -106,6 +109,21 @@ describe("Deterministic simulation testing", () => {
 			step: advance.step,
 			reason: "client2.commit#9 is not held at a boundary",
 		})
+	})
+
+	it("sweeps seeds, keeping and replaying artifacts only for failing runs", async () => {
+		const outDir = mkdtempSync(join(tmpdir(), "dst-sweep-"))
+		onTestFinished(() => rmSync(outDir, { recursive: true }))
+
+		const results = await sweep({ seed: 1, steps: 300, runs: 4, outDir })
+
+		expect(results.map(({ seed, outcome }) => ({ seed, outcome }))).toEqual([
+			{ seed: 1, outcome: "violation" },
+			{ seed: 2, outcome: "ok" },
+			{ seed: 3, outcome: "ok" },
+			{ seed: 4, outcome: "ok" },
+		])
+		expect(readdirSync(outDir)).toEqual(["seed-1.jsonl"])
 	})
 
 	// Known sync bugs, documented in known-failures/README.md. Each replay must
