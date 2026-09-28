@@ -167,8 +167,12 @@ class DstTimer implements TimerApi {
 
 const timerGates = { gates: { enter: false, exit: true } }
 
-export function isTimerHandoff({ sentBy, waitingFor }: PendingCall): boolean {
-	return sentBy.endsWith("Timer") || waitingFor.endsWith("Timer")
+/**
+ * A handoff that crosses the network: a request to the server, its reply, or a
+ * poke. Timer ticks and storage writes are local, so a fault never drops them.
+ */
+export function isNetworkHandoff({ sentBy, waitingFor }: PendingCall): boolean {
+	return sentBy === "server" || waitingFor === "server"
 }
 
 export const clientNames = ["client1", "client2"] as const

@@ -6,7 +6,7 @@ import {
 	type DstTraceRecord,
 	type DstViolation,
 	DstWorld,
-	isTimerHandoff,
+	isNetworkHandoff,
 } from "./DstWorld.js"
 import { SimPrng } from "./SimPrng.js"
 
@@ -96,8 +96,8 @@ export class DstSimulation {
 	): DstIntent | undefined {
 		const faultRate = this.options.faultRate ?? 0
 		const crashRate = this.options.crashRate ?? 0
-		// Faults model lost network messages, never a timer that fails to tick.
-		const droppable = pending.filter((call) => !isTimerHandoff(call))
+		// Faults model lost network messages, never a failed timer or disk write.
+		const droppable = pending.filter(isNetworkHandoff)
 		const { down, running, writers } = world
 
 		// Without crashes these draw nothing, so crash-free runs are unchanged.

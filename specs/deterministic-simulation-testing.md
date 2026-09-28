@@ -264,7 +264,7 @@ This is the core change. The prototype picked a client and ran its commit to com
 ```
 step():
   pending = harness.pendingCalls()
-  with probability faultRate, if a non-timer handoff is held:
+  with probability faultRate, if a network handoff is held:
     drop   → fail it with a DstFaultError
   else if nothing is in flight, or fewer than 4 calls are and a coin says so:
     mutate → a random client sets or removes a random record
@@ -289,7 +289,7 @@ Calls get stable trace names like `client1.commit#3`, assigned in creation order
 - [x] Delete `dst/DstScheduler.ts` and the inline commit loop in `DstSimulation.ts`.
 - [x] Model the trace as `set`, `remove`, `advance`, and `drop` records, each carrying the call name and boundary it acted on.
 - [x] Build `advance` and `drop` from `harness.pendingCalls()`, so each event carries the handle it acts on and no separate handle map is needed.
-- [x] Never offer `drop` on a timer handoff, and classify drops as `pokeLost`, `requestLost`, or `responseLost`, passing a tagged `DstFaultError` to `fail()`. This replaces the planned `DstNetworkFault` and `DstAckLossFault` classes: the kind field carries the same distinction.
+- [x] Offer `drop` only on network handoffs, to or from the server, never on a timer tick or a storage write, and classify drops as `pokeLost`, `requestLost`, or `responseLost`, passing a tagged `DstFaultError` to `fail()`. This replaces the planned `DstNetworkFault` and `DstAckLossFault` classes: the kind field carries the same distinction.
 - [x] Start controls without awaiting them, so a step cannot deadlock on a call that waits for another held call.
 - [x] Add a test asserting a run holds two or more calls at once, which the prototype could not produce. Runs hold up to seven.
 - [x] Record the three sync bugs the loop found as known failures, with a test that each recording still reproduces exactly.
