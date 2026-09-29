@@ -1,0 +1,24 @@
+{
+	"name": "@tandem/dst-video",
+	"version": "0.0.1",
+	"private": true,
+	"type": "module",
+	"description": "Renders videos of DST known failures and their proposed fixes with Remotion",
+	"scripts": {
+		"render": "tsx src/render.ts",
+		"studio": "remotion studio src/index.ts",
+		"type-check": "tsgo --noEmit"
+	},
+	"devDependencies": {
+		"@remotion/bundler": "4.0.529",
+		"@remotion/cli": "4.0.529",
+		"@remotion/renderer": "4.0.529",
+		"@types/node": "^20.14.2",
+		"@types/react": "^19.0.0",
+		"react": "^19.0.0",
+		"react-dom": "^19.0.0",
+		"remotion": "4.0.529",
+		"tsx": "^4.23.13",
+		"typescript": "^5.7.2"
+	}
+}
