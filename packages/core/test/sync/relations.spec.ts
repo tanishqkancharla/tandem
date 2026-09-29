@@ -367,18 +367,18 @@ describe("TandemClient relation sync", () => {
 		"syncs remote one-to-many relation removals into subscribed results",
 		async ({ threadGatekeeper }) => {
 			const { client1, client2 } = threadGatekeeper
-			const query = {
-				collection: "threads",
-				select: { id: true },
-				with: { messages: { select: { body: true } } },
-			} as const
 
 			const seenByClient2: { id: string; messages: { body: string }[] }[][] = []
-			client2.subscribe(query, (result) => {
-				seenByClient2.push(result)
-			})
-			// The writer subscribes to the records it removes later
-			client1.subscribe(query)
+			client2.subscribe(
+				{
+					collection: "threads",
+					select: { id: true },
+					with: { messages: { select: { body: true } } },
+				},
+				(result) => {
+					seenByClient2.push(result)
+				},
+			)
 			await (
 				await client2.pullFromRemote()
 			).result
@@ -674,8 +674,6 @@ describe("TandemClient relation sync", () => {
 			client2.subscribe(query, (result) => {
 				seenByClient2.push(result)
 			})
-			// The writer subscribes to the records it removes later
-			client1.subscribe(query)
 			await (
 				await client2.pullFromRemote()
 			).result
@@ -719,20 +717,20 @@ describe("TandemClient relation sync", () => {
 		"removes a deleted root from a subscribed relational result",
 		async ({ threadGatekeeper }) => {
 			const { client1, client2 } = threadGatekeeper
-			const query = {
-				collection: "threads",
-				select: { id: true },
-				with: { messages: { select: { body: true } } },
-			} as const
 			const seenByClient2: {
 				id: string
 				messages: { body: string }[]
 			}[][] = []
-			client2.subscribe(query, (result) => {
-				seenByClient2.push(result)
-			})
-			// The writer subscribes to the records it removes later
-			client1.subscribe(query)
+			client2.subscribe(
+				{
+					collection: "threads",
+					select: { id: true },
+					with: { messages: { select: { body: true } } },
+				},
+				(result) => {
+					seenByClient2.push(result)
+				},
+			)
 			await (
 				await client2.pullFromRemote()
 			).result

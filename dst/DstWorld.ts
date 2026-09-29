@@ -29,7 +29,7 @@ import {
 	type WriteOps,
 } from "tuple-database"
 import * as errore from "errore"
-import { ReferenceModel } from "./ReferenceModel.js"
+import { type DstOp, ReferenceModel } from "./ReferenceModel.js"
 import { SimPrng } from "./SimPrng.js"
 
 export interface DstTodo {
@@ -233,8 +233,7 @@ export type DstTraceRecord =
 			type: "remove"
 			step: number
 			client: DstClientName
-			/** Missing when the client doesn't have the record, so the remove commits nothing. */
-			mutationId?: number
+			mutationId: number
 			id: string
 	  }
 	| ({ type: "advance"; step: number } & DstBoundary)
@@ -466,28 +465,17 @@ export class DstWorld implements AsyncDisposable {
 	): DstTraceRecord {
 		const client = this.harness[intent.client]
 		const tx = client.transact()
-		// The commit handle arrives only once the commit reaches a boundary, which
-		// may wait on another held call. Its call shows up in pending() then.
-		if (intent.type === "set") {
-			tx.set("todos", intent.item)
-			const mutationId = this.model.wrote(intent.client, {
-				type: "set",
-				item: intent.item,
-			})
-			this.inFlight.push(client.commit(tx))
-			return { ...intent, step, mutationId }
-		}
-		tx.remove("todos", intent.id)
-		// Removing a record the client does not show records no op, so nothing
-		// is written or synced, and no mutation id is used.
-		const mutationId =
-			tx.ops.length > 0
-				? this.model.wrote(intent.client, { type: "remove", id: intent.id })
-				: undefined
+		const op: DstOp =
+			intent.type === "set"
+				? { type: "set", item: intent.item }
+				: { type: "remove", id: intent.id }
+		if (op.type === "set") tx.set("todos", op.item)
+		else tx.remove("todos", op.id)
+		const mutationId = this.model.wrote(intent.client, op)
+		// The handle arrives only once the commit reaches a boundary, which may
+		// wait on another held call. Its call shows up in pending() then.
 		this.inFlight.push(client.commit(tx))
-		return mutationId === undefined
-			? { ...intent, step }
-			: { ...intent, step, mutationId }
+		return { ...intent, step, mutationId }
 	}
 
 	private async boot(name: DstClientName): Promise<void> {

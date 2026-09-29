@@ -313,11 +313,13 @@ DST's `write` skips the model for a remove of an absent record, because such a r
 +└── model.wrote(...)                                 # every write commits a mutation
 ```
 
-- [ ] `Transaction.remove` records an op whether or not the record is local.
-- [ ] Add a core test that removing a record the client doesn't have removes it on the server.
-- [ ] DST: record a model write for every remove.
-- [ ] Re-record the #43 and #44 recordings and check that each still reaches its violation.
-- [ ] Run `pnpm test` and `pnpm type-check`.
+The #43 recording opens with a remove of a record client2 doesn't have, so it stopped replaying. Re-recorded with the same options, it still hits #43's bug, now at step 5: client1's push request is dropped and its write of `item-3` is rolled back. The #44 recording has no such remove and replays unchanged. The phase 2 writer subscriptions in `compound-ids.spec.ts` and `relations.spec.ts` are reverted: those tests only needed them to remove records, and a remove no longer needs the record. `client.spec.ts` keeps its subscription because it queries after its writes are confirmed.
+
+- [x] `Transaction.remove` records an op whether or not the record is local.
+- [x] Add a core test that removing a record the client doesn't have removes it on the server.
+- [x] DST: record a model write for every remove.
+- [x] Re-record the #43 recording, check that it still reaches #43's violation, and update the tests and README entry that describe it.
+- [x] Run `pnpm test`, `pnpm type-check`, and `pnpm lint`.
 
 ### Phase 5: Update docs and sweep
 

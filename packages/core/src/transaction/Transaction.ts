@@ -230,14 +230,9 @@ export class Transaction<Schema extends AnySchema> {
 			Collection
 		>
 
-		const transaction = getCollectionTransaction(this.tupleDbTx, collection)
-		const value = transaction.get(tupleSchemaKey)
-
-		transaction.remove(tupleSchemaKey)
-
-		if (value !== undefined) {
-			this.ops.push({ type: "remove", collection, id })
-		}
+		getCollectionTransaction(this.tupleDbTx, collection).remove(tupleSchemaKey)
+		// Recorded even when the record isn't local, so the server removes it too.
+		this.ops.push({ type: "remove", collection, id })
 
 		return this
 	}

@@ -93,6 +93,28 @@ describe("TandemClient sync", () => {
 		client2Subscription.destroy()
 	})
 
+	test("removes a record on the server that the client doesn't have", async ({
+		gatekeeper,
+	}) => {
+		const { client1, client2 } = gatekeeper
+		const client2Subscription = client2.subscribe({ collection: "todos" })
+		const seedTx = client2.transact()
+		seedTx.set("todos", todo("todo-1", { text: "Removed remotely" }))
+		await (
+			await client2.commit(seedTx)
+		).result
+
+		// client1 never received todo-1, but can still remove it by id
+		const removeTx = client1.transact()
+		removeTx.remove("todos", "todo-1")
+		await (
+			await client1.commit(removeTx)
+		).result
+
+		await expectQuery(client2, { collection: "todos" }).toResolveTo([])
+		client2Subscription.destroy()
+	})
+
 	test("syncs a committed change from one client to another subscribed client", async ({
 		gatekeeper,
 	}) => {

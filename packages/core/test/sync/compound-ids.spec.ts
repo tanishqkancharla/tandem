@@ -86,7 +86,6 @@ describe("TandemClient compound ID sync", () => {
 		"syncs updates and removals for compound-ID records between clients",
 		async ({ compoundIdGatekeeper }) => {
 			const { client1, client2 } = compoundIdGatekeeper
-			const writerSubscription = client1.subscribe({ collection: "entries" })
 			const subscription = client2.subscribe({ collection: "entries" })
 
 			// Compound tuple IDs survive the client-server-client sync boundary
@@ -122,7 +121,6 @@ describe("TandemClient compound ID sync", () => {
 			await expectQuery(client2, { collection: "entries" }).toResolveTo([
 				{ id: ["session-1", 1], body: "Updated entry" },
 			])
-			writerSubscription.destroy()
 			subscription.destroy()
 		},
 	)

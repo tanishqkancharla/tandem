@@ -10,14 +10,14 @@ The expected behavior these recordings encode: a client shows the last server st
 
 ## C. A push that fails in transit is treated as a rejection: `seed-2-lost-push-rolls-back.jsonl`
 
-`{ seed: 2, steps: 10, faultRate: 0.1 }`. Violation at step 3: client2 shows nothing, but its write of `item-2` should still be pending.
+`{ seed: 2, steps: 10, faultRate: 0.1 }`. Violation at step 5: client1 shows nothing, but its write of `item-3` should still be pending.
 
-- step 1: client2 writes `item-2`.
-- step 2: its sync tick is delivered, so the push is sent.
-- step 3: the push request is dropped (`requestLost`).
+- step 3: client1 writes `item-3`.
+- step 4: its sync tick is delivered, so the push is sent.
+- step 5: the push request is dropped (`requestLost`).
 
 ```
-push fails → rollback([item-2 write])   # a lost message is not a rejection, but Tandem cannot
+push fails → rollback([item-3 write])   # a lost message is not a rejection, but Tandem cannot
                                         # tell them apart, so the write is discarded and never
                                         # reaches the server
 ```
