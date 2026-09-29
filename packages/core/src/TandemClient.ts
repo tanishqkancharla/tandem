@@ -137,14 +137,14 @@ export class TandemClient<
 	}) {
 		this.logger.info({ message: "applying pull" })
 		const tx = this.db.makeTupleDbTransaction()
-		this.pendingWrites.applyPull(tx, patch, lastMutationId)
+		this.pendingWrites.applyPull(tx, { patch, lastMutationId })
 		tx.commit()
 	}
 
 	private rollback(mutationsToRollback: readonly Mutation<Schema>[]) {
 		this.logger.info({ message: "rolling back" })
 		const tx = this.db.makeTupleDbTransaction()
-		this.pendingWrites.reject(tx, mutationsToRollback)
+		this.pendingWrites.rollBackRejected(tx, mutationsToRollback)
 		tx.commit()
 	}
 
@@ -195,12 +195,10 @@ export class TandemClient<
 			ops: transaction.ops,
 			id: tag<MutationId>(this.mutationCount),
 		}
-		const base = this.pendingWrites.captureBase(
-			mutation,
-			({ collection, id }) => this.db.get(collection, id),
-		)
-		this.db.commit(transaction)
-		this.pendingWrites.add(mutation, base)
+		this.pendingWrites.commitAndTrack(mutation, {
+			readCommittedRecord: ({ collection, id }) => this.db.get(collection, id),
+			commit: () => this.db.commit(transaction),
+		})
 
 		const commitPromise =
 			this.syncEngine?.queuePush(mutation) ?? Promise.resolve()
@@ -238,7 +236,7 @@ export class TandemClient<
 	async clear() {
 		this.logger.info({ message: "clearing database" })
 
-		this.pendingWrites.clear()
+		this.pendingWrites.clearAll()
 
 		// Clear the database
 		await this.db.clear()

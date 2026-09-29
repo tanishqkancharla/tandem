@@ -11,53 +11,63 @@ import {
 	type MutationId,
 	type MutationOp,
 } from "../transaction/Transaction.js"
+import { unreachable } from "../utils/typeUtils.js"
 import type { Patch } from "./SyncEngine.js"
 
-/** The record an op or a patch entry writes. */
+/** The record an op writes. */
 type RecordRef<Schema extends AnySchema> = {
 	collection: CollectionName<Schema>
 	id: Schema[CollectionName<Schema>]["id"]
 }
 
-type BaseEntry<Schema extends AnySchema> = RecordRef<Schema> & {
-	/** The server's latest value, or undefined when the server has no such record. */
-	value: Schema[CollectionName<Schema>] | undefined
+type BaseEntry<Schema extends AnySchema> = {
+	/**
+	 * The op that makes the record match the server: a set of the server's
+	 * latest value, or a remove when the server has no such record.
+	 */
+	server: MutationOp<Schema>
 	/** The newest pending mutation that writes this record. */
 	lastWrittenBy: MutationId
 }
 
-/** Base values read before a mutation commits, for the records it writes first. */
-export type BaseCapture<Schema extends AnySchema> = ReadonlyMap<
-	string,
-	Schema[CollectionName<Schema>] | undefined
->
-
 function mutationOpToRecordRef<Schema extends AnySchema>(
 	op: MutationOp<Schema>,
 ): RecordRef<Schema> {
-	return {
-		collection: op.collection,
-		id: op.type === "set" ? op.value.id : op.id,
+	switch (op.type) {
+		case "set":
+			return { collection: op.collection, id: op.value.id }
+		case "remove":
+			return { collection: op.collection, id: op.id }
+		default:
+			return unreachable(op)
 	}
 }
 
 /** The base map's key for a record: its collection followed by its id parts. */
-function recordRefToBaseKey<Schema extends AnySchema>({
-	collection,
-	id,
-}: RecordRef<Schema>): string {
+function mutationOpToBaseKey<Schema extends AnySchema>(
+	op: MutationOp<Schema>,
+): string {
+	const { collection, id } = mutationOpToRecordRef(op)
 	return JSON.stringify([collection, ...collectionIdToTuple(id)])
 }
 
-/** Sets the record to value, or removes it when value is undefined. */
-function writeRecord<Schema extends AnySchema>(
+/** Applies one set or remove to the tuple transaction. */
+function applyOp<Schema extends AnySchema>(
 	tx: TupleRootTransactionApi<SchemaToTupleSchema<Schema>>,
-	{ collection, id }: RecordRef<Schema>,
-	value: Schema[CollectionName<Schema>] | undefined,
+	op: MutationOp<Schema>,
 ): void {
+	const { collection, id } = mutationOpToRecordRef(op)
 	const records = getCollectionTransaction(tx, collection)
-	if (value === undefined) records.remove(collectionIdToTuple(id))
-	else records.set(collectionIdToTuple(id), value)
+	switch (op.type) {
+		case "set":
+			records.set(collectionIdToTuple(id), op.value)
+			return
+		case "remove":
+			records.remove(collectionIdToTuple(id))
+			return
+		default:
+			unreachable(op)
+	}
 }
 
 /**
@@ -69,10 +79,10 @@ function writeRecord<Schema extends AnySchema>(
  * Invariants between calls:
  * - The base has an entry exactly for the records pending mutations write,
  *   and each entry's lastWrittenBy is the highest id among them.
- * - Each entry's value is the server's latest value for that record, as far
- *   as this client knows.
- * - Each such record in the tuple database equals its base value with the
- *   pending ops on it replayed in order.
+ * - Each entry's server op matches the server's latest value for that record,
+ *   as far as this client knows.
+ * - Each such record in the tuple database equals its base with the pending
+ *   ops on it replayed in order.
  */
 export class PendingWrites<Schema extends AnySchema> {
 	/** Mutations the server hasn't acknowledged, in ascending id order. */
@@ -80,40 +90,44 @@ export class PendingWrites<Schema extends AnySchema> {
 	private readonly base = new Map<string, BaseEntry<Schema>>()
 
 	/**
-	 * Reads the committed value of each record the mutation writes that no
-	 * pending mutation writes yet. Call it before the mutation commits.
+	 * Runs commit and tracks the mutation as pending. Before the commit runs, it
+	 * reads the committed value of each record the mutation writes that no
+	 * pending mutation writes yet. If the commit throws, nothing is tracked.
 	 */
-	captureBase(
+	commitAndTrack(
 		mutation: Mutation<Schema>,
-		readCommitted: (
-			ref: RecordRef<Schema>,
-		) => Schema[CollectionName<Schema>] | undefined,
-	): BaseCapture<Schema> {
-		const capture = new Map<
-			string,
-			Schema[CollectionName<Schema>] | undefined
-		>()
+		{
+			readCommittedRecord,
+			commit,
+		}: {
+			readCommittedRecord: (
+				ref: RecordRef<Schema>,
+			) => Schema[CollectionName<Schema>] | undefined
+			commit: () => void
+		},
+	): void {
+		const captured = new Map<string, MutationOp<Schema>>()
 		for (const op of mutation.ops) {
-			const ref = mutationOpToRecordRef(op)
-			const baseKey = recordRefToBaseKey(ref)
-			if (this.base.has(baseKey) || capture.has(baseKey)) continue
-			capture.set(baseKey, readCommitted(ref))
+			const baseKey = mutationOpToBaseKey(op)
+			if (this.base.has(baseKey) || captured.has(baseKey)) continue
+			const { collection, id } = mutationOpToRecordRef(op)
+			const value = readCommittedRecord({ collection, id })
+			captured.set(
+				baseKey,
+				value === undefined
+					? { type: "remove", collection, id }
+					: { type: "set", collection, value },
+			)
 		}
-		return capture
-	}
 
-	/** Records a committed mutation, with the base captured before it committed. */
-	add(mutation: Mutation<Schema>, capture: BaseCapture<Schema>): void {
+		commit()
+
+		for (const [baseKey, server] of captured) {
+			this.base.set(baseKey, { server, lastWrittenBy: mutation.id })
+		}
 		for (const op of mutation.ops) {
-			const ref = mutationOpToRecordRef(op)
-			const baseKey = recordRefToBaseKey(ref)
-			const entry = this.base.get(baseKey) ?? {
-				...ref,
-				value: capture.get(baseKey),
-				lastWrittenBy: mutation.id,
-			}
-			entry.lastWrittenBy = mutation.id
-			this.base.set(baseKey, entry)
+			const entry = this.base.get(mutationOpToBaseKey(op))
+			if (entry) entry.lastWrittenBy = mutation.id
 		}
 		this.mutations.push(mutation)
 	}
@@ -124,20 +138,22 @@ export class PendingWrites<Schema extends AnySchema> {
 	 */
 	applyPull(
 		tx: TupleRootTransactionApi<SchemaToTupleSchema<Schema>>,
-		patch: Patch<Schema>,
-		lastMutationId: MutationId,
+		{
+			patch,
+			lastMutationId,
+		}: { patch: Patch<Schema>; lastMutationId: MutationId },
 	): void {
 		for (const op of patch.set ?? []) {
-			this.receive(tx, { collection: op.collection, id: op.value.id }, op.value)
+			this.applyServerOp(tx, { type: "set", ...op })
 		}
 		for (const op of patch.remove ?? []) {
-			this.receive(tx, { collection: op.collection, id: op.id }, undefined)
+			this.applyServerOp(tx, { type: "remove", ...op })
 		}
 
 		this.mutations = this.mutations.filter(
 			(mutation) => mutation.id > lastMutationId,
 		)
-		this.rebuild(tx)
+		this.resetToBaseAndReplay(tx)
 
 		// Only now: the rebuild above still needed these entries.
 		for (const [baseKey, entry] of this.base) {
@@ -146,7 +162,7 @@ export class PendingWrites<Schema extends AnySchema> {
 	}
 
 	/** Drops mutations the server rejected and writes the rebuild into tx. */
-	reject(
+	rollBackRejected(
 		tx: TupleRootTransactionApi<SchemaToTupleSchema<Schema>>,
 		rejected: readonly Mutation<Schema>[],
 	): void {
@@ -154,15 +170,12 @@ export class PendingWrites<Schema extends AnySchema> {
 		this.mutations = this.mutations.filter(
 			(mutation) => !rejectedIds.has(mutation.id),
 		)
-		this.rebuild(tx)
+		this.resetToBaseAndReplay(tx)
 
 		const lastWrittenBy = new Map<string, MutationId>()
 		for (const mutation of this.mutations) {
 			for (const op of mutation.ops) {
-				lastWrittenBy.set(
-					recordRefToBaseKey(mutationOpToRecordRef(op)),
-					mutation.id,
-				)
+				lastWrittenBy.set(mutationOpToBaseKey(op), mutation.id)
 			}
 		}
 		for (const [baseKey, entry] of this.base) {
@@ -172,36 +185,29 @@ export class PendingWrites<Schema extends AnySchema> {
 		}
 	}
 
-	clear(): void {
+	clearAll(): void {
 		this.mutations = []
 		this.base.clear()
 	}
 
-	/** Writes a server value, and keeps it as the base if a pending mutation writes the record. */
-	private receive(
+	/** Applies a patch op, and keeps it as the base if a pending mutation writes the record. */
+	private applyServerOp(
 		tx: TupleRootTransactionApi<SchemaToTupleSchema<Schema>>,
-		ref: RecordRef<Schema>,
-		value: Schema[CollectionName<Schema>] | undefined,
+		op: MutationOp<Schema>,
 	): void {
-		const entry = this.base.get(recordRefToBaseKey(ref))
-		if (entry) entry.value = value
-		writeRecord(tx, ref, value)
+		const entry = this.base.get(mutationOpToBaseKey(op))
+		if (entry) entry.server = op
+		applyOp(tx, op)
 	}
 
-	private rebuild(
+	private resetToBaseAndReplay(
 		tx: TupleRootTransactionApi<SchemaToTupleSchema<Schema>>,
 	): void {
-		for (const entry of this.base.values()) writeRecord(tx, entry, entry.value)
+		for (const entry of this.base.values()) applyOp(tx, entry.server)
 		// One op at a time, in order: tx.write applies every remove before every
 		// set, which would reorder a mutation that sets and then removes a record.
 		for (const mutation of this.mutations) {
-			for (const op of mutation.ops) {
-				writeRecord(
-					tx,
-					mutationOpToRecordRef(op),
-					op.type === "set" ? op.value : undefined,
-				)
-			}
+			for (const op of mutation.ops) applyOp(tx, op)
 		}
 	}
 }

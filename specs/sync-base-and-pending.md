@@ -70,15 +70,18 @@ Tandem doesn't need a full copy of the server state. A record's base value only 
 ```ts
 // packages/core/src/sync/PendingWrites.ts, owned by TandemClient
 
-/** The record an op or a patch entry writes. */
+/** The record an op writes. */
 type RecordRef<Schema extends AnySchema> = {
 	collection: CollectionName<Schema>
 	id: Schema[CollectionName<Schema>]["id"]
 }
 
-type BaseEntry<Schema extends AnySchema> = RecordRef<Schema> & {
-	/** The server's latest value, or undefined when the server has no such record. */
-	value: Schema[CollectionName<Schema>] | undefined
+type BaseEntry<Schema extends AnySchema> = {
+	/**
+	 * The op that makes the record match the server: a set of the server's
+	 * latest value, or a remove when the server has no such record.
+	 */
+	server: MutationOp<Schema>
 	/** The newest pending mutation that writes this record. */
 	lastWrittenBy: MutationId
 }
@@ -89,13 +92,19 @@ class PendingWrites<Schema extends AnySchema> {
 	/** Keyed by JSON of [collection, ...collectionIdToTuple(id)]. */
 	private base = new Map<string, BaseEntry<Schema>>()
 
-	captureBase(mutation, readCommitted: (ref: RecordRef<Schema>) => value | undefined): BaseCapture<Schema>
-	add(mutation, capture: BaseCapture<Schema>): void
-	applyPull(tx, patch: Patch<Schema>, lastMutationId: MutationId): void
-	reject(tx, rejected: Mutation<Schema>[]): void
-	clear(): void
+	/** Reads base values, runs commit, and tracks the mutation only if commit didn't throw. */
+	commitAndTrack(mutation, { readCommittedRecord, commit }): void
+	/** Writes the patch, applies each base op, and replays pending ops, in one tuple transaction. */
+	applyPull(tx, { patch, lastMutationId }): void
+	/** Drops mutations the server rejected and rebuilds their records. */
+	rollBackRejected(tx, rejected: Mutation<Schema>[]): void
+	clearAll(): void
 }
 ```
+
+A base entry stores the server's state as an op, the same `set` or `remove` shape mutations use, so the server having no record is explicit rather than an `undefined` value. Patch entries, base entries, and pending ops all go through one `applyOp`, and the rebuild replays them as they are. The only place `undefined` means "no record" is `Database.get`, tuple-database's own convention, and `commitAndTrack` turns it into a remove op right there.
+
+`commitAndTrack` takes the commit as a callback because a tuple-database commit can throw on a read-write conflict. The base values have to be read before the commit, but the mutation only becomes pending once the commit succeeds.
 
 Records are identified by collection and id. Every write goes through `getCollectionTransaction` from `Transaction.ts`, which narrows the tuple transaction to one collection's subspace so a record's value type-checks for a generic schema. `Transaction` writes the same way, so `PendingWrites` needs no casts of its own.
 
@@ -103,29 +112,28 @@ The implementation follows this shape:
 
 ```callstack
  PendingWrites [[packages/core/src/sync/PendingWrites.ts#PendingWrites]]
- ├── captureBase                                     # read committed values before the commit [[packages/core/src/sync/PendingWrites.ts#PendingWrites.captureBase]]
- │   └── Database.get(collection, id) [[packages/core/src/Database.ts#Database.get]]
- ├── add                                             # record the mutation after the commit succeeds [[packages/core/src/sync/PendingWrites.ts#PendingWrites.add]]
+ ├── commitAndTrack                                  # read base values, commit, then track the mutation [[packages/core/src/sync/PendingWrites.ts#PendingWrites.commitAndTrack]]
+ │   └── Database.get(collection, id)                # committed value, before the commit [[packages/core/src/Database.ts#Database.get]]
  ├── applyPull                                       # patch, reset, replay, then delete confirmed entries [[packages/core/src/sync/PendingWrites.ts#PendingWrites.applyPull]]
- │   └── receive                                     # write a server value; keep it as the base if pending [[packages/core/src/sync/PendingWrites.ts#PendingWrites.receive]]
- ├── reject                                          # drop rejected mutations and rebuild [[packages/core/src/sync/PendingWrites.ts#PendingWrites.reject]]
- └── rebuild                                         # reset base records, replay ops in order [[packages/core/src/sync/PendingWrites.ts#PendingWrites.rebuild]]
-     └── writeRecord                                 # set or remove one record via getCollectionTransaction [[packages/core/src/sync/PendingWrites.ts#writeRecord]]
+ │   └── applyServerOp                               # apply a patch op; keep it as the base if pending [[packages/core/src/sync/PendingWrites.ts#PendingWrites.applyServerOp]]
+ ├── rollBackRejected                                # drop rejected mutations and rebuild [[packages/core/src/sync/PendingWrites.ts#PendingWrites.rollBackRejected]]
+ └── resetToBaseAndReplay                            # apply each base op, then replay pending ops in order [[packages/core/src/sync/PendingWrites.ts#PendingWrites.resetToBaseAndReplay]]
+     └── applyOp                                     # one set or remove via getCollectionTransaction [[packages/core/src/sync/PendingWrites.ts#applyOp]]
 ```
 
 Three invariants hold between operations:
 
 1. **An entry exists exactly for the records pending mutations write.** Its `lastWrittenBy` is the highest id among them.
-2. **An entry's `value` is the server's latest value for that record,** as far as this client knows: captured when a pending mutation first writes the record, then replaced by every patch that mentions it.
-3. **Each `["record", …]` tuple equals its base value with the pending ops on that record replayed in order.** Records without an entry equal what the server last sent.
+2. **An entry's `server` op matches the server's latest value for that record,** as far as this client knows: captured when a pending mutation first writes the record, then replaced by every patch op that mentions it.
+3. **Each `["record", …]` tuple equals its base with the pending ops on that record replayed in order.** Records without an entry equal what the server last sent.
 
 Each operation keeps them:
 
 | Operation | `mutations` | `base` | `["record", …]` tuples |
 |---|---|---|---|
-| `commit` m | append m | for each record m writes: create the entry from the committed value if missing; set `lastWrittenBy = m.id` | m's writes, applied by the transaction as today |
-| pull | drop ids ≤ `lastMutationId` | set `value` for records the patch mentions; after the rebuild, delete entries with `lastWrittenBy ≤ lastMutationId` | one tx: apply the patch, reset each entry's record to `value`, replay pending ops in order |
-| failed push | remove the rejected mutations | recompute `lastWrittenBy` for records they wrote; delete entries no mutation writes | one tx: reset each entry's record to `value`, replay pending ops in order |
+| `commit` m | append m | for each record m writes: create the entry from the committed value (a set, or a remove if there's none) if missing; set `lastWrittenBy = m.id` | m's writes, applied by the transaction as today |
+| pull | drop ids ≤ `lastMutationId` | replace `server` with the patch op for records the patch mentions; after the rebuild, delete entries with `lastWrittenBy ≤ lastMutationId` | one tx: apply the patch, apply each entry's `server` op, replay pending ops in order |
+| failed push | remove the rejected mutations | recompute `lastWrittenBy` for records they wrote; delete entries no mutation writes | one tx: apply each entry's `server` op, replay pending ops in order |
 | `clear` | empty | empty | cleared, as today |
 
 Counter ids make cleanup one comparison: an acknowledgement confirms every id up to N, so `lastWrittenBy ≤ N` means no pending mutation writes the record any more. An entry is deleted only after the rebuild, because that rebuild may still need it. For example, the record may be missing from the patch because no subscription covers it.
@@ -574,7 +582,7 @@ Add `PendingWrites` and route commit, pull, and rollback through it. This is the
 
 `PendingWrites` is the only owner of `mutations` and `base`. `TandemClient` opens the tuple transaction, hands it in, and commits it, so each pull is still one change for subscribers.
 
-`PendingWrites` splits capturing from adding: `captureBase(mutation, readCommitted)` reads committed values before the transaction commits, and `add(mutation, capture)` records the mutation only after the commit succeeds. A tuple-database commit can throw on a read-write conflict, and a mutation that never committed must not become pending. The phase 2 commit keyed records by raw tuple keys and wrote through a cast-typed view of the transaction. A follow-up commit (`40619a6`) keys them by collection and id and writes through `getCollectionTransaction` instead, which removed both casts. `Database.get` now takes a collection and id to match.
+The phase 2 commit split capturing from adding: `captureBase(mutation, readCommitted)` read committed values before the transaction committed, and `add(mutation, capture)` recorded the mutation only after the commit succeeded, because a tuple-database commit can throw on a read-write conflict. It also keyed records by raw tuple keys, wrote through a cast-typed view of the transaction, and stored an absent server record as an `undefined` value. Follow-up commits on the PR key records by collection and id and write through `getCollectionTransaction`, which removed both casts, and store the server's state as a `set` or `remove` op. They also merge the two steps into `commitAndTrack(mutation, { readCommittedRecord, commit })`, and give the methods names that say what they act on: `rollBackRejected`, `clearAll`, `applyServerOp`, and `resetToBaseAndReplay`. `Database.get` takes a collection and id to match.
 
 The DST sweep test swept seeds 1–4 with no faults and relied on seed 1 failing with #42's bug. It now sweeps 10 steps with a 0.1 fault rate, where seeds 1 and 2 fail with #43's bug.
 
