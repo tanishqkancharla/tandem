@@ -325,7 +325,16 @@ The #43 recording opens with a remove of a record client2 doesn't have, so it st
 
 - [x] Update `packages/core/src/sync/AGENTS.md` and `packages/core/src/transaction/AGENTS.md`, which still describe undo-based rollback. The sync guide also showed a `sync()` remote API that doesn't exist.
 - [x] Check the "expected behavior" paragraph in `dst/known-failures/README.md`: it still holds. Drop the "invertible mutations" roadmap item from the root README.
-- [ ] Run `pnpm lint` and a DST sweep with no faults: `pnpm dst:run --runs 50 --steps 300`.
+- [x] Run `pnpm lint` and the four nightly DST legs: 200 runs of 500 steps each, base seed 2026092900.
+
+| Leg | Failing runs | Causes |
+|---|---|---|
+| no faults | 0 of 200 | — |
+| faults (0.1) | 200 of 200 | 199 follow a dropped push (#43); 1 is a lost pull response that loses a delete |
+| crashes (0.02) | 84 of 200 | 81 extra records are the crashed client's own unpushed writes (#44); 9 are stale stored records the server deleted while the client was down |
+| faults and crashes | 200 of 200 | 199 dropped push (#43), 1 crash (#44) |
+
+The two failures without an issue are gaps the Replicache plan's phase 2 fixes: `readPull` overwrites its record of what a client has before the client receives the response, and a restarted client gets a new id, so the server never sends it removes for records it deleted in the meantime. Both get the same result from the old undo-based rebase.
 
 ## References
 
