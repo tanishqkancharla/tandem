@@ -33,7 +33,7 @@ type CollectionTransactionApi<
 	remove(key: CollectionTupleKey<Schema, Collection>): unknown
 }
 
-function getCollectionTransaction<
+export function getCollectionTransaction<
 	Schema extends AnySchema,
 	Collection extends CollectionName<Schema>,
 >(

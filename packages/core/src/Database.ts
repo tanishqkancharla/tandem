@@ -10,6 +10,9 @@ import {
 import {
 	type AnySchema,
 	type AnyRelations,
+	type CollectionIdTuple,
+	type CollectionName,
+	collectionIdToTuple,
 	type RuntimeSchemaDefinition,
 	type SchemaToTupleSchema,
 } from "./schema/Schema.js"
@@ -156,10 +159,20 @@ export class Database<
 	}
 
 	/** A record's committed value, read outside any open transaction. */
-	get(
-		key: SchemaToTupleSchema<Schema>["key"],
-	): SchemaToTupleSchema<Schema>["value"] | undefined {
-		return this.tupleDb.get(key)
+	get<Collection extends CollectionName<Schema>>(
+		collection: Collection,
+		id: Schema[Collection]["id"],
+	): Schema[Collection] | undefined {
+		// tuple-database cannot narrow a mapped tuple union while Schema is
+		// generic, so read through the collection's subspace, as queries do.
+		const records = this.tupleDb as unknown as {
+			subspace(prefix: ["record", Collection]): {
+				get(
+					key: CollectionIdTuple<Schema[Collection]["id"]>,
+				): Schema[Collection] | undefined
+			}
+		}
+		return records.subspace(["record", collection]).get(collectionIdToTuple(id))
 	}
 
 	transact(): Transaction<Schema> {

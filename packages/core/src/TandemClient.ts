@@ -195,8 +195,9 @@ export class TandemClient<
 			ops: transaction.ops,
 			id: tag<MutationId>(this.mutationCount),
 		}
-		const base = this.pendingWrites.captureBase(mutation, (key) =>
-			this.db.get(key),
+		const base = this.pendingWrites.captureBase(
+			mutation,
+			({ collection, id }) => this.db.get(collection, id),
 		)
 		this.db.commit(transaction)
 		this.pendingWrites.add(mutation, base)

@@ -5,37 +5,23 @@ import {
 	collectionIdToTuple,
 	type SchemaToTupleSchema,
 } from "../schema/Schema.js"
-import type {
-	Mutation,
-	MutationId,
-	MutationOp,
+import {
+	getCollectionTransaction,
+	type Mutation,
+	type MutationId,
+	type MutationOp,
 } from "../transaction/Transaction.js"
 import type { Patch } from "./SyncEngine.js"
 
-type RecordTuple<Schema extends AnySchema> = SchemaToTupleSchema<Schema>
-type RecordTupleKey<Schema extends AnySchema> = RecordTuple<Schema>["key"]
-type RecordValue<Schema extends AnySchema> = RecordTuple<Schema>["value"]
-type TupleTransaction<Schema extends AnySchema> = TupleRootTransactionApi<
-	RecordTuple<Schema>
->
-type RecordWriter<Schema extends AnySchema> = {
-	set(key: RecordTupleKey<Schema>, value: RecordValue<Schema>): unknown
-	remove(key: RecordTupleKey<Schema>): unknown
+/** The record an op or a patch entry writes. */
+type RecordRef<Schema extends AnySchema> = {
+	collection: CollectionName<Schema>
+	id: Schema[CollectionName<Schema>]["id"]
 }
 
-// tuple-database cannot narrow a key's value type while Schema is generic, so
-// write through a view typed by the record tuple instead.
-function writerOf<Schema extends AnySchema>(
-	tx: TupleTransaction<Schema>,
-): RecordWriter<Schema> {
-	return tx as unknown as RecordWriter<Schema>
-}
-
-type BaseEntry<Schema extends AnySchema> = {
-	/** The record's tuple key, for writing it during a rebuild. */
-	key: RecordTupleKey<Schema>
+type BaseEntry<Schema extends AnySchema> = RecordRef<Schema> & {
 	/** The server's latest value, or undefined when the server has no such record. */
-	value: RecordValue<Schema> | undefined
+	value: Schema[CollectionName<Schema>] | undefined
 	/** The newest pending mutation that writes this record. */
 	lastWrittenBy: MutationId
 }
@@ -43,29 +29,36 @@ type BaseEntry<Schema extends AnySchema> = {
 /** Base values read before a mutation commits, for the records it writes first. */
 export type BaseCapture<Schema extends AnySchema> = ReadonlyMap<
 	string,
-	RecordValue<Schema> | undefined
+	Schema[CollectionName<Schema>] | undefined
 >
 
-function recordKey<Schema extends AnySchema>(
-	collection: CollectionName<Schema>,
-	id: Schema[CollectionName<Schema>]["id"],
-): RecordTupleKey<Schema> {
-	return [
-		"record",
-		collection,
-		...collectionIdToTuple(id),
-	] as unknown as RecordTupleKey<Schema>
-}
-
-function opKey<Schema extends AnySchema>(
+function refOf<Schema extends AnySchema>(
 	op: MutationOp<Schema>,
-): RecordTupleKey<Schema> {
-	return op.type === "set"
-		? recordKey<Schema>(op.collection, op.value.id)
-		: recordKey<Schema>(op.collection, op.id)
+): RecordRef<Schema> {
+	return {
+		collection: op.collection,
+		id: op.type === "set" ? op.value.id : op.id,
+	}
 }
 
-const encode = (key: readonly unknown[]) => JSON.stringify(key)
+/** A Map key for a record: its collection followed by its id parts. */
+function encode<Schema extends AnySchema>({
+	collection,
+	id,
+}: RecordRef<Schema>): string {
+	return JSON.stringify([collection, ...collectionIdToTuple(id)])
+}
+
+/** Sets the record to value, or removes it when value is undefined. */
+function write<Schema extends AnySchema>(
+	tx: TupleRootTransactionApi<SchemaToTupleSchema<Schema>>,
+	{ collection, id }: RecordRef<Schema>,
+	value: Schema[CollectionName<Schema>] | undefined,
+): void {
+	const records = getCollectionTransaction(tx, collection)
+	if (value === undefined) records.remove(collectionIdToTuple(id))
+	else records.set(collectionIdToTuple(id), value)
+}
 
 /**
  * A client's unacknowledged mutations, and the base they apply to: the
@@ -93,15 +86,18 @@ export class PendingWrites<Schema extends AnySchema> {
 	captureBase(
 		mutation: Mutation<Schema>,
 		readCommitted: (
-			key: RecordTupleKey<Schema>,
-		) => RecordValue<Schema> | undefined,
+			ref: RecordRef<Schema>,
+		) => Schema[CollectionName<Schema>] | undefined,
 	): BaseCapture<Schema> {
-		const capture = new Map<string, RecordValue<Schema> | undefined>()
+		const capture = new Map<
+			string,
+			Schema[CollectionName<Schema>] | undefined
+		>()
 		for (const op of mutation.ops) {
-			const key = opKey(op)
-			const encoded = encode(key)
+			const ref = refOf(op)
+			const encoded = encode(ref)
 			if (this.base.has(encoded) || capture.has(encoded)) continue
-			capture.set(encoded, readCommitted(key))
+			capture.set(encoded, readCommitted(ref))
 		}
 		return capture
 	}
@@ -109,10 +105,10 @@ export class PendingWrites<Schema extends AnySchema> {
 	/** Records a committed mutation, with the base captured before it committed. */
 	add(mutation: Mutation<Schema>, capture: BaseCapture<Schema>): void {
 		for (const op of mutation.ops) {
-			const key = opKey(op)
-			const encoded = encode(key)
+			const ref = refOf(op)
+			const encoded = encode(ref)
 			const entry = this.base.get(encoded) ?? {
-				key,
+				...ref,
 				value: capture.get(encoded),
 				lastWrittenBy: mutation.id,
 			}
@@ -127,29 +123,21 @@ export class PendingWrites<Schema extends AnySchema> {
 	 * server's value, then the still-pending mutations replayed on top.
 	 */
 	applyPull(
-		tx: TupleTransaction<Schema>,
+		tx: TupleRootTransactionApi<SchemaToTupleSchema<Schema>>,
 		patch: Patch<Schema>,
 		lastMutationId: MutationId,
 	): void {
-		const writer = writerOf(tx)
 		for (const op of patch.set ?? []) {
-			const key = recordKey<Schema>(op.collection, op.value.id)
-			const value = op.value as RecordValue<Schema>
-			const entry = this.base.get(encode(key))
-			if (entry) entry.value = value
-			writer.set(key, value)
+			this.receive(tx, { collection: op.collection, id: op.value.id }, op.value)
 		}
 		for (const op of patch.remove ?? []) {
-			const key = recordKey<Schema>(op.collection, op.id)
-			const entry = this.base.get(encode(key))
-			if (entry) entry.value = undefined
-			writer.remove(key)
+			this.receive(tx, { collection: op.collection, id: op.id }, undefined)
 		}
 
 		this.mutations = this.mutations.filter(
 			(mutation) => mutation.id > lastMutationId,
 		)
-		this.rebuild(writer)
+		this.rebuild(tx)
 
 		// Only now: the rebuild above still needed these entries.
 		for (const [encoded, entry] of this.base) {
@@ -159,19 +147,19 @@ export class PendingWrites<Schema extends AnySchema> {
 
 	/** Drops mutations the server rejected and writes the rebuild into tx. */
 	reject(
-		tx: TupleTransaction<Schema>,
+		tx: TupleRootTransactionApi<SchemaToTupleSchema<Schema>>,
 		rejected: readonly Mutation<Schema>[],
 	): void {
 		const rejectedIds = new Set(rejected.map((mutation) => mutation.id))
 		this.mutations = this.mutations.filter(
 			(mutation) => !rejectedIds.has(mutation.id),
 		)
-		this.rebuild(writerOf(tx))
+		this.rebuild(tx)
 
 		const lastWrittenBy = new Map<string, MutationId>()
 		for (const mutation of this.mutations) {
 			for (const op of mutation.ops) {
-				lastWrittenBy.set(encode(opKey(op)), mutation.id)
+				lastWrittenBy.set(encode(refOf(op)), mutation.id)
 			}
 		}
 		for (const [encoded, entry] of this.base) {
@@ -186,20 +174,26 @@ export class PendingWrites<Schema extends AnySchema> {
 		this.base.clear()
 	}
 
-	private rebuild(writer: RecordWriter<Schema>): void {
-		for (const { key, value } of this.base.values()) {
-			if (value === undefined) writer.remove(key)
-			else writer.set(key, value)
-		}
+	/** Writes a server value, and keeps it as the base if a pending mutation writes the record. */
+	private receive(
+		tx: TupleRootTransactionApi<SchemaToTupleSchema<Schema>>,
+		ref: RecordRef<Schema>,
+		value: Schema[CollectionName<Schema>] | undefined,
+	): void {
+		const entry = this.base.get(encode(ref))
+		if (entry) entry.value = value
+		write(tx, ref, value)
+	}
+
+	private rebuild(
+		tx: TupleRootTransactionApi<SchemaToTupleSchema<Schema>>,
+	): void {
+		for (const entry of this.base.values()) write(tx, entry, entry.value)
 		// One op at a time, in order: tx.write applies every remove before every
 		// set, which would reorder a mutation that sets and then removes a record.
 		for (const mutation of this.mutations) {
 			for (const op of mutation.ops) {
-				if (op.type === "set") {
-					writer.set(opKey(op), op.value as RecordValue<Schema>)
-				} else {
-					writer.remove(opKey(op))
-				}
+				write(tx, refOf(op), op.type === "set" ? op.value : undefined)
 			}
 		}
 	}
