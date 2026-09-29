@@ -1,235 +1,233 @@
-# Quickstart Guide
+# Quickstart
 
-Get up and running with Tandem in 5 minutes. This guide will walk you through creating a simple todo app with real-time sync.
+This guide builds a todo app where a React client syncs through a `TandemServer`. The complete version is in [`examples/todo`](../examples/todo).
 
-## Installation
+## Install
 
-```bash
-npm install @tanishqkancharla/tandem-core
+```sh
+pnpm add @tanishqkancharla/tandem-core @tanishqkancharla/tandem-react
+pnpm add @tanishqkancharla/tandem-server # server only
 ```
 
-## 1. Define Your Schema
+## 1. Define a schema
 
-First, define your data structure with TypeScript types:
+Share the schema between client and server.
 
-```typescript
-// types.ts
-export type TodoSchema = {
-  todos: {
-    id: string
-    text: string
-    complete: boolean
-    createdAt: number
-  }
+```ts
+// shared/schema.ts
+import { collection, defineSchema, t } from "@tanishqkancharla/tandem-core"
+
+export const schema = defineSchema({
+	todos: collection({
+		id: t.id(),
+		text: t.string(),
+		complete: t.boolean(),
+		createdAt: t.number(),
+	}),
+})
+
+export type Todo = {
+	id: string
+	text: string
+	complete: boolean
+	createdAt: number
 }
+
+export type TodoSchema = { todos: Todo }
 ```
 
-## 2. Create the Database
+Field builders are `t.id()`, `t.string()`, `t.number()`, and `t.boolean()`. To use compound IDs or custom storage encodings, see [Server](server.md#compound-ids).
 
-Create a TandemClient instance:
+## 2. Create a client
 
-```typescript
-// db.ts
+```ts
+// client/db.ts
 import {
-  TandemClient,
-  TandemClientIndexedDbStorage,
+	TandemClient,
+	TandemClientIndexedDbStorage,
 } from "@tanishqkancharla/tandem-core"
-import { TodoSchema } from "./types"
+import { schema, type TodoSchema } from "../shared/schema"
+import { todoRemote } from "./remote"
 
-export const db = new TandemClient<TodoSchema>({
-  // Optional: Add persistent storage
-  clientStorage: new TandemClientIndexedDbStorage({
-    dbName: "my-todo-app",
-    version: 1,
-  }),
-  
-  // Optional: Add remote sync (see backend guide)
-  // remote: myRemoteApi,
-})
-
-// Wait for database to be ready
-await db.ready
-```
-
-## 3. Reading Data
-
-Use object queries to read data:
-
-```typescript
-// Read all todos
-const todos = db.query({ collection: "todos" })
-
-// Read incomplete todos
-const incompleteTodos = db.query({
-  collection: "todos",
-  where: { complete: false },
-  orderBy: { createdAt: "desc" },
-})
-
-// Read a specific todo
-const todo = db.query({
-  collection: "todos",
-  where: { id: "todo-123" },
-  limit: 1,
+export const db = new TandemClient({
+	schema,
+	// Optional. Persists the local database across reloads.
+	clientStorage: new TandemClientIndexedDbStorage<TodoSchema>({
+		dbName: "todos",
+		schema,
+	}),
+	// Optional. Without it, the client is a local-only database.
+	remote: todoRemote,
+	// Let the React provider manage the connection.
+	autoConnect: false,
 })
 ```
 
-## 4. Subscribing to Changes
+`db.ready` resolves once the client has loaded from `clientStorage`.
 
-Subscribe to get real-time updates:
+## 3. Read and write
 
-```typescript
-// Subscribe to all todos
+Queries are plain objects. See [Queries](queries.md) for every option.
+
+```ts
+const open = db.query({
+	collection: "todos",
+	where: { complete: false },
+	orderBy: { createdAt: "desc" },
+})
+
 const { result, destroy } = db.subscribe({ collection: "todos" }, (todos) => {
-  console.log("Todos updated:", todos)
-  // Update your UI here
+	console.log(todos)
 })
-
-// Don't forget to cleanup
-destroy() // Call this when component unmounts
+destroy()
 ```
 
-## 5. Making Changes
+Writes go through transactions. `commit` applies the changes locally right away. The returned promise settles once the push to the remote finishes, and rejects if the push fails. When a push fails, the client rolls the changes back.
 
-Use transactions to modify data:
-
-```typescript
-// Add a new todo
+```ts
 const tx = db.transact()
 tx.set("todos", {
-  id: "todo-123",
-  text: "Learn Tandem",
-  complete: false,
-  createdAt: Date.now()
+	id: crypto.randomUUID(),
+	text: "Learn Tandem",
+	complete: false,
+	createdAt: Date.now(),
 })
+tx.update("todos", "todo-1", (todo) => ({ ...todo, complete: true }))
+tx.remove("todos", "todo-2")
 await db.commit(tx)
-
-// Update a todo
-const tx2 = db.transact()
-tx2.set("todos", {
-  id: "todo-123",
-  text: "Learn Tandem",
-  complete: true,  // Mark as complete
-  createdAt: Date.now()
-})
-await db.commit(tx2)
-
-// Delete a todo
-const tx3 = db.transact()
-tx3.remove("todos", "todo-123")
-await db.commit(tx3)
 ```
 
-## 6. React Integration
+A transaction also exposes `get`, `list`, and `scan` for reads that should see its own uncommitted writes.
 
-Here's how to use Tandem in a React component:
+## 4. Use it in React
 
-```typescript
-// TodoList.tsx
-import { useEffect, useState } from "react"
+`TandemClientProvider` waits for `db.ready`, and connects to the remote when you pass `connect`.
+
+```tsx
+// client/main.tsx
+import { TandemClientProvider } from "@tanishqkancharla/tandem-react"
+import { createRoot } from "react-dom/client"
+import { App } from "./App"
 import { db } from "./db"
-import { TodoSchema } from "./types"
 
-export function TodoList() {
-  const [todos, setTodos] = useState<TodoSchema["todos"][]>([])
+createRoot(document.getElementById("root")!).render(
+	<TandemClientProvider client={db} connect>
+		<App />
+	</TandemClientProvider>,
+)
+```
 
-  useEffect(() => {
-    const { result, destroy } = db.subscribe(
-      { collection: "todos", orderBy: { createdAt: "desc" } },
-      setTodos,
-    )
-    setTodos(result)
-    return destroy
-  }, [])
+Bind the hooks to your schema once, then use them in components.
 
-  const addTodo = async (text: string) => {
-    const tx = db.transact()
-    tx.set("todos", {
-      id: crypto.randomUUID(),
-      text,
-      complete: false,
-      createdAt: Date.now()
-    })
-    await db.commit(tx)
-  }
+```tsx
+// client/App.tsx
+import {
+	useTandemQuery,
+	useTandemTransaction,
+	type UseTandemQuery,
+	type UseTandemTransaction,
+} from "@tanishqkancharla/tandem-react"
+import type { TodoSchema } from "../shared/schema"
 
-  const toggleTodo = async (id: string) => {
-    const todo = db.query({ collection: "todos", where: { id }, limit: 1 })[0]
-    if (todo) {
-      const tx = db.transact()
-      tx.set("todos", { ...todo, complete: !todo.complete })
-      await db.commit(tx)
-    }
-  }
+const useQuery: UseTandemQuery<TodoSchema> = useTandemQuery
+const useTransaction: UseTandemTransaction<TodoSchema> = useTandemTransaction
 
-  return (
-    <div>
-      {todos.map(todo => (
-        <div key={todo.id}>
-          <input
-            type="checkbox"
-            checked={todo.complete}
-            onChange={() => toggleTodo(todo.id)}
-          />
-          <span>{todo.text}</span>
-        </div>
-      ))}
-      <button onClick={() => addTodo("New todo")}>
-        Add Todo
-      </button>
-    </div>
-  )
+export function App() {
+	const todos =
+		useQuery({ collection: "todos", orderBy: { createdAt: "desc" } }) ?? []
+
+	const addTodo = useTransaction((tx, text: string) => {
+		tx.set("todos", {
+			id: crypto.randomUUID(),
+			text,
+			complete: false,
+			createdAt: Date.now(),
+		})
+	})
+
+	const toggleTodo = useTransaction((tx, id: string) => {
+		tx.update("todos", id, (todo) => ({ ...todo, complete: !todo.complete }))
+	})
+
+	return (
+		<div>
+			{todos.map((todo) => (
+				<label key={todo.id}>
+					<input
+						type="checkbox"
+						checked={todo.complete}
+						onChange={() => toggleTodo(todo.id)}
+					/>
+					{todo.text}
+				</label>
+			))}
+			<button onClick={() => addTodo("New todo")}>Add</button>
+		</div>
+	)
 }
 ```
 
-## 7. Adding Sync (Optional)
+The package also exports `useTandemClient` for direct client access and `useEntity(collection, id)` for reading a single record.
 
-To enable real-time sync between clients, you'll need to implement a backend. See the [Remote Implementation Guide](./how_to_implement_remote.md) for details.
+## 5. Add a server
 
-```typescript
-// With sync enabled
-const db = new TandemClient<TodoSchema>({
-  clientStorage: new TandemClientIndexedDbStorage({
-    dbName: "my-todo-app",
-    version: 1,
-  }),
-  remote: {
-    async push({ mutations }) {
-      // Send mutations to your server
-      await fetch("/api/sync/push", {
-        method: "POST",
-        body: JSON.stringify({ mutations })
-      })
-    },
-    async pull({ cookie, scanWindow }) {
-      // Fetch updates from your server
-      const response = await fetch("/api/sync/pull", {
-        method: "POST",
-        body: JSON.stringify({ cookie, scanWindow })
-      })
-      return response.json()
-    },
-    async connect(api) {
-      // Setup real-time connection (WebSocket, SSE, etc.)
-      const ws = new WebSocket("/api/sync/ws")
-      ws.onmessage = () => api.poke()
-      return () => ws.close()
-    }
-  }
+Run a `TandemServer` and expose its `push` and `pull` methods over HTTP.
+
+```ts
+// server/index.ts
+import {
+	TandemServer,
+	TandemServerJsonFileStorage,
+} from "@tanishqkancharla/tandem-server"
+import { schema, type TodoSchema } from "../shared/schema"
+
+const server = new TandemServer({
+	schema,
+	relations: {},
+	storage: new TandemServerJsonFileStorage<TodoSchema>({
+		filePath: "./data/tandem.json",
+	}),
 })
+
+// In your HTTP framework:
+// POST /api/tandem { action: "push", args } -> await server.push(args)
+// POST /api/tandem { action: "pull", args } -> await server.pull(args)
 ```
 
-## Key Concepts
+On the client, implement `RemoteApi` by forwarding each call to that endpoint.
 
-- **Schema**: Define your data structure with TypeScript types
-- **Queries**: Use the query builder to read and filter data
-- **Subscriptions**: Get real-time updates when data changes
-- **Transactions**: Group operations together for atomic updates
-- **Optimistic Updates**: Changes appear instantly, sync happens in background
+```ts
+// client/remote.ts
+import type { RemoteApi } from "@tanishqkancharla/tandem-core"
+import type { TodoSchema } from "../shared/schema"
 
-## Next Steps
+async function call(action: "push" | "pull", args: unknown) {
+	const response = await fetch("/api/tandem", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ action, args }),
+	})
+	if (!response.ok) throw new Error(`Tandem ${action} failed`)
+	return response.json()
+}
 
-- [**How Tandem Works**](./how_does_tandem_work.md) - Understand the sync model
-- [**Remote Implementation**](./how_to_implement_remote.md) - Add backend sync
-- **API Reference** - Complete API documentation (coming soon)
-- **Examples** - More complex examples (coming soon)
+export const todoRemote: RemoteApi<TodoSchema> = {
+	async connect({ poke }) {
+		// Poll for changes. Use a WebSocket or SSE to poke on demand instead.
+		const timer = setInterval(poke, 1000)
+		return async () => clearInterval(timer)
+	},
+	async push(args) {
+		await call("push", args)
+	},
+	pull: (args) => call("pull", args),
+}
+```
+
+The client only pulls data for queries it subscribes to, so another client's writes appear once a matching `subscribe` or `useTandemQuery` is active.
+
+## Next steps
+
+- [Queries](queries.md)
+- [Server](server.md)
+- [How sync works](sync.md)
