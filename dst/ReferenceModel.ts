@@ -1,4 +1,9 @@
-import type { Mutation, RemoteApi } from "@tanishqkancharla/tandem-core"
+import {
+	type Mutation,
+	matchBy,
+	type RemoteApi,
+	unreachable,
+} from "@tanishqkancharla/tandem-core"
 import type { DstSchema, DstTodo } from "./DstWorld.js"
 
 export type DstOp =
@@ -15,8 +20,16 @@ function byId(a: DstTodo, b: DstTodo): number {
 }
 
 function apply(state: Map<string, DstTodo>, op: DstOp): void {
-	if (op.type === "set") state.set(op.item.id, op.item)
-	else state.delete(op.id)
+	switch (op.type) {
+		case "set":
+			state.set(op.item.id, op.item)
+			return
+		case "remove":
+			state.delete(op.id)
+			return
+		default:
+			return unreachable(op)
+	}
 }
 
 /**
@@ -55,9 +68,10 @@ export class ReferenceModel<Client extends string> {
 				if (op.collection !== "todos") continue
 				apply(
 					this.server,
-					op.type === "set"
-						? { type: "set", item: op.value }
-						: { type: "remove", id: String(op.id) },
+					matchBy(op, "type", {
+						set: ({ value }): DstOp => ({ type: "set", item: value }),
+						remove: ({ id }): DstOp => ({ type: "remove", id: String(id) }),
+					}),
 				)
 			}
 		}

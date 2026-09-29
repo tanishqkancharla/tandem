@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
+import { matchBy } from "@tanishqkancharla/tandem-core"
 import * as errore from "errore"
 import { jsonlFileSink, parseArtifact, replay } from "./DstReplay.js"
 import {
@@ -131,12 +132,13 @@ export function sweepSummary(
 		`| ${count("ok")} | ${count("violation")} | ${count("nondeterministic")} | ${count("error")} |`,
 		"",
 		...failures.map((failure) => {
-			const detail =
-				failure.outcome === "violation"
-					? describeViolation(failure.violation).split("\n")[0]
-					: failure.outcome === "ok"
-						? ""
-						: failure.detail
+			const detail = matchBy(failure, "outcome", {
+				ok: () => "",
+				violation: ({ violation }) =>
+					describeViolation(violation).split("\n")[0],
+				nondeterministic: ({ detail }) => detail,
+				error: ({ detail }) => detail,
+			})
 			return `- seed ${failure.seed} (${failure.outcome}): ${detail}`
 		}),
 		"",

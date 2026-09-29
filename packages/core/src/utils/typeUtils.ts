@@ -70,6 +70,23 @@ export function match<V, K extends string | number = string | number>(
 	return result
 }
 
+/**
+ * Calls the handler for the member of a discriminated union selected by `key`,
+ * with the value narrowed to that member, so a new member fails to compile
+ * instead of falling through.
+ */
+export function matchBy<
+	K extends PropertyKey,
+	U extends Record<K, PropertyKey>,
+	H extends {
+		[V in U[K]]: (value: Extract<U, Record<K, V>>) => unknown
+	},
+>(value: U, key: K, handlers: H): ReturnType<H[U[K]]> {
+	const handler = handlers[value[key]] as (value: U) => ReturnType<H[U[K]]>
+
+	return handler(value)
+}
+
 export type Assert<_Test extends true> = void
 export type TestIsEqual<A extends B, B> = A extends B
 	? B extends A

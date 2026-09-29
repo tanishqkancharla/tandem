@@ -1,3 +1,5 @@
+import { match } from "./typeUtils.js"
+
 export function isObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null
 }
@@ -91,9 +93,9 @@ export function sortBy<T, V extends string | number>(
 			const aValue = sortFn(a)
 			const bValue = sortFn(b)
 			if (aValue > bValue) {
-				return order === "asc" ? 1 : -1
+				return match(order, { asc: 1, desc: -1 })
 			} else if (aValue < bValue) {
-				return order === "asc" ? -1 : 1
+				return match(order, { asc: -1, desc: 1 })
 			}
 		}
 

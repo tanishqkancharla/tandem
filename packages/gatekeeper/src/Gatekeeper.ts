@@ -451,11 +451,25 @@ class Interaction {
 	}
 
 	get sentBy(): Service {
-		return this.phase === "exit" ? this.args.receiver : this.args.sender
+		switch (this.phase) {
+			case "enter":
+			case "processing":
+			case "delivered":
+				return this.args.sender
+			case "exit":
+				return this.args.receiver
+		}
 	}
 
 	get waitingFor(): Service {
-		return this.phase === "exit" ? this.args.sender : this.args.receiver
+		switch (this.phase) {
+			case "enter":
+			case "processing":
+			case "delivered":
+				return this.args.receiver
+			case "exit":
+				return this.args.sender
+		}
 	}
 
 	get isStop(): boolean {

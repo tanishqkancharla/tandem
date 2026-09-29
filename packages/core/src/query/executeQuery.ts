@@ -10,6 +10,7 @@ import type {
 } from "../schema/Schema.js"
 import { collectionIdToTuple } from "../schema/Schema.js"
 import { isEqual, isObject, pick } from "../utils/objectUtils.js"
+import { match } from "../utils/typeUtils.js"
 import type {
 	EncodedQuery,
 	Operator,
@@ -379,7 +380,7 @@ function getQueryRows<
 				for (const [field, direction] of query.order ?? []) {
 					const comparison = compareOrderedValues(left[field], right[field])
 					if (comparison !== 0) {
-						return direction === "asc" ? comparison : -comparison
+						return match(direction, { asc: comparison, desc: -comparison })
 					}
 				}
 				return 0
@@ -448,8 +449,10 @@ function executeLoadedQuery<Schema extends AnySchema>(
 				collectRow,
 			)
 
-			result[relationName] =
-				relation.type === "many-to-one" ? (related[0] ?? null) : related
+			result[relationName] = match<unknown>(relation.type, {
+				"many-to-one": related[0] ?? null,
+				"one-to-many": related,
+			})
 		}
 
 		return result
