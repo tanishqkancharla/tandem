@@ -323,8 +323,8 @@ The #43 recording opens with a remove of a record client2 doesn't have, so it st
 
 ### Phase 5: Update docs and sweep
 
-- [ ] Update `packages/core/src/sync/AGENTS.md` and `packages/core/src/transaction/AGENTS.md`, which still describe undo-based rollback.
-- [ ] Update the "expected behavior" paragraph in `dst/known-failures/README.md` if the remaining recordings describe it differently.
+- [x] Update `packages/core/src/sync/AGENTS.md` and `packages/core/src/transaction/AGENTS.md`, which still describe undo-based rollback. The sync guide also showed a `sync()` remote API that doesn't exist.
+- [x] Check the "expected behavior" paragraph in `dst/known-failures/README.md`: it still holds. Drop the "invertible mutations" roadmap item from the root README.
 - [ ] Run `pnpm lint` and a DST sweep with no faults: `pnpm dst:run --runs 50 --steps 300`.
 
 ## References

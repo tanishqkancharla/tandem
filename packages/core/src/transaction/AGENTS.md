@@ -2,7 +2,7 @@
 
 ## What
 
-Handles data modifications with optimistic updates, transactions, and rollback support. Ensures data consistency during concurrent modifications.
+Records data modifications as mutations. A transaction applies its writes locally and records each as an op, and `TandemClient.commit` turns the ops into a mutation for the sync engine.
 
 ## How to use
 
@@ -24,14 +24,14 @@ await db.commit(tx);
 1. **Transactions**: Group operations atomically
 2. **Optimistic Updates**: Apply locally first
 3. **Streaming**: Send to server in background
-4. **Rollback**: Revert on conflicts
-5. **Replay**: Re-apply non-conflicting changes
+4. **Replay**: After a pull, pending mutations are replayed on the server's latest values (see `sync/PendingWrites.ts`)
 
 ## Mutation types
 
 - `set` - Create or update record
-- `remove` - Delete record
-- Invertible variants store rollback data
+- `remove` - Delete record by id, recorded even when the record isn't local
+
+Ops store only the new value or the id, never the previous value. Replay reapplies each op in order.
 
 ## Common patterns
 
