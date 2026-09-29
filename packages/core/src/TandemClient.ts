@@ -26,7 +26,7 @@ import {
 import { ConsoleLoggerSink, Logger, type LoggerApi } from "./utils/Logger.js"
 import { randomId, type RngApi } from "./utils/randomId.js"
 import type { TimerApi } from "./utils/Timer.js"
-import type { AsyncUnsubscribe } from "./utils/typeUtils.js"
+import { tag, type AsyncUnsubscribe } from "./utils/typeUtils.js"
 
 export type TandemClientArgs<
 	Schema extends AnySchema,
@@ -76,6 +76,9 @@ export class TandemClient<
 	private readonly rng: RngApi
 
 	private speculativeMutations: InvertibleMutation<Schema>[] = []
+	// Not reset by clear(): the server acknowledges every id up to the last one it
+	// applied for this client id, so a reused id would count as acknowledged.
+	private mutationCount = 0
 	constructor({
 		schema,
 		relations,
@@ -131,7 +134,7 @@ export class TandemClient<
 		lastMutationId,
 	}: {
 		patch: Patch<Schema>
-		lastMutationId?: MutationId
+		lastMutationId: MutationId
 	}) {
 		this.logger.info({ message: "applying patch" })
 
@@ -139,13 +142,6 @@ export class TandemClient<
 			this.logger.info({ message: "no ops to apply" })
 			return
 		}
-
-		// A little magick-y but this works as expected even when lastMutationId is
-		// undefined because this will be -1, and we'll report all speculative mutations
-		// as still speculative
-		const commitedMutationIndex = this.speculativeMutations.findIndex(
-			(m) => m.id === lastMutationId,
-		)
 
 		const tx = this.db.makeTupleDbTransaction()
 
@@ -158,8 +154,8 @@ export class TandemClient<
 		tx.write(writeOps)
 
 		// Apply the un-committed still speculative mutations on top
-		const stillSpeculative = this.speculativeMutations.slice(
-			commitedMutationIndex + 1,
+		const stillSpeculative = this.speculativeMutations.filter(
+			(m) => m.id > lastMutationId,
 		)
 
 		for (const mutation of stillSpeculative) {
@@ -228,9 +224,10 @@ export class TandemClient<
 		}
 
 		this.logger.info({ message: "committing transaction" })
+		this.mutationCount += 1
 		const mutation: InvertibleMutation<Schema> = {
 			ops: transaction.ops,
-			id: transaction.tupleDbTx.id as MutationId,
+			id: tag<MutationId>(this.mutationCount),
 		}
 		this.db.commit(transaction)
 		this.speculativeMutations.push(mutation)

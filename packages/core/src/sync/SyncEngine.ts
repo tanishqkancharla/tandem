@@ -43,7 +43,11 @@ export type RemoteApi<Schema extends AnySchema> = {
 	}): Promise<{
 		cookie: Cookie
 		patch: Patch<Schema>
-		lastMutationId?: MutationId
+		/**
+		 * The last of this client's mutations the server applied, on every pull.
+		 * 0 before the server has applied any.
+		 */
+		lastMutationId: MutationId
 	}>
 }
 
@@ -147,7 +151,7 @@ export class SyncEngine<Schema extends AnySchema> {
 	) => void
 	private readonly applyPatchAt: (args: {
 		patch: Patch<Schema>
-		lastMutationId?: MutationId
+		lastMutationId: MutationId
 	}) => void
 
 	private readonly clientId: ClientId

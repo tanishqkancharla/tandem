@@ -97,7 +97,11 @@ export type MutationOp<Schema extends AnySchema> =
 	| SetMutationOp<Schema>
 	| RemoveMutationOp<Schema>
 
-export type MutationId = Tagged<"MutationId", string>
+/**
+ * A per-client counter: a client's first committed mutation is 1, and each
+ * commit adds 1. A server acknowledges every mutation up to an id at once.
+ */
+export type MutationId = Tagged<"MutationId", number>
 export type Mutation<Schema extends AnySchema> = {
 	ops: MutationOp<Schema>[]
 	id: MutationId

@@ -337,9 +337,8 @@ export class TandemServer<
 					(previous) => !containsRecordKey(currentRecordKeys, previous),
 				)
 			: []
-		const lastMutationId = client.lastMutationId
+		const lastMutationId = client.lastMutationId ?? tag<MutationId>(0)
 
-		client.lastMutationId = undefined
 		client.scanWindowKey = scanWindowKey
 		if (shouldRead) client.syncedRecordKeys = currentRecordKeys
 

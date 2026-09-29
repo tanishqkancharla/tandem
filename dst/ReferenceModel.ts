@@ -5,7 +5,7 @@ export type DstOp =
 	| { type: "set"; item: DstTodo }
 	| { type: "remove"; id: string }
 
-export type DstWrite = { mutationId: string; op: DstOp }
+export type DstWrite = { mutationId: number; op: DstOp }
 
 type PullArgs = Parameters<RemoteApi<DstSchema>["pull"]>[0]
 type PullResponse = Awaited<ReturnType<RemoteApi<DstSchema>["pull"]>>
@@ -32,9 +32,20 @@ export class ReferenceModel<Client extends string> {
 	private readonly server = new Map<string, DstTodo>()
 	private readonly pending = new Map<Client, DstWrite[]>()
 	private readonly received = new Map<Client, Map<string, DstTodo>>()
+	private readonly writeCounts = new Map<Client, number>()
 
-	wrote(client: Client, write: DstWrite): void {
-		this.pending.set(client, [...(this.pending.get(client) ?? []), write])
+	/**
+	 * Records a committed write and returns its mutation id. Ids are a
+	 * per-client counter in the sync protocol, so the model can assign them.
+	 */
+	wrote(client: Client, op: DstOp): number {
+		const mutationId = (this.writeCounts.get(client) ?? 0) + 1
+		this.writeCounts.set(client, mutationId)
+		this.pending.set(client, [
+			...(this.pending.get(client) ?? []),
+			{ mutationId, op },
+		])
+		return mutationId
 	}
 
 	/** The server committed these mutations. */
@@ -66,20 +77,21 @@ export class ReferenceModel<Client extends string> {
 				),
 			)
 		}
-		if (response.lastMutationId === undefined) return
 		const pending = this.pending.get(client) ?? []
-		const acknowledged = pending.findIndex(
-			({ mutationId }) => mutationId === response.lastMutationId,
+		this.pending.set(
+			client,
+			pending.filter(({ mutationId }) => mutationId > response.lastMutationId),
 		)
-		if (acknowledged >= 0) {
-			this.pending.set(client, pending.slice(acknowledged + 1))
-		}
 	}
 
-	/** A crash forgets the incarnation; the restarted one must pull again. */
+	/**
+	 * A crash forgets the incarnation. The restarted one is a new client that
+	 * must pull again, and its mutation ids start over.
+	 */
 	crashed(client: Client): void {
 		this.pending.delete(client)
 		this.received.delete(client)
+		this.writeCounts.delete(client)
 	}
 
 	/** What the client should show now, or undefined before its first pull. */

@@ -132,10 +132,6 @@ describe("Deterministic simulation testing", () => {
 	describe("known sync bugs", () => {
 		it.each([
 			[
-				"A: an empty patch drops its acknowledgement",
-				"seed-2-empty-patch-drops-ack",
-			],
-			[
 				"B: the server does not count keys a client pushed",
 				"seed-216-pushed-keys-not-synced",
 			],

@@ -4,27 +4,13 @@ Runs the simulation found that fail because of sync engine bugs we have not fixe
 
 `dst.spec.ts` replays each artifact with no random choices and requires it to reach its recorded violation. The test fails when the bug is fixed, or when the recording no longer applies to the code; either way, look at it, and delete the recording once the bug is fixed. A random run writes the same format through `jsonlFileSink`, so a new failure can be added here as it is.
 
-The four bugs are independent: applying the fix for A still leaves B, C, and D failing.
+The bugs are independent: fixing one still leaves the others failing.
 
 The expected behavior these recordings encode: a client shows the last server state it received plus its own unacknowledged writes, and every write reaches the server unless the server rejects it. That includes writes a client stored before crashing, which Tandem does not implement yet.
 
-## A. An empty patch drops its acknowledgement: `seed-2-empty-patch-drops-ack.jsonl`
+## A. An empty patch drops its acknowledgement: no recording
 
-`{ seed: 2, steps: 30 }`. Violation at quiescence: client2 is missing `item-2 (rev 29)`, which the server has.
-
-- steps 1 and 3: client2 sets and then removes `item-2`; both pushes are applied, so `item-2` is gone from the server.
-- A later pull of client2's returns an empty patch with the acknowledgement, and the server consumes the ack.
-- step 29: client1 sets `item-2` again.
-
-```
-client.applyPatchAt:
-  patch is empty → return        # before looking at the ack, so the remove stays speculative
-later pulls:
-  undo speculative, apply patch, replay speculative
-                                 # the ack is gone, so the stale remove is replayed forever
-```
-
-Also reproduced through the public API by the `(known bug)` test in `packages/core/test/sync/conflicts.spec.ts`, where a lost poke lets a deleted write survive.
+`TandemClient.applyPatchAt` returns before it reads `lastMutationId` when the patch is empty, so that pull confirms nothing. The server reports `lastMutationId` on every pull, so the next non-empty patch confirms the writes, and DST runs no longer show the bug. It stays visible for a client that receives only empty patches after its write is acknowledged. The `(known bug)` test in `packages/core/test/sync/conflicts.spec.ts` covers that case, where a lost poke lets a deleted write survive.
 
 ## B. The server does not count keys a client pushed: `seed-216-pushed-keys-not-synced.jsonl`
 
@@ -54,7 +40,7 @@ push fails → rollback([item-2 write])   # a lost message is not a rejection, b
                                         # reaches the server
 ```
 
-A lost response does the same, and worse: the server did apply the write, and the rollback removes the accepted mutation from `speculativeMutations`. The next pull's acknowledgement then names an id the client no longer has, `findIndex(ack)` returns -1, and older acknowledged writes are replayed over newer server data. Nearly every run with faults hits this bug, so fault runs find little else until it is fixed.
+A lost response does the same, although the server did apply the write: the client discards it until a later patch brings the record back, which happens only if the client's window covers it. Nearly every run with faults hits this bug, so fault runs find little else until it is fixed.
 
 ## D. A crash loses writes that were stored but not pushed: `seed-13-crash-loses-outbox.jsonl`
 

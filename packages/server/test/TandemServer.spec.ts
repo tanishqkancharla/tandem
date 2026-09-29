@@ -442,15 +442,14 @@ test("subscriptions reject initial reads and report recomputation failures", asy
 	expect(initialCallbacks).toEqual([])
 })
 
-test("remote pushes preserve operation order and acknowledge the last mutation once", async () => {
+test("remote pushes preserve operation order and acknowledge the last mutation on every pull", async () => {
 	const { server } = createServer()
 	const clientId = tag<ClientId>("offline-client")
-	const duplicateMutationId = tag<MutationId>("duplicate-mutation")
 	const scanWindow: ScanWindow<TestSchema> = [{ collection: "threads" }]
 	const initial = await server.pull({ clientId, scanWindow })
 	const mutations: Parameters<RemoteApi<TestSchema>["push"]>[0]["mutations"] = [
 		{
-			id: duplicateMutationId,
+			id: tag<MutationId>(1),
 			ops: [
 				{
 					type: "set",
@@ -466,7 +465,7 @@ test("remote pushes preserve operation order and acknowledge the last mutation o
 			],
 		},
 		{
-			id: duplicateMutationId,
+			id: tag<MutationId>(2),
 			ops: [
 				{
 					type: "set",
@@ -503,7 +502,7 @@ test("remote pushes preserve operation order and acknowledge the last mutation o
 		cookie: initial.cookie,
 		scanWindow,
 	})
-	expect(acknowledged.lastMutationId).toBe(duplicateMutationId)
+	expect(acknowledged.lastMutationId).toBe(2)
 	expect(acknowledged.cookie).toBe(1)
 	expect(acknowledged.patch.set).toEqual([
 		{
@@ -518,7 +517,7 @@ test("remote pushes preserve operation order and acknowledge the last mutation o
 		},
 	])
 
-	// Acknowledgements are consumed and unchanged pulls stay empty.
+	// Unchanged pulls stay empty but still carry the acknowledgement.
 	const unchanged = await server.pull({
 		clientId,
 		cookie: acknowledged.cookie,
@@ -527,7 +526,7 @@ test("remote pushes preserve operation order and acknowledge the last mutation o
 	expect(unchanged).toEqual({
 		cookie: acknowledged.cookie,
 		patch: { set: [], remove: [] },
-		lastMutationId: undefined,
+		lastMutationId: 2,
 	})
 
 	await server.close()
@@ -536,7 +535,7 @@ test("remote pushes preserve operation order and acknowledge the last mutation o
 test("push acknowledgement is visible to the pull started by its poke", async () => {
 	const { server } = createServer()
 	const clientId = tag<ClientId>("poked-client")
-	const mutationId = tag<MutationId>("poked-mutation")
+	const mutationId = tag<MutationId>(1)
 	const scanWindow: ScanWindow<TestSchema> = [{ collection: "users" }]
 	const initial = await server.pull({ clientId, scanWindow })
 	const pokedPull =
@@ -786,7 +785,7 @@ test("failed pushes do not acknowledge, advance, or poke", async () => {
 			clientId,
 			mutations: [
 				{
-					id: tag<MutationId>("failed-mutation"),
+					id: tag<MutationId>(1),
 					ops: [
 						{
 							type: "set",
@@ -808,7 +807,7 @@ test("failed pushes do not acknowledge, advance, or poke", async () => {
 	expect(afterFailure).toEqual({
 		cookie: initial.cookie,
 		patch: { set: [], remove: [] },
-		lastMutationId: undefined,
+		lastMutationId: 0,
 	})
 	expect(await server.query({ collection: "users" })).toEqual([])
 
