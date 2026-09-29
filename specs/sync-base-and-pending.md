@@ -110,7 +110,7 @@ The implementation follows this shape:
  │   └── receive                                     # write a server value; keep it as the base if pending [[packages/core/src/sync/PendingWrites.ts#PendingWrites.receive]]
  ├── reject                                          # drop rejected mutations and rebuild [[packages/core/src/sync/PendingWrites.ts#PendingWrites.reject]]
  └── rebuild                                         # reset base records, replay ops in order [[packages/core/src/sync/PendingWrites.ts#PendingWrites.rebuild]]
-     └── write                                       # set or remove one record via getCollectionTransaction [[packages/core/src/sync/PendingWrites.ts#write]]
+     └── writeRecord                                 # set or remove one record via getCollectionTransaction [[packages/core/src/sync/PendingWrites.ts#writeRecord]]
 ```
 
 Three invariants hold between operations:

@@ -32,7 +32,7 @@ export type BaseCapture<Schema extends AnySchema> = ReadonlyMap<
 	Schema[CollectionName<Schema>] | undefined
 >
 
-function refOf<Schema extends AnySchema>(
+function mutationOpToRecordRef<Schema extends AnySchema>(
 	op: MutationOp<Schema>,
 ): RecordRef<Schema> {
 	return {
@@ -41,8 +41,8 @@ function refOf<Schema extends AnySchema>(
 	}
 }
 
-/** A Map key for a record: its collection followed by its id parts. */
-function encode<Schema extends AnySchema>({
+/** The base map's key for a record: its collection followed by its id parts. */
+function recordRefToBaseKey<Schema extends AnySchema>({
 	collection,
 	id,
 }: RecordRef<Schema>): string {
@@ -50,7 +50,7 @@ function encode<Schema extends AnySchema>({
 }
 
 /** Sets the record to value, or removes it when value is undefined. */
-function write<Schema extends AnySchema>(
+function writeRecord<Schema extends AnySchema>(
 	tx: TupleRootTransactionApi<SchemaToTupleSchema<Schema>>,
 	{ collection, id }: RecordRef<Schema>,
 	value: Schema[CollectionName<Schema>] | undefined,
@@ -94,10 +94,10 @@ export class PendingWrites<Schema extends AnySchema> {
 			Schema[CollectionName<Schema>] | undefined
 		>()
 		for (const op of mutation.ops) {
-			const ref = refOf(op)
-			const encoded = encode(ref)
-			if (this.base.has(encoded) || capture.has(encoded)) continue
-			capture.set(encoded, readCommitted(ref))
+			const ref = mutationOpToRecordRef(op)
+			const baseKey = recordRefToBaseKey(ref)
+			if (this.base.has(baseKey) || capture.has(baseKey)) continue
+			capture.set(baseKey, readCommitted(ref))
 		}
 		return capture
 	}
@@ -105,15 +105,15 @@ export class PendingWrites<Schema extends AnySchema> {
 	/** Records a committed mutation, with the base captured before it committed. */
 	add(mutation: Mutation<Schema>, capture: BaseCapture<Schema>): void {
 		for (const op of mutation.ops) {
-			const ref = refOf(op)
-			const encoded = encode(ref)
-			const entry = this.base.get(encoded) ?? {
+			const ref = mutationOpToRecordRef(op)
+			const baseKey = recordRefToBaseKey(ref)
+			const entry = this.base.get(baseKey) ?? {
 				...ref,
-				value: capture.get(encoded),
+				value: capture.get(baseKey),
 				lastWrittenBy: mutation.id,
 			}
 			entry.lastWrittenBy = mutation.id
-			this.base.set(encoded, entry)
+			this.base.set(baseKey, entry)
 		}
 		this.mutations.push(mutation)
 	}
@@ -140,8 +140,8 @@ export class PendingWrites<Schema extends AnySchema> {
 		this.rebuild(tx)
 
 		// Only now: the rebuild above still needed these entries.
-		for (const [encoded, entry] of this.base) {
-			if (entry.lastWrittenBy <= lastMutationId) this.base.delete(encoded)
+		for (const [baseKey, entry] of this.base) {
+			if (entry.lastWrittenBy <= lastMutationId) this.base.delete(baseKey)
 		}
 	}
 
@@ -159,12 +159,15 @@ export class PendingWrites<Schema extends AnySchema> {
 		const lastWrittenBy = new Map<string, MutationId>()
 		for (const mutation of this.mutations) {
 			for (const op of mutation.ops) {
-				lastWrittenBy.set(encode(refOf(op)), mutation.id)
+				lastWrittenBy.set(
+					recordRefToBaseKey(mutationOpToRecordRef(op)),
+					mutation.id,
+				)
 			}
 		}
-		for (const [encoded, entry] of this.base) {
-			const last = lastWrittenBy.get(encoded)
-			if (last === undefined) this.base.delete(encoded)
+		for (const [baseKey, entry] of this.base) {
+			const last = lastWrittenBy.get(baseKey)
+			if (last === undefined) this.base.delete(baseKey)
 			else entry.lastWrittenBy = last
 		}
 	}
@@ -180,20 +183,24 @@ export class PendingWrites<Schema extends AnySchema> {
 		ref: RecordRef<Schema>,
 		value: Schema[CollectionName<Schema>] | undefined,
 	): void {
-		const entry = this.base.get(encode(ref))
+		const entry = this.base.get(recordRefToBaseKey(ref))
 		if (entry) entry.value = value
-		write(tx, ref, value)
+		writeRecord(tx, ref, value)
 	}
 
 	private rebuild(
 		tx: TupleRootTransactionApi<SchemaToTupleSchema<Schema>>,
 	): void {
-		for (const entry of this.base.values()) write(tx, entry, entry.value)
+		for (const entry of this.base.values()) writeRecord(tx, entry, entry.value)
 		// One op at a time, in order: tx.write applies every remove before every
 		// set, which would reorder a mutation that sets and then removes a record.
 		for (const mutation of this.mutations) {
 			for (const op of mutation.ops) {
-				write(tx, refOf(op), op.type === "set" ? op.value : undefined)
+				writeRecord(
+					tx,
+					mutationOpToRecordRef(op),
+					op.type === "set" ? op.value : undefined,
+				)
 			}
 		}
 	}
