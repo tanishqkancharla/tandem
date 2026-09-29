@@ -68,16 +68,17 @@ This only works if the client can tell which writes a response confirms, whateve
 Tandem doesn't need a full copy of the server state. A record's base value only differs from what the app sees while a pending mutation writes it. So the base holds an entry only for records that pending mutations write, and each entry remembers the newest pending mutation that writes it.
 
 ```ts
-// packages/core/src/sync/PendingWrites.ts (new), owned by TandemClient
+// packages/core/src/sync/PendingWrites.ts, owned by TandemClient
 
-/** JSON of the record's tuple key: ["record", collection, ...collectionIdToTuple(id)] */
-type RecordKey = string
+/** The record an op or a patch entry writes. */
+type RecordRef<Schema extends AnySchema> = {
+	collection: CollectionName<Schema>
+	id: Schema[CollectionName<Schema>]["id"]
+}
 
-type BaseEntry<Schema extends AnySchema> = {
-	/** The tuple key, for tx.set and tx.remove during a rebuild. */
-	key: SchemaToTupleSchema<Schema>["key"]
+type BaseEntry<Schema extends AnySchema> = RecordRef<Schema> & {
 	/** The server's latest value, or undefined when the server has no such record. */
-	value: SchemaToTupleSchema<Schema>["value"] | undefined
+	value: Schema[CollectionName<Schema>] | undefined
 	/** The newest pending mutation that writes this record. */
 	lastWrittenBy: MutationId
 }
@@ -85,27 +86,31 @@ type BaseEntry<Schema extends AnySchema> = {
 class PendingWrites<Schema extends AnySchema> {
 	/** Mutations the server hasn't acknowledged, in ascending id order. */
 	private mutations: Mutation<Schema>[] = []
-	private base = new Map<RecordKey, BaseEntry<Schema>>()
+	/** Keyed by JSON of [collection, ...collectionIdToTuple(id)]. */
+	private base = new Map<string, BaseEntry<Schema>>()
 
-	/** Records a committed mutation, capturing base values for records it writes first. */
-	add(mutation: Mutation<Schema>, readCommitted: (key) => value | undefined): void
-	/** Writes the patch, the base, and the replayed pending ops into one tuple transaction. */
+	captureBase(mutation, readCommitted: (ref: RecordRef<Schema>) => value | undefined): BaseCapture<Schema>
+	add(mutation, capture: BaseCapture<Schema>): void
 	applyPull(tx, patch: Patch<Schema>, lastMutationId: MutationId): void
-	/** Drops rejected mutations and writes the rebuild into tx. */
-	reject(tx, mutations: Mutation<Schema>[]): void
+	reject(tx, rejected: Mutation<Schema>[]): void
 	clear(): void
 }
 ```
 
+Records are identified by collection and id. Every write goes through `getCollectionTransaction` from `Transaction.ts`, which narrows the tuple transaction to one collection's subspace so a record's value type-checks for a generic schema. `Transaction` writes the same way, so `PendingWrites` needs no casts of its own.
+
 The implementation follows this shape:
 
 ```callstack
- PendingWrites [[p2-pending:new:84-206]]
- ├── captureBase                                     # read committed values before the commit [[p2-pending:new:93-107]]
- ├── add                                             # record the mutation after the commit succeeds [[p2-pending:new:110-123]]
- ├── applyPull                                       # patch, reset, replay, then delete confirmed entries [[p2-pending:new:129-158]]
- ├── reject                                          # drop rejected mutations and rebuild [[p2-pending:new:161-182]]
- └── rebuild                                         # reset base records, replay ops in order [[p2-pending:new:189-205]]
+ PendingWrites [[packages/core/src/sync/PendingWrites.ts#PendingWrites]]
+ ├── captureBase                                     # read committed values before the commit [[packages/core/src/sync/PendingWrites.ts#PendingWrites.captureBase]]
+ │   └── Database.get(collection, id) [[packages/core/src/Database.ts#Database.get]]
+ ├── add                                             # record the mutation after the commit succeeds [[packages/core/src/sync/PendingWrites.ts#PendingWrites.add]]
+ ├── applyPull                                       # patch, reset, replay, then delete confirmed entries [[packages/core/src/sync/PendingWrites.ts#PendingWrites.applyPull]]
+ │   └── receive                                     # write a server value; keep it as the base if pending [[packages/core/src/sync/PendingWrites.ts#PendingWrites.receive]]
+ ├── reject                                          # drop rejected mutations and rebuild [[packages/core/src/sync/PendingWrites.ts#PendingWrites.reject]]
+ └── rebuild                                         # reset base records, replay ops in order [[packages/core/src/sync/PendingWrites.ts#PendingWrites.rebuild]]
+     └── write                                       # set or remove one record via getCollectionTransaction [[packages/core/src/sync/PendingWrites.ts#write]]
 ```
 
 Three invariants hold between operations:
@@ -569,14 +574,14 @@ Add `PendingWrites` and route commit, pull, and rollback through it. This is the
 
 `PendingWrites` is the only owner of `mutations` and `base`. `TandemClient` opens the tuple transaction, hands it in, and commits it, so each pull is still one change for subscribers.
 
-`PendingWrites` splits capturing from adding: `captureBase(mutation, readCommitted)` reads committed values before the transaction commits, and `add(mutation, capture)` records the mutation only after the commit succeeds. A tuple-database commit can throw on a read-write conflict, and a mutation that never committed must not become pending. `Database.get` takes the record's tuple key rather than a collection and id, because `PendingWrites` works in tuple keys.
+`PendingWrites` splits capturing from adding: `captureBase(mutation, readCommitted)` reads committed values before the transaction commits, and `add(mutation, capture)` records the mutation only after the commit succeeds. A tuple-database commit can throw on a read-write conflict, and a mutation that never committed must not become pending. The phase 2 commit keyed records by raw tuple keys and wrote through a cast-typed view of the transaction. A follow-up commit (`40619a6`) keys them by collection and id and writes through `getCollectionTransaction` instead, which removed both casts. `Database.get` now takes a collection and id to match.
 
 The DST sweep test swept seeds 1–4 with no faults and relied on seed 1 failing with #42's bug. It now sweeps 10 steps with a 0.1 fault rate, where seeds 1 and 2 fail with #43's bug.
 
 A no-fault sweep of 60 seeds at 300 steps passes every seed; phase 1 failed 15 of them, all with #42's shape. The new core tests for #41, #42, the ordering bug, and writes outside subscriptions all fail on phase 1's code.
 
 - [x] Add `packages/core/src/sync/PendingWrites.ts` with the data structure and invariants from "The base".
-- [x] Add `Database.get(key)` to read a committed record outside a transaction.
+- [x] Add `Database.get(collection, id)` to read a committed record outside a transaction.
 - [x] Replace `speculativeMutations` in `TandemClient` with a `PendingWrites`, and route `commit`, the pull handler, `rollback`, and `clear` through it. Rename `applyPatchAt` to `applyPull`, in `SyncEngine` too.
 - [x] `conflicts.spec.ts`: drop `.fails` from the #41 `(known bug)` test.
 - [x] Add a core test for #42's pattern: a pushed record that another client deletes before the writer's next read, then removed by the writer.
