@@ -27,23 +27,34 @@ Avoid letting the last member fall through:
 const id = op.type === "set" ? op.value.id : op.id;
 ```
 
-Use `switch` with `unreachable` from `utils/typeUtils.ts` when a branch needs the value narrowed to its member:
+Use `match` from `utils/typeUtils.ts` to map each member of a key to a value. Its cases receive only the key:
+
+```ts
+const verb = match(op.type, { set: "write", remove: "delete" });
+```
+
+Use `matchBy` from `utils/typeUtils.ts` when each case computes a value from the member narrowed by a discriminant property:
+
+```ts
+const id = matchBy(op, "type", {
+  set: ({ value }) => value.id,
+  remove: ({ id }) => id,
+});
+```
+
+Use `switch` with `unreachable` from `utils/typeUtils.ts` when branches run statements, such as side effects, rather than produce a value:
 
 ```ts
 switch (op.type) {
   case "set":
-    return op.value.id;
+    tx.set(op.collection, op.value);
+    return;
   case "remove":
-    return op.id;
+    tx.remove(op.collection, op.id);
+    return;
   default:
     return unreachable(op);
 }
-```
-
-Use `match` from `utils/typeUtils.ts` to map each member of a key to a value. Its cases receive only the key, so use `switch` when a case needs the narrowed value:
-
-```ts
-const verb = match(op.type, { set: "write", remove: "delete" });
 ```
 
 This applies to named members of a union. A check for absence, such as `value === undefined`, is not a fallback.

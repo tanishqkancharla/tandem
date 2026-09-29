@@ -16,7 +16,7 @@ import type {
 	AnyRelations,
 	RuntimeSchemaDefinition,
 } from "@tanishqkancharla/tandem-core"
-import { tag, untag } from "@tanishqkancharla/tandem-core"
+import { tag, unreachable, untag } from "@tanishqkancharla/tandem-core"
 import {
 	collectionIdsEqual,
 	executeQueryAsync,
@@ -110,12 +110,16 @@ function applyMutationOperation<
 	transaction: TandemServerTransaction<Schema, Relations>,
 	operation: MutationOp<Schema>,
 ) {
-	if (operation.type === "set") {
-		transaction.set(operation.collection, operation.value)
-		return
+	switch (operation.type) {
+		case "set":
+			transaction.set(operation.collection, operation.value)
+			return
+		case "remove":
+			transaction.remove(operation.collection, operation.id)
+			return
+		default:
+			return unreachable(operation)
 	}
-
-	transaction.remove(operation.collection, operation.id)
 }
 
 function tandemStorageToTupleDatabaseStorage<Schema extends AnySchema>(

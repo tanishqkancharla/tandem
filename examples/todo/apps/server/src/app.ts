@@ -3,6 +3,7 @@ import {
 	type TodoRemoteRequest,
 	type TodoSchema,
 } from "@tandem/example-todo-shared"
+import { matchBy } from "@tanishqkancharla/tandem-core"
 import {
 	TandemServer,
 	TandemServerJsonFileStorage,
@@ -41,18 +42,21 @@ function executeRequest({
 	server: TodoServer
 	request: TodoRemoteRequest
 }) {
-	if (request.action === "push") {
-		return server
-			.push(request.args)
-			.then(() => ({}))
-			.catch(
-				(cause) => new TodoHonoError({ operation: "push mutation", cause }),
-			)
-	}
-
-	return server
-		.pull(request.args)
-		.catch((cause) => new TodoHonoError({ operation: "pull changes", cause }))
+	return matchBy(request, "action", {
+		push: ({ args }) =>
+			server
+				.push(args)
+				.then(() => ({}))
+				.catch(
+					(cause) => new TodoHonoError({ operation: "push mutation", cause }),
+				),
+		pull: ({ args }) =>
+			server
+				.pull(args)
+				.catch(
+					(cause) => new TodoHonoError({ operation: "pull changes", cause }),
+				),
+	})
 }
 
 async function seedIfEmpty(server: TodoServer) {
