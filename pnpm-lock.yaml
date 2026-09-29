@@ -384,6 +384,9 @@ importers:
       '@remotion/renderer':
         specifier: 4.0.529
         version: 4.0.529(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@tanishqkancharla/tandem-core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@types/node':
         specifier: ^20.14.2
         version: 20.19.9

@@ -1,9 +1,12 @@
 /**
  * A small model of Tandem sync, used to draw the videos. `current` follows the
- * rules on main; `proposed` follows the Replicache-style design from the issues.
+ * rules on main before #46, which undid writes with saved undo values;
+ * `proposed` follows the Replicache-style design from the issues.
  * Pushes and pulls are explicit steps instead of timer ticks and pokes, and a
  * client's window is either every record or none.
  */
+import { unreachable } from "@tanishqkancharla/tandem-core"
+
 export type Model = "current" | "proposed"
 export type ClientName = "client1" | "client2"
 export const CLIENTS: ClientName[] = ["client1", "client2"]
@@ -41,14 +44,32 @@ export type Snapshot = {
 	notes: Note[]
 }
 
-const fmtOp = (op: Op) =>
-	op.type === "set" ? `set ${op.key} = "${op.value}"` : `remove ${op.key}`
+function fmtOp(op: Op): string {
+	switch (op.type) {
+		case "set":
+			return `set ${op.key} = "${op.value}"`
+		case "remove":
+			return `remove ${op.key}`
+		default:
+			return unreachable(op)
+	}
+}
 const short = (c: ClientName) => (c === "client1" ? "c1" : "c2")
 const sorted = (records: Records) =>
-	Object.fromEntries(Object.entries(records).sort(([a], [b]) => a.localeCompare(b)))
+	Object.fromEntries(
+		Object.entries(records).sort(([a], [b]) => a.localeCompare(b)),
+	)
 function applyOp(records: Records, op: Op) {
-	if (op.type === "set") records[op.key] = op.value
-	else delete records[op.key]
+	switch (op.type) {
+		case "set":
+			records[op.key] = op.value
+			return
+		case "remove":
+			delete records[op.key]
+			return
+		default:
+			unreachable(op)
+	}
 }
 const listKeys = (keys: string[]) => (keys.length ? keys.join(", ") : "")
 const ids = (list: string[]) => list.join(", ")
@@ -88,7 +109,16 @@ class CurrentWorld implements World {
 	}
 
 	private newClient(gen: number): CurrentClient {
-		return { gen, up: true, subscribed: false, visible: {}, speculative: [], outbox: [], counter: 0, disk: {} }
+		return {
+			gen,
+			up: true,
+			subscribed: false,
+			visible: {},
+			speculative: [],
+			outbox: [],
+			counter: 0,
+			disk: {},
+		}
 	}
 	private serverClient(c: ClientName) {
 		const id = `${c}#${this.clients[c].gen}`
@@ -107,7 +137,10 @@ class CurrentWorld implements World {
 			case "set": {
 				const prev = cl.visible[action.key]
 				const op: Op = { type: "set", key: action.key, value: action.value }
-				const undo: Op = prev === undefined ? { type: "remove", key: action.key } : { type: "set", key: action.key, value: prev }
+				const undo: Op =
+					prev === undefined
+						? { type: "remove", key: action.key }
+						: { type: "set", key: action.key, value: prev }
 				cl.visible[action.key] = action.value
 				this.commit(c, [op], [undo])
 				break
@@ -115,12 +148,22 @@ class CurrentWorld implements World {
 			case "remove": {
 				const prev = cl.visible[action.key]
 				if (prev === undefined) {
-					notes.push({ kind: "bad", text: `${action.key} isn't local, so the remove records nothing` })
+					notes.push({
+						kind: "bad",
+						text: `${action.key} isn't local, so the remove records nothing`,
+					})
 					break
 				}
 				delete cl.visible[action.key]
-				this.commit(c, [{ type: "remove", key: action.key }], [{ type: "set", key: action.key, value: prev }])
-				notes.push({ kind: "info", text: `The remove saves "${prev}" as its undo value` })
+				this.commit(
+					c,
+					[{ type: "remove", key: action.key }],
+					[{ type: "set", key: action.key, value: prev }],
+				)
+				notes.push({
+					kind: "info",
+					text: `The remove saves "${prev}" as its undo value`,
+				})
 				break
 			}
 			case "push": {
@@ -133,14 +176,19 @@ class CurrentWorld implements World {
 				const label = `push ${ms.map((m) => m.id).join(", ")}`
 				if (action.lost) {
 					messages.push({ from: c, to: "server", label, lost: true })
-					for (const m of [...ms].reverse()) for (const op of m.undo) applyOp(cl.visible, op)
+					for (const m of [...ms].reverse())
+						for (const op of m.undo) applyOp(cl.visible, op)
 					cl.speculative = cl.speculative.filter((m) => !ms.includes(m))
 					cl.disk = { ...cl.visible }
-					notes.push({ kind: "bad", text: `The failed push is treated as a rejection: ${ms.map((m) => m.id).join(", ")} rolled back and never retried` })
+					notes.push({
+						kind: "bad",
+						text: `The failed push is treated as a rejection: ${ms.map((m) => m.id).join(", ")} rolled back and never retried`,
+					})
 					break
 				}
 				messages.push({ from: c, to: "server", label })
-				for (const m of ms) for (const op of m.ops) applyOp(this.server.records, op)
+				for (const m of ms)
+					for (const op of m.ops) applyOp(this.server.records, op)
 				this.serverClient(c).ack = ms.at(-1)!.id
 				this.server.revision++
 				break
@@ -151,13 +199,24 @@ class CurrentWorld implements World {
 			case "crash":
 				cl.up = false
 				if (cl.speculative.length)
-					notes.push({ kind: "bad", text: `Storage keeps only records. ${cl.speculative.map((m) => m.id).join(", ")} and the outbox are lost` })
+					notes.push({
+						kind: "bad",
+						text: `Storage keeps only records. ${cl.speculative.map((m) => m.id).join(", ")} and the outbox are lost`,
+					})
 				break
 			case "restart": {
 				const disk = cl.disk
-				this.clients[c] = { ...this.newClient(cl.gen + 1), subscribed: cl.subscribed, visible: { ...disk }, disk: { ...disk } }
+				this.clients[c] = {
+					...this.newClient(cl.gen + 1),
+					subscribed: cl.subscribed,
+					visible: { ...disk },
+					disk: { ...disk },
+				}
 				const keys = Object.keys(disk)
-				notes.push({ kind: "bad", text: `Restarts with a new client id. ${listKeys(keys) || "Its records"} ${keys.length === 1 ? "loads" : "load"} as if confirmed, with nothing to push` })
+				notes.push({
+					kind: "bad",
+					text: `Restarts with a new client id. ${listKeys(keys) || "Its records"} ${keys.length === 1 ? "loads" : "load"} as if confirmed, with nothing to push`,
+				})
 				break
 			}
 		}
@@ -175,9 +234,13 @@ class CurrentWorld implements World {
 	private pull(c: ClientName, messages: Message[], notes: Note[]) {
 		const cl = this.clients[c]
 		const sc = this.serverClient(c)
-		const shouldRead = sc.synced === undefined || cl.cookie !== this.server.revision
-		const current = shouldRead && cl.subscribed ? Object.keys(this.server.records).sort() : []
-		const remove = shouldRead ? (sc.synced ?? []).filter((k) => !current.includes(k)) : []
+		const shouldRead =
+			sc.synced === undefined || cl.cookie !== this.server.revision
+		const current =
+			shouldRead && cl.subscribed ? Object.keys(this.server.records).sort() : []
+		const remove = shouldRead
+			? (sc.synced ?? []).filter((k) => !current.includes(k))
+			: []
 		const set = current.map((k) => [k, this.server.records[k]!] as const)
 		const ack = sc.ack
 		sc.ack = undefined
@@ -191,23 +254,38 @@ class CurrentWorld implements World {
 		})
 
 		if (set.length === 0 && remove.length === 0) {
-			if (ack !== undefined) notes.push({ kind: "bad", text: `Empty patch: applyPatchAt returns early and drops the ack for ${ack}` })
+			if (ack !== undefined)
+				notes.push({
+					kind: "bad",
+					text: `Empty patch: applyPatchAt returns early and drops the ack for ${ack}`,
+				})
 			return
 		}
 		const idx = cl.speculative.findIndex((m) => m.id === ack)
-		for (const m of [...cl.speculative].reverse()) for (const op of m.undo) applyOp(cl.visible, op)
+		for (const m of [...cl.speculative].reverse())
+			for (const op of m.undo) applyOp(cl.visible, op)
 		for (const [k, v] of set) cl.visible[k] = v
 		for (const k of remove) delete cl.visible[k]
 		const still = cl.speculative.slice(idx + 1)
 		for (const m of still) for (const op of m.ops) applyOp(cl.visible, op)
-		const covered = new Set([...set.map(([k]) => k), ...remove, ...still.flatMap((m) => m.ops.map((op) => op.key))])
+		const covered = new Set([
+			...set.map(([k]) => k),
+			...remove,
+			...still.flatMap((m) => m.ops.map((op) => op.key)),
+		])
 		for (const m of cl.speculative.slice(0, idx + 1))
 			for (const op of m.undo)
 				if (op.type === "set" && !covered.has(op.key))
-					notes.push({ kind: "bad", text: `Undoing acked ${m.id} restores ${op.key} "${op.value}", and the patch has no remove for it` })
+					notes.push({
+						kind: "bad",
+						text: `Undoing acked ${m.id} restores ${op.key} "${op.value}", and the patch has no remove for it`,
+					})
 		cl.speculative = still
 		cl.disk = { ...cl.visible }
-		notes.push({ kind: "info", text: "Rebase: undo unconfirmed writes with their saved undo values, apply the patch, redo the rest" })
+		notes.push({
+			kind: "info",
+			text: "Rebase: undo unconfirmed writes with their saved undo values, apply the patch, redo the rest",
+		})
 	}
 
 	snapshot(step: Step): Snapshot {
@@ -217,7 +295,10 @@ class CurrentWorld implements World {
 				up: cl.up,
 				subscribed: cl.subscribed,
 				records: sorted(cl.visible),
-				pending: cl.speculative.map((m) => ({ text: `${m.id}: ${m.ops.map(fmtOp).join(", ")}`, detail: `undo: ${m.undo.map(fmtOp).join(", ")}` })),
+				pending: cl.speculative.map((m) => ({
+					text: `${m.id}: ${m.ops.map(fmtOp).join(", ")}`,
+					detail: `undo: ${m.undo.map(fmtOp).join(", ")}`,
+				})),
 				pendingLabel: "Unconfirmed writes",
 			}
 		}
@@ -234,8 +315,12 @@ class CurrentWorld implements World {
 		}
 	}
 
-	serverRecords() { return sorted(this.server.records) }
-	clientRecords(c: ClientName) { return sorted(this.clients[c].visible) }
+	serverRecords() {
+		return sorted(this.server.records)
+	}
+	clientRecords(c: ClientName) {
+		return sorted(this.clients[c].visible)
+	}
 }
 
 // ─── Proposed: Replicache-style base + pending ────────────────────────────
@@ -253,7 +338,10 @@ class ProposedWorld implements World {
 	private server = {
 		records: {} as Records,
 		revision: 0,
-		clients: {} as Record<ClientName, { synced?: string[]; lastMutationId: number }>,
+		clients: {} as Record<
+			ClientName,
+			{ synced?: string[]; lastMutationId: number }
+		>,
 	}
 	private clients: Record<ClientName, ProposedClient> = {
 		client1: { up: true, subscribed: false, base: {}, pending: [], counter: 0 },
@@ -269,7 +357,9 @@ class ProposedWorld implements World {
 		for (const m of cl.pending) for (const op of m.ops) applyOp(records, op)
 		return records
 	}
-	private id(c: ClientName, n: number) { return `${short(c)}·m${n}` }
+	private id(c: ClientName, n: number) {
+		return `${short(c)}·m${n}`
+	}
 
 	apply(action: Action): Step {
 		const messages: Message[] = []
@@ -281,11 +371,20 @@ class ProposedWorld implements World {
 				cl.subscribed = true
 				break
 			case "set":
-				cl.pending.push({ id: ++cl.counter, ops: [{ type: "set", key: action.key, value: action.value }] })
+				cl.pending.push({
+					id: ++cl.counter,
+					ops: [{ type: "set", key: action.key, value: action.value }],
+				})
 				break
 			case "remove":
-				cl.pending.push({ id: ++cl.counter, ops: [{ type: "remove", key: action.key }] })
-				notes.push({ kind: "info", text: "The remove is recorded by key, with no undo value" })
+				cl.pending.push({
+					id: ++cl.counter,
+					ops: [{ type: "remove", key: action.key }],
+				})
+				notes.push({
+					kind: "info",
+					text: "The remove is recorded by key, with no undo value",
+				})
 				break
 			case "push": {
 				if (cl.pending.length === 0) {
@@ -296,7 +395,10 @@ class ProposedWorld implements World {
 				const label = `push ${ms.map((m) => this.id(c, m.id)).join(", ")}`
 				if (action.lost) {
 					messages.push({ from: c, to: "server", label, lost: true })
-					notes.push({ kind: "good", text: `The push failed, so ${ids(ms.map((m) => this.id(c, m.id)))} ${ms.length > 1 ? "stay" : "stays"} pending and will be retried` })
+					notes.push({
+						kind: "good",
+						text: `The push failed, so ${ids(ms.map((m) => this.id(c, m.id)))} ${ms.length > 1 ? "stay" : "stays"} pending and will be retried`,
+					})
 					break
 				}
 				messages.push({ from: c, to: "server", label })
@@ -315,12 +417,18 @@ class ProposedWorld implements World {
 			case "crash":
 				cl.up = false
 				if (cl.pending.length)
-					notes.push({ kind: "good", text: `Storage keeps the base and pending ${cl.pending.map((m) => this.id(c, m.id)).join(", ")}` })
+					notes.push({
+						kind: "good",
+						text: `Storage keeps the base and pending ${cl.pending.map((m) => this.id(c, m.id)).join(", ")}`,
+					})
 				break
 			case "restart":
 				cl.up = true
 				if (cl.pending.length)
-					notes.push({ kind: "good", text: `Restarts with the same client id and pending ${cl.pending.map((m) => this.id(c, m.id)).join(", ")}` })
+					notes.push({
+						kind: "good",
+						text: `Restarts with the same client id and pending ${cl.pending.map((m) => this.id(c, m.id)).join(", ")}`,
+					})
 				break
 		}
 		return { messages, notes }
@@ -329,9 +437,13 @@ class ProposedWorld implements World {
 	private pull(c: ClientName, messages: Message[], notes: Note[]) {
 		const cl = this.clients[c]
 		const sc = this.serverClient(c)
-		const shouldRead = sc.synced === undefined || cl.cookie !== this.server.revision
-		const current = shouldRead && cl.subscribed ? Object.keys(this.server.records).sort() : []
-		const remove = shouldRead ? (sc.synced ?? []).filter((k) => !current.includes(k)) : []
+		const shouldRead =
+			sc.synced === undefined || cl.cookie !== this.server.revision
+		const current =
+			shouldRead && cl.subscribed ? Object.keys(this.server.records).sort() : []
+		const remove = shouldRead
+			? (sc.synced ?? []).filter((k) => !current.includes(k))
+			: []
 		const set = current.map((k) => [k, this.server.records[k]!] as const)
 		if (shouldRead) sc.synced = current
 		cl.cookie = this.server.revision
@@ -348,9 +460,15 @@ class ProposedWorld implements World {
 		cl.pending = cl.pending.filter((m) => m.id > last)
 		if (confirmed.length) {
 			const empty = set.length === 0 && remove.length === 0
-			notes.push({ kind: "good", text: `${ids(confirmed.map((m) => this.id(c, m.id)))} confirmed${empty ? ", even though the patch is empty" : ""}` })
+			notes.push({
+				kind: "good",
+				text: `${ids(confirmed.map((m) => this.id(c, m.id)))} confirmed${empty ? ", even though the patch is empty" : ""}`,
+			})
 		}
-		notes.push({ kind: "info", text: "Rebuild: base (server state) + pending writes. Nothing is undone" })
+		notes.push({
+			kind: "info",
+			text: "Rebuild: base (server state) + pending writes. Nothing is undone",
+		})
 	}
 
 	snapshot(step: Step): Snapshot {
@@ -360,7 +478,9 @@ class ProposedWorld implements World {
 				up: cl.up,
 				subscribed: cl.subscribed,
 				records: sorted(this.visible(c)),
-				pending: cl.pending.map((m) => ({ text: `${this.id(c, m.id)}: ${m.ops.map(fmtOp).join(", ")}` })),
+				pending: cl.pending.map((m) => ({
+					text: `${this.id(c, m.id)}: ${m.ops.map(fmtOp).join(", ")}`,
+				})),
 				pendingLabel: "Pending writes",
 				base: sorted(cl.base),
 			}
@@ -369,14 +489,21 @@ class ProposedWorld implements World {
 			clients: { client1: client("client1"), client2: client("client2") },
 			server: {
 				records: sorted(this.server.records),
-				facts: CLIENTS.map((c) => `${c}: lastMutationId ${this.server.clients[c]?.lastMutationId ?? 0}`),
+				facts: CLIENTS.map(
+					(c) =>
+						`${c}: lastMutationId ${this.server.clients[c]?.lastMutationId ?? 0}`,
+				),
 			},
 			...step,
 		}
 	}
 
-	serverRecords() { return sorted(this.server.records) }
-	clientRecords(c: ClientName) { return sorted(this.visible(c)) }
+	serverRecords() {
+		return sorted(this.server.records)
+	}
+	clientRecords(c: ClientName) {
+		return sorted(this.visible(c))
+	}
 }
 
 export function createWorld(model: Model): World {
