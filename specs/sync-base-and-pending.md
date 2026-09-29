@@ -216,7 +216,7 @@ DST assigns ids in the reference model instead of reading `tx.tupleDbTx.id`: ids
 - [x] DST: assign ids in `ReferenceModel.wrote`, confirm by counter in `ReferenceModel.pulled`, change `mutationId` in trace records to a number.
 - [x] Re-record the #42, #43, and #44 recordings with their original options; each reaches the same violation through the same events. Delete the #41 recording, which no longer fails, and its `dst.spec.ts` case; its README entry now points at the core `(known bug)` test.
 - [x] Update the #43 README entry: a lost response no longer breaks the next acknowledgement's lookup.
-- [x] Update `docs/how_to_implement_remote.md` for numeric ids reported on every pull.
+- [x] Update the remote docs for numeric ids reported on every pull. After rebasing onto the docs restructure, that's `docs/custom-remote.md` and `docs/sync.md`, which also describe the rebuild from the base.
 - [x] Run `pnpm test`, `pnpm type-check`, `pnpm lint`, and the todo example's end-to-end tests.
 
 ### Phase 2: Rebuild pulls and rollbacks from the base

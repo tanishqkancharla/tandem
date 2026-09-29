@@ -8,7 +8,7 @@ Each client stores records as ordered tuples: `["record", collection, ...idParts
 
 ## Mutations
 
-`commit` turns a transaction into a mutation: an ID and a list of operations.
+`commit` turns a transaction into a mutation: an ID and a list of operations. The ID is a per-client counter: 1 for a client's first mutation, then one more for each commit.
 
 ```ts
 type Mutation = {
@@ -20,7 +20,7 @@ type Mutation = {
 }
 ```
 
-A `set` carries the whole record, not a field-level diff. Locally, the client also keeps each operation's previous value so it can undo the mutation.
+A `set` carries the whole record, not a field-level diff. A `remove` is recorded even when the client doesn't have the record. Operations carry no previous value, because the client never undoes a mutation. See [Rebase](#rebase).
 
 ## Scan windows
 
@@ -28,13 +28,15 @@ A scan window is the list of queries the client currently subscribes to, encoded
 
 So a client does not receive another client's writes until it subscribes to a query that covers them. Calling `pullFromRemote()` runs a pull with the current scan window.
 
+The same applies to a client's own writes. Once a pull confirms a write that no subscription covers, the record disappears locally, because the remote never sends it back.
+
 ## The sync loop
 
 ### Local write
 
 1. `commit` applies the mutation to the local database right away.
 2. Subscriptions re-run and the UI updates.
-3. The mutation joins the list of pending (speculative) mutations and is queued for push.
+3. The mutation joins the list of pending mutations and is queued for push. For each record it writes that no pending mutation already writes, the client first saves the committed value as that record's base: the server's latest value as far as the client knows.
 
 ### Push
 
@@ -44,7 +46,7 @@ The sync engine batches queued pushes and pulls on an interval (`syncInterval`, 
 await remote.push({ clientId, mutations })
 ```
 
-If the push fails, the client rolls back that batch locally, and the `commit` promise rejects. While disconnected, the client skips pushes and sends pending mutations after `connect`.
+If the push fails, the client drops that batch from its pending mutations and rebuilds their records from the base, and the `commit` promise rejects. While disconnected, the client skips pushes and sends pending mutations after `connect`.
 
 ### Pull
 
@@ -60,7 +62,7 @@ const { cookie, patch, lastMutationId } = await remote.pull({
 
 - `patch` lists records to `set` and to `remove`.
 - `cookie` is an opaque marker the client sends back on its next pull.
-- `lastMutationId` is the last mutation from this client that the remote has applied.
+- `lastMutationId` is the last mutation from this client that the remote has applied, on every pull. It is `0` until the remote applies one.
 
 ### Poke
 
@@ -68,14 +70,14 @@ const { cookie, patch, lastMutationId } = await remote.pull({
 
 ### Rebase
 
-The client applies each patch in one local transaction:
+The client applies each pull in one local transaction:
 
-1. Undo all speculative mutations.
-2. Apply the patch.
-3. Drop speculative mutations up to and including `lastMutationId`, since the patch already reflects them.
-4. Re-apply the remaining speculative mutations.
+1. Apply the patch, and update the base of any record it mentions.
+2. Drop pending mutations up to and including `lastMutationId`, since the remote has applied them. This happens even when the patch is empty.
+3. Reset each record that has a base to its base value.
+4. Re-apply the remaining pending mutations, one operation at a time, in order.
 
-Subscribers see only the final state.
+The client then forgets the base of records that no pending mutation writes. Subscribers see only the final state. Queries always read the optimistic value: the server's value with every pending mutation applied.
 
 ```mermaid
 sequenceDiagram
@@ -87,7 +89,7 @@ sequenceDiagram
 	R-->>C: poke
 	C->>R: pull(cookie, scanWindow)
 	R->>C: patch, cookie, lastMutationId
-	C->>C: Undo, apply patch, replay pending
+	C->>C: Apply patch, reset to base, replay pending
 ```
 
 ## Conflicts
