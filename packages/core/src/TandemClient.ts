@@ -19,7 +19,7 @@ import {
 } from "./sync/SyncEngine.js"
 import {
 	Transaction,
-	type InvertibleMutation,
+	type Mutation,
 	type MutationId,
 } from "./transaction/Transaction.js"
 import { ConsoleLoggerSink, Logger, type LoggerApi } from "./utils/Logger.js"
@@ -141,7 +141,7 @@ export class TandemClient<
 		tx.commit()
 	}
 
-	private rollback(mutationsToRollback: readonly InvertibleMutation<Schema>[]) {
+	private rollback(mutationsToRollback: readonly Mutation<Schema>[]) {
 		this.logger.info({ message: "rolling back" })
 		const tx = this.db.makeTupleDbTransaction()
 		this.pendingWrites.reject(tx, mutationsToRollback)
@@ -191,7 +191,7 @@ export class TandemClient<
 
 		this.logger.info({ message: "committing transaction" })
 		this.mutationCount += 1
-		const mutation: InvertibleMutation<Schema> = {
+		const mutation: Mutation<Schema> = {
 			ops: transaction.ops,
 			id: tag<MutationId>(this.mutationCount),
 		}

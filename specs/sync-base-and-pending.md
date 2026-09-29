@@ -287,10 +287,13 @@ Nothing reads `prevValue` or the remove op's `value` after phase 2, so remove th
 +└── mutations                                         # already plain Mutations
 ```
 
-- [ ] `Transaction.ops` becomes `MutationOp<Schema>[]`; remove `prevValue` and the remove op's `value`.
-- [ ] `SyncEngine` queues plain `Mutation`s; delete `invertibleMutationToMutation`.
-- [ ] Delete `InvertibleMutation`, `InvertibleMutationOp`, `InveribleSetMutationOp`, `InveribleRemoveMutationOp`, `MutationApi.getRollbackWrites`, and `invertMutationOp`, and remove them from [[packages/core/src/index.ts]].
-- [ ] Run `pnpm test` and `pnpm type-check`.
+`MutationApi.toWriteOps` and `PatchApi.toWriteOps` lost their last callers in phase 2, so they go too. `MutationApi.toWriteOps` is the helper that split a mutation's ops into sets and removes and lost their order.
+
+- [x] `Transaction.ops` becomes `MutationOp<Schema>[]`; remove `prevValue` and the remove op's `value`.
+- [x] `SyncEngine` queues plain `Mutation`s; delete `invertibleMutationToMutation`.
+- [x] Delete `InvertibleMutation`, `InvertibleMutationOp`, `InveribleSetMutationOp`, `InveribleRemoveMutationOp`, `MutationApi.getRollbackWrites`, and `invertMutationOp`, and remove them from [[packages/core/src/index.ts]].
+- [x] Delete `MutationApi.toWriteOps` and `PatchApi.toWriteOps`, which nothing calls.
+- [x] Run `pnpm test`, `pnpm type-check`, and `pnpm lint`.
 
 ### Phase 4: Record removes by key
 
