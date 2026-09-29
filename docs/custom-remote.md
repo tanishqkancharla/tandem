@@ -26,7 +26,7 @@ type RemoteApi<Schema> = {
 			set?: { collection: string; value: Record }[]
 			remove?: { collection: string; id: Id }[]
 		}
-		lastMutationId?: MutationId
+		lastMutationId: MutationId
 	}>
 }
 ```
@@ -41,7 +41,7 @@ Any signal works: a WebSocket message, an SSE event, or a polling timer.
 
 ## `push`
 
-Apply the mutations in order. Each `set` carries a full record, and each `remove` carries an ID. After they are applied, remember the last mutation ID for `clientId` so `pull` can report it.
+Apply the mutations in order. Each `set` carries a full record, and each `remove` carries an ID. Mutation IDs are per-client counters, so they arrive in increasing order. After they are applied, remember the last mutation ID for `clientId` so `pull` can report it.
 
 Reject if the mutations cannot be applied. The client then rolls back the whole batch locally, and each affected `commit` promise rejects. Authorization and validation belong here too: reject a push the client may not make.
 
@@ -52,7 +52,7 @@ Return a patch that moves the client from the state at `cookie` to the current s
 - `patch.set` holds records in the scan window that are new or changed. Returning every record in the window is also correct, just larger.
 - `patch.remove` holds records the client received earlier that were since deleted or dropped out of the window. The client keeps any record that is not explicitly removed.
 - `cookie` is opaque to the client. It sends back the last cookie it received. A revision number works.
-- `lastMutationId` is the last mutation from `clientId` that the remote applied. The client treats that mutation and all earlier ones as confirmed and stops replaying them.
+- `lastMutationId` is the last mutation from `clientId` that the remote applied, or `0` before it applies one. Report it on every pull, even when the patch is empty. The client treats that mutation and all earlier ones as confirmed and stops replaying them.
 
 The scan window is a list of `EncodedQuery` objects. Filters are `[field, operator, value]` tuples, and operators are `=`, `>`, `<`, `>=`, and `<=`. Relation includes appear under `with`. Include related records in `patch.set` so the client can resolve relational queries.
 

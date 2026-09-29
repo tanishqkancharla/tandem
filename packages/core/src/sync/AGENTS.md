@@ -2,51 +2,33 @@
 
 ## What
 
-Handles real-time synchronization between local database and remote server. Manages optimistic updates, conflict resolution, and ensures data consistency.
+Synchronizes a client's local database with a remote server: pushes local mutations, pulls server patches for the client's subscriptions, and keeps optimistic writes visible until the server acknowledges them.
 
 ## How to use
 
 ```typescript
 // Configured automatically by TandemClient
-const remote = {
-	async push(mutations) {
-		// Send mutations to server
+const remote: RemoteApi<Schema> = {
+	async push({ clientId, mutations }) {
+		// Apply the mutations in id order
 	},
-	async pull({ cookie, scanWindow }) {
-		// Fetch updates from server
-		return { cookie, patch, lastMutationId };
+	async pull({ clientId, cookie, scanWindow }) {
+		// lastMutationId: the last of this client's mutations applied, on every pull
+		return { cookie, patch, lastMutationId }
 	},
-	async connect(api) {
-		// Real-time connection for pokes
+	async connect({ clientId, poke }) {
+		// Call poke() when the client should pull
 	},
-};
+}
 ```
 
 ## How it works
 
-1. **Optimistic Updates**: Apply changes locally first
-2. **Push**: Stream mutations to server
-3. **Pull**: Fetch server updates via scan windows
-4. **Conflict Resolution**: Rollback → apply server patch → replay local changes
-5. **Poke System**: Real-time notifications from server
+1. **Optimistic writes**: `TandemClient.commit` applies a transaction locally and numbers its mutation with a per-client counter (1, 2, 3, …).
+2. **Push**: `SyncEngine` sends queued mutations to the remote.
+3. **Pull**: `SyncEngine` fetches a patch for the scan window, which the client's subscriptions build.
+4. **Rebuild**: `PendingWrites` keeps pending mutations and the base, the server's latest value for each record they write. A pull updates the base from the patch, drops mutations up to `lastMutationId`, resets those records to their base values, and replays the rest in order. Nothing is undone, so mutations carry no undo values.
+5. **Rollback**: a failed push drops its mutations and rebuilds their records from the base.
+6. **Pokes**: the remote tells a client when to pull.
 
-## Key patterns
-
-**Implement remote API:**
-
-```typescript
-const remote = {
-  async sync(mutations) {
-    // Return conflicts for resolution
-    return { conflicts: [...], resolved: [...] };
-  }
-};
-```
-
-**Handle rollbacks:**
-
-```typescript
-// Automatically handled by sync engine
-// Rollback conflicting optimistic updates
-// Re-apply non-conflicting changes
-```
+A confirmed write outside every subscription disappears on the next pull, because the server never sends that record back.

@@ -17,6 +17,7 @@ import {
 	TandemClient,
 	type TandemClientStorageApi,
 	type TimerApi,
+	unreachable,
 } from "@tanishqkancharla/tandem-core"
 import {
 	TandemServer,
@@ -29,7 +30,7 @@ import {
 	type WriteOps,
 } from "tuple-database"
 import * as errore from "errore"
-import { ReferenceModel, type DstOp } from "./ReferenceModel.js"
+import { type DstOp, ReferenceModel } from "./ReferenceModel.js"
 import { SimPrng } from "./SimPrng.js"
 
 export interface DstTodo {
@@ -202,7 +203,7 @@ export type DstViolation =
 			/** A client's writes never reached the server, though the run settled. */
 			kind: "writeNeverAccepted"
 			client: DstClientName
-			mutationIds: string[]
+			mutationIds: number[]
 	  }
 
 /** Where a dropped handoff was lost, which decides what its sender can know. */
@@ -226,14 +227,14 @@ export type DstTraceRecord =
 			type: "set"
 			step: number
 			client: DstClientName
-			mutationId: string
+			mutationId: number
 			item: DstTodo
 	  }
 	| {
 			type: "remove"
 			step: number
 			client: DstClientName
-			mutationId: string
+			mutationId: number
 			id: string
 	  }
 	| ({ type: "advance"; step: number } & DstBoundary)
@@ -465,23 +466,23 @@ export class DstWorld implements AsyncDisposable {
 	): DstTraceRecord {
 		const client = this.harness[intent.client]
 		const tx = client.transact()
-		let op: DstOp
-		if (intent.type === "remove") {
-			tx.remove("todos", intent.id)
-			op = { type: "remove", id: intent.id }
-		} else {
-			tx.set("todos", intent.item)
-			op = { type: "set", item: intent.item }
-		}
-		// Removing a record the client does not show records no op, so nothing
-		// is written or synced.
-		if (tx.ops.length > 0) {
-			this.model.wrote(intent.client, { mutationId: tx.tupleDbTx.id, op })
-		}
+		const op = ((): DstOp => {
+			switch (intent.type) {
+				case "set":
+					tx.set("todos", intent.item)
+					return { type: "set", item: intent.item }
+				case "remove":
+					tx.remove("todos", intent.id)
+					return { type: "remove", id: intent.id }
+				default:
+					return unreachable(intent)
+			}
+		})()
+		const mutationId = this.model.wrote(intent.client, op)
 		// The handle arrives only once the commit reaches a boundary, which may
 		// wait on another held call. Its call shows up in pending() then.
 		this.inFlight.push(client.commit(tx))
-		return { ...intent, step, mutationId: tx.tupleDbTx.id }
+		return { ...intent, step, mutationId }
 	}
 
 	private async boot(name: DstClientName): Promise<void> {

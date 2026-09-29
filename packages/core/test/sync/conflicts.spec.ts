@@ -230,10 +230,8 @@ describe("TandemClient sync conflicts", () => {
 		},
 	)
 
-	// Known sync bug: an empty patch that carries an acknowledgement skips the
-	// rebase, so the deleted write survives. Drop `.fails` once it is fixed.
-	conflictTest.fails(
-		"drops an acknowledged write that another client deleted while its pokes were lost (known bug)",
+	conflictTest(
+		"drops an acknowledged write that another client deleted while its pokes were lost",
 		async ({ makeTodoGatekeeper, server }) => {
 			let losePokesFor: string | undefined
 			const remote: RemoteApi<TestsSchema> = {
@@ -286,6 +284,124 @@ describe("TandemClient sync conflicts", () => {
 			client2Subscription.destroy()
 		},
 	)
+
+	conflictTest(
+		"keeps a record deleted after the writer removed it, before the writer read it back",
+		async ({ makeTodoGatekeeper, server }) => {
+			let losePokesFor: string | undefined
+			const remote: RemoteApi<TestsSchema> = {
+				connect: (client) =>
+					server.connect({
+						...client,
+						poke: () =>
+							client.clientId === losePokesFor
+								? Promise.resolve()
+								: client.poke(),
+					}),
+				push: (args) => server.push(args),
+				pull: (args) => server.pull(args),
+			}
+			const { client1, client2 } = await makeTodoGatekeeper({ remote })
+			const client1Subscription = client1.subscribe({ collection: "todos" })
+			const client2Subscription = client2.subscribe({ collection: "todos" })
+
+			// Another todo keeps later pulls from carrying an empty patch
+			const seedTx = client1.transact()
+			seedTx.set("todos", todo("todo-2", { text: "Keep me" }))
+			await (
+				await client1.commit(seedTx)
+			).result
+			await expectQuery(client2, { collection: "todos" }).toResolveTo([
+				todo("todo-2", { text: "Keep me" }),
+			])
+			losePokesFor = client2.clientId
+
+			// client2 creates todo-1 but never reads it back from the server
+			const createTx = client2.transact()
+			createTx.set("todos", todo("todo-1", { text: "Short-lived" }))
+			await (
+				await client2.commit(createTx)
+			).result
+			await expectQuery(client1, { collection: "todos" }).toResolveTo([
+				todo("todo-1", { text: "Short-lived" }),
+				todo("todo-2", { text: "Keep me" }),
+			])
+
+			// client1 deletes it on the server
+			const deleteTx = client1.transact()
+			deleteTx.remove("todos", "todo-1")
+			await (
+				await client1.commit(deleteTx)
+			).result
+
+			// Offline, client2 removes todo-1 too, while its create is unacknowledged
+			await (
+				await client2.disconnect()
+			).result
+			const removeTx = client2.transact()
+			removeTx.remove("todos", "todo-1")
+			await (
+				await client2.commit(removeTx)
+			).result
+
+			// Reconnecting acknowledges the create; a later pull acknowledges the remove
+			await (
+				await client2.connect()
+			).result
+			await (
+				await client2.pullFromRemote()
+			).result
+
+			expect(client2.query({ collection: "todos" })).toEqual([
+				todo("todo-2", { text: "Keep me" }),
+			])
+			client1Subscription.destroy()
+			client2Subscription.destroy()
+		},
+	)
+
+	test("replays a pending mutation's operations in order across a pull", async ({
+		gatekeeper,
+	}) => {
+		const { client1, client2 } = gatekeeper
+		const client1Subscription = client1.subscribe({ collection: "todos" })
+		const client2Subscription = client2.subscribe({ collection: "todos" })
+		const seedTx = client2.transact()
+		seedTx.set("todos", todo("todo-1", { text: "Original" }))
+		await (
+			await client2.commit(seedTx)
+		).result
+		await expectQuery(client1, { collection: "todos" }).toResolveTo([
+			todo("todo-1", { text: "Original" }),
+		])
+
+		// Offline, client1 creates and deletes a draft in one transaction
+		await (
+			await client1.disconnect()
+		).result
+		const draftTx = client1.transact()
+		draftTx.set("todos", todo("draft", { text: "Never kept" }))
+		draftTx.remove("todos", "draft")
+		await (
+			await client1.commit(draftTx)
+		).result
+
+		// Reconnecting pulls a patch while the draft mutation is still pending
+		const remoteTx = client2.transact()
+		remoteTx.set("todos", todo("todo-1", { text: "Changed remotely" }))
+		await (
+			await client2.commit(remoteTx)
+		).result
+		await (
+			await client1.connect()
+		).result
+
+		expect(client1.query({ collection: "todos" })).toEqual([
+			todo("todo-1", { text: "Changed remotely" }),
+		])
+		client1Subscription.destroy()
+		client2Subscription.destroy()
+	})
 
 	test("converges after both clients edit the same record concurrently", async ({
 		gatekeeper,

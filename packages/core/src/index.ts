@@ -14,10 +14,6 @@ export type {
 export { PatchApi } from "./sync/SyncEngine.js"
 export { Transaction } from "./transaction/Transaction.js"
 export type {
-	InveribleRemoveMutationOp,
-	InveribleSetMutationOp,
-	InvertibleMutation,
-	InvertibleMutationOp,
 	Mutation,
 	MutationId,
 	MutationOp,
@@ -112,6 +108,7 @@ export {
 	type Span,
 	Spans,
 	unreachable,
+	match,
 	type Assert,
 	type TestIsEqual,
 	type TestExtends,

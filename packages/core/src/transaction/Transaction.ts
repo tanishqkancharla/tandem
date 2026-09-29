@@ -1,4 +1,4 @@
-import type { TupleRootTransactionApi, WriteOps } from "tuple-database"
+import type { TupleRootTransactionApi } from "tuple-database"
 import type {
 	AnySchema,
 	CollectionIdTuple,
@@ -8,8 +8,6 @@ import type {
 } from "../schema/Schema.js"
 import { collectionIdToTuple } from "../schema/Schema.js"
 import type { EncodedQuery, ScanWindow } from "../query/Query.js"
-import { WriteOpsApi } from "../clientStorage/TandemClientStorage.js"
-import { partition, reverse } from "../utils/objectUtils.js"
 import type { Tagged } from "../utils/typeUtils.js"
 
 type CollectionTupleKey<
@@ -35,7 +33,7 @@ type CollectionTransactionApi<
 	remove(key: CollectionTupleKey<Schema, Collection>): unknown
 }
 
-function getCollectionTransaction<
+export function getCollectionTransaction<
 	Schema extends AnySchema,
 	Collection extends CollectionName<Schema>,
 >(
@@ -51,26 +49,6 @@ function getCollectionTransaction<
 	}
 	return collectionRoot.subspace(["record", collection])
 }
-
-export type InveribleSetMutationOp<Schema extends AnySchema> = {
-	type: "set"
-} & {
-	[Collection in CollectionName<Schema>]: {
-		collection: Collection
-		value: Schema[Collection]
-		prevValue?: Schema[Collection]
-	}
-}[CollectionName<Schema>]
-
-export type InveribleRemoveMutationOp<Schema extends AnySchema> = {
-	type: "remove"
-} & {
-	[Collection in CollectionName<Schema>]: {
-		collection: Collection
-		id: Schema[Collection]["id"]
-		value: Schema[Collection]
-	}
-}[CollectionName<Schema>]
 
 export type SetMutationOp<Schema extends AnySchema> = {
 	type: "set"
@@ -90,83 +68,21 @@ export type RemoveMutationOp<Schema extends AnySchema> = {
 	}
 }[CollectionName<Schema>]
 
-export type InvertibleMutationOp<Schema extends AnySchema> =
-	| InveribleSetMutationOp<Schema>
-	| InveribleRemoveMutationOp<Schema>
 export type MutationOp<Schema extends AnySchema> =
 	| SetMutationOp<Schema>
 	| RemoveMutationOp<Schema>
 
-export type MutationId = Tagged<"MutationId", string>
+/**
+ * A per-client counter: a client's first committed mutation is 1, and each
+ * commit adds 1. A server acknowledges every mutation up to an id at once.
+ */
+export type MutationId = Tagged<"MutationId", number>
 export type Mutation<Schema extends AnySchema> = {
 	ops: MutationOp<Schema>[]
 	id: MutationId
 }
-export type InvertibleMutation<Schema extends AnySchema> = {
-	ops: InvertibleMutationOp<Schema>[]
-	id: MutationId
-}
 
 export namespace MutationApi {
-	function invertMutationOp<Schema extends AnySchema = AnySchema>(
-		op: InvertibleMutationOp<Schema>,
-	): MutationOp<Schema> {
-		switch (op.type) {
-			case "set": {
-				return "prevValue" in op
-					? {
-							type: "set",
-							collection: op.collection,
-							value: op.prevValue as Schema[CollectionName<Schema>],
-						}
-					: {
-							type: "remove",
-							collection: op.collection,
-							id: op.value.id,
-						}
-			}
-			case "remove": {
-				return {
-					type: "set",
-					collection: op.collection,
-					value: op.value,
-				}
-			}
-			default:
-				throw new Error("Unknown mutation op type")
-		}
-	}
-
-	export function getRollbackWrites<Schema extends AnySchema>(
-		mutations: readonly InvertibleMutation<Schema>[],
-	): WriteOps<SchemaToTupleSchema<Schema>> {
-		return WriteOpsApi.merge(
-			...reverse(mutations)
-				.map((mutation) => mutation.ops.map(invertMutationOp))
-				.map(toWriteOps),
-		)
-	}
-
-	export function toWriteOps<Schema extends AnySchema>(
-		ops: MutationOp<Schema>[],
-	): WriteOps<SchemaToTupleSchema<Schema>> {
-		const [setOps, removeOps] = partition(ops, (op) => op.type === "set")
-
-		const writeOps: WriteOps<SchemaToTupleSchema<Schema>> = {
-			set: setOps.map((op) => ({
-				key: ["record", op.collection, ...collectionIdToTuple(op.value.id)],
-				value: op.value,
-			})) as unknown as SchemaToTupleSchema<Schema>[],
-			remove: removeOps.map((op) => [
-				"record",
-				op.collection,
-				...collectionIdToTuple(op.id),
-			]),
-		}
-
-		return writeOps
-	}
-
 	function opToDebugString(op: MutationOp<AnySchema>): string {
 		switch (op.type) {
 			case "set":
@@ -218,7 +134,7 @@ export class Transaction<Schema extends AnySchema> {
 	/**
 	 * @internal
 	 */
-	readonly ops: InvertibleMutationOp<Schema>[] = []
+	readonly ops: MutationOp<Schema>[] = []
 
 	constructor(
 		/**
@@ -267,22 +183,11 @@ export class Transaction<Schema extends AnySchema> {
 			Schema,
 			Collection
 		>
-		const transaction = getCollectionTransaction(this.tupleDbTx, collection)
-		const prevValue = transaction.get(tupleSchemaKey)
-
-		transaction.set(tupleSchemaKey, record)
-
-		const setOp: InvertibleMutationOp<Schema> = {
-			type: "set",
-			collection,
-			value: record,
-		}
-
-		if (prevValue !== undefined) {
-			setOp.prevValue = prevValue
-		}
-
-		this.ops.push(setOp)
+		getCollectionTransaction(this.tupleDbTx, collection).set(
+			tupleSchemaKey,
+			record,
+		)
+		this.ops.push({ type: "set", collection, value: record })
 
 		return this
 	}
@@ -311,16 +216,7 @@ export class Transaction<Schema extends AnySchema> {
 		}
 
 		transaction.set(tupleSchemaKey, updatedRecord)
-
-		const setOp: InvertibleMutationOp<Schema> = {
-			type: "set",
-			collection,
-			value: updatedRecord,
-		}
-
-		setOp.prevValue = prevRecord
-
-		this.ops.push(setOp)
+		this.ops.push({ type: "set", collection, value: updatedRecord })
 
 		return this
 	}
@@ -334,19 +230,9 @@ export class Transaction<Schema extends AnySchema> {
 			Collection
 		>
 
-		const transaction = getCollectionTransaction(this.tupleDbTx, collection)
-		const value = transaction.get(tupleSchemaKey)
-
-		transaction.remove(tupleSchemaKey)
-
-		if (value !== undefined) {
-			this.ops.push({
-				type: "remove",
-				collection,
-				id,
-				value,
-			})
-		}
+		getCollectionTransaction(this.tupleDbTx, collection).remove(tupleSchemaKey)
+		// Recorded even when the record isn't local, so the server removes it too.
+		this.ops.push({ type: "remove", collection, id })
 
 		return this
 	}

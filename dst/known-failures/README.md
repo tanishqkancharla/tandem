@@ -4,57 +4,25 @@ Runs the simulation found that fail because of sync engine bugs we have not fixe
 
 `dst.spec.ts` replays each artifact with no random choices and requires it to reach its recorded violation. The test fails when the bug is fixed, or when the recording no longer applies to the code; either way, look at it, and delete the recording once the bug is fixed. A random run writes the same format through `jsonlFileSink`, so a new failure can be added here as it is.
 
-The four bugs are independent: applying the fix for A still leaves B, C, and D failing.
+The bugs are independent: fixing one still leaves the others failing. Bugs A and B, an empty patch dropping its acknowledgement and a pushed key coming back after its remove was acknowledged, are fixed: the client rebuilds each pull from the server's values instead of undoing writes.
 
 The expected behavior these recordings encode: a client shows the last server state it received plus its own unacknowledged writes, and every write reaches the server unless the server rejects it. That includes writes a client stored before crashing, which Tandem does not implement yet.
 
-## A. An empty patch drops its acknowledgement: `seed-2-empty-patch-drops-ack.jsonl`
-
-`{ seed: 2, steps: 30 }`. Violation at quiescence: client2 is missing `item-2 (rev 29)`, which the server has.
-
-- steps 1 and 3: client2 sets and then removes `item-2`; both pushes are applied, so `item-2` is gone from the server.
-- A later pull of client2's returns an empty patch with the acknowledgement, and the server consumes the ack.
-- step 29: client1 sets `item-2` again.
-
-```
-client.applyPatchAt:
-  patch is empty → return        # before looking at the ack, so the remove stays speculative
-later pulls:
-  undo speculative, apply patch, replay speculative
-                                 # the ack is gone, so the stale remove is replayed forever
-```
-
-Also reproduced through the public API by the `(known bug)` test in `packages/core/test/sync/conflicts.spec.ts`, where a lost poke lets a deleted write survive.
-
-## B. The server does not count keys a client pushed: `seed-216-pushed-keys-not-synced.jsonl`
-
-`{ seed: 216, steps: 30 }`. Violation at quiescence: client2 still holds `item-1 (rev 1)`, its own first write, which the server no longer has.
-
-- step 1: client2 creates `item-1`, and its push is applied.
-- step 25: client2 removes `item-1` itself.
-- When client2 rebases over its acknowledged remove, undoing the remove restores the value it captured locally, `rev 1`.
-
-```
-server.pull:
-  removes = syncedKeys - records   # syncedKeys holds only keys the server sent,
-                                   # never keys the client pushed, so no remove follows
-```
-
 ## C. A push that fails in transit is treated as a rejection: `seed-2-lost-push-rolls-back.jsonl`
 
-`{ seed: 2, steps: 10, faultRate: 0.1 }`. Violation at step 3: client2 shows nothing, but its write of `item-2` should still be pending.
+`{ seed: 2, steps: 10, faultRate: 0.1 }`. Violation at step 5: client1 shows nothing, but its write of `item-3` should still be pending.
 
-- step 1: client2 writes `item-2`.
-- step 2: its sync tick is delivered, so the push is sent.
-- step 3: the push request is dropped (`requestLost`).
+- step 3: client1 writes `item-3`.
+- step 4: its sync tick is delivered, so the push is sent.
+- step 5: the push request is dropped (`requestLost`).
 
 ```
-push fails → rollback([item-2 write])   # a lost message is not a rejection, but Tandem cannot
+push fails → rollback([item-3 write])   # a lost message is not a rejection, but Tandem cannot
                                         # tell them apart, so the write is discarded and never
                                         # reaches the server
 ```
 
-A lost response does the same, and worse: the server did apply the write, and the rollback removes the accepted mutation from `speculativeMutations`. The next pull's acknowledgement then names an id the client no longer has, `findIndex(ack)` returns -1, and older acknowledged writes are replayed over newer server data. Nearly every run with faults hits this bug, so fault runs find little else until it is fixed.
+A lost response does the same, although the server did apply the write: the client discards it until a later patch brings the record back, which happens only if the client's window covers it. Nearly every run with faults hits this bug, so fault runs find little else until it is fixed.
 
 ## D. A crash loses writes that were stored but not pushed: `seed-13-crash-loses-outbox.jsonl`
 

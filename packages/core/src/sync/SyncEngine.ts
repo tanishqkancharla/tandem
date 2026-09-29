@@ -1,17 +1,6 @@
-import type { WriteOps } from "tuple-database"
 import type { EncodedQuery, ScanWindow } from "../query/Query.js"
-import type {
-	AnySchema,
-	CollectionName,
-	SchemaToTupleSchema,
-} from "../schema/Schema.js"
-import { collectionIdToTuple } from "../schema/Schema.js"
-import type {
-	InvertibleMutation,
-	Mutation,
-	MutationId,
-	MutationOp,
-} from "../transaction/Transaction.js"
+import type { AnySchema, CollectionName } from "../schema/Schema.js"
+import type { Mutation, MutationId } from "../transaction/Transaction.js"
 import type { LoggerApi } from "../utils/Logger.js"
 import { TaskQueue } from "../utils/TaskQueue.js"
 import { Timer, type TimerApi } from "../utils/Timer.js"
@@ -43,7 +32,11 @@ export type RemoteApi<Schema extends AnySchema> = {
 	}): Promise<{
 		cookie: Cookie
 		patch: Patch<Schema>
-		lastMutationId?: MutationId
+		/**
+		 * The last of this client's mutations the server applied, on every pull.
+		 * 0 before the server has applied any.
+		 */
+		lastMutationId: MutationId
 	}>
 }
 
@@ -79,59 +72,13 @@ export namespace PatchApi {
 				.join("\n") ?? ""
 		}\n${patch.remove?.map((op) => `  remove ${op.collection}.${op.id}`).join("\n") ?? ""}}`
 	}
-
-	export function toWriteOps<Schema extends AnySchema>(
-		patch: Patch<Schema>,
-	): WriteOps<SchemaToTupleSchema<Schema>> {
-		const set: SchemaToTupleSchema<Schema>[] = []
-		const remove: SchemaToTupleSchema<Schema>["key"][] = []
-
-		for (const s of patch.set ?? []) {
-			const key = ["record", s.collection, ...collectionIdToTuple(s.value.id)]
-			set.push({ key, value: s.value } as SchemaToTupleSchema<Schema>)
-		}
-
-		for (const r of patch.remove ?? []) {
-			remove.push([
-				"record",
-				r.collection,
-				...collectionIdToTuple(r.id),
-			] as SchemaToTupleSchema<Schema>["key"])
-		}
-
-		return { set, remove }
-	}
-}
-
-function invertibleMutationToMutation<Schema extends AnySchema>(
-	invertible: InvertibleMutation<Schema>,
-): Mutation<Schema> {
-	return {
-		id: invertible.id,
-		ops: invertible.ops.map((op): MutationOp<Schema> => {
-			if (op.type === "set") {
-				return {
-					type: "set",
-					collection: op.collection,
-					value: op.value,
-				}
-			} else if (op.type === "remove") {
-				return {
-					type: "remove",
-					collection: op.collection,
-					id: op.id,
-				}
-			}
-			return op
-		}),
-	}
 }
 
 export type SyncEngineArgs<Schema extends AnySchema> = {
 	clientId: ClientId
 	remote: SyncEngine<Schema>["remote"]
 	handleRollback: SyncEngine<Schema>["handleRollback"]
-	applyPatchAt: SyncEngine<Schema>["applyPatchAt"]
+	applyPull: SyncEngine<Schema>["applyPull"]
 	autoConnect?: boolean
 	logger: SyncEngine<Schema>["logger"]
 	syncInterval: number | TimerApi
@@ -139,15 +86,15 @@ export type SyncEngineArgs<Schema extends AnySchema> = {
 
 export class SyncEngine<Schema extends AnySchema> {
 	private syncQueue: TaskQueue<"pull" | "push">
-	private pendingMutations: InvertibleMutation<Schema>[] = []
+	private pendingMutations: Mutation<Schema>[] = []
 	private readonly remote: RemoteApi<Schema>
 	private readonly logger: LoggerApi
 	private readonly handleRollback: (
-		mutationsToRollback: readonly InvertibleMutation<Schema>[],
+		mutationsToRollback: readonly Mutation<Schema>[],
 	) => void
-	private readonly applyPatchAt: (args: {
+	private readonly applyPull: (args: {
 		patch: Patch<Schema>
-		lastMutationId?: MutationId
+		lastMutationId: MutationId
 	}) => void
 
 	private readonly clientId: ClientId
@@ -160,7 +107,7 @@ export class SyncEngine<Schema extends AnySchema> {
 		this.logger = args.logger
 		this.remote = args.remote
 		this.handleRollback = args.handleRollback
-		this.applyPatchAt = args.applyPatchAt
+		this.applyPull = args.applyPull
 		this.clientId = args.clientId
 		const timer =
 			typeof args.syncInterval === "number"
@@ -253,10 +200,10 @@ export class SyncEngine<Schema extends AnySchema> {
 
 		this.cookie = cookie
 
-		this.applyPatchAt({ patch, lastMutationId })
+		this.applyPull({ patch, lastMutationId })
 	}
 
-	queuePush(mutation: InvertibleMutation<Schema>): Promise<void> {
+	queuePush(mutation: Mutation<Schema>): Promise<void> {
 		this.logger.info({ message: "queueing push" })
 		this.pendingMutations.push(mutation)
 		return this.syncQueue.enqueue("push")
@@ -274,14 +221,7 @@ export class SyncEngine<Schema extends AnySchema> {
 		this.pendingMutations = []
 
 		try {
-			// Convert invertible mutations to regular mutations before pushing
-			const serializedMutations = mutations.map(invertibleMutationToMutation)
-
-			// Then apply to remote if available
-			await this.remote.push({
-				mutations: serializedMutations,
-				clientId: this.clientId,
-			})
+			await this.remote.push({ mutations, clientId: this.clientId })
 		} catch (error) {
 			this.logger.error({ message: "error applying mutation", error })
 

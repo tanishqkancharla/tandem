@@ -53,6 +53,23 @@ export function unreachable(value: never): never {
 	throw new Error("Unreachable code reached: " + JSON.stringify(value))
 }
 
+/**
+ * Maps each member of a closed union of keys to a value, so a new member
+ * fails to compile instead of falling through. A case that is a function is
+ * called with the key.
+ */
+export function match<V, K extends string | number = string | number>(
+	key: K,
+	cases: Record<K, V | ((key: K) => V)>,
+): V {
+	const result: V | ((key: K) => V) = cases[key]
+	if (typeof result === "function") {
+		return (result as (key: K) => V)(key)
+	}
+
+	return result
+}
+
 export type Assert<_Test extends true> = void
 export type TestIsEqual<A extends B, B> = A extends B
 	? B extends A

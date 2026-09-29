@@ -10,23 +10,22 @@ import type {
 	RuntimeSchemaDefinition,
 } from "./schema/Schema.js"
 import type { TandemClientStorageApi } from "./clientStorage/TandemClientStorage.js"
+import { PendingWrites } from "./sync/PendingWrites.js"
 import {
-	PatchApi,
 	SyncEngine,
 	type ClientId,
 	type Patch,
 	type RemoteApi,
 } from "./sync/SyncEngine.js"
 import {
-	MutationApi,
 	Transaction,
-	type InvertibleMutation,
+	type Mutation,
 	type MutationId,
 } from "./transaction/Transaction.js"
 import { ConsoleLoggerSink, Logger, type LoggerApi } from "./utils/Logger.js"
 import { randomId, type RngApi } from "./utils/randomId.js"
 import type { TimerApi } from "./utils/Timer.js"
-import type { AsyncUnsubscribe } from "./utils/typeUtils.js"
+import { tag, type AsyncUnsubscribe } from "./utils/typeUtils.js"
 
 export type TandemClientArgs<
 	Schema extends AnySchema,
@@ -75,7 +74,10 @@ export class TandemClient<
 	private readonly logger: LoggerApi
 	private readonly rng: RngApi
 
-	private speculativeMutations: InvertibleMutation<Schema>[] = []
+	private readonly pendingWrites = new PendingWrites<Schema>()
+	// Not reset by clear(): the server acknowledges every id up to the last one it
+	// applied for this client id, so a reused id would count as acknowledged.
+	private mutationCount = 0
 	constructor({
 		schema,
 		relations,
@@ -98,7 +100,7 @@ export class TandemClient<
 					handleRollback: (mutationsToRollback) => {
 						this.rollback(mutationsToRollback)
 					},
-					applyPatchAt: (args) => this.applyPatchAt(args),
+					applyPull: (args) => this.applyPull(args),
 					autoConnect,
 					logger: this.logger.scope("sync-engine"),
 					syncInterval,
@@ -126,64 +128,24 @@ export class TandemClient<
 		return this.syncEngine.queuePull()
 	}
 
-	private applyPatchAt({
+	private applyPull({
 		patch,
 		lastMutationId,
 	}: {
 		patch: Patch<Schema>
-		lastMutationId?: MutationId
+		lastMutationId: MutationId
 	}) {
-		this.logger.info({ message: "applying patch" })
-
-		if (patch.set?.length === 0 && patch.remove?.length === 0) {
-			this.logger.info({ message: "no ops to apply" })
-			return
-		}
-
-		// A little magick-y but this works as expected even when lastMutationId is
-		// undefined because this will be -1, and we'll report all speculative mutations
-		// as still speculative
-		const commitedMutationIndex = this.speculativeMutations.findIndex(
-			(m) => m.id === lastMutationId,
-		)
-
+		this.logger.info({ message: "applying pull" })
 		const tx = this.db.makeTupleDbTransaction()
-
-		// Rollback to before all the speculative mutations
-		const inverted = MutationApi.getRollbackWrites(this.speculativeMutations)
-		tx.write(inverted)
-
-		// Convert patch to WriteOps and apply
-		const writeOps = PatchApi.toWriteOps(patch)
-		tx.write(writeOps)
-
-		// Apply the un-committed still speculative mutations on top
-		const stillSpeculative = this.speculativeMutations.slice(
-			commitedMutationIndex + 1,
-		)
-
-		for (const mutation of stillSpeculative) {
-			tx.write(MutationApi.toWriteOps(mutation.ops))
-		}
-
+		this.pendingWrites.applyPull(tx, { patch, lastMutationId })
 		tx.commit()
-
-		this.speculativeMutations = stillSpeculative
 	}
 
-	private rollback(mutationsToRollback: readonly InvertibleMutation<Schema>[]) {
+	private rollback(mutationsToRollback: readonly Mutation<Schema>[]) {
 		this.logger.info({ message: "rolling back" })
-		const inverted = MutationApi.getRollbackWrites(mutationsToRollback)
-
 		const tx = this.db.makeTupleDbTransaction()
-		tx.write(inverted)
+		this.pendingWrites.rollBackRejected(tx, mutationsToRollback)
 		tx.commit()
-
-		// Remove the rolled-back mutations from speculativeMutations so they are not re-applied on subsequent patches
-		const rollbackIds = new Set(mutationsToRollback.map((m) => m.id))
-		this.speculativeMutations = this.speculativeMutations.filter(
-			(m) => !rollbackIds.has(m.id),
-		)
 	}
 
 	query<Query extends RelationalQuery<Schema, Relations>>(
@@ -228,12 +190,15 @@ export class TandemClient<
 		}
 
 		this.logger.info({ message: "committing transaction" })
-		const mutation: InvertibleMutation<Schema> = {
+		this.mutationCount += 1
+		const mutation: Mutation<Schema> = {
 			ops: transaction.ops,
-			id: transaction.tupleDbTx.id as MutationId,
+			id: tag<MutationId>(this.mutationCount),
 		}
-		this.db.commit(transaction)
-		this.speculativeMutations.push(mutation)
+		this.pendingWrites.commitAndTrack(mutation, {
+			readCommittedRecord: ({ collection, id }) => this.db.get(collection, id),
+			commit: () => this.db.commit(transaction),
+		})
 
 		const commitPromise =
 			this.syncEngine?.queuePush(mutation) ?? Promise.resolve()
@@ -271,8 +236,7 @@ export class TandemClient<
 	async clear() {
 		this.logger.info({ message: "clearing database" })
 
-		// Clear speculative mutations
-		this.speculativeMutations = []
+		this.pendingWrites.clearAll()
 
 		// Clear the database
 		await this.db.clear()

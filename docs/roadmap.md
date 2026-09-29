@@ -47,7 +47,7 @@ Short-term cleanup tasks live in [`TODO.md`](../TODO.md).
 - Local database with `get`, `list`, `set`, `update`, and `remove`
 - Mutation stream to client storage, rollback on failure, and mounting from storage on startup
 - Sync engine with push, pull, poke, and replay of pending mutations on top of pulled patches
-- Invertible mutations
+- Per-client mutation ids and rebuilding pulls from the server's values instead of undoing writes
 - Scan windows, so clients pull only the data they subscribe to
 - Object queries with `select`, `where`, `orderBy`, `limit`, and `offset`
 - Runtime schemas, schema-owned codecs, and `defineRelations`

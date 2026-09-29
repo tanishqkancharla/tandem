@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest"
 import type { EncodedQuery } from "../query/Query.js"
-import { type Mutation, MutationApi } from "./Transaction.js"
+import { tag } from "../utils/typeUtils.js"
+import { type Mutation, type MutationId, MutationApi } from "./Transaction.js"
 
 type TestSchema = {
 	threads: { id: string; ownerId: string; title: string }
@@ -14,7 +15,7 @@ function mutation(
 	value: TestSchema[keyof TestSchema],
 ): Mutation<TestSchema> {
 	return {
-		id: `mutation-${collection}` as Mutation<TestSchema>["id"],
+		id: tag<MutationId>(1),
 		ops: [{ type: "set", collection, value }],
 	} as Mutation<TestSchema>
 }

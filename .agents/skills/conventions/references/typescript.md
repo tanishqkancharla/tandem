@@ -16,6 +16,38 @@ Use PascalCase for classes, types, interfaces, enums, and React components. Use 
 
 Within a class, declare and briefly explain owned state first, then explicit `private readonly` dependencies. Prefer TypeScript `private` and `private readonly` fields over `#` fields. Constructors take one `ctx` object, destructure it, and explicitly assign fields rather than retaining the whole context or using constructor parameter properties. Other comments should explain external quirks or decisions, not repeat the code.
 
+## Branch exhaustively on closed unions
+
+When code branches on a closed union, such as an op's `type` or a fault kind, handle every member explicitly. Do not make one member the implicit fallback of a ternary, an `if`/`else`, or a default value: when the union gains a member, it silently takes that branch instead of failing to compile.
+
+Avoid letting the last member fall through:
+
+```ts
+// A new op type would be treated as a remove.
+const id = op.type === "set" ? op.value.id : op.id;
+```
+
+Use `switch` with `unreachable` from `utils/typeUtils.ts` when a branch needs the value narrowed to its member:
+
+```ts
+switch (op.type) {
+  case "set":
+    return op.value.id;
+  case "remove":
+    return op.id;
+  default:
+    return unreachable(op);
+}
+```
+
+Use `match` from `utils/typeUtils.ts` to map each member of a key to a value. Its cases receive only the key, so use `switch` when a case needs the narrowed value:
+
+```ts
+const verb = match(op.type, { set: "write", remove: "delete" });
+```
+
+This applies to named members of a union. A check for absence, such as `value === undefined`, is not a fallback.
+
 ## Return expected internal failures with `errore`
 
 Use the `errore` package for Tandem's internal error handling. Expected internal failures are part of the function's return type: `Value | DomainError`, not thrown exceptions or `Result` wrappers. Internal callers check `instanceof Error` and return early, keeping the success path flat.

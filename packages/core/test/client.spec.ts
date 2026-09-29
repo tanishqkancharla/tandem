@@ -8,6 +8,9 @@ describe("TandemClient local data", () => {
 		gatekeeper,
 	}) => {
 		const { client1 } = gatekeeper
+		// A synced client keeps confirmed records only where it subscribes
+		const subscription = client1.subscribe({ collection: "todos" })
+
 		// Seed three todos and query the highest-priority open ones
 		const tx = client1.transact()
 		tx.set(
@@ -63,6 +66,7 @@ describe("TandemClient local data", () => {
 			todo("todo-3", { text: "Fix the sync bug", priority: 3 }),
 		])
 		expect(deletedTodo).toEqual([])
+		subscription.destroy()
 	})
 
 	test("runs flat queries unchanged when constructed with a runtime schema", async ({
