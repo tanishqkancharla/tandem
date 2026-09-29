@@ -115,15 +115,22 @@ describe("Deterministic simulation testing", () => {
 		const outDir = mkdtempSync(join(tmpdir(), "dst-sweep-"))
 		onTestFinished(() => rmSync(outDir, { recursive: true }))
 
-		const results = await sweep({ seed: 1, steps: 300, runs: 4, outDir })
+		// Seeds 1 and 2 hit bug C, a lost push treated as a rejection.
+		const results = await sweep({
+			seed: 1,
+			steps: 10,
+			faultRate: 0.1,
+			runs: 4,
+			outDir,
+		})
 
 		expect(results.map(({ seed, outcome }) => ({ seed, outcome }))).toEqual([
 			{ seed: 1, outcome: "violation" },
-			{ seed: 2, outcome: "ok" },
+			{ seed: 2, outcome: "violation" },
 			{ seed: 3, outcome: "ok" },
 			{ seed: 4, outcome: "ok" },
 		])
-		expect(readdirSync(outDir)).toEqual(["seed-1.jsonl"])
+		expect(readdirSync(outDir).sort()).toEqual(["seed-1.jsonl", "seed-2.jsonl"])
 	})
 
 	// Known sync bugs, documented in known-failures/README.md. Each replay must
@@ -131,10 +138,6 @@ describe("Deterministic simulation testing", () => {
 	// no longer applies, the test fails; then delete the recording.
 	describe("known sync bugs", () => {
 		it.each([
-			[
-				"B: the server does not count keys a client pushed",
-				"seed-216-pushed-keys-not-synced",
-			],
 			[
 				"C: a push that fails in transit is treated as a rejection",
 				"seed-2-lost-push-rolls-back",

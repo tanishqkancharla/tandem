@@ -155,6 +155,13 @@ export class Database<
 		return this.tupleDb.transact(this.rng.randomId())
 	}
 
+	/** A record's committed value, read outside any open transaction. */
+	get(
+		key: SchemaToTupleSchema<Schema>["key"],
+	): SchemaToTupleSchema<Schema>["value"] | undefined {
+		return this.tupleDb.get(key)
+	}
+
 	transact(): Transaction<Schema> {
 		const tupleDbTx = this.tupleDb.transact(this.rng.randomId())
 		return new Transaction(tupleDbTx)

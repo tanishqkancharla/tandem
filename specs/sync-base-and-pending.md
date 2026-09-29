@@ -251,16 +251,23 @@ Add `PendingWrites` and route commit, pull, and rollback through it. This is the
 
 `PendingWrites` is the only owner of `mutations` and `base`. `TandemClient` opens the tuple transaction, hands it in, and commits it, so each pull is still one change for subscribers.
 
-- [ ] Add `packages/core/src/sync/PendingWrites.ts` with the data structure and invariants from "The base".
-- [ ] Add `Database.get(collection, id)` to read a committed record outside a transaction.
-- [ ] Replace `speculativeMutations` in `TandemClient` with a `PendingWrites`, and route `commit`, the pull handler, `rollback`, and `clear` through it. Rename `applyPatchAt` to `applyPull`.
-- [ ] `conflicts.spec.ts`: drop `.fails` from the #41 `(known bug)` test.
-- [ ] Add a core test for #42's pattern: a pushed record that another client deletes before the writer's next read, then removed by the writer.
-- [ ] Add a core test that a confirmed write outside the client's subscriptions disappears after the next pull.
-- [ ] Add a core test for a mutation that sets and then removes the same record, pending across a pull.
-- [ ] Update the five tests that write without subscribing to subscribe first: `client.spec.ts` (local data), `compound-ids.spec.ts`, and three in `relations.spec.ts`.
-- [ ] Delete the #42 recording, its case in `dst.spec.ts`, and the #41 and #42 entries in `dst/known-failures/README.md`. The #41 recording was already deleted in phase 1.
-- [ ] Run `pnpm test` and `pnpm type-check`.
+`PendingWrites` splits capturing from adding: `captureBase(mutation, readCommitted)` reads committed values before the transaction commits, and `add(mutation, capture)` records the mutation only after the commit succeeds. A tuple-database commit can throw on a read-write conflict, and a mutation that never committed must not become pending. `Database.get` takes the record's tuple key rather than a collection and id, because `PendingWrites` works in tuple keys.
+
+The DST sweep test swept seeds 1–4 with no faults and relied on seed 1 failing with #42's bug. It now sweeps 10 steps with a 0.1 fault rate, where seeds 1 and 2 fail with #43's bug.
+
+A no-fault sweep of 60 seeds at 300 steps passes every seed; phase 1 failed 15 of them, all with #42's shape. The new core tests for #41, #42, the ordering bug, and writes outside subscriptions all fail on phase 1's code.
+
+- [x] Add `packages/core/src/sync/PendingWrites.ts` with the data structure and invariants from "The base".
+- [x] Add `Database.get(key)` to read a committed record outside a transaction.
+- [x] Replace `speculativeMutations` in `TandemClient` with a `PendingWrites`, and route `commit`, the pull handler, `rollback`, and `clear` through it. Rename `applyPatchAt` to `applyPull`, in `SyncEngine` too.
+- [x] `conflicts.spec.ts`: drop `.fails` from the #41 `(known bug)` test.
+- [x] Add a core test for #42's pattern: a pushed record that another client deletes before the writer's next read, then removed by the writer.
+- [x] Add a core test that a confirmed write outside the client's subscriptions disappears after the next pull.
+- [x] Add a core test for a mutation that sets and then removes the same record, pending across a pull.
+- [x] Update the five tests that write without subscribing to subscribe first: `client.spec.ts` (local data), `compound-ids.spec.ts`, and three in `relations.spec.ts`.
+- [x] Delete the #42 recording, its case in `dst.spec.ts`, and the #41 and #42 entries in `dst/known-failures/README.md`.
+- [x] Point the DST sweep test at a fault sweep that still has failing seeds.
+- [x] Run `pnpm test`, `pnpm type-check`, `pnpm lint`, and a no-fault DST sweep.
 
 ### Phase 3: Delete undo values
 

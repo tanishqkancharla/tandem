@@ -4,27 +4,9 @@ Runs the simulation found that fail because of sync engine bugs we have not fixe
 
 `dst.spec.ts` replays each artifact with no random choices and requires it to reach its recorded violation. The test fails when the bug is fixed, or when the recording no longer applies to the code; either way, look at it, and delete the recording once the bug is fixed. A random run writes the same format through `jsonlFileSink`, so a new failure can be added here as it is.
 
-The bugs are independent: fixing one still leaves the others failing.
+The bugs are independent: fixing one still leaves the others failing. Bugs A and B, an empty patch dropping its acknowledgement and a pushed key coming back after its remove was acknowledged, are fixed: the client rebuilds each pull from the server's values instead of undoing writes.
 
 The expected behavior these recordings encode: a client shows the last server state it received plus its own unacknowledged writes, and every write reaches the server unless the server rejects it. That includes writes a client stored before crashing, which Tandem does not implement yet.
-
-## A. An empty patch drops its acknowledgement: no recording
-
-`TandemClient.applyPatchAt` returns before it reads `lastMutationId` when the patch is empty, so that pull confirms nothing. The server reports `lastMutationId` on every pull, so the next non-empty patch confirms the writes, and DST runs no longer show the bug. It stays visible for a client that receives only empty patches after its write is acknowledged. The `(known bug)` test in `packages/core/test/sync/conflicts.spec.ts` covers that case, where a lost poke lets a deleted write survive.
-
-## B. The server does not count keys a client pushed: `seed-216-pushed-keys-not-synced.jsonl`
-
-`{ seed: 216, steps: 30 }`. Violation at quiescence: client2 still holds `item-1 (rev 1)`, its own first write, which the server no longer has.
-
-- step 1: client2 creates `item-1`, and its push is applied.
-- step 25: client2 removes `item-1` itself.
-- When client2 rebases over its acknowledged remove, undoing the remove restores the value it captured locally, `rev 1`.
-
-```
-server.pull:
-  removes = syncedKeys - records   # syncedKeys holds only keys the server sent,
-                                   # never keys the client pushed, so no remove follows
-```
 
 ## C. A push that fails in transit is treated as a rejection: `seed-2-lost-push-rolls-back.jsonl`
 

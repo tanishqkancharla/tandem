@@ -135,7 +135,7 @@ export type SyncEngineArgs<Schema extends AnySchema> = {
 	clientId: ClientId
 	remote: SyncEngine<Schema>["remote"]
 	handleRollback: SyncEngine<Schema>["handleRollback"]
-	applyPatchAt: SyncEngine<Schema>["applyPatchAt"]
+	applyPull: SyncEngine<Schema>["applyPull"]
 	autoConnect?: boolean
 	logger: SyncEngine<Schema>["logger"]
 	syncInterval: number | TimerApi
@@ -149,7 +149,7 @@ export class SyncEngine<Schema extends AnySchema> {
 	private readonly handleRollback: (
 		mutationsToRollback: readonly InvertibleMutation<Schema>[],
 	) => void
-	private readonly applyPatchAt: (args: {
+	private readonly applyPull: (args: {
 		patch: Patch<Schema>
 		lastMutationId: MutationId
 	}) => void
@@ -164,7 +164,7 @@ export class SyncEngine<Schema extends AnySchema> {
 		this.logger = args.logger
 		this.remote = args.remote
 		this.handleRollback = args.handleRollback
-		this.applyPatchAt = args.applyPatchAt
+		this.applyPull = args.applyPull
 		this.clientId = args.clientId
 		const timer =
 			typeof args.syncInterval === "number"
@@ -257,7 +257,7 @@ export class SyncEngine<Schema extends AnySchema> {
 
 		this.cookie = cookie
 
-		this.applyPatchAt({ patch, lastMutationId })
+		this.applyPull({ patch, lastMutationId })
 	}
 
 	queuePush(mutation: InvertibleMutation<Schema>): Promise<void> {

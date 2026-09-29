@@ -68,6 +68,31 @@ const schemaSyncTest = test.extend<{
 })
 
 describe("TandemClient sync", () => {
+	test("drops a confirmed write that no subscription covers", async ({
+		gatekeeper,
+	}) => {
+		const { client1, client2 } = gatekeeper
+		const client2Subscription = client2.subscribe({ collection: "todos" })
+
+		// client1 writes a todo without subscribing to todos
+		const tx = client1.transact()
+		tx.set("todos", todo("todo-1", { text: "Unwatched" }))
+		await (
+			await client1.commit(tx)
+		).result
+
+		// Once a pull confirms the write, client1 keeps only what it subscribes to
+		await (
+			await client1.pullFromRemote()
+		).result
+
+		expect(client1.query({ collection: "todos" })).toEqual([])
+		await expectQuery(client2, { collection: "todos" }).toResolveTo([
+			todo("todo-1", { text: "Unwatched" }),
+		])
+		client2Subscription.destroy()
+	})
+
 	test("syncs a committed change from one client to another subscribed client", async ({
 		gatekeeper,
 	}) => {
