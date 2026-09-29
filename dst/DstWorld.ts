@@ -17,6 +17,7 @@ import {
 	TandemClient,
 	type TandemClientStorageApi,
 	type TimerApi,
+	unreachable,
 } from "@tanishqkancharla/tandem-core"
 import {
 	TandemServer,
@@ -465,12 +466,18 @@ export class DstWorld implements AsyncDisposable {
 	): DstTraceRecord {
 		const client = this.harness[intent.client]
 		const tx = client.transact()
-		const op: DstOp =
-			intent.type === "set"
-				? { type: "set", item: intent.item }
-				: { type: "remove", id: intent.id }
-		if (op.type === "set") tx.set("todos", op.item)
-		else tx.remove("todos", op.id)
+		const op = ((): DstOp => {
+			switch (intent.type) {
+				case "set":
+					tx.set("todos", intent.item)
+					return { type: "set", item: intent.item }
+				case "remove":
+					tx.remove("todos", intent.id)
+					return { type: "remove", id: intent.id }
+				default:
+					return unreachable(intent)
+			}
+		})()
 		const mutationId = this.model.wrote(intent.client, op)
 		// The handle arrives only once the commit reaches a boundary, which may
 		// wait on another held call. Its call shows up in pending() then.

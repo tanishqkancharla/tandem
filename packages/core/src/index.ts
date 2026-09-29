@@ -108,6 +108,7 @@ export {
 	type Span,
 	Spans,
 	unreachable,
+	match,
 	type Assert,
 	type TestIsEqual,
 	type TestExtends,
