@@ -9,13 +9,13 @@ Persistent tuple storage with IndexedDB backend. Handles data persistence, cachi
 ```typescript
 import { TandemClientIndexedDbStorage } from "./TandemClientIndexedDbStorage.js";
 
-const storage = new TandemClientIndexedDbStorage({
+const storage = new TandemClientIndexedDbStorage<Schema>({
 	dbName: "my-app",
-	version: 1,
+	schema,
 });
 
 // Used internally by TandemClient
-const db = new TandemClient({ clientStorage: storage });
+const db = new TandemClient({ schema, clientStorage: storage });
 ```
 
 ## How it works

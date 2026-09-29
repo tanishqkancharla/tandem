@@ -1,8 +1,10 @@
 # Relational queries design
 
+Status: implemented. For usage, see [Queries](../queries.md). This page records the design rationale.
+
 ## Overview
 
-Relational Queries v2 makes Tandem queries schema-aware and relation-aware while keeping the public API small. Runtime schemas, schema-owned codecs, and basic `defineRelations` metadata already exist; this design defines the target query shape that later type inference, encoding, execution, subscription, and sync specs should implement.
+Relational Queries v2 makes Tandem queries schema-aware and relation-aware while keeping the public API small. It builds on runtime schemas, schema-owned codecs, and `defineRelations` metadata, and defines the query shape that type inference, encoding, execution, subscriptions, and sync implement.
 
 The public query shape is a single serializable object with an explicit `collection` field:
 
@@ -383,33 +385,14 @@ const threads = useQuery({
 
 Zero is stronger for named, validated, server-owned query definitions. Tandem's ad hoc shape is more direct for local-first UI reads and remains compatible with secure server execution if the backend enforces tenant context, RLS, query validation, and resource caps.
 
-## Roadmap mapping
-
-This design resolves the README group `Finalize public relational query shape`:
-
-- Object-style query API: `useQuery({ collection: "threads", select, where, with, orderBy, limit })`
-- Exact `select`, `where`, `orderBy`, `limit`, and `offset` syntax
-- Relation result shape for `many-to-one` vs `one-to-many`
-
-The next README groups should be specified and implemented separately:
-
-- Type inference for relational queries
-- Encode relational queries
-- Execute relational queries locally
-- Subscribe to relational queries locally
-- Sync relational subscriptions through remote
-- Tests and examples
-
 ## Important files and references
 
-- `README.md` - Relational Queries v2 roadmap.
-- `packages/core/src/schema/Schema.ts` - Runtime schema and relation helpers.
-- `packages/core/src/query/Query.ts` - Current flat builder API and likely query type/normalization home.
-- `packages/core/src/TandemClient.ts` - Public run/subscribe surface.
-- `packages/core/src/Database.ts` - Current flat executor.
-- `packages/core/src/schema/Schema.ts` - Runtime schema and relation helpers.
-- `packages/types/src/types.ts` - Current shared query and relation types.
-- `https://www.notion.so/Relational-tandem-258ac9fb35f1801e88eaf858b5401317` - Product direction and examples.
-- `https://orm.drizzle.team/docs/relations-v2` - Drizzle relational query inspiration.
-- `https://tanstack.com/db/latest/docs/collections/query-collection` - TanStack DB query collection and predicate push-down inspiration.
-- `https://zero.rocicorp.dev/docs/queries` - Zero named query and validation inspiration.
+- `packages/core/src/schema/Schema.ts`: runtime schema and relation helpers
+- `packages/core/src/query/Query.ts`: query types, result inference, and encoding
+- `packages/core/src/query/executeQuery.ts`: query and scan window execution
+- `packages/core/src/TandemClient.ts`: public `query` and `subscribe`
+- `packages/react/src/TandemClientProvider.tsx`: `useTandemQuery`
+- [Product direction and examples](https://www.notion.so/Relational-tandem-258ac9fb35f1801e88eaf858b5401317)
+- [Drizzle Relations v2](https://orm.drizzle.team/docs/relations-v2)
+- [TanStack DB query collections](https://tanstack.com/db/latest/docs/collections/query-collection)
+- [Zero queries](https://zero.rocicorp.dev/docs/queries)
