@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+TIMEFORMAT='Completed in %3R seconds'
+
+echo 'Preparing Node.js 24 (matching CI)'
+if ! command -v node >/dev/null || [[ "$(node -p 'process.versions.node.split(".")[0]')" != 24 ]]; then
+  time sudo npm install --global n
+  time sudo n 24
+  hash -r
+fi
+node --version
+
+echo 'Preparing the package manager pinned in package.json'
+package_manager="$(node -p 'JSON.parse(require("fs").readFileSync("package.json", "utf8")).packageManager')"
+if ! command -v pnpm >/dev/null || [[ "$(pnpm --version)" != "${package_manager#pnpm@}" ]]; then
+  time sudo npm install --global --force "$package_manager"
+fi
+pnpm --version
+
+echo 'Installing workspace dependencies from the lockfile'
+time pnpm install --frozen-lockfile
+
+echo 'Preparing Chromium for the todo browser tests'
+# Playwright reuses its versioned browser cache on warm setup runs.
+time pnpm --filter @tandem/example-todo-web exec playwright install chromium
+
+echo 'Building workspace packages and priming the Turbo cache'
+time pnpm build

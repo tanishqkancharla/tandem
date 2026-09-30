@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Tests use in-process or disposable file storage; no services or authentication
+# need repair on wake. Dependencies and browser binaries belong in setup only.

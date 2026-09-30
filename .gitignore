@@ -10,3 +10,4 @@ examples/**/test-results/
 *.tsbuildinfo
 packages/core/test/logs/
 tmp/
+.amp/portals/*
