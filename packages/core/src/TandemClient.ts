@@ -190,15 +190,15 @@ export class TandemClient<
 		}
 
 		this.logger.info({ message: "committing transaction" })
-		this.mutationCount += 1
 		const mutation: Mutation<Schema> = {
 			ops: transaction.ops,
-			id: tag<MutationId>(this.mutationCount),
+			id: tag<MutationId>(this.mutationCount + 1),
 		}
 		this.pendingWrites.commitAndTrack(mutation, {
 			readCommittedRecord: ({ collection, id }) => this.db.get(collection, id),
 			commit: () => this.db.commit(transaction),
 		})
+		this.mutationCount += 1
 
 		const commitPromise =
 			this.syncEngine?.queuePush(mutation) ?? Promise.resolve()
