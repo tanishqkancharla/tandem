@@ -6,6 +6,7 @@ import {
 } from "@tanishqkancharla/tandem-core"
 import type {
 	ClientId,
+	Mutation,
 	MutationId,
 	Patch,
 	RemoteApi,
@@ -503,7 +504,7 @@ test("remote pushes preserve operation order and acknowledge the last mutation o
 		scanWindow,
 	})
 	expect(acknowledged.lastMutationId).toBe(2)
-	expect(acknowledged.cookie).toBe(1)
+	expect(acknowledged.cookie).not.toBe(initial.cookie)
 	expect(acknowledged.patch.set).toEqual([
 		{
 			collection: "threads",
@@ -529,6 +530,141 @@ test("remote pushes preserve operation order and acknowledge the last mutation o
 		lastMutationId: 2,
 	})
 
+	await server.close()
+})
+
+test("concurrent duplicate pushes are skipped and pulls wait for committed effects", async () => {
+	const { server, storage } = createServer()
+	const clientId = tag<ClientId>("concurrent-client")
+	const scanWindow: ScanWindow<TestSchema> = [{ collection: "users" }]
+	const mutations: Mutation<TestSchema>[] = [
+		{
+			id: tag<MutationId>(1),
+			ops: [
+				{
+					type: "set",
+					collection: "users",
+					value: { id: "user-1", name: "Ada" },
+				},
+			],
+		},
+	]
+	let pokes = 0
+	await server.connect({
+		clientId,
+		poke: () => {
+			pokes += 1
+			return Promise.resolve()
+		},
+	})
+	const gate = storage.pauseNextCommit()
+	const first = server.push({ clientId, mutations })
+	await gate.entered
+	const duplicate = server.push({ clientId, mutations })
+	const pull = server.pull({ clientId, scanWindow })
+	const edit = server.transact()
+	edit.set("users", { id: "user-1", name: "Grace" })
+	const commit = server.commit(edit)
+	gate.release()
+	await Promise.all([first, duplicate, commit])
+
+	expect(await pull).toMatchObject({
+		lastMutationId: 1,
+		patch: {
+			set: [{ collection: "users", value: { id: "user-1", name: "Ada" } }],
+		},
+	})
+	expect(await server.query({ collection: "users" })).toEqual([
+		{ id: "user-1", name: "Grace" },
+	])
+	expect(pokes).toBe(2)
+	await server.close()
+})
+
+test("retrying a partially committed batch skips its prefix and processes its suffix", async () => {
+	const { server, storage } = createServer()
+	const clientId = tag<ClientId>("batch-client")
+	const scanWindow: ScanWindow<TestSchema> = [{ collection: "users" }]
+	const mutations: Mutation<TestSchema>[] = [
+		{
+			id: tag<MutationId>(1),
+			ops: [
+				{
+					type: "set",
+					collection: "users",
+					value: { id: "user-1", name: "Ada" },
+				},
+			],
+		},
+		{
+			id: tag<MutationId>(2),
+			ops: [
+				{
+					type: "set",
+					collection: "users",
+					value: { id: "user-2", name: "Grace" },
+				},
+			],
+		},
+	]
+	const storageCause = new Error("second mutation fails")
+	const disconnect = await server.connect({
+		clientId,
+		poke: () => {
+			storage.failNextCommit(storageCause)
+			return Promise.resolve()
+		},
+	})
+	await expect(server.push({ clientId, mutations })).rejects.toMatchObject({
+		cause: storageCause,
+	})
+	await disconnect()
+	expect(await server.pull({ clientId, scanWindow })).toMatchObject({
+		lastMutationId: 1,
+		patch: {
+			set: [{ collection: "users", value: { id: "user-1", name: "Ada" } }],
+		},
+	})
+
+	const edit = server.transact()
+	edit.set("users", { id: "user-1", name: "Newer edit" })
+	await server.commit(edit)
+	await server.push({ clientId, mutations })
+	expect(await server.pull({ clientId, scanWindow })).toMatchObject({
+		lastMutationId: 2,
+	})
+	expect(await server.query({ collection: "users" })).toEqual([
+		{ id: "user-1", name: "Newer edit" },
+		{ id: "user-2", name: "Grace" },
+	])
+	await server.close()
+})
+
+test("empty mutations advance acknowledgement once, without re-poking on retry", async () => {
+	const { server } = createServer()
+	const clientId = tag<ClientId>("empty-client")
+	let pokes = 0
+	await server.connect({
+		clientId,
+		poke: () => {
+			pokes += 1
+			return Promise.resolve()
+		},
+	})
+	const mutations: Mutation<TestSchema>[] = [
+		{ id: tag<MutationId>(1), ops: [] },
+	]
+	await server.push({ clientId, mutations })
+	const confirmed = await server.pull({ clientId, scanWindow: [] })
+	await server.push({ clientId, mutations })
+	expect(
+		await server.pull({ clientId, scanWindow: [], cookie: confirmed.cookie }),
+	).toEqual({
+		cookie: confirmed.cookie,
+		lastMutationId: 1,
+		patch: { set: [], remove: [] },
+	})
+	expect(pokes).toBe(1)
 	await server.close()
 })
 

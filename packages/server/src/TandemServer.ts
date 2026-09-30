@@ -15,6 +15,7 @@ import type {
 	ScanWindow,
 	AnyRelations,
 	RuntimeSchemaDefinition,
+	SchemaToTupleSchema,
 } from "@tanishqkancharla/tandem-core"
 import { tag, unreachable, untag } from "@tanishqkancharla/tandem-core"
 import {
@@ -30,6 +31,7 @@ import {
 	subscribeQueryAsync,
 } from "tuple-database"
 import type {
+	AsyncTupleRootTransactionApi,
 	AsyncTupleStorageApi,
 	ReadOnlyAsyncTupleDatabaseClientApi,
 	WriteOps,
@@ -37,6 +39,7 @@ import type {
 import { TandemServerError } from "./TandemServerError.js"
 import { TandemServerTransaction } from "./TandemServerTransaction.js"
 import type {
+	TandemClientTuple,
 	TandemTuple,
 	TandemServerStorageApi,
 } from "./storage/TandemServerStorage.js"
@@ -71,15 +74,12 @@ type SyncedRecordKey<
 }[Collection]
 
 type SyncClientState<Schema extends AnySchema> = {
-	lastMutationId?: MutationId
 	poke?: ClientApi["poke"]
 	scanWindowKey?: string
 	syncedRecordKeys?: SyncedRecordKey<Schema>[]
 }
 
 type CommitOptions = {
-	advanceWithoutWrites?: boolean
-	onCommitted?: () => void
 	operation: "commit" | "push"
 }
 
@@ -142,18 +142,26 @@ export class TandemServer<
 	private readonly tupleDb: AsyncTupleDatabaseClient<TandemTuple<Schema>>
 	private readonly rng?: RngApi
 	private revision = 0
+	// Tuple transactions batch writes but do not snapshot reads or serialize
+	// asynchronous storage commits. Order sync reads and commits here.
+	private queue: Promise<void> = Promise.resolve()
 
 	constructor(args: TandemServerArgs<Schema, Relations>) {
 		this.relations = args.relations
 		this.rng = args.rng
-		this.tupleDb = new AsyncTupleDatabaseClient<TandemTuple<Schema>>(
-			new AsyncTupleDatabase(
-				tandemStorageToTupleDatabaseStorage(args.storage),
-				{
-					rng: args.rng,
-				},
-			),
+		const database = new AsyncTupleDatabase(
+			tandemStorageToTupleDatabaseStorage(args.storage),
+			{ rng: args.rng },
 		)
+		this.tupleDb = new AsyncTupleDatabaseClient<TandemTuple<Schema>>(database)
+	}
+
+	private get recordDb() {
+		// Query APIs retain full ["record", ...] keys. This is the same client,
+		// narrowed for those APIs, not a subspace that strips the record prefix.
+		return this.tupleDb as unknown as AsyncTupleDatabaseClient<
+			SchemaToTupleSchema<Schema>
+		>
 	}
 
 	transact(): TandemServerTransaction<Schema, Relations> {
@@ -163,13 +171,12 @@ export class TandemServer<
 		)
 	}
 
-	async commit(
+	commit(
 		transaction: TandemServerTransaction<Schema, Relations>,
 	): Promise<void> {
-		const result = await this.commitTransaction(transaction, {
-			operation: "commit",
-		})
-		if (result instanceof Error) throw result
+		return this.run(() =>
+			this.commitTransaction(transaction, { operation: "commit" }),
+		)
 	}
 
 	connect: RemoteApi<Schema>["connect"] = ({ clientId, poke }) => {
@@ -187,21 +194,29 @@ export class TandemServer<
 		})
 	}
 
-	push: RemoteApi<Schema>["push"] = async ({ clientId, mutations }) => {
-		const result = await this.applyPush(clientId, mutations)
-		if (result instanceof Error) throw result
-	}
+	push: RemoteApi<Schema>["push"] = ({ clientId, mutations }) =>
+		this.run(() => this.applyPush(clientId, mutations))
 
-	pull: RemoteApi<Schema>["pull"] = async (args) => {
-		const result = await this.readPull(args)
-		if (result instanceof Error) throw result
+	pull: RemoteApi<Schema>["pull"] = (args) =>
+		this.run(() => this.readPull(args))
+
+	private run<T>(operation: () => Promise<T | TandemServerError>): Promise<T> {
+		const result = this.queue.then(async () => {
+			const value = await operation()
+			if (value instanceof Error) throw value
+			return value
+		})
+		this.queue = result.then(
+			() => undefined,
+			() => undefined,
+		)
 		return result
 	}
 
 	async query<Query extends RelationalQuery<Schema, Relations>>(
 		query: Query,
 	): Promise<RelationalQueryResult<Schema, Relations, Query>> {
-		const result = await this.runQuery(this.tupleDb, query, "query")
+		const result = await this.runQuery(this.recordDb, query, "query")
 		if (result instanceof Error) throw result
 		return result
 	}
@@ -214,7 +229,7 @@ export class TandemServer<
 		TandemServerSubscription<RelationalQueryResult<Schema, Relations, Query>>
 	> {
 		const subscription = await subscribeQueryAsync(
-			this.tupleDb,
+			this.recordDb,
 			(db) => this.runQuery(db, query, "subscribe"),
 			(result) => {
 				if (result instanceof Error) {
@@ -255,7 +270,7 @@ export class TandemServer<
 	}
 
 	private runQuery<Query extends RelationalQuery<Schema, Relations>>(
-		db: ReadOnlyAsyncTupleDatabaseClientApi<TandemTuple<Schema>>,
+		db: ReadOnlyAsyncTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
 		query: Query,
 		operation: "query" | "subscribe",
 	): Promise<
@@ -277,34 +292,52 @@ export class TandemServer<
 		return created
 	}
 
-	private applyPush(
+	private async applyPush(
 		clientId: ClientId,
 		mutations: Mutation<Schema>[],
 	): Promise<TandemServerError | undefined> {
-		if (mutations.length === 0) return Promise.resolve(undefined)
+		for (const mutation of mutations) {
+			const lastMutationId = await this.readLastMutationId(clientId, "push")
+			if (lastMutationId instanceof Error) return lastMutationId
+			if (mutation.id <= lastMutationId) continue
 
-		const transaction = this.transact()
-		const staged = errore.try(() => {
-			for (const mutation of mutations) {
+			const tupleTx = this.tupleDb.transact(this.rng?.randomId())
+			const transaction = new TandemServerTransaction(tupleTx, this.relations)
+			// Narrow before selecting the namespace: tuple-database cannot resolve
+			// subspace types through the generic application-record union.
+			const clientTx = (
+				tupleTx as unknown as AsyncTupleRootTransactionApi<TandemClientTuple>
+			).subspace(["client"])
+			const staged = errore.try(() => {
 				for (const operation of mutation.ops) {
 					applyMutationOperation(transaction, operation)
 				}
+				clientTx.set([clientId], { lastMutationId: mutation.id })
+			})
+			if (staged instanceof Error) {
+				await transaction.cancel()
+				return new TandemServerError({ operation: "push", cause: staged })
 			}
-		})
-		if (staged instanceof Error) {
-			return Promise.resolve(
-				new TandemServerError({ operation: "push", cause: staged }),
-			)
-		}
 
-		const lastMutationId = mutations.at(-1)?.id
-		return this.commitTransaction(transaction, {
-			advanceWithoutWrites: true,
-			onCommitted: () => {
-				this.getSyncClient(clientId).lastMutationId = lastMutationId
-			},
-			operation: "push",
-		})
+			const committed = await this.commitTransaction(transaction, {
+				operation: "push",
+			})
+			if (committed instanceof Error) return committed
+		}
+	}
+
+	private async readLastMutationId(
+		clientId: ClientId,
+		operation: "push" | "pull",
+	) {
+		const metadata = (
+			this.tupleDb as unknown as AsyncTupleDatabaseClient<TandemClientTuple>
+		).subspace(["client"])
+		const client = await metadata
+			.get([clientId])
+			.catch((cause) => new TandemServerError({ operation, cause }))
+		if (client instanceof Error) return client
+		return client?.lastMutationId ?? tag<MutationId>(0)
 	}
 
 	private async readPull(
@@ -316,6 +349,8 @@ export class TandemServer<
 		const client = this.getSyncClient(clientId)
 		const scanWindowKey = this.encodeScanWindow(scanWindow)
 		if (scanWindowKey instanceof Error) return scanWindowKey
+		const lastMutationId = await this.readLastMutationId(clientId, "pull")
+		if (lastMutationId instanceof Error) return lastMutationId
 
 		const revision = this.revision
 		const cookieRevision = cookie === undefined ? undefined : untag(cookie)
@@ -326,7 +361,7 @@ export class TandemServer<
 			cookieRevision !== revision
 		const records = shouldRead
 			? await executeScanWindowAsync<Schema, Relations>(
-					this.tupleDb,
+					this.recordDb,
 					this.relations,
 					scanWindow,
 				).catch((cause) => new TandemServerError({ operation: "pull", cause }))
@@ -341,8 +376,6 @@ export class TandemServer<
 					(previous) => !containsRecordKey(currentRecordKeys, previous),
 				)
 			: []
-		const lastMutationId = client.lastMutationId ?? tag<MutationId>(0)
-
 		client.scanWindowKey = scanWindowKey
 		if (shouldRead) client.syncedRecordKeys = currentRecordKeys
 
@@ -373,9 +406,8 @@ export class TandemServer<
 					new TandemServerError({ operation: options.operation, cause }),
 			)
 		if (hasWrites instanceof Error) return hasWrites
-		if (!hasWrites && !options.advanceWithoutWrites) return
+		if (!hasWrites) return
 
-		options.onCommitted?.()
 		this.revision += 1
 		this.emitPokes()
 	}

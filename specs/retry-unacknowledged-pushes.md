@@ -1,6 +1,6 @@
 # Retry unacknowledged pushes
 
-Fix for [#43](https://github.com/tanishqkancharla/tandem/issues/43), building on [PR #46](https://github.com/tanishqkancharla/tandem/pull/46), which added numeric mutation IDs and base-plus-pending reconciliation. Phase 1 is implemented; phases 2–5 remain planned.
+Fix for [#43](https://github.com/tanishqkancharla/tandem/issues/43), building on [PR #46](https://github.com/tanishqkancharla/tandem/pull/46), which added numeric mutation IDs and base-plus-pending reconciliation. Phases 1 and 2 are implemented, verified, and committed locally; phases 3–5 remain planned.
 
 ## Problem
 
@@ -118,46 +118,50 @@ flowchart TD
 
 A temporary regression test created a real local transaction conflict, verified that the failed draft was not replayed, then checked that the server acknowledged the next write as ID 2 rather than 3. It failed before the fix and passed afterward; the test was removed at the user's request. Repository type-checks, tests, and lint passed with the fix.
 
-### Phase 2: Make server processing durable and idempotent
+### ✅ Phase 2: Make server processing durable and idempotent
 
-[[packages/server/src/TandemServer.ts#TandemServer]] currently applies every received mutation and records its acknowledgement in memory. This commit makes repeated delivery safe and makes pulls report the durable acknowledgement. Keep these changes together so pushes and pulls cannot disagree about which IDs were processed.
+Implemented locally. [[packages/server/src/TandemServer.ts#TandemServer]] skips processed mutations and makes pulls report durable acknowledgements. Effects and acknowledgements commit together, so retrying an old mutation cannot overwrite a newer edit, even after reopening JSON storage.
 
-Process mutations in order, with a transaction per new mutation. Extend the server tuple storage union to include client metadata; do not expose it as application records. Defer strict gap rejection to phase 3, where the client stops discarding failed pushes. Until then, retain the existing gap acceptance rather than introducing a new lockout.
+Mutations run in request order, with one transaction per new mutation. [[packages/server/src/storage/TandemServerStorage.ts]] includes client metadata outside application records. Strict gap rejection remains deferred to phase 3, where the client stops discarding failed pushes. Phase 2 retains the existing gap acceptance rather than introducing a new lockout.
+
+The shared storage contract owns `TandemTuple`; JSON storage trusts that schema when reading its own files rather than maintaining runtime shape validation. File-I/O and JSON syntax errors still propagate. One root client and its root transactions use the full `TandemTuple<Schema>`. Internal casts narrow collection and metadata views before selecting their subspaces. Query APIs retain full record keys and use a narrowed view of the same root. Both namespaces commit through one transaction; Tandem's public operations are unchanged.
+
+The local `tuple-database` spike showed that distributing prefix calculation alone does not resolve generic subspace results. Explicit namespace types work for the tested string-ID collection operations, but do not yet cover Tandem's compound IDs and aggregate query APIs. The implementation therefore keeps the existing tuple schema and confines casts to internal view boundaries. No fork changes are integrated, pushed, or pinned as dependencies.
 
 ```diff
  Server storage tuples:
-     application records and indexes
+     application records
 +    ["client", clientId] -> { lastMutationId }
 
  TandemServer.applyPush(clientId, mutations):
 -    begin batch transaction
++    serialize with other pushes, pulls, and application commits
      for mutation in mutations:
 -        stage mutation.ops
 -    commit batch transaction
 -    inMemoryClients[clientId].lastMutationId = mutations.last.id
-+        begin transaction
 +        last = read ["client", clientId].lastMutationId ?? 0
 +
 +        if mutation.id <= last:
-+            discard transaction
 +            continue                      // duplicate; no writes or pokes
 +
-+        decision = validate mutation
-+        if decision is explicit application rejection:
-+            stage no record changes
-+        else:
-+            stage every mutation operation
++        begin transaction
++        stage every mutation operation
 +
 +        stage ["client", clientId].lastMutationId = mutation.id
 +        commit atomically
 +        advance revision and emit pokes after commit
 ```
 
-An explicit application rejection consumes the ID without effects. A transport error, storage failure, or unexpected exception is not such a rejection. On a failed database commit, neither the effects nor the ID advance. Validation above describes the decision boundary, not a new public validation-hook API; do not classify arbitrary caught exceptions as rejections.
+On a failed storage commit, neither effects nor the ID advance for that mutation. A previously committed prefix of the batch remains committed. Empty mutations still persist their acknowledgement; their retries do not write or poke.
 
-Concurrent pushes for the same client must serialize or conflict on the transactional client-state read. A conflicted transaction is retried from a fresh read, never committed with a stale acknowledgement. A partially completed batch is safe to resend because its committed prefix is skipped.
+The earlier sketch included an application-rejection branch, but the server has no application validation API. This phase does not introduce one or classify storage exceptions as rejections. The proposed push receipts, gap responses, and pull rejection details are not implemented here; `RemoteApi` keeps its existing push and pull shapes. Explicit rejection handling remains future protocol work.
 
-The patch and acknowledgement must describe a consistent server state. Read the durable acknowledgement with the data used to build the patch, using a read transaction or equivalent serialization with pushes. A server restart must not reset the acknowledgement.
+One server-owned queue serializes pushes, pulls, and application commits across asynchronous storage operations. The tuple database does not provide a snapshot read spanning these operations, so a transactional read alone is insufficient. This assumes one `TandemServer` owns the storage; it does not coordinate multiple server instances sharing storage. Query and transaction reads retain their existing behavior.
+
+In the pinned tuple-database version, conflict bookkeeping happens before `await storage.commit`. A pull beginning during that wait can read the old acknowledgement, then read new records after the commit, without detecting a conflict. Atomic writes alone do not prevent this mixed read. Removing the queue requires stronger transaction guarantees from the database layer.
+
+Pull reads the durable acknowledgement and builds its patch while holding the same queue. A server restart does not reset the acknowledgement.
 
 ```diff
  TandemServer.readPull(clientId, window, cookie):
@@ -171,17 +175,15 @@ The patch and acknowledgement must describe a consistent server state. Read the 
 
 ```mermaid
 flowchart TD
-    A[Read durable client ID in transaction] --> B{Incoming ID}
+    Q[Enter server operation queue] --> A[Read durable client ID]
+    A --> B{Incoming ID}
     B -->|Already processed| C[Skip without effects]
-    B -->|Higher ID| E{Application decision}
-    E -->|Accept| F[Stage effects and ID]
-    E -->|Reject| G[Stage ID without effects]
+    B -->|Higher ID| F[Stage effects and ID in one transaction]
     F --> H[Atomic commit]
-    G --> H
     H --> I[Pull reads consistent patch and durable ID]
 ```
 
-Validate duplicates after another client's newer edit, reopening durable storage, concurrent duplicate pushes, and failed storage commits. A failed storage commit must leave both records and acknowledgement unchanged. Explicit application rejection must acknowledge without partial effects. The client still has its old rollback behavior at this boundary; strict gap rejection and retries are not enabled yet.
+Verified retries after another client's newer edit and reopening JSON storage, concurrent duplicate pushes during a blocked storage commit, ordered pull and application commit, partial-batch failure and retry, empty mutations, and the existing failed-storage-commit checks. Repository type-checks and all 133 tests pass. The client still has its old rollback behavior; strict gap rejection and retries are not enabled yet.
 
 ### Phase 3: Retain unacknowledged writes and enforce consecutive delivery
 

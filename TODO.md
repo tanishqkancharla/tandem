@@ -15,3 +15,7 @@
 - Specify reset versus incremental pull behavior.
 - Specify retry and idempotency semantics for pushes and pulls.
 - Build a production Drizzle `TandemServerStorageApi` adapter.
+
+## Testing
+
+- Use Gatekeeper for server tests too, replacing ad hoc timing and fault controls such as the paused storage commit in `packages/server/test/TandemServer.spec.ts`.

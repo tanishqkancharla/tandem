@@ -1,12 +1,7 @@
 import crypto from "node:crypto"
 import fs from "node:fs/promises"
 import path from "node:path"
-import type {
-	AnySchema,
-	CollectionId,
-	CollectionIdPart,
-} from "@tanishqkancharla/tandem-core"
-import { collectionIdToTuple } from "@tanishqkancharla/tandem-core/internal"
+import type { AnySchema } from "@tanishqkancharla/tandem-core"
 import * as errore from "errore"
 import { InMemoryTupleStorage } from "tuple-database"
 import type { ScanStorageArgs, WriteOps } from "tuple-database"
@@ -17,11 +12,6 @@ import type {
 
 export type TandemServerJsonFileStorageArgs = {
 	filePath: string
-}
-
-type StoredTandemTuple = {
-	key: ["record", collection: string, ...id: CollectionIdPart[]]
-	value: Record<string, unknown> & { id: CollectionId }
 }
 
 type FileOperation =
@@ -55,60 +45,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-function isCollectionIdPart(value: unknown): value is CollectionIdPart {
-	return typeof value === "string" || typeof value === "number"
-}
-
-function isCollectionId(value: unknown): value is CollectionId {
-	return (
-		isCollectionIdPart(value) ||
-		(Array.isArray(value) &&
-			value.length > 0 &&
-			value.every(isCollectionIdPart))
-	)
-}
-
-function isStoredTandemTuple(value: unknown): value is StoredTandemTuple {
-	if (!isRecord(value) || !Array.isArray(value.key)) return false
-	const key = value.key
-	if (key.length < 3 || key[0] !== "record") return false
-	if (typeof key[1] !== "string") return false
-	if (!key.slice(2).every(isCollectionIdPart)) return false
-	if (!isRecord(value.value)) return false
-	if (!isCollectionId(value.value.id)) return false
-
-	const idTuple = collectionIdToTuple(value.value.id)
-	return (
-		idTuple.length === key.length - 2 &&
-		idTuple.every((part, index) => part === key[index + 2])
-	)
-}
-
 function isNotFoundError(value: unknown): boolean {
 	return isRecord(value) && value.code === "ENOENT"
-}
-
-function parseTuples({ filePath, raw }: { filePath: string; raw: string }) {
-	const parsed = errore.try({
-		// Wrap the unknown JSON value so Error remains a discriminable union.
-		try: () => ({ value: JSON.parse(raw) as unknown }),
-		catch: (cause) =>
-			new TandemServerJsonFileStorageError({
-				operation: "parse",
-				filePath,
-				cause,
-			}),
-	})
-	if (parsed instanceof Error) return parsed
-	if (Array.isArray(parsed.value) && parsed.value.every(isStoredTandemTuple)) {
-		return parsed.value
-	}
-
-	return new TandemServerJsonFileStorageError({
-		operation: "parse",
-		filePath,
-		cause: new Error("Expected a JSON array of Tandem tuples"),
-	})
 }
 
 export class TandemServerJsonFileStorage<
@@ -128,7 +66,7 @@ export class TandemServerJsonFileStorage<
 			if (initialized instanceof Error) return initialized
 
 			// tuple-database's in-memory storage erases its tuple generic. The data
-			// entered this adapter through typed writes or the validated JSON boundary.
+			// comes from typed writes or a file previously written by this adapter.
 			return this.scanMemory(this.memory, args)
 		})
 	}
@@ -189,7 +127,15 @@ export class TandemServerJsonFileStorage<
 		if (raw instanceof Error && isNotFoundError(raw.cause)) return undefined
 		if (raw instanceof Error) return raw
 
-		const tuples = parseTuples({ filePath: this.args.filePath, raw })
+		const tuples = errore.try({
+			try: () => JSON.parse(raw) as TandemTuple<Schema>[],
+			catch: (cause) =>
+				new TandemServerJsonFileStorageError({
+					operation: "parse",
+					filePath: this.args.filePath,
+					cause,
+				}),
+		})
 		if (tuples instanceof Error) return tuples
 
 		this.memory.commit({ set: tuples })

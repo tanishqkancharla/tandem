@@ -13,6 +13,16 @@ export class TestTandemServerStorage<
 	closed = false
 	private nextCommitError: Error | undefined
 	private nextScanError: Error | undefined
+	private nextCommitGate:
+		| { entered: () => void; wait: Promise<void> }
+		| undefined
+
+	pauseNextCommit() {
+		const entered = Promise.withResolvers<void>()
+		const release = Promise.withResolvers<void>()
+		this.nextCommitGate = { entered: entered.resolve, wait: release.promise }
+		return { entered: entered.promise, release: release.resolve }
+	}
 
 	failNextCommit(error: Error) {
 		this.nextCommitError = error
@@ -32,7 +42,13 @@ export class TestTandemServerStorage<
 		return Promise.resolve(this.memory.scan(args) as TandemTuple<Schema>[])
 	}
 
-	commit(writes: WriteOps<TandemTuple<Schema>>): Promise<void> {
+	async commit(writes: WriteOps<TandemTuple<Schema>>): Promise<void> {
+		const gate = this.nextCommitGate
+		this.nextCommitGate = undefined
+		if (gate) {
+			gate.entered()
+			await gate.wait
+		}
 		if (this.nextCommitError) {
 			const error = this.nextCommitError
 			this.nextCommitError = undefined

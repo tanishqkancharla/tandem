@@ -6,6 +6,7 @@ import type {
 	RelationalQuery,
 	RelationalQueryResult,
 	AnyRelations,
+	SchemaToTupleSchema,
 } from "@tanishqkancharla/tandem-core"
 import {
 	collectionIdToTuple,
@@ -82,8 +83,12 @@ export class TandemServerTransaction<
 	async query<Query extends RelationalQuery<Schema, Relations>>(
 		query: Query,
 	): Promise<RelationalQueryResult<Schema, Relations, Query>> {
+		// Query execution uses full record keys on the shared root transaction.
+		const records = this.tupleDbTx as unknown as AsyncTupleRootTransactionApi<
+			SchemaToTupleSchema<Schema>
+		>
 		const result = await executeQueryAsync<Schema, Relations, Query>(
-			this.tupleDbTx,
+			records,
 			this.relations,
 			query,
 		).catch((cause) => new TandemServerError({ operation: "query", cause }))
