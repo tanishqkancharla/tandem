@@ -18,6 +18,55 @@ sequenceDiagram
 
 The failure does not tell the client whether the server received the request. Retrying without server deduplication is also unsafe: an old set could overwrite another client's newer edit.
 
+### A missing mutation is reproducible; gap-check lockout is not current behavior
+
+A temporary Gatekeeper test reproduced this sequence against the real client and server after phase 1. It dropped a push before the server received it, checked the rollback and server acknowledgement, then committed another write. The test passed and was removed afterward; no implementation changed for this investigation.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Current server
+    C->>C: Commit mutation 1, creating lost
+    C--xS: Drop request before delivery
+    C->>C: Push rejects; discard mutation 1 and its optimistic record
+    C->>S: Read acknowledgement
+    S-->>C: lastMutationId = 0
+    C->>C: Commit mutation 2, creating next
+    C->>S: Push mutation 2
+    S-->>C: Later pull reports lastMutationId = 2
+    Note over C,S: Both hold only next; mutation 1 never reached the server
+```
+
+The observed failure is data loss and a jump from acknowledgement 0 to 2. Today's server accepts gaps, so it does not lock the client out. Lockout would follow if we added strict gap checks without first removing destructive rollback:
+
+```diff
+ server receives mutation 2 while lastMutationId is 0:
+-    current behavior: apply mutation 2 and acknowledge 2
++    proposed strict check: reject gap; expect mutation 1
+
+ client after today's rollback:
+     mutation 1 is absent from both pending state and the send queue
+-    sending mutation 2 succeeds today
++    resending mutation 2 cannot satisfy the strict check
++    later mutations also cannot satisfy it
+```
+
+```mermaid
+flowchart TD
+    A[Lost request for mutation 1] --> B{Client retains mutation 1?}
+    B -->|No: current rollback| C[Next write is mutation 2]
+    C --> D[Strict server expects mutation 1]
+    D --> E[No mutation 1 exists to resend]
+    E --> F[Automatic retries cannot recover]
+    B -->|Yes: proposed retention| G[Next delivery includes mutations 1 and 2]
+    G --> H[Server processes consecutive IDs]
+    H --> I[Pull confirms them; client may discard them]
+```
+
+Phase 1 does not prevent this sequence: mutation 1 committed locally successfully, so consuming its ID was correct. The mistake happens later when transport failure discards it. Retention fixes this demonstrated case; server-generation IDs or a new client-session recovery protocol are not required for it.
+
+Incomplete client persistence and restoring an older server database are separate possible sources of missing history, not scenarios reproduced in this investigation. With complete client retention and durable server acknowledgements, ordinary request or response loss must not create a missing mutation. If a future gap response names an ID absent locally, report missing client history instead of retrying forever or silently skipping it; recovering that corrupted/reset history is separate work.
+
 ## Solution
 
 Keep each mutation pending until a pull acknowledges it. Retry delivery in ID order. The server stores each client's last processed ID in the same database transaction as the mutation's effects and skips IDs it already processed.
@@ -44,11 +93,11 @@ The scope is retrying pushes, durable server deduplication, and acknowledgement-
 
 ## Implementation phases
 
-Each phase is one commit with its focused tests. Land them in order: consecutive client IDs, durable server processing, acknowledgement-owned pending writes, automatic retries, then DST integration. Server deduplication must land before the client can resend writes.
+Each phase is one commit with its focused tests. Land them in order: consecutive client IDs, durable server deduplication, acknowledgement-owned pending writes together with strict gap enforcement, automatic retries, then DST integration. Deduplication must precede resending, and strict gap enforcement must not precede removal of destructive rollback. Phase 2 alone preserves today's gap acceptance; it does not fix lost writes.
 
-### Phase 1: Allocate IDs only for successful local commits
+### ✅ Phase 1: Allocate IDs only for successful local commits
 
-Implemented. [[packages/core/src/TandemClient.ts#TandemClient]] now advances the counter only after `PendingWrites.commitAndTrack` succeeds. A failed local transaction does not consume a mutation ID. This establishes the consecutive sequence the server will enforce in phase 2 without changing delivery behavior.
+Implemented. [[packages/core/src/TandemClient.ts#TandemClient]] now advances the counter only after `PendingWrites.commitAndTrack` succeeds. A failed local transaction does not consume a mutation ID. This establishes the consecutive sequence the server will enforce in phase 3 without changing delivery behavior.
 
 ```diff
  TandemClient.commit(transaction):
@@ -73,7 +122,7 @@ A temporary regression test created a real local transaction conflict, verified 
 
 [[packages/server/src/TandemServer.ts#TandemServer]] currently applies every received mutation and records its acknowledgement in memory. This commit makes repeated delivery safe and makes pulls report the durable acknowledgement. Keep these changes together so pushes and pulls cannot disagree about which IDs were processed.
 
-Process mutations in order, with a transaction per new mutation. Extend the server tuple storage union to include client metadata; do not expose it as application records.
+Process mutations in order, with a transaction per new mutation. Extend the server tuple storage union to include client metadata; do not expose it as application records. Defer strict gap rejection to phase 3, where the client stops discarding failed pushes. Until then, retain the existing gap acceptance rather than introducing a new lockout.
 
 ```diff
  Server storage tuples:
@@ -92,10 +141,6 @@ Process mutations in order, with a transaction per new mutation. Extend the serv
 +        if mutation.id <= last:
 +            discard transaction
 +            continue                      // duplicate; no writes or pokes
-+
-+        if mutation.id != last + 1:
-+            discard transaction
-+            return gap error              // missing IDs are not acknowledged
 +
 +        decision = validate mutation
 +        if decision is explicit application rejection:
@@ -128,8 +173,7 @@ The patch and acknowledgement must describe a consistent server state. Read the 
 flowchart TD
     A[Read durable client ID in transaction] --> B{Incoming ID}
     B -->|Already processed| C[Skip without effects]
-    B -->|Gap| D[Fail without advancing ID]
-    B -->|Next consecutive ID| E{Application decision}
+    B -->|Higher ID| E{Application decision}
     E -->|Accept| F[Stage effects and ID]
     E -->|Reject| G[Stage ID without effects]
     F --> H[Atomic commit]
@@ -137,11 +181,11 @@ flowchart TD
     H --> I[Pull reads consistent patch and durable ID]
 ```
 
-Validate duplicates after another client's newer edit, reopening durable storage, gaps, concurrent duplicate pushes, and failed storage commits. A failure must leave both records and acknowledgement unchanged. Explicit application rejection must acknowledge without partial effects. The client still has its old rollback behavior at this boundary; retries are not enabled yet.
+Validate duplicates after another client's newer edit, reopening durable storage, concurrent duplicate pushes, and failed storage commits. A failed storage commit must leave both records and acknowledgement unchanged. Explicit application rejection must acknowledge without partial effects. The client still has its old rollback behavior at this boundary; strict gap rejection and retries are not enabled yet.
 
-### Phase 3: Let pull acknowledgements own the pending list
+### Phase 3: Retain unacknowledged writes and enforce consecutive delivery
 
-`PendingWrites`, owned by `TandemClient` on remote `main`, already tracks unacknowledged mutations. Expose a snapshot to [[packages/core/src/sync/SyncEngine.ts#SyncEngine]] instead of maintaining a second list with a different lifetime. Remove transport-triggered rollback. Phase 2 makes resending the snapshot safe.
+`PendingWrites`, owned by `TandemClient`, already tracks unacknowledged mutations. Expose a snapshot to [[packages/core/src/sync/SyncEngine.ts#SyncEngine]] instead of maintaining a second list with a different lifetime. Remove transport-triggered rollback and enable strict server gap checks in this same commit. Phase 2 makes resending the snapshot safe; retention prevents the demonstrated missing-history lockout.
 
 ```diff
  SyncEngine:
@@ -173,6 +217,13 @@ Validate duplicates after another client's newer edit, reopening durable storage
      discard mutations with id <= lastMutationId
      rebuild local records from base + remaining mutations
 +    // The next push snapshot now excludes these acknowledged writes too.
+
+ TandemServer.applyPush(clientId, mutations):
+     skip mutations already processed
++    if mutation.id != lastMutationId + 1:
++        discard transaction
++        report gap with expectedMutationId = lastMutationId + 1
+     commit mutation effects and processed ID atomically
 ```
 
 ```mermaid
@@ -185,7 +236,7 @@ flowchart TD
     F --> B
 ```
 
-A snapshot prevents newly committed writes from changing an in-flight request. Validate that lost requests and responses leave optimistic values visible, a later queued push includes the retained writes, and a pull removes only the acknowledged prefix, including when its patch is empty. Automatic retries remain for phase 4; this commit changes ownership, not scheduling.
+A snapshot prevents newly committed writes from changing an in-flight request. Validate that lost requests and responses leave optimistic values visible, a later queued push includes the retained writes, and a pull removes only the acknowledged prefix, including when its patch is empty. Repeat the demonstrated sequence: lose mutation 1's request, commit mutation 2, and verify both reach the strict server in order. Direct requests containing a gap must leave the missing ID unacknowledged. Automatic retries remain for phase 4; this commit changes ownership and enforcement, not scheduling.
 
 Keep the current public `commit()` promise meaning: it reports the initial push attempt, not eventual pull confirmation. An attempt may reject while the mutation remains queued. Disconnect does not roll back pending writes.
 
