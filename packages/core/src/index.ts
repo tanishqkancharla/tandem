@@ -9,6 +9,12 @@ export type {
 	PatchRemoveOp,
 	PatchSetOp,
 	RemoteApi,
+	RemoteUnavailableError,
+	RemoteInvalidRequestError,
+	RemoteMutationGapError,
+	RemoteRequestError,
+	PushResponse,
+	PullResponse,
 	SyncEngineArgs,
 } from "./sync/SyncEngine.js"
 export { PatchApi } from "./sync/SyncEngine.js"

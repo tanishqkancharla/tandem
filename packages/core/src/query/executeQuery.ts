@@ -1,3 +1,4 @@
+import * as errore from "errore"
 import type {
 	ReadOnlyAsyncTupleDatabaseClientApi,
 	ReadOnlyTupleDatabaseClientApi,
@@ -20,6 +21,11 @@ import type {
 } from "./Query.js"
 
 type RuntimeRecord = Record<string, unknown>
+
+export class InvalidScanWindowError extends errore.createTaggedError({
+	name: "InvalidScanWindowError",
+	message: "$detail",
+}) {}
 
 type RelationalQueryInput<Schema extends AnySchema> = {
 	readonly collection: CollectionName<Schema>
@@ -184,7 +190,7 @@ function normalizeRelationalQuery<Schema extends AnySchema>(
 function normalizeEncodedQuery<Schema extends AnySchema>(
 	query: EncodedQuery<Schema>,
 	relations: AnyRelations<Schema>,
-): QueryNode<Schema> {
+): QueryNode<Schema> | InvalidScanWindowError {
 	const normalized = {
 		collection: query.collection,
 		...(query.select === undefined || query.select === "*"
@@ -202,15 +208,19 @@ function normalizeEncodedQuery<Schema extends AnySchema>(
 		const nestedQuery = query.with[relationName]
 		const relation = relations[query.collection]?.[relationName]
 		if (!relation) {
-			throw new Error(`Unknown relation "${query.collection}.${relationName}"`)
+			return new InvalidScanWindowError({
+				detail: `Unknown relation "${query.collection}.${relationName}"`,
+			})
 		}
 		if (nestedQuery.collection !== relation.targetCollection) {
-			throw new Error(
-				`Relation "${query.collection}.${relationName}" targets collection "${relation.targetCollection}", not "${nestedQuery.collection}"`,
-			)
+			return new InvalidScanWindowError({
+				detail: `Relation "${query.collection}.${relationName}" targets collection "${relation.targetCollection}", not "${nestedQuery.collection}"`,
+			})
 		}
 
-		withQueries[relationName] = normalizeEncodedQuery(nestedQuery, relations)
+		const normalizedNested = normalizeEncodedQuery(nestedQuery, relations)
+		if (normalizedNested instanceof Error) return normalizedNested
+		withQueries[relationName] = normalizedNested
 	}
 
 	return { ...normalized, with: withQueries }
@@ -516,10 +526,13 @@ export async function executeScanWindowAsync<
 	db: ReadOnlyAsyncTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
 	relations: Relations,
 	scanWindow: ScanWindow<Schema>,
-): Promise<ScanWindowRecord<Schema>[]> {
-	const queries = scanWindow.map((query) =>
-		normalizeEncodedQuery(query, relations),
-	)
+): Promise<ScanWindowRecord<Schema>[] | InvalidScanWindowError> {
+	const queries: QueryNode<Schema>[] = []
+	for (const query of scanWindow) {
+		const normalized = normalizeEncodedQuery(query, relations)
+		if (normalized instanceof Error) return normalized
+		queries.push(normalized)
+	}
 	const collections = getQueryCollections(queries)
 	const recordsByCollection = await loadRecordsAsync(db, collections)
 	const result: ScanWindowRecord<Schema>[] = []

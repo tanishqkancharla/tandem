@@ -1,3 +1,4 @@
+import * as errore from "errore"
 import type { Database } from "../Database.js"
 import type { EncodedQuery, ScanWindow } from "../query/Query.js"
 import type { AnySchema, CollectionName } from "../schema/Schema.js"
@@ -7,6 +8,7 @@ import type {
 	Transaction,
 } from "../transaction/Transaction.js"
 import type { LoggerApi } from "../utils/Logger.js"
+import { randomId, type RngApi } from "../utils/randomId.js"
 import { TaskQueue } from "../utils/TaskQueue.js"
 import { Timer, type TimerApi } from "../utils/Timer.js"
 import { tag } from "../utils/typeUtils.js"
@@ -20,6 +22,36 @@ import type {
 export type ClientId = Tagged<"ClientId", string>
 export type Cookie = Tagged<"Cookie", number | string>
 
+/** Expected failures are protocol data, not Error instances requiring revival. */
+export type RemoteUnavailableError = { error: "unavailable"; message: string }
+export type RemoteInvalidRequestError = {
+	error: "invalid-request"
+	message: string
+}
+export type RemoteMutationGapError = {
+	error: "mutation-gap"
+	expectedMutationId: number
+	receivedMutationId: number
+}
+export type RemoteRequestError =
+	| RemoteUnavailableError
+	| RemoteInvalidRequestError
+export type PushResponse =
+	| { ok: true }
+	| RemoteRequestError
+	| RemoteMutationGapError
+export type PullResponse<Schema extends AnySchema> = {
+	cookie: Cookie
+	patch: Patch<Schema>
+	/** The last processed mutation, or 0 before any were applied. */
+	lastMutationId: MutationId
+}
+
+class RemoteResponseError extends errore.createTaggedError({
+	name: "RemoteResponseError",
+	message: "Remote $operation failed",
+}) {}
+
 export type ClientApi = {
 	clientId: ClientId
 	/** Settles when the pull the poke started has finished. Never rejects. */
@@ -27,24 +59,16 @@ export type ClientApi = {
 }
 
 export type RemoteApi<Schema extends AnySchema> = {
-	connect(api: ClientApi): Promise<AsyncUnsubscribe>
+	connect(api: ClientApi): Promise<AsyncUnsubscribe | RemoteRequestError>
 	push(args: {
 		mutations: Mutation<Schema>[]
 		clientId: ClientId
-	}): Promise<void>
+	}): Promise<PushResponse>
 	pull(args: {
 		clientId: ClientId
 		cookie?: Cookie
 		scanWindow: ScanWindow<Schema>
-	}): Promise<{
-		cookie: Cookie
-		patch: Patch<Schema>
-		/**
-		 * The last of this client's mutations the server applied, on every pull.
-		 * 0 before the server has applied any.
-		 */
-		lastMutationId: MutationId
-	}>
+	}): Promise<PullResponse<Schema> | RemoteRequestError>
 }
 
 export type PatchSetOp<Schema extends AnySchema> = {
@@ -88,13 +112,12 @@ export type SyncEngineArgs<Schema extends AnySchema> = {
 	autoConnect?: boolean
 	logger: SyncEngine<Schema>["logger"]
 	syncInterval: number | TimerApi
+	rng?: RngApi
 }
 
 export class SyncEngine<Schema extends AnySchema> {
 	private syncQueue: TaskQueue<"pull" | "push">
-	private pendingMutations: Mutation<Schema>[] = []
 	private readonly pendingWrites = new PendingWrites<Schema>()
-	// Keep IDs monotonic for this client identity, including across clear().
 	private mutationCount = 0
 	private readonly db: Pick<
 		Database<Schema>,
@@ -102,18 +125,24 @@ export class SyncEngine<Schema extends AnySchema> {
 	>
 	private readonly remote: RemoteApi<Schema>
 	private readonly logger: LoggerApi
+	private readonly rng: RngApi
 
-	private readonly clientId: ClientId
+	private currentClientId: ClientId
 	private cookie?: Cookie
 
 	private disconnectFromRemote?: AsyncUnsubscribe
 	private scanWindow: ScanWindow<Schema> = []
 
+	get clientId(): ClientId {
+		return this.currentClientId
+	}
+
 	constructor(args: SyncEngineArgs<Schema>) {
 		this.logger = args.logger
 		this.remote = args.remote
 		this.db = args.db
-		this.clientId = args.clientId
+		this.currentClientId = args.clientId
+		this.rng = args.rng ?? { randomId }
 		const timer =
 			typeof args.syncInterval === "number"
 				? new Timer({ interval: args.syncInterval })
@@ -121,8 +150,14 @@ export class SyncEngine<Schema extends AnySchema> {
 
 		this.syncQueue = new TaskQueue(
 			{
-				pull: () => this.pull(),
-				push: () => this.push(),
+				pull: async () => {
+					const result = await this.pull()
+					if (result instanceof Error) throw result
+				},
+				push: async () => {
+					const result = await this.push()
+					if (result instanceof Error) throw result
+				},
 			},
 			timer,
 		)
@@ -136,26 +171,41 @@ export class SyncEngine<Schema extends AnySchema> {
 	}
 
 	async connect(): Promise<AsyncUnsubscribe> {
+		const connected = await this.connectToRemote()
+		if (connected instanceof Error) throw connected
+		await this.queuePull()
+		if (!this.pendingWrites.isEmpty) {
+			await this.syncQueue.enqueue("push")
+		}
+		return () => this.disconnect()
+	}
+
+	private async connectToRemote() {
 		this.logger.info({ message: "connecting to remote" })
+		const clientId = this.clientId
 		const unsubscribe = await this.remote.connect({
-			clientId: this.clientId,
+			clientId,
 			poke: () => {
+				if (clientId !== this.clientId) return Promise.resolve()
 				this.logger.info({ message: "received poke from remote" })
 				return this.queuePull().catch((error) => {
 					this.logger.error({ message: "error pulling from remote", error })
 				})
 			},
 		})
+		if (typeof unsubscribe !== "function") {
+			return new RemoteResponseError({
+				operation: "connect",
+				cause: unsubscribe,
+			})
+		}
+		if (clientId !== this.clientId) {
+			await unsubscribe()
+			return
+		}
 		this.disconnectFromRemote = unsubscribe
 
 		this.logger.info({ message: "connected to remote" })
-
-		await this.queuePull()
-		if (this.pendingMutations.length > 0) {
-			await this.syncQueue.enqueue("push")
-		}
-
-		return unsubscribe
 	}
 
 	async disconnect() {
@@ -190,11 +240,18 @@ export class SyncEngine<Schema extends AnySchema> {
 		}
 
 		this.logger.info({ message: "pulling from remote" })
-		const { cookie, patch, lastMutationId } = await this.remote.pull({
-			clientId: this.clientId,
+		const clientId = this.clientId
+		const response = await this.remote.pull({
+			clientId,
 			cookie: this.cookie,
 			scanWindow: this.scanWindow,
 		})
+		// A response from before clear() must not acknowledge the new session.
+		if (clientId !== this.clientId) return
+		if ("error" in response) {
+			return new RemoteResponseError({ operation: "pull", cause: response })
+		}
+		const { cookie, patch, lastMutationId } = response
 
 		this.logger.info({
 			message: "pulled from remote",
@@ -221,35 +278,37 @@ export class SyncEngine<Schema extends AnySchema> {
 		})
 		this.mutationCount += 1
 		this.logger.info({ message: "queueing push" })
-		this.pendingMutations.push(mutation)
 		return this.syncQueue.enqueue("push")
 	}
 
 	private async push() {
-		if (this.pendingMutations.length === 0) return
+		if (this.pendingWrites.isEmpty) return
 
 		if (!this.disconnectFromRemote) {
 			this.logger.info({ message: "skipping push while disconnected" })
 			return
 		}
 
-		const mutations = this.pendingMutations
-		this.pendingMutations = []
-
-		try {
-			await this.remote.push({ mutations, clientId: this.clientId })
-		} catch (error) {
-			this.logger.error({ message: "error applying mutation", error })
-
-			const tx = this.db.makeTupleDbTransaction()
-			this.pendingWrites.rollBackRejected(tx, mutations)
-			tx.commit()
-			throw error
+		const response = await this.remote.push({
+			mutations: this.pendingWrites.snapshot(),
+			clientId: this.clientId,
+		})
+		if ("error" in response) {
+			return new RemoteResponseError({ operation: "push", cause: response })
 		}
 	}
 
 	async clear() {
+		const unsubscribe = this.disconnectFromRemote
+		this.disconnectFromRemote = undefined
+		this.currentClientId = tag<ClientId>(this.rng.randomId())
+		this.mutationCount = 0
+		this.cookie = undefined
 		this.pendingWrites.clearAll()
-		await this.db.clear()
+		await Promise.all([this.db.clear(), unsubscribe?.()])
+		// Preserve connection state, but leave the database empty until a later pull.
+		if (!unsubscribe) return
+		const connected = await this.connectToRemote()
+		if (connected instanceof Error) throw connected
 	}
 }

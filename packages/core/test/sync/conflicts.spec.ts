@@ -76,10 +76,11 @@ const conflictTest = test.extend<{
 })
 
 describe("TandemClient sync conflicts", () => {
-	test("rolls back an optimistic write when the server rejects the push", async ({
+	test("retains a lost push and delivers it with the next write", async ({
 		gatekeeper,
 	}) => {
-		const { client1 } = gatekeeper
+		const { client1, client2 } = gatekeeper
+		client2.subscribe({ collection: "todos" })
 		const offlineDraft = todo("offline-todo", {
 			text: "Write while offline",
 			priority: 1,
@@ -101,9 +102,157 @@ describe("TandemClient sync conflicts", () => {
 		await commit.fail(failure)
 
 		await expect(commit.result).rejects.toBe(failure)
-		expect(latestResult).toEqual([])
-		expect(client1.query({ collection: "todos" })).toEqual([])
+		expect(latestResult).toEqual([offlineDraft])
+		expect(client1.query({ collection: "todos" })).toEqual([offlineDraft])
+
+		// The next push carries both writes, with no gap left by the failed attempt.
+		const nextTodo = todo("second-todo", { text: "Next write" })
+		const nextTx = client1.transact()
+		nextTx.set("todos", nextTodo)
+		const nextCommit = await client1.commit(nextTx)
+		await nextCommit.continueToCompletion()
+		const pull = await client2.pullFromRemote()
+		await pull.continueToCompletion()
+		expect(client2.query({ collection: "todos" })).toEqual([
+			offlineDraft,
+			nextTodo,
+		])
 	})
+
+	test("clear discards offline writes and lets the next session sync", async ({
+		gatekeeper,
+	}) => {
+		const { client1, client2 } = gatekeeper
+		client1.subscribe({ collection: "todos" })
+		client2.subscribe({ collection: "todos" })
+		await (
+			await client1.disconnect()
+		).result
+		const oldTx = client1.transact()
+		oldTx.set("todos", todo("discarded"))
+		await (
+			await client1.commit(oldTx)
+		).result
+
+		await (
+			await client1.clear()
+		).result
+		expect(client1.query({ collection: "todos" })).toEqual([])
+
+		// A fresh write must not wait for the discarded mutation's ID.
+		const nextTodo = todo("kept", { text: "After clear" })
+		const nextTx = client1.transact()
+		nextTx.set("todos", nextTodo)
+		await (
+			await client1.commit(nextTx)
+		).result
+		await (
+			await client1.connect()
+		).result
+		await expectQuery(client2, { collection: "todos" }).toResolveTo([nextTodo])
+		await expectQuery(client1, { collection: "todos" }).toResolveTo([nextTodo])
+	})
+
+	test("clear ignores an old pull response without dropping new-session writes", async ({
+		gatekeeper,
+	}) => {
+		const { client1, client2 } = gatekeeper
+		client1.subscribe({ collection: "todos" })
+		client2.subscribe({ collection: "todos" })
+		const oldTodo = todo("old", { text: "Already delivered" })
+		const oldTx = client1.transact()
+		oldTx.set("todos", oldTodo)
+		await (
+			await client1.commit(oldTx)
+		).result
+		await (
+			await client1.pullFromRemote()
+		).result
+		await gatekeeper.activateGates()
+		const oldPull = await client1.pullFromRemote()
+		await oldPull.continueTo("server")
+
+		const clear = await client1.clear()
+		await clear.continueToCompletion()
+		expect(client1.query({ collection: "todos" })).toEqual([])
+
+		// The old acknowledgement of ID 1 must not prune the new session's ID 1.
+		const nextTodo = todo("new", { text: "New session" })
+		const nextTx = client1.transact()
+		nextTx.set("todos", nextTodo)
+		const nextReady = client1.commit(nextTx)
+		await oldPull.continueToCompletion()
+		expect(client1.query({ collection: "todos" })).toEqual([nextTodo])
+		const next = await nextReady
+		await next.continueToCompletion()
+		const pull = await client2.pullFromRemote()
+		await pull.continueToCompletion()
+		expect(client2.query({ collection: "todos" })).toEqual([nextTodo, oldTodo])
+	})
+
+	conflictTest(
+		"an empty pull acknowledges only the confirmed prefix of the next push",
+		async ({ makeTodoGatekeeper, server }) => {
+			const deliveries: number[][] = []
+			const remote: RemoteApi<TestsSchema> = {
+				connect: (client) =>
+					server.connect({ ...client, poke: async () => {} }),
+				push: (args) => {
+					deliveries.push(args.mutations.map(({ id }) => id))
+					return server.push(args)
+				},
+				pull: (args) => server.pull(args),
+			}
+			const gatekeeper = await makeTodoGatekeeper({ remote })
+			const { client1, client2 } = gatekeeper
+			client2.subscribe({ collection: "todos" })
+			const firstTx = client1.transact()
+			firstTx.set("todos", todo("confirmed"))
+			await (
+				await client1.commit(firstTx)
+			).result
+
+			// Success is not confirmation: the first mutation is sent again.
+			const secondTodo = todo("pending")
+			const secondTx = client1.transact()
+			secondTx.set("todos", secondTodo)
+			await gatekeeper.activateGates()
+			const second = await client1.commit(secondTx)
+			await second.continueTo("server")
+			expect(deliveries).toEqual([[1], [1, 2]])
+			await second.fail(new Error("Lost response"))
+			await expect(second.result).rejects.toThrow("Lost response")
+			expect(client1.query({ collection: "todos" })).toEqual([
+				todo("confirmed"),
+				secondTodo,
+			])
+
+			// A newer unsent mutation survives the empty-window acknowledgement of 1 and 2.
+			const thirdTodo = todo("unsent")
+			const thirdTx = client1.transact()
+			thirdTx.set("todos", thirdTodo)
+			const third = await client1.commit(thirdTx)
+			await third.fail(new Error("Lost request"))
+			await expect(third.result).rejects.toThrow("Lost request")
+			const pull = await client1.pullFromRemote()
+			await pull.continueToCompletion()
+			expect(client1.query({ collection: "todos" })).toEqual([thirdTodo])
+
+			const fourthTx = client1.transact()
+			fourthTx.set("todos", todo("trigger"))
+			const fourth = await client1.commit(fourthTx)
+			await fourth.continueToCompletion()
+			expect(deliveries).toEqual([[1], [1, 2], [3, 4]])
+			const observerPull = await client2.pullFromRemote()
+			await observerPull.continueToCompletion()
+			expect(client2.query({ collection: "todos" })).toEqual([
+				todo("confirmed"),
+				secondTodo,
+				todo("trigger"),
+				thirdTodo,
+			])
+		},
+	)
 
 	conflictTest(
 		"keeps pending mutations queued while disconnected and pushes them after reconnect",
@@ -186,7 +335,6 @@ describe("TandemClient sync conflicts", () => {
 			let failingClientId = ""
 			let shouldFail = false
 			let failedPulls = 0
-			const failure = new Error("Temporary pull failure")
 			const unreliableRemote: RemoteApi<TestsSchema> = {
 				connect: (client) => server.connect(client),
 				push: (args) => server.push(args),
@@ -194,7 +342,10 @@ describe("TandemClient sync conflicts", () => {
 					if (shouldFail && args.clientId === failingClientId) {
 						shouldFail = false
 						failedPulls += 1
-						return Promise.reject(failure)
+						return Promise.resolve({
+							error: "unavailable" as const,
+							message: "Temporary pull failure",
+						})
 					}
 					return server.pull(args)
 				},
@@ -227,6 +378,88 @@ describe("TandemClient sync conflicts", () => {
 				todo("todo-1", { text: "Retry this pull" }),
 			])
 			subscription.destroy()
+		},
+	)
+
+	conflictTest(
+		"a returned connection error leaves offline writes available for reconnect",
+		async ({ makeTodoGatekeeper, server }) => {
+			let failConnect = false
+			const remote: RemoteApi<TestsSchema> = {
+				connect: (client) =>
+					failConnect
+						? Promise.resolve({
+								error: "unavailable" as const,
+								message: "Cannot connect",
+							})
+						: server.connect(client),
+				pull: (args) => server.pull(args),
+				push: (args) => server.push(args),
+			}
+			const { client1, client2 } = await makeTodoGatekeeper({
+				remote,
+				connect: ["client2"],
+			})
+			client2.subscribe({ collection: "todos" })
+			const tx = client1.transact()
+			tx.set("todos", todo("offline"))
+			await (
+				await client1.commit(tx)
+			).result
+			failConnect = true
+			await expect((await client1.connect()).result).rejects.toMatchObject({
+				cause: { error: "unavailable" },
+			})
+			expect(client1.query({ collection: "todos" })).toEqual([todo("offline")])
+
+			failConnect = false
+			await (
+				await client1.connect()
+			).result
+			await expectQuery(client2, { collection: "todos" }).toResolveTo([
+				todo("offline"),
+			])
+		},
+	)
+
+	conflictTest(
+		"reports a returned push error without losing the write, then syncs on reconnect",
+		async ({ makeTodoGatekeeper, server }) => {
+			let failPush = true
+			const remote: RemoteApi<TestsSchema> = {
+				connect: (client) => server.connect(client),
+				pull: (args) => server.pull(args),
+				push: (args) => {
+					if (failPush) {
+						failPush = false
+						return Promise.resolve({
+							error: "unavailable" as const,
+							message: "Storage unavailable",
+						})
+					}
+					return server.push(args)
+				},
+			}
+			const { client1, client2 } = await makeTodoGatekeeper({ remote })
+			client1.subscribe({ collection: "todos" })
+			client2.subscribe({ collection: "todos" })
+			const draft = todo("retained")
+			const tx = client1.transact()
+			tx.set("todos", draft)
+			const commit = await client1.commit(tx)
+			await expect(commit.result).rejects.toMatchObject({
+				cause: { error: "unavailable" },
+			})
+			expect(client1.query({ collection: "todos" })).toEqual([draft])
+
+			// Reconnecting retries the retained write against the real server.
+			await (
+				await client1.disconnect()
+			).result
+			await (
+				await client1.connect()
+			).result
+			await expectQuery(client2, { collection: "todos" }).toResolveTo([draft])
 		},
 	)
 

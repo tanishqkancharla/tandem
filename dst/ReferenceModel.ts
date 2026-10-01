@@ -2,6 +2,7 @@ import {
 	type Mutation,
 	matchBy,
 	type RemoteApi,
+	type PullResponse,
 	unreachable,
 } from "@tanishqkancharla/tandem-core"
 import type { DstSchema, DstTodo } from "./DstWorld.js"
@@ -13,7 +14,6 @@ export type DstOp =
 export type DstWrite = { mutationId: number; op: DstOp }
 
 type PullArgs = Parameters<RemoteApi<DstSchema>["pull"]>[0]
-type PullResponse = Awaited<ReturnType<RemoteApi<DstSchema>["pull"]>>
 
 function byId(a: DstTodo, b: DstTodo): number {
 	return a.id.localeCompare(b.id)
@@ -78,7 +78,11 @@ export class ReferenceModel<Client extends string> {
 	}
 
 	/** A pull response reached the client. */
-	pulled(client: Client, args: PullArgs, response: PullResponse): void {
+	pulled(
+		client: Client,
+		args: PullArgs,
+		response: PullResponse<DstSchema>,
+	): void {
 		// The server re-reads the window, and sends all of it, whenever the
 		// client's cookie is stale. Otherwise the response changes nothing.
 		if (args.cookie === undefined || response.cookie !== args.cookie) {

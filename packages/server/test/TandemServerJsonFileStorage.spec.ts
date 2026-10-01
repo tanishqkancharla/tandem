@@ -8,7 +8,7 @@ import type {
 	MutationId,
 	ScanWindow,
 } from "@tanishqkancharla/tandem-core"
-import { expect, test as baseTest } from "vitest"
+import { assert, expect, test as baseTest } from "vitest"
 import { TandemServer, TandemServerJsonFileStorage } from "../src/index.js"
 
 type Todo = {
@@ -120,6 +120,7 @@ test("reopened servers acknowledge retries without overwriting another client's 
 
 	const reopened = createServer(filePath)
 	const before = await reopened.pull({ clientId, scanWindow })
+	assert(!("error" in before))
 	let pokes = 0
 	await reopened.connect({
 		clientId,

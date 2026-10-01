@@ -10,6 +10,7 @@ import {
 	defineSchema,
 	Logger,
 	type RemoteApi,
+	type PullResponse,
 	type RngApi,
 	type RuntimeSchemaDefinition,
 	t,
@@ -80,9 +81,11 @@ class InProcessTransport implements RemoteApi<DstSchema> {
 	connect: RemoteApi<DstSchema>["connect"] = (client) =>
 		this.server.connect(client)
 	push: RemoteApi<DstSchema>["push"] = async (args) => {
-		await this.server.push(args)
+		const response = await this.server.push(args)
+		if ("error" in response) return response
 		// The server committed the push, whether or not the reply arrives.
 		this.model.accepted(args.mutations)
+		return response
 	}
 	pull: RemoteApi<DstSchema>["pull"] = (args) => this.server.pull(args)
 }
@@ -96,7 +99,7 @@ function remoteWithPokeEvents(
 	events: GatekeeperEvents,
 	onPulled: (
 		args: Parameters<RemoteApi<DstSchema>["pull"]>[0],
-		response: Awaited<ReturnType<RemoteApi<DstSchema>["pull"]>>,
+		response: PullResponse<DstSchema>,
 	) => void,
 ): RemoteApi<DstSchema> {
 	let poke: ClientApi["poke"] = () => Promise.resolve()
@@ -115,6 +118,7 @@ function remoteWithPokeEvents(
 		push: (args) => server.push(args),
 		pull: async (args) => {
 			const response = await server.pull(args)
+			if ("error" in response) return response
 			onPulled(args, response)
 			return response
 		},

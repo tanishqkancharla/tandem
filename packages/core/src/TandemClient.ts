@@ -58,7 +58,11 @@ export class TandemClient<
 	readonly ready: Promise<void>
 
 	// TODO: use a real uuid
-	readonly clientId: ClientId
+	private readonly initialClientId: ClientId
+
+	get clientId(): ClientId {
+		return this.syncEngine?.clientId ?? this.initialClientId
+	}
 
 	private readonly syncEngine?: SyncEngine<Schema>
 	private readonly logger: LoggerApi
@@ -76,7 +80,7 @@ export class TandemClient<
 		syncInterval = 150,
 	}: TandemClientArgs<Schema, Relations>) {
 		this.rng = rng ?? { randomId }
-		this.clientId = this.rng.randomId() as ClientId
+		this.initialClientId = this.rng.randomId() as ClientId
 		this.logger = logger ?? new Logger({ sinks: new ConsoleLoggerSink() })
 
 		this.db = new Database({
@@ -95,6 +99,7 @@ export class TandemClient<
 					clientId: this.clientId,
 					autoConnect,
 					logger: this.logger.scope("sync-engine"),
+					rng: this.rng,
 					syncInterval,
 				})
 			: undefined
@@ -160,7 +165,9 @@ export class TandemClient<
 		const commitPromise = this.syncEngine.commit(transaction)
 
 		// Ignored commit promises should not surface unhandled rejections.
-		commitPromise.catch(() => {})
+		commitPromise.catch((error) => {
+			this.logger.error({ message: "error pushing mutation", error })
+		})
 
 		return commitPromise
 	}
@@ -189,6 +196,10 @@ export class TandemClient<
 		await this.db.flushClientStorage()
 	}
 
+	/**
+	 * Discard local records and pending mutations and start a new sync identity.
+	 * Does not undo server writes. Await this before starting new work.
+	 */
 	async clear() {
 		this.logger.info({ message: "clearing database" })
 

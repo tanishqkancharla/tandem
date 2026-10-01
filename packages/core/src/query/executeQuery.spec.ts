@@ -5,7 +5,7 @@ import {
 	TupleDatabase,
 	TupleDatabaseClient,
 } from "tuple-database"
-import { expect, expectTypeOf, test as baseTest } from "vitest"
+import { assert, expect, expectTypeOf, test as baseTest } from "vitest"
 import {
 	executeQueryAsync,
 	executeQuerySync,
@@ -284,6 +284,7 @@ test("encoded scan windows collect complete deduplicated records", async ({
 			},
 		},
 	])
+	assert(!(records instanceof Error))
 	expectTypeOf(records).toEqualTypeOf<ScanWindowRecord<QuerySchema>[]>()
 	for (const record of records) {
 		if (record.collection !== "threads") continue

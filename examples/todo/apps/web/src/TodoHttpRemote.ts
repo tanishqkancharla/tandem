@@ -1,9 +1,13 @@
 import type {
 	TodoPullResult,
+	TodoPushResult,
 	TodoRemoteRequest,
 	TodoSchema,
 } from "@tandem/example-todo-shared"
-import type { RemoteApi } from "@tanishqkancharla/tandem-core"
+import type {
+	RemoteApi,
+	RemoteRequestError,
+} from "@tanishqkancharla/tandem-core"
 import * as errore from "errore"
 
 class TodoHttpRemoteError extends errore.createTaggedError({
@@ -17,31 +21,34 @@ async function request<Result>({
 }: {
 	operation: "pull" | "push"
 	body: TodoRemoteRequest
-}) {
+}): Promise<Result | RemoteRequestError> {
 	const serialized = errore.try({
 		try: () => JSON.stringify(body),
 		catch: (cause) => new TodoHttpRemoteError({ operation, cause }),
 	})
-	if (serialized instanceof Error) return serialized
+	if (serialized instanceof Error)
+		return { error: "invalid-request", message: serialized.message }
 
 	const response = await fetch("/api/tandem", {
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: serialized,
 	}).catch((cause) => new TodoHttpRemoteError({ operation, cause }))
-	if (response instanceof Error) return response
+	if (response instanceof Error)
+		return { error: "unavailable", message: response.message }
 	if (!response.ok) {
-		return new TodoHttpRemoteError({
-			operation,
-			cause: new Error(`HTTP ${response.status}`),
-		})
+		return {
+			error: response.status === 400 ? "invalid-request" : "unavailable",
+			message: `HTTP ${response.status}`,
+		}
 	}
 
 	const parsed = await response
 		.json()
 		.then((value: unknown) => ({ value }))
 		.catch((cause) => new TodoHttpRemoteError({ operation, cause }))
-	if (parsed instanceof Error) return parsed
+	if (parsed instanceof Error)
+		return { error: "unavailable", message: parsed.message }
 
 	// This is the typed JSON boundary after the server validates the envelope.
 	return parsed.value as Result
@@ -64,14 +71,15 @@ export class TodoHttpRemote implements RemoteApi<TodoSchema> {
 	}
 
 	push: RemoteApi<TodoSchema>["push"] = async (args) => {
-		const result = await request<unknown>({
+		const result = await request<TodoPushResult>({
 			operation: "push",
 			body: { action: "push", args },
 		})
-		if (result instanceof Error) throw result
+		if ("error" in result) return result
 
 		// Pull immediately to acknowledge this client's mutation.
 		this.poke?.()
+		return result
 	}
 
 	pull: RemoteApi<TodoSchema>["pull"] = async (args) => {
@@ -79,7 +87,6 @@ export class TodoHttpRemote implements RemoteApi<TodoSchema> {
 			operation: "pull",
 			body: { action: "pull", args },
 		})
-		if (result instanceof Error) throw result
 		return result
 	}
 }

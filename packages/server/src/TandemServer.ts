@@ -11,6 +11,7 @@ import type {
 	RelationalQuery,
 	RelationalQueryResult,
 	RemoteApi,
+	RemoteMutationGapError,
 	RngApi,
 	ScanWindow,
 	AnyRelations,
@@ -22,6 +23,7 @@ import {
 	collectionIdsEqual,
 	executeQueryAsync,
 	executeScanWindowAsync,
+	InvalidScanWindowError,
 } from "@tanishqkancharla/tandem-core/internal"
 import type { ScanWindowRecord } from "@tanishqkancharla/tandem-core/internal"
 import * as errore from "errore"
@@ -179,7 +181,7 @@ export class TandemServer<
 		)
 	}
 
-	connect: RemoteApi<Schema>["connect"] = ({ clientId, poke }) => {
+	connect = ({ clientId, poke }: ClientApi) => {
 		const client = this.getSyncClient(clientId)
 		client.poke = poke
 		let disconnected = false
@@ -195,10 +197,22 @@ export class TandemServer<
 	}
 
 	push: RemoteApi<Schema>["push"] = ({ clientId, mutations }) =>
-		this.run(() => this.applyPush(clientId, mutations))
+		this.run(async () => {
+			const result = await this.applyPush(clientId, mutations)
+			if (result instanceof Error) {
+				return { error: "unavailable", message: result.message } as const
+			}
+			return result ?? ({ ok: true } as const)
+		})
 
 	pull: RemoteApi<Schema>["pull"] = (args) =>
-		this.run(() => this.readPull(args))
+		this.run(async () => {
+			const result = await this.readPull(args)
+			if (result instanceof Error) {
+				return { error: "unavailable", message: result.message } as const
+			}
+			return result
+		})
 
 	private run<T>(operation: () => Promise<T | TandemServerError>): Promise<T> {
 		const result = this.queue.then(async () => {
@@ -295,11 +309,18 @@ export class TandemServer<
 	private async applyPush(
 		clientId: ClientId,
 		mutations: Mutation<Schema>[],
-	): Promise<TandemServerError | undefined> {
+	): Promise<TandemServerError | RemoteMutationGapError | undefined> {
 		for (const mutation of mutations) {
 			const lastMutationId = await this.readLastMutationId(clientId, "push")
 			if (lastMutationId instanceof Error) return lastMutationId
 			if (mutation.id <= lastMutationId) continue
+			if (mutation.id !== lastMutationId + 1) {
+				return {
+					error: "mutation-gap",
+					expectedMutationId: lastMutationId + 1,
+					receivedMutationId: mutation.id,
+				}
+			}
 
 			const tupleTx = this.tupleDb.transact(this.rng?.randomId())
 			const transaction = new TandemServerTransaction(tupleTx, this.relations)
@@ -348,7 +369,11 @@ export class TandemServer<
 		const { clientId, cookie, scanWindow } = args
 		const client = this.getSyncClient(clientId)
 		const scanWindowKey = this.encodeScanWindow(scanWindow)
-		if (scanWindowKey instanceof Error) return scanWindowKey
+		if (scanWindowKey instanceof Error)
+			return {
+				error: "invalid-request",
+				message: "Scan window must be serializable",
+			}
 		const lastMutationId = await this.readLastMutationId(clientId, "pull")
 		if (lastMutationId instanceof Error) return lastMutationId
 
@@ -366,6 +391,9 @@ export class TandemServer<
 					scanWindow,
 				).catch((cause) => new TandemServerError({ operation: "pull", cause }))
 			: []
+		if (records instanceof InvalidScanWindowError) {
+			return { error: "invalid-request", message: records.message }
+		}
 		if (records instanceof Error) return records
 
 		const currentRecordKeys = records.map((record) =>

@@ -26,6 +26,7 @@ export type TodoSchema = {
 }
 
 export type TodoPushArgs = Parameters<RemoteApi<TodoSchema>["push"]>[0]
+export type TodoPushResult = Awaited<ReturnType<RemoteApi<TodoSchema>["push"]>>
 export type TodoPullArgs = Parameters<RemoteApi<TodoSchema>["pull"]>[0]
 export type TodoPullResult = Awaited<ReturnType<RemoteApi<TodoSchema>["pull"]>>
 

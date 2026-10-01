@@ -46,7 +46,6 @@ function executeRequest({
 		push: ({ args }) =>
 			server
 				.push(args)
-				.then(() => ({}))
 				.catch(
 					(cause) => new TodoHonoError({ operation: "push mutation", cause }),
 				),
@@ -115,12 +114,18 @@ export async function createTodoApp({ filePath }: { filePath: string }) {
 				(cause) => new TodoHonoError({ operation: "parse request", cause }),
 			)
 		if (json instanceof Error) {
-			return context.json({ error: "Invalid Tandem request" }, 400)
+			return context.json(
+				{ error: "invalid-request", message: "Invalid Tandem request" },
+				400,
+			)
 		}
 
 		const request = validateRequest(json)
 		if (request instanceof Error) {
-			return context.json({ error: "Invalid Tandem request" }, 400)
+			return context.json(
+				{ error: "invalid-request", message: "Invalid Tandem request" },
+				400,
+			)
 		}
 
 		const result = await executeRequest({ server, request })

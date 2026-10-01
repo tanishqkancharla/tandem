@@ -5,7 +5,8 @@ describe("Tandem client sync ordering", () => {
 	test("shows a newer edit while the previous push is in flight", async ({
 		gatekeeper,
 	}) => {
-		const { client1 } = gatekeeper
+		const { client1, client2 } = gatekeeper
+		client2.subscribe({ collection: "todos" })
 		const firstTodo = todo("queued", { text: "First title" })
 		const firstTx = client1.transact()
 		firstTx.set("todos", firstTodo)
@@ -19,6 +20,12 @@ describe("Tandem client sync ordering", () => {
 
 		first.assertSentBy("client1").assertWaitingFor("server")
 		expect(client1.query({ collection: "todos" })).toEqual([secondTodo])
+
+		// The in-flight request is a snapshot, not the list extended by the new edit.
+		await first.continueTo("server")
+		const pull = await client2.pullFromRemote()
+		await pull.continueToCompletion()
+		expect(client2.query({ collection: "todos" })).toEqual([firstTodo])
 	})
 
 	test("makes a server-accepted edit visible before acknowledging it", async ({
@@ -139,6 +146,7 @@ describe("Tandem client sync ordering", () => {
 		const commitSettled = Promise.allSettled([commit.result])
 		await commit.continueTo("server")
 		await commit.fail(failure)
+		expect(client1.query({ collection: "todos" })).toEqual([acceptedTodo])
 		const pull = await client2.pullFromRemote()
 		await pull.continueToCompletion()
 

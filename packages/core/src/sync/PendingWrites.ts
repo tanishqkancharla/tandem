@@ -89,6 +89,20 @@ export class PendingWrites<Schema extends AnySchema> {
 	private mutations: Mutation<Schema>[] = []
 	private readonly base = new Map<string, BaseEntry<Schema>>()
 
+	get isEmpty(): boolean {
+		return this.mutations.length === 0
+	}
+
+	/** A stable send list; subsequent commits cannot extend an in-flight push. */
+	snapshot(): Mutation<Schema>[] {
+		return [...this.mutations]
+	}
+
+	clearAll(): void {
+		this.mutations = []
+		this.base.clear()
+	}
+
 	/**
 	 * Runs commit and tracks the mutation as pending. Before the commit runs, it
 	 * reads the committed value of each record the mutation writes that no
@@ -159,35 +173,6 @@ export class PendingWrites<Schema extends AnySchema> {
 		for (const [baseKey, entry] of this.base) {
 			if (entry.lastWrittenBy <= lastMutationId) this.base.delete(baseKey)
 		}
-	}
-
-	/** Drops mutations the server rejected and writes the rebuild into tx. */
-	rollBackRejected(
-		tx: TupleRootTransactionApi<SchemaToTupleSchema<Schema>>,
-		rejected: readonly Mutation<Schema>[],
-	): void {
-		const rejectedIds = new Set(rejected.map((mutation) => mutation.id))
-		this.mutations = this.mutations.filter(
-			(mutation) => !rejectedIds.has(mutation.id),
-		)
-		this.resetToBaseAndReplay(tx)
-
-		const lastWrittenBy = new Map<string, MutationId>()
-		for (const mutation of this.mutations) {
-			for (const op of mutation.ops) {
-				lastWrittenBy.set(mutationOpToBaseKey(op), mutation.id)
-			}
-		}
-		for (const [baseKey, entry] of this.base) {
-			const last = lastWrittenBy.get(baseKey)
-			if (last === undefined) this.base.delete(baseKey)
-			else entry.lastWrittenBy = last
-		}
-	}
-
-	clearAll(): void {
-		this.mutations = []
-		this.base.clear()
 	}
 
 	/** Applies a patch op, and keeps it as the base if a pending mutation writes the record. */

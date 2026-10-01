@@ -12,7 +12,7 @@ import type {
 	RemoteApi,
 	ScanWindow,
 } from "@tanishqkancharla/tandem-core"
-import { expect, expectTypeOf, test, vi } from "vitest"
+import { assert, expect, expectTypeOf, test, vi } from "vitest"
 import { TandemServer } from "../src/index.js"
 import { TestTandemServerStorage } from "./TandemServerStorage.fixture.js"
 
@@ -496,6 +496,7 @@ test("remote pushes preserve operation order and acknowledge the last mutation o
 	]
 
 	// Push and pull work without a prior connect registration.
+	assert(!("error" in initial))
 	expect(initial.cookie).toBe(0)
 	await server.push({ clientId, mutations })
 	const acknowledged = await server.pull({
@@ -503,6 +504,7 @@ test("remote pushes preserve operation order and acknowledge the last mutation o
 		cookie: initial.cookie,
 		scanWindow,
 	})
+	assert(!("error" in acknowledged))
 	expect(acknowledged.lastMutationId).toBe(2)
 	expect(acknowledged.cookie).not.toBe(initial.cookie)
 	expect(acknowledged.patch.set).toEqual([
@@ -615,8 +617,8 @@ test("retrying a partially committed batch skips its prefix and processes its su
 			return Promise.resolve()
 		},
 	})
-	await expect(server.push({ clientId, mutations })).rejects.toMatchObject({
-		cause: storageCause,
+	await expect(server.push({ clientId, mutations })).resolves.toMatchObject({
+		error: "unavailable",
 	})
 	await disconnect()
 	expect(await server.pull({ clientId, scanWindow })).toMatchObject({
@@ -640,6 +642,51 @@ test("retrying a partially committed batch skips its prefix and processes its su
 	await server.close()
 })
 
+test("a gap preserves the committed prefix and a consecutive retry recovers", async () => {
+	const { server } = createServer()
+	const clientId = tag<ClientId>("gap-client")
+	const mutations: Mutation<TestSchema>[] = [1, 2, 3].map((id) => ({
+		id: tag<MutationId>(id),
+		ops: [
+			{
+				type: "set",
+				collection: "users",
+				value: { id: `user-${id}`, name: `User ${id}` },
+			},
+		],
+	}))
+	const scanWindow: ScanWindow<TestSchema> = [{ collection: "users" }]
+
+	await expect(
+		server.push({
+			clientId,
+			mutations: [mutations[0]!, mutations[2]!],
+		}),
+	).resolves.toEqual({
+		error: "mutation-gap",
+		expectedMutationId: 2,
+		receivedMutationId: 3,
+	})
+	expect(await server.pull({ clientId, scanWindow })).toMatchObject({
+		lastMutationId: 1,
+	})
+	expect(await server.query({ collection: "users" })).toEqual([
+		{ id: "user-1", name: "User 1" },
+	])
+
+	// Skip the already committed ID 1, then accept IDs 2 and 3 in order.
+	await server.push({ clientId, mutations })
+	expect(await server.pull({ clientId, scanWindow })).toMatchObject({
+		lastMutationId: 3,
+	})
+	expect(await server.query({ collection: "users" })).toEqual([
+		{ id: "user-1", name: "User 1" },
+		{ id: "user-2", name: "User 2" },
+		{ id: "user-3", name: "User 3" },
+	])
+	await server.close()
+})
+
 test("empty mutations advance acknowledgement once, without re-poking on retry", async () => {
 	const { server } = createServer()
 	const clientId = tag<ClientId>("empty-client")
@@ -656,6 +703,7 @@ test("empty mutations advance acknowledgement once, without re-poking on retry",
 	]
 	await server.push({ clientId, mutations })
 	const confirmed = await server.pull({ clientId, scanWindow: [] })
+	assert(!("error" in confirmed))
 	await server.push({ clientId, mutations })
 	expect(
 		await server.pull({ clientId, scanWindow: [], cookie: confirmed.cookie }),
@@ -674,6 +722,7 @@ test("push acknowledgement is visible to the pull started by its poke", async ()
 	const mutationId = tag<MutationId>(1)
 	const scanWindow: ScanWindow<TestSchema> = [{ collection: "users" }]
 	const initial = await server.pull({ clientId, scanWindow })
+	assert(!("error" in initial))
 	const pokedPull =
 		Promise.withResolvers<Awaited<ReturnType<RemoteApi<TestSchema>["pull"]>>>()
 	const disconnect = await server.connect({
@@ -701,6 +750,7 @@ test("push acknowledgement is visible to the pull started by its poke", async ()
 	})
 
 	const result = await pokedPull.promise
+	assert(!("error" in result))
 	expect(result.lastMutationId).toBe(mutationId)
 	expect(result.patch.set).toEqual([
 		{ collection: "users", value: { id: "user-1", name: "Ada" } },
@@ -744,6 +794,7 @@ test("pull diffs filtered, paginated, and nested client views", async () => {
 
 	// The initial page includes complete root and related records.
 	const initial = await server.pull({ clientId, scanWindow: nestedPage })
+	assert(!("error" in initial))
 	expect(patchSetKeys(initial.patch)).toEqual([
 		"messages.thread-3",
 		"threads.thread-3",
@@ -772,6 +823,7 @@ test("pull diffs filtered, paginated, and nested client views", async () => {
 		cookie: initial.cookie,
 		scanWindow: nestedPage,
 	})
+	assert(!("error" in promoted))
 	expect(patchSetKeys(promoted.patch)).toEqual([
 		"messages.message-2",
 		"threads.thread-1",
@@ -795,6 +847,7 @@ test("pull diffs filtered, paginated, and nested client views", async () => {
 		cookie: promoted.cookie,
 		scanWindow: nestedPage,
 	})
+	assert(!("error" in displaced))
 	expect(patchSetKeys(displaced.patch)).toEqual([
 		"threads.thread-2",
 		"users.user-1",
@@ -818,6 +871,7 @@ test("pull diffs filtered, paginated, and nested client views", async () => {
 		cookie: displaced.cookie,
 		scanWindow: rootOnlyPage,
 	})
+	assert(!("error" in shrunk))
 	expect(patchSetKeys(shrunk.patch)).toEqual(["threads.thread-2"])
 	expect(patchRemoveKeys(shrunk.patch)).toEqual(["users.user-1"])
 
@@ -827,13 +881,14 @@ test("pull diffs filtered, paginated, and nested client views", async () => {
 		cookie: shrunk.cookie,
 		scanWindow: rootOnlyPage,
 	})
+	assert(!("error" in unchanged))
 	expect(unchanged.patch).toEqual({ set: [], remove: [] })
 	expect(unchanged.cookie).toBe(shrunk.cookie)
 
 	await server.close()
 })
 
-test("pull rejects an encoded relation that targets the wrong collection", async () => {
+test("pull returns an invalid-request error for a relation targeting the wrong collection", async () => {
 	const { server } = createServer()
 	const invalidScanWindow: ScanWindow<TestSchema> = [
 		{
@@ -849,13 +904,32 @@ test("pull rejects an encoded relation that targets the wrong collection", async
 			clientId: tag<ClientId>("invalid-query-client"),
 			scanWindow: invalidScanWindow,
 		}),
-	).rejects.toMatchObject({
-		cause: expect.objectContaining({
-			message:
-				'Relation "threads.owner" targets collection "users", not "messages"',
-		}),
+	).resolves.toEqual({
+		error: "invalid-request",
+		message:
+			'Relation "threads.owner" targets collection "users", not "messages"',
 	})
 
+	await server.close()
+})
+
+test("pull returns unavailable on a storage failure and a later pull recovers", async () => {
+	const { server, storage } = createServer()
+	await seed(server)
+	const args = {
+		clientId: tag<ClientId>("read-failure"),
+		scanWindow: [{ collection: "users" as const }],
+	}
+	storage.failNextScan(new Error("Storage disconnected"))
+	await expect(server.pull(args)).resolves.toMatchObject({
+		error: "unavailable",
+	})
+	await expect(server.pull(args)).resolves.toMatchObject({
+		lastMutationId: 0,
+		patch: {
+			set: [{ collection: "users", value: { id: "user-1", name: "Ada" } }],
+		},
+	})
 	await server.close()
 })
 
@@ -932,9 +1006,10 @@ test("failed pushes do not acknowledge, advance, or poke", async () => {
 				},
 			],
 		}),
-	).rejects.toMatchObject({ cause: storageCause })
+	).resolves.toMatchObject({ error: "unavailable" })
 	expect(poke).not.toHaveBeenCalled()
 
+	assert(!("error" in initial))
 	const afterFailure = await server.pull({
 		clientId,
 		cookie: initial.cookie,

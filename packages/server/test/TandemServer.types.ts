@@ -43,6 +43,23 @@ const server = new TandemServer({ schema, relations, storage })
 expectTypeOf(server).toEqualTypeOf<TandemServer<AppSchema, typeof relations>>()
 const remote: RemoteApi<AppSchema> = server
 void remote
+
+declare const pushResponse: Awaited<ReturnType<typeof remote.push>>
+// @ts-expect-error A failed push does not have the success marker.
+void pushResponse.ok
+if ("error" in pushResponse && pushResponse.error === "mutation-gap") {
+	expectTypeOf(pushResponse.expectedMutationId).toEqualTypeOf<number>()
+	expectTypeOf(pushResponse.receivedMutationId).toEqualTypeOf<number>()
+}
+declare const pullResponse: Awaited<ReturnType<typeof remote.pull>>
+// @ts-expect-error A failed pull has no acknowledgement to apply.
+void pullResponse.lastMutationId
+if ("error" in pullResponse) {
+	expectTypeOf(pullResponse.error).toEqualTypeOf<
+		"unavailable" | "invalid-request"
+	>()
+}
+
 const transaction = server.transact()
 expectTypeOf(server.commit(transaction)).toEqualTypeOf<Promise<void>>()
 

@@ -1,10 +1,10 @@
 # Retry unacknowledged pushes
 
-Fix for [#43](https://github.com/tanishqkancharla/tandem/issues/43), building on [PR #46](https://github.com/tanishqkancharla/tandem/pull/46), which added numeric mutation IDs and base-plus-pending reconciliation. Phases 1, 2, and 2.5 are committed locally; phases 3–5 remain planned.
+Fix for [#43](https://github.com/tanishqkancharla/tandem/issues/43), building on [PR #46](https://github.com/tanishqkancharla/tandem/pull/46), which added numeric mutation IDs and base-plus-pending reconciliation. Phases 1, 2, 2.5, and 3 are implemented. Phases 4–5 remain planned.
 
 ## Problem
 
-`SyncEngine.push` empties its send queue before sending. Any push failure calls the client's rollback path, removing the optimistic write. A lost request therefore loses a write permanently. A lost response removes a write the server may already have accepted.
+Before phase 3, `SyncEngine.push` emptied its send queue before sending. Any push failure called the rollback path, removing the optimistic write. A lost request therefore lost a write permanently. A lost response removed a write the server may already have accepted.
 
 ```mermaid
 sequenceDiagram
@@ -18,14 +18,14 @@ sequenceDiagram
 
 The failure does not tell the client whether the server received the request. Retrying without server deduplication is also unsafe: an old set could overwrite another client's newer edit.
 
-### A missing mutation is reproducible; gap-check lockout is not current behavior
+### The phase 1 investigation reproduced a missing mutation, before gap enforcement
 
 A temporary Gatekeeper test reproduced this sequence against the real client and server after phase 1. It dropped a push before the server received it, checked the rollback and server acknowledgement, then committed another write. The test passed and was removed afterward; no implementation changed for this investigation.
 
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant S as Current server
+    participant S as Phase 1 server
     C->>C: Commit mutation 1, creating lost
     C--xS: Drop request before delivery
     C->>C: Push rejects; discard mutation 1 and its optimistic record
@@ -37,7 +37,7 @@ sequenceDiagram
     Note over C,S: Both hold only next; mutation 1 never reached the server
 ```
 
-The observed failure is data loss and a jump from acknowledgement 0 to 2. Today's server accepts gaps, so it does not lock the client out. Lockout would follow if we added strict gap checks without first removing destructive rollback:
+The observed failure was data loss and a jump from acknowledgement 0 to 2. The phase 2 server accepted gaps, so it did not lock the client out. Lockout would follow if we added strict gap checks without first removing destructive rollback:
 
 ```diff
  server receives mutation 2 while lastMutationId is 0:
@@ -200,7 +200,7 @@ The test diffs cover concurrent delivery [[phase2-server-tests:new:536-584]], re
 
 ### ✅ Phase 2.5: Move synchronization state into SyncEngine
 
-Implemented, verified, and committed locally. `SyncEngine` owns the `PendingWrites` instance and mutation counter and borrows the existing database. `PendingWrites` stays a private reconciliation helper, with its mutation list and server-base map together. `TandemClient` no longer receives callbacks from the engine to apply pulls or roll back writes.
+Implemented, verified, and committed locally. [[phase25-engine:new:96-102]] owns the `PendingWrites` instance and mutation counter and borrows the existing database. `PendingWrites` stays a private reconciliation helper, with its mutation list and server-base map together. [[phase25-client:new:155-160]] delegates synchronized commits to the engine; the client no longer receives callbacks to apply pulls or roll back writes.
 
 The dependency triangle has three top-level components. `TandemClient` exposes the application API and owns the database lifetime. `SyncEngine` coordinates synchronized commits and remote events. `Database` stores and queries local records. `PendingWrites` appears explicitly below, nested inside its engine owner rather than as another top-level service.
 
@@ -214,8 +214,8 @@ flowchart TD
     C[TandemClient] -->|commit, pull, connect, clear| E[SyncEngine]
     C -->|transact, query, local subscriptions| D[Database]
     E -->|read base, commit, apply reconciliation| D
-    %% ref node:C [[packages/core/src/TandemClient.ts#TandemClient]]
-    %% ref node:E [[packages/core/src/sync/SyncEngine.ts#SyncEngine]]
+    %% ref node:C [[phase25-client:new:91-100]]
+    %% ref node:E [[phase25-engine:new:96-102]]
     %% ref node:P [[packages/core/src/sync/PendingWrites.ts#PendingWrites]]
     %% ref node:D [[packages/core/src/Database.ts#Database]]
 ```
@@ -388,11 +388,11 @@ Queries and draft creation keep the direct client-to-database edge. Subscribing 
 +    delegate to engine when present; otherwise clear database directly
 ```
 
-This phase preserves transport behavior, including the duplicate send queue and failed-push rollback, so the refactor can be verified independently. The engine exists whenever a remote is configured, even before connection, and survives disconnect/reconnect. Local commits do not wait behind network tasks. Repository type checks and all 133 tests passed after the ownership move. Phase 3 removes the duplicate queue, changes retention, and prevents `clear()` from discarding unacknowledged history; automatic retries remain phase 4.
+This phase preserves transport behavior, including the duplicate send queue and failed-push rollback, so the refactor can be verified independently. The engine exists whenever a remote is configured, even before connection, and survives disconnect/reconnect. Local commits do not wait behind network tasks. Repository type checks and all 133 tests passed after the ownership move. Phase 3 removes the duplicate queue and changes retention. Explicit `clear()` discards local history and starts a new sync session; automatic retries remain phase 4.
 
-### Phase 3: Retain unacknowledged writes and enforce consecutive delivery
+### ✅ Phase 3: Retain unacknowledged writes and enforce consecutive delivery
 
-`PendingWrites`, now privately owned by `SyncEngine`, tracks unacknowledged mutations. Push a snapshot of that state instead of maintaining a second list with a different lifetime. Remove transport-triggered rollback and enable strict server gap checks in this same commit. Phase 2 makes resending the snapshot safe; retention prevents the demonstrated missing-history lockout. Reject `clear()` while mutations remain unacknowledged rather than discard IDs the server still expects.
+Implemented. `PendingWrites`, privately owned by `SyncEngine`, tracks unacknowledged mutations. [[phase3-engine:new:292-298]] pushes a snapshot of that state instead of maintaining a second list with a different lifetime. Transport failure no longer rolls back writes, and the server rejects gaps before opening a transaction. Phase 2 makes resending the snapshot safe; retention prevents the demonstrated missing-history lockout. Explicit `clear()` discards pending writes along with the local database and resets the sync session, rather than rejecting because writes remain pending.
 
 Before phase 3: a lost request removes the optimistic write and its pending mutation. The next write sends only mutation 2. The phase 2 server still accepts gaps, so mutation 1 is permanently lost rather than retried.
 
@@ -422,7 +422,7 @@ sequenceDiagram
     Note over E,S: Mutation 1 exists on neither side
 ```
 
-After phase 3 (planned): delivery failure leaves mutation 1 pending and visible. A new local write schedules a push containing both mutations. The strict server accepts them consecutively; only a later pull acknowledgement removes them from `PendingWrites`. This example uses another write to trigger delivery, not phase 4's automatic retry timer.
+After phase 3: delivery failure leaves mutation 1 pending and visible. A new local write schedules a push containing both mutations. The strict server accepts them consecutively; only a later pull acknowledgement removes them from `PendingWrites`. This example uses another write to trigger delivery, not phase 4's automatic retry timer.
 
 ```mermaid
 sequenceDiagram
@@ -479,8 +479,12 @@ If the first request committed but its response was lost, the same snapshot is s
 -    rollBackRejected(mutations)
 
  SyncEngine.clear():
-+    if pendingWrites is not empty: return an error without changing state
-     clear local database without resetting mutation IDs
+-    discard pending state but keep client ID, counter, and cookie
++    detach the old connection
++    assign a new client ID; reset mutation counter and cookie
++    clear pending mutations, server base, and local database
++    unregister the old identity; register the new one if previously connected
++    ignore old-session pull responses and pokes
 
  PendingWrites.applyPull(patch, lastMutationId):
      update server base from patch
@@ -491,8 +495,7 @@ If the first request committed but its response was lost, the same snapshot is s
  TandemServer.applyPush(clientId, mutations):
      skip mutations already processed
 +    if mutation.id != lastMutationId + 1:
-+        discard transaction
-+        report gap with expectedMutationId = lastMutationId + 1
++        report expected and received IDs without starting a transaction
      commit mutation effects and processed ID atomically
 ```
 
@@ -509,6 +512,78 @@ flowchart TD
 A snapshot prevents newly committed writes from changing an in-flight request. Validate that lost requests and responses leave optimistic values visible, a later queued push includes the retained writes, and a pull removes only the acknowledged prefix, including when its patch is empty. Repeat the demonstrated sequence: lose mutation 1's request, commit mutation 2, and verify both reach the strict server in order. Direct requests containing a gap must leave the missing ID unacknowledged. Automatic retries remain for phase 4; this commit changes ownership and enforcement, not scheduling.
 
 Keep the current public `commit()` promise meaning: it reports the initial push attempt, not eventual pull confirmation. An attempt may reject while the mutation remains queued. Disconnect does not roll back pending writes.
+
+Expected remote failures are typed protocol values in [[packages/core/src/sync/SyncEngine.ts#RemoteApi]], not private server exceptions. They are JSON-safe so the HTTP adapter preserves the same contract as the in-process server. The contract covers the existing failure paths: mutation gaps, invalid requests (including invalid relation queries), and unavailable storage or transport. It does not invent authentication, permission, or application-validation failures that the server cannot currently produce.
+
+```diff
+ RemoteApi.push(args):
+-    Promise<void>; a gap rejects as an internal server error
++    Promise<{ ok: true }
++      | { error: "mutation-gap", expectedMutationId, receivedMutationId }
++      | { error: "invalid-request", message }
++      | { error: "unavailable", message }>
+
+ RemoteApi.pull(args):
+-    Promise<{ cookie, patch, lastMutationId }>
++    Promise<{ cookie, patch, lastMutationId }
++      | { error: "invalid-request", message }
++      | { error: "unavailable", message }>
+
+ RemoteApi.connect(client):
+-    Promise<unsubscribe>
++    Promise<unsubscribe | invalid-request | unavailable>
+
+ SyncEngine receives a failure response:
++    retain pending writes; do not apply a patch or acknowledgement
++    reject the corresponding public operation with the response as its cause
+
+ HTTP adapter:
+-    discard successful push body; flatten all server failures to HTTP 500
++    pass typed protocol responses through JSON unchanged
++    turn expected network failure into unavailable
+```
+
+```mermaid
+sequenceDiagram
+    participant E as SyncEngine
+    participant H as HTTP remote adapter
+    participant S as TandemServer
+    E->>H: push(snapshot)
+    H->>S: JSON push request
+    S-->>H: mutation-gap with expected and received IDs
+    H-->>E: Same typed error value
+    E->>E: Retain pending writes; report failed attempt
+    Note over E,S: A resolved remote call can still report a protocol failure
+```
+
+An `unavailable` response does not prove that nothing committed: a batch may have committed a prefix, or a reply may have been lost. A pull remains the source of acknowledgements. Invalid requests must be corrected; a gap must be filled rather than silently skipped. Unexpected exceptions may still reject. The DST transport now ignores failure responses when observing accepted writes and received patches; duplicate-aware model changes remain phase 5.
+
+`clear()` is deliberately destructive. Keeping the old identity after discarding mutation 1 would make mutation 2 fail the strict gap check. Resetting only the counter would also be unsafe: the server could mistake a new mutation 1 for an old duplicate. A new identity, counter, and cookie form one reset. `TandemClient.clientId` reflects the current session. Await `clear()` before starting new work. Subscriptions remain registered, but clearing does not immediately pull records back into the empty database.
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant E as SyncEngine
+    participant P as PendingWrites
+    participant D as Local database
+    participant S as Server
+    App->>E: clear()
+    E->>E: New client ID; counter = 0; no cookie
+    E->>P: Discard all mutations and base records
+    E->>D: Clear records and client storage
+    E->>S: Unregister old identity; register new identity if connected
+    S-->>E: Old-session pull response arrives
+    E->>E: Ignore stale patch and acknowledgement
+    E-->>App: Clear completes
+    App->>E: Commit new write
+    E->>P: Track mutation 1 in the new session
+    E->>S: Push new client ID, mutation 1
+    S-->>E: Accepted without a gap or duplicate collision
+```
+
+Clearing does not undo server writes or cancel requests already dispatched. Those records may return on a later pull. Tests cover offline clearing followed by successful sync, and a delayed old pull that must not prune the new session's first write.
+
+Verification: core/server sync tests, repository type-checks, and lint pass. Four DST expectations still fail because they encode the old rollback violation or seed outcomes. The lost-request recording now reaches `writeNeverAccepted` at quiescence instead of losing the optimistic value at step 5: retention works, but automatic retry remains phase 4. Keep the recording and update the independent model and expectations in phase 5.
 
 ### Phase 4: Schedule retries until confirmation
 
@@ -1355,4 +1430,782 @@ index fd0894e..1040e5a 100644
  		if (this.nextCommitError) {
  			const error = this.nextCommitError
  			this.nextCommitError = undefined
+```
+
+```source-diff:phase25-client:packages/core/src/TandemClient.ts
+diff --git a/packages/core/src/TandemClient.ts b/packages/core/src/TandemClient.ts
+index d24ff13..4d0e0c0 100644
+--- a/packages/core/src/TandemClient.ts
++++ b/packages/core/src/TandemClient.ts
+@@ -10,22 +10,12 @@ import type {
+ 	RuntimeSchemaDefinition,
+ } from "./schema/Schema.js"
+ import type { TandemClientStorageApi } from "./clientStorage/TandemClientStorage.js"
+-import { PendingWrites } from "./sync/PendingWrites.js"
+-import {
+-	SyncEngine,
+-	type ClientId,
+-	type Patch,
+-	type RemoteApi,
+-} from "./sync/SyncEngine.js"
+-import {
+-	Transaction,
+-	type Mutation,
+-	type MutationId,
+-} from "./transaction/Transaction.js"
++import { SyncEngine, type ClientId, type RemoteApi } from "./sync/SyncEngine.js"
++import { Transaction } from "./transaction/Transaction.js"
+ import { ConsoleLoggerSink, Logger, type LoggerApi } from "./utils/Logger.js"
+ import { randomId, type RngApi } from "./utils/randomId.js"
+ import type { TimerApi } from "./utils/Timer.js"
+-import { tag, type AsyncUnsubscribe } from "./utils/typeUtils.js"
++import type { AsyncUnsubscribe } from "./utils/typeUtils.js"
+ 
+ export type TandemClientArgs<
+ 	Schema extends AnySchema,
+@@ -74,10 +64,6 @@ export class TandemClient<
+ 	private readonly logger: LoggerApi
+ 	private readonly rng: RngApi
+ 
+-	private readonly pendingWrites = new PendingWrites<Schema>()
+-	// Not reset by clear(): the server acknowledges every id up to the last one it
+-	// applied for this client id, so a reused id would count as acknowledged.
+-	private mutationCount = 0
+ 	constructor({
+ 		schema,
+ 		relations,
+@@ -93,29 +79,26 @@ export class TandemClient<
+ 		this.clientId = this.rng.randomId() as ClientId
+ 		this.logger = logger ?? new Logger({ sinks: new ConsoleLoggerSink() })
+ 
++		this.db = new Database({
++			schema,
++			relations,
++			logger: this.logger.scope("db"),
++			clientStorage,
++			clientStorageWriteInterval,
++			rng: this.rng,
++		})
++
+ 		this.syncEngine = remote
+ 			? new SyncEngine({
+ 					remote,
++					db: this.db,
+ 					clientId: this.clientId,
+-					handleRollback: (mutationsToRollback) => {
+-						this.rollback(mutationsToRollback)
+-					},
+-					applyPull: (args) => this.applyPull(args),
+ 					autoConnect,
+ 					logger: this.logger.scope("sync-engine"),
+ 					syncInterval,
+ 				})
+ 			: undefined
+ 
+-		this.db = new Database({
+-			schema,
+-			relations,
+-			logger: this.logger.scope("db"),
+-			clientStorage,
+-			clientStorageWriteInterval,
+-			rng: this.rng,
+-		})
+-
+ 		this.ready = this.db.ready
+ 	}
+ 
+@@ -128,26 +111,6 @@ export class TandemClient<
+ 		return this.syncEngine.queuePull()
+ 	}
+ 
+-	private applyPull({
+-		patch,
+-		lastMutationId,
+-	}: {
+-		patch: Patch<Schema>
+-		lastMutationId: MutationId
+-	}) {
+-		this.logger.info({ message: "applying pull" })
+-		const tx = this.db.makeTupleDbTransaction()
+-		this.pendingWrites.applyPull(tx, { patch, lastMutationId })
+-		tx.commit()
+-	}
+-
+-	private rollback(mutationsToRollback: readonly Mutation<Schema>[]) {
+-		this.logger.info({ message: "rolling back" })
+-		const tx = this.db.makeTupleDbTransaction()
+-		this.pendingWrites.rollBackRejected(tx, mutationsToRollback)
+-		tx.commit()
+-	}
+-
+ 	query<Query extends RelationalQuery<Schema, Relations>>(
+ 		query: Query,
+ 	): RelationalQueryResult<Schema, Relations, Query> {
+@@ -190,18 +153,11 @@ export class TandemClient<
+ 		}
+ 
+ 		this.logger.info({ message: "committing transaction" })
+-		const mutation: Mutation<Schema> = {
+-			ops: transaction.ops,
+-			id: tag<MutationId>(this.mutationCount + 1),
++		if (!this.syncEngine) {
++			this.db.commit(transaction)
++			return Promise.resolve()
+ 		}
+-		this.pendingWrites.commitAndTrack(mutation, {
+-			readCommittedRecord: ({ collection, id }) => this.db.get(collection, id),
+-			commit: () => this.db.commit(transaction),
+-		})
+-		this.mutationCount += 1
+-
+-		const commitPromise =
+-			this.syncEngine?.queuePush(mutation) ?? Promise.resolve()
++		const commitPromise = this.syncEngine.commit(transaction)
+ 
+ 		// Ignored commit promises should not surface unhandled rejections.
+ 		commitPromise.catch(() => {})
+@@ -236,9 +192,7 @@ export class TandemClient<
+ 	async clear() {
+ 		this.logger.info({ message: "clearing database" })
+ 
+-		this.pendingWrites.clearAll()
+-
+-		// Clear the database
+-		await this.db.clear()
++		if (this.syncEngine) await this.syncEngine.clear()
++		else await this.db.clear()
+ 	}
+ }
+```
+
+```source-diff:phase25-engine:packages/core/src/sync/SyncEngine.ts
+diff --git a/packages/core/src/sync/SyncEngine.ts b/packages/core/src/sync/SyncEngine.ts
+index c8d9136..313ff3d 100644
+--- a/packages/core/src/sync/SyncEngine.ts
++++ b/packages/core/src/sync/SyncEngine.ts
+@@ -1,9 +1,16 @@
++import type { Database } from "../Database.js"
+ import type { EncodedQuery, ScanWindow } from "../query/Query.js"
+ import type { AnySchema, CollectionName } from "../schema/Schema.js"
+-import type { Mutation, MutationId } from "../transaction/Transaction.js"
++import type {
++	Mutation,
++	MutationId,
++	Transaction,
++} from "../transaction/Transaction.js"
+ import type { LoggerApi } from "../utils/Logger.js"
+ import { TaskQueue } from "../utils/TaskQueue.js"
+ import { Timer, type TimerApi } from "../utils/Timer.js"
++import { tag } from "../utils/typeUtils.js"
++import { PendingWrites } from "./PendingWrites.js"
+ import type {
+ 	AsyncUnsubscribe,
+ 	Tagged,
+@@ -77,8 +84,7 @@ export namespace PatchApi {
+ export type SyncEngineArgs<Schema extends AnySchema> = {
+ 	clientId: ClientId
+ 	remote: SyncEngine<Schema>["remote"]
+-	handleRollback: SyncEngine<Schema>["handleRollback"]
+-	applyPull: SyncEngine<Schema>["applyPull"]
++	db: SyncEngine<Schema>["db"]
+ 	autoConnect?: boolean
+ 	logger: SyncEngine<Schema>["logger"]
+ 	syncInterval: number | TimerApi
+@@ -87,15 +93,15 @@ export type SyncEngineArgs<Schema extends AnySchema> = {
+ export class SyncEngine<Schema extends AnySchema> {
+ 	private syncQueue: TaskQueue<"pull" | "push">
+ 	private pendingMutations: Mutation<Schema>[] = []
++	private readonly pendingWrites = new PendingWrites<Schema>()
++	// Keep IDs monotonic for this client identity, including across clear().
++	private mutationCount = 0
++	private readonly db: Pick<
++		Database<Schema>,
++		"get" | "commit" | "makeTupleDbTransaction" | "clear"
++	>
+ 	private readonly remote: RemoteApi<Schema>
+ 	private readonly logger: LoggerApi
+-	private readonly handleRollback: (
+-		mutationsToRollback: readonly Mutation<Schema>[],
+-	) => void
+-	private readonly applyPull: (args: {
+-		patch: Patch<Schema>
+-		lastMutationId: MutationId
+-	}) => void
+ 
+ 	private readonly clientId: ClientId
+ 	private cookie?: Cookie
+@@ -106,8 +112,7 @@ export class SyncEngine<Schema extends AnySchema> {
+ 	constructor(args: SyncEngineArgs<Schema>) {
+ 		this.logger = args.logger
+ 		this.remote = args.remote
+-		this.handleRollback = args.handleRollback
+-		this.applyPull = args.applyPull
++		this.db = args.db
+ 		this.clientId = args.clientId
+ 		const timer =
+ 			typeof args.syncInterval === "number"
+@@ -200,10 +205,21 @@ export class SyncEngine<Schema extends AnySchema> {
+ 
+ 		this.cookie = cookie
+ 
+-		this.applyPull({ patch, lastMutationId })
++		const tx = this.db.makeTupleDbTransaction()
++		this.pendingWrites.applyPull(tx, { patch, lastMutationId })
++		tx.commit()
+ 	}
+ 
+-	queuePush(mutation: Mutation<Schema>): Promise<void> {
++	commit(transaction: Transaction<Schema>): Promise<void> {
++		const mutation: Mutation<Schema> = {
++			ops: transaction.ops,
++			id: tag<MutationId>(this.mutationCount + 1),
++		}
++		this.pendingWrites.commitAndTrack(mutation, {
++			readCommittedRecord: ({ collection, id }) => this.db.get(collection, id),
++			commit: () => this.db.commit(transaction),
++		})
++		this.mutationCount += 1
+ 		this.logger.info({ message: "queueing push" })
+ 		this.pendingMutations.push(mutation)
+ 		return this.syncQueue.enqueue("push")
+@@ -225,8 +241,15 @@ export class SyncEngine<Schema extends AnySchema> {
+ 		} catch (error) {
+ 			this.logger.error({ message: "error applying mutation", error })
+ 
+-			this.handleRollback(mutations)
++			const tx = this.db.makeTupleDbTransaction()
++			this.pendingWrites.rollBackRejected(tx, mutations)
++			tx.commit()
+ 			throw error
+ 		}
+ 	}
++
++	async clear() {
++		this.pendingWrites.clearAll()
++		await this.db.clear()
++	}
+ }
+```
+
+```source-diff:phase3-engine:packages/core/src/sync/SyncEngine.ts
+diff --git a/packages/core/src/sync/SyncEngine.ts b/packages/core/src/sync/SyncEngine.ts
+index 313ff3d..c9a3d4f 100644
+--- a/packages/core/src/sync/SyncEngine.ts
++++ b/packages/core/src/sync/SyncEngine.ts
+@@ -1,3 +1,4 @@
++import * as errore from "errore"
+ import type { Database } from "../Database.js"
+ import type { EncodedQuery, ScanWindow } from "../query/Query.js"
+ import type { AnySchema, CollectionName } from "../schema/Schema.js"
+@@ -7,6 +8,7 @@ import type {
+ 	Transaction,
+ } from "../transaction/Transaction.js"
+ import type { LoggerApi } from "../utils/Logger.js"
++import { randomId, type RngApi } from "../utils/randomId.js"
+ import { TaskQueue } from "../utils/TaskQueue.js"
+ import { Timer, type TimerApi } from "../utils/Timer.js"
+ import { tag } from "../utils/typeUtils.js"
+@@ -20,6 +22,36 @@ import type {
+ export type ClientId = Tagged<"ClientId", string>
+ export type Cookie = Tagged<"Cookie", number | string>
+ 
++/** Expected failures are protocol data, not Error instances requiring revival. */
++export type RemoteUnavailableError = { error: "unavailable"; message: string }
++export type RemoteInvalidRequestError = {
++	error: "invalid-request"
++	message: string
++}
++export type RemoteMutationGapError = {
++	error: "mutation-gap"
++	expectedMutationId: number
++	receivedMutationId: number
++}
++export type RemoteRequestError =
++	| RemoteUnavailableError
++	| RemoteInvalidRequestError
++export type PushResponse =
++	| { ok: true }
++	| RemoteRequestError
++	| RemoteMutationGapError
++export type PullResponse<Schema extends AnySchema> = {
++	cookie: Cookie
++	patch: Patch<Schema>
++	/** The last processed mutation, or 0 before any were applied. */
++	lastMutationId: MutationId
++}
++
++class RemoteResponseError extends errore.createTaggedError({
++	name: "RemoteResponseError",
++	message: "Remote $operation failed",
++}) {}
++
+ export type ClientApi = {
+ 	clientId: ClientId
+ 	/** Settles when the pull the poke started has finished. Never rejects. */
+@@ -27,24 +59,16 @@ export type ClientApi = {
+ }
+ 
+ export type RemoteApi<Schema extends AnySchema> = {
+-	connect(api: ClientApi): Promise<AsyncUnsubscribe>
++	connect(api: ClientApi): Promise<AsyncUnsubscribe | RemoteRequestError>
+ 	push(args: {
+ 		mutations: Mutation<Schema>[]
+ 		clientId: ClientId
+-	}): Promise<void>
++	}): Promise<PushResponse>
+ 	pull(args: {
+ 		clientId: ClientId
+ 		cookie?: Cookie
+ 		scanWindow: ScanWindow<Schema>
+-	}): Promise<{
+-		cookie: Cookie
+-		patch: Patch<Schema>
+-		/**
+-		 * The last of this client's mutations the server applied, on every pull.
+-		 * 0 before the server has applied any.
+-		 */
+-		lastMutationId: MutationId
+-	}>
++	}): Promise<PullResponse<Schema> | RemoteRequestError>
+ }
+ 
+ export type PatchSetOp<Schema extends AnySchema> = {
+@@ -88,13 +112,12 @@ export type SyncEngineArgs<Schema extends AnySchema> = {
+ 	autoConnect?: boolean
+ 	logger: SyncEngine<Schema>["logger"]
+ 	syncInterval: number | TimerApi
++	rng?: RngApi
+ }
+ 
+ export class SyncEngine<Schema extends AnySchema> {
+ 	private syncQueue: TaskQueue<"pull" | "push">
+-	private pendingMutations: Mutation<Schema>[] = []
+ 	private readonly pendingWrites = new PendingWrites<Schema>()
+-	// Keep IDs monotonic for this client identity, including across clear().
+ 	private mutationCount = 0
+ 	private readonly db: Pick<
+ 		Database<Schema>,
+@@ -102,18 +125,24 @@ export class SyncEngine<Schema extends AnySchema> {
+ 	>
+ 	private readonly remote: RemoteApi<Schema>
+ 	private readonly logger: LoggerApi
++	private readonly rng: RngApi
+ 
+-	private readonly clientId: ClientId
++	private currentClientId: ClientId
+ 	private cookie?: Cookie
+ 
+ 	private disconnectFromRemote?: AsyncUnsubscribe
+ 	private scanWindow: ScanWindow<Schema> = []
+ 
++	get clientId(): ClientId {
++		return this.currentClientId
++	}
++
+ 	constructor(args: SyncEngineArgs<Schema>) {
+ 		this.logger = args.logger
+ 		this.remote = args.remote
+ 		this.db = args.db
+-		this.clientId = args.clientId
++		this.currentClientId = args.clientId
++		this.rng = args.rng ?? { randomId }
+ 		const timer =
+ 			typeof args.syncInterval === "number"
+ 				? new Timer({ interval: args.syncInterval })
+@@ -121,8 +150,14 @@ export class SyncEngine<Schema extends AnySchema> {
+ 
+ 		this.syncQueue = new TaskQueue(
+ 			{
+-				pull: () => this.pull(),
+-				push: () => this.push(),
++				pull: async () => {
++					const result = await this.pull()
++					if (result instanceof Error) throw result
++				},
++				push: async () => {
++					const result = await this.push()
++					if (result instanceof Error) throw result
++				},
+ 			},
+ 			timer,
+ 		)
+@@ -136,26 +171,41 @@ export class SyncEngine<Schema extends AnySchema> {
+ 	}
+ 
+ 	async connect(): Promise<AsyncUnsubscribe> {
++		const connected = await this.connectToRemote()
++		if (connected instanceof Error) throw connected
++		await this.queuePull()
++		if (!this.pendingWrites.isEmpty) {
++			await this.syncQueue.enqueue("push")
++		}
++		return () => this.disconnect()
++	}
++
++	private async connectToRemote() {
+ 		this.logger.info({ message: "connecting to remote" })
++		const clientId = this.clientId
+ 		const unsubscribe = await this.remote.connect({
+-			clientId: this.clientId,
++			clientId,
+ 			poke: () => {
++				if (clientId !== this.clientId) return Promise.resolve()
+ 				this.logger.info({ message: "received poke from remote" })
+ 				return this.queuePull().catch((error) => {
+ 					this.logger.error({ message: "error pulling from remote", error })
+ 				})
+ 			},
+ 		})
++		if (typeof unsubscribe !== "function") {
++			return new RemoteResponseError({
++				operation: "connect",
++				cause: unsubscribe,
++			})
++		}
++		if (clientId !== this.clientId) {
++			await unsubscribe()
++			return
++		}
+ 		this.disconnectFromRemote = unsubscribe
+ 
+ 		this.logger.info({ message: "connected to remote" })
+-
+-		await this.queuePull()
+-		if (this.pendingMutations.length > 0) {
+-			await this.syncQueue.enqueue("push")
+-		}
+-
+-		return unsubscribe
+ 	}
+ 
+ 	async disconnect() {
+@@ -190,11 +240,18 @@ export class SyncEngine<Schema extends AnySchema> {
+ 		}
+ 
+ 		this.logger.info({ message: "pulling from remote" })
+-		const { cookie, patch, lastMutationId } = await this.remote.pull({
+-			clientId: this.clientId,
++		const clientId = this.clientId
++		const response = await this.remote.pull({
++			clientId,
+ 			cookie: this.cookie,
+ 			scanWindow: this.scanWindow,
+ 		})
++		// A response from before clear() must not acknowledge the new session.
++		if (clientId !== this.clientId) return
++		if ("error" in response) {
++			return new RemoteResponseError({ operation: "pull", cause: response })
++		}
++		const { cookie, patch, lastMutationId } = response
+ 
+ 		this.logger.info({
+ 			message: "pulled from remote",
+@@ -221,35 +278,37 @@ export class SyncEngine<Schema extends AnySchema> {
+ 		})
+ 		this.mutationCount += 1
+ 		this.logger.info({ message: "queueing push" })
+-		this.pendingMutations.push(mutation)
+ 		return this.syncQueue.enqueue("push")
+ 	}
+ 
+ 	private async push() {
+-		if (this.pendingMutations.length === 0) return
++		if (this.pendingWrites.isEmpty) return
+ 
+ 		if (!this.disconnectFromRemote) {
+ 			this.logger.info({ message: "skipping push while disconnected" })
+ 			return
+ 		}
+ 
+-		const mutations = this.pendingMutations
+-		this.pendingMutations = []
+-
+-		try {
+-			await this.remote.push({ mutations, clientId: this.clientId })
+-		} catch (error) {
+-			this.logger.error({ message: "error applying mutation", error })
+-
+-			const tx = this.db.makeTupleDbTransaction()
+-			this.pendingWrites.rollBackRejected(tx, mutations)
+-			tx.commit()
+-			throw error
++		const response = await this.remote.push({
++			mutations: this.pendingWrites.snapshot(),
++			clientId: this.clientId,
++		})
++		if ("error" in response) {
++			return new RemoteResponseError({ operation: "push", cause: response })
+ 		}
+ 	}
+ 
+ 	async clear() {
++		const unsubscribe = this.disconnectFromRemote
++		this.disconnectFromRemote = undefined
++		this.currentClientId = tag<ClientId>(this.rng.randomId())
++		this.mutationCount = 0
++		this.cookie = undefined
+ 		this.pendingWrites.clearAll()
+-		await this.db.clear()
++		await Promise.all([this.db.clear(), unsubscribe?.()])
++		// Preserve connection state, but leave the database empty until a later pull.
++		if (!unsubscribe) return
++		const connected = await this.connectToRemote()
++		if (connected instanceof Error) throw connected
+ 	}
+ }
+```
+
+```source-diff:phase3-pending:packages/core/src/sync/PendingWrites.ts
+diff --git a/packages/core/src/sync/PendingWrites.ts b/packages/core/src/sync/PendingWrites.ts
+index fe630a2..1ac0fb9 100644
+--- a/packages/core/src/sync/PendingWrites.ts
++++ b/packages/core/src/sync/PendingWrites.ts
+@@ -89,6 +89,20 @@ export class PendingWrites<Schema extends AnySchema> {
+ 	private mutations: Mutation<Schema>[] = []
+ 	private readonly base = new Map<string, BaseEntry<Schema>>()
+ 
++	get isEmpty(): boolean {
++		return this.mutations.length === 0
++	}
++
++	/** A stable send list; subsequent commits cannot extend an in-flight push. */
++	snapshot(): Mutation<Schema>[] {
++		return [...this.mutations]
++	}
++
++	clearAll(): void {
++		this.mutations = []
++		this.base.clear()
++	}
++
+ 	/**
+ 	 * Runs commit and tracks the mutation as pending. Before the commit runs, it
+ 	 * reads the committed value of each record the mutation writes that no
+@@ -161,35 +175,6 @@ export class PendingWrites<Schema extends AnySchema> {
+ 		}
+ 	}
+ 
+-	/** Drops mutations the server rejected and writes the rebuild into tx. */
+-	rollBackRejected(
+-		tx: TupleRootTransactionApi<SchemaToTupleSchema<Schema>>,
+-		rejected: readonly Mutation<Schema>[],
+-	): void {
+-		const rejectedIds = new Set(rejected.map((mutation) => mutation.id))
+-		this.mutations = this.mutations.filter(
+-			(mutation) => !rejectedIds.has(mutation.id),
+-		)
+-		this.resetToBaseAndReplay(tx)
+-
+-		const lastWrittenBy = new Map<string, MutationId>()
+-		for (const mutation of this.mutations) {
+-			for (const op of mutation.ops) {
+-				lastWrittenBy.set(mutationOpToBaseKey(op), mutation.id)
+-			}
+-		}
+-		for (const [baseKey, entry] of this.base) {
+-			const last = lastWrittenBy.get(baseKey)
+-			if (last === undefined) this.base.delete(baseKey)
+-			else entry.lastWrittenBy = last
+-		}
+-	}
+-
+-	clearAll(): void {
+-		this.mutations = []
+-		this.base.clear()
+-	}
+-
+ 	/** Applies a patch op, and keeps it as the base if a pending mutation writes the record. */
+ 	private applyServerOp(
+ 		tx: TupleRootTransactionApi<SchemaToTupleSchema<Schema>>,
+```
+
+```source-diff:phase3-server:packages/server/src/TandemServer.ts
+diff --git a/packages/server/src/TandemServer.ts b/packages/server/src/TandemServer.ts
+index e50062c..91c26fa 100644
+--- a/packages/server/src/TandemServer.ts
++++ b/packages/server/src/TandemServer.ts
+@@ -11,6 +11,7 @@ import type {
+ 	RelationalQuery,
+ 	RelationalQueryResult,
+ 	RemoteApi,
++	RemoteMutationGapError,
+ 	RngApi,
+ 	ScanWindow,
+ 	AnyRelations,
+@@ -22,6 +23,7 @@ import {
+ 	collectionIdsEqual,
+ 	executeQueryAsync,
+ 	executeScanWindowAsync,
++	InvalidScanWindowError,
+ } from "@tanishqkancharla/tandem-core/internal"
+ import type { ScanWindowRecord } from "@tanishqkancharla/tandem-core/internal"
+ import * as errore from "errore"
+@@ -179,7 +181,7 @@ export class TandemServer<
+ 		)
+ 	}
+ 
+-	connect: RemoteApi<Schema>["connect"] = ({ clientId, poke }) => {
++	connect = ({ clientId, poke }: ClientApi) => {
+ 		const client = this.getSyncClient(clientId)
+ 		client.poke = poke
+ 		let disconnected = false
+@@ -195,10 +197,22 @@ export class TandemServer<
+ 	}
+ 
+ 	push: RemoteApi<Schema>["push"] = ({ clientId, mutations }) =>
+-		this.run(() => this.applyPush(clientId, mutations))
++		this.run(async () => {
++			const result = await this.applyPush(clientId, mutations)
++			if (result instanceof Error) {
++				return { error: "unavailable", message: result.message } as const
++			}
++			return result ?? ({ ok: true } as const)
++		})
+ 
+ 	pull: RemoteApi<Schema>["pull"] = (args) =>
+-		this.run(() => this.readPull(args))
++		this.run(async () => {
++			const result = await this.readPull(args)
++			if (result instanceof Error) {
++				return { error: "unavailable", message: result.message } as const
++			}
++			return result
++		})
+ 
+ 	private run<T>(operation: () => Promise<T | TandemServerError>): Promise<T> {
+ 		const result = this.queue.then(async () => {
+@@ -295,11 +309,18 @@ export class TandemServer<
+ 	private async applyPush(
+ 		clientId: ClientId,
+ 		mutations: Mutation<Schema>[],
+-	): Promise<TandemServerError | undefined> {
++	): Promise<TandemServerError | RemoteMutationGapError | undefined> {
+ 		for (const mutation of mutations) {
+ 			const lastMutationId = await this.readLastMutationId(clientId, "push")
+ 			if (lastMutationId instanceof Error) return lastMutationId
+ 			if (mutation.id <= lastMutationId) continue
++			if (mutation.id !== lastMutationId + 1) {
++				return {
++					error: "mutation-gap",
++					expectedMutationId: lastMutationId + 1,
++					receivedMutationId: mutation.id,
++				}
++			}
+ 
+ 			const tupleTx = this.tupleDb.transact(this.rng?.randomId())
+ 			const transaction = new TandemServerTransaction(tupleTx, this.relations)
+@@ -348,7 +369,11 @@ export class TandemServer<
+ 		const { clientId, cookie, scanWindow } = args
+ 		const client = this.getSyncClient(clientId)
+ 		const scanWindowKey = this.encodeScanWindow(scanWindow)
+-		if (scanWindowKey instanceof Error) return scanWindowKey
++		if (scanWindowKey instanceof Error)
++			return {
++				error: "invalid-request",
++				message: "Scan window must be serializable",
++			}
+ 		const lastMutationId = await this.readLastMutationId(clientId, "pull")
+ 		if (lastMutationId instanceof Error) return lastMutationId
+ 
+@@ -366,6 +391,9 @@ export class TandemServer<
+ 					scanWindow,
+ 				).catch((cause) => new TandemServerError({ operation: "pull", cause }))
+ 			: []
++		if (records instanceof InvalidScanWindowError) {
++			return { error: "invalid-request", message: records.message }
++		}
+ 		if (records instanceof Error) return records
+ 
+ 		const currentRecordKeys = records.map((record) =>
+```
+
+```source-diff:phase3-http:examples/todo/apps/web/src/TodoHttpRemote.ts
+diff --git a/examples/todo/apps/web/src/TodoHttpRemote.ts b/examples/todo/apps/web/src/TodoHttpRemote.ts
+index 11f52a8..e7ff32b 100644
+--- a/examples/todo/apps/web/src/TodoHttpRemote.ts
++++ b/examples/todo/apps/web/src/TodoHttpRemote.ts
+@@ -1,9 +1,13 @@
+ import type {
+ 	TodoPullResult,
++	TodoPushResult,
+ 	TodoRemoteRequest,
+ 	TodoSchema,
+ } from "@tandem/example-todo-shared"
+-import type { RemoteApi } from "@tanishqkancharla/tandem-core"
++import type {
++	RemoteApi,
++	RemoteRequestError,
++} from "@tanishqkancharla/tandem-core"
+ import * as errore from "errore"
+ 
+ class TodoHttpRemoteError extends errore.createTaggedError({
+@@ -17,31 +21,34 @@ async function request<Result>({
+ }: {
+ 	operation: "pull" | "push"
+ 	body: TodoRemoteRequest
+-}) {
++}): Promise<Result | RemoteRequestError> {
+ 	const serialized = errore.try({
+ 		try: () => JSON.stringify(body),
+ 		catch: (cause) => new TodoHttpRemoteError({ operation, cause }),
+ 	})
+-	if (serialized instanceof Error) return serialized
++	if (serialized instanceof Error)
++		return { error: "invalid-request", message: serialized.message }
+ 
+ 	const response = await fetch("/api/tandem", {
+ 		method: "POST",
+ 		headers: { "content-type": "application/json" },
+ 		body: serialized,
+ 	}).catch((cause) => new TodoHttpRemoteError({ operation, cause }))
+-	if (response instanceof Error) return response
++	if (response instanceof Error)
++		return { error: "unavailable", message: response.message }
+ 	if (!response.ok) {
+-		return new TodoHttpRemoteError({
+-			operation,
+-			cause: new Error(`HTTP ${response.status}`),
+-		})
++		return {
++			error: response.status === 400 ? "invalid-request" : "unavailable",
++			message: `HTTP ${response.status}`,
++		}
+ 	}
+ 
+ 	const parsed = await response
+ 		.json()
+ 		.then((value: unknown) => ({ value }))
+ 		.catch((cause) => new TodoHttpRemoteError({ operation, cause }))
+-	if (parsed instanceof Error) return parsed
++	if (parsed instanceof Error)
++		return { error: "unavailable", message: parsed.message }
+ 
+ 	// This is the typed JSON boundary after the server validates the envelope.
+ 	return parsed.value as Result
+@@ -64,14 +71,15 @@ export class TodoHttpRemote implements RemoteApi<TodoSchema> {
+ 	}
+ 
+ 	push: RemoteApi<TodoSchema>["push"] = async (args) => {
+-		const result = await request<unknown>({
++		const result = await request<TodoPushResult>({
+ 			operation: "push",
+ 			body: { action: "push", args },
+ 		})
+-		if (result instanceof Error) throw result
++		if ("error" in result) return result
+ 
+ 		// Pull immediately to acknowledge this client's mutation.
+ 		this.poke?.()
++		return result
+ 	}
+ 
+ 	pull: RemoteApi<TodoSchema>["pull"] = async (args) => {
+@@ -79,7 +87,6 @@ export class TodoHttpRemote implements RemoteApi<TodoSchema> {
+ 			operation: "pull",
+ 			body: { action: "pull", args },
+ 		})
+-		if (result instanceof Error) throw result
+ 		return result
+ 	}
+ }
 ```
