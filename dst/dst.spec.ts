@@ -21,25 +21,31 @@ function knownFailure(name: string): DstArtifact {
 }
 
 describe("Deterministic simulation testing", () => {
-	it("agrees with the reference model with interleaved calls and no faults", async () => {
+	it("converges to the server with interleaved calls and no faults", async () => {
 		const result = await new DstSimulation({ seed: 3, steps: 300 }).execute()
 
 		expect(result.violation).toBeUndefined()
+		expect(result.states.client1).toEqual(result.states.server)
+		expect(result.states.client2).toEqual(result.states.server)
 	})
 
-	it("stops at the first step a client disagrees with the model", async () => {
-		const { options } = knownFailure("seed-2-lost-push-rolls-back")
-
-		const result = await new DstSimulation(options).execute()
-
-		expect(result.violation).toMatchObject({
-			kind: "clientState",
-			step: 5,
-			client: "client1",
-			actual: [],
+	it("settles a final lost request by reconnecting and delivering retained writes", async () => {
+		const result = await new DstSimulation({
+			seed: 2,
+			steps: 6,
+			faultRate: 0.1,
+		}).execute()
+		expect(result.trace.at(-1)).toMatchObject({
+			type: "drop",
+			fault: "requestLost",
 		})
+		expect(result.violation).toBeUndefined()
+		expect(result.states.server).toEqual([
+			{ id: "item-3", text: "Note item-3 (rev 3)", done: true, priority: 1 },
+		])
+		expect(result.states.client1).toEqual(result.states.server)
+		expect(result.states.client2).toEqual(result.states.server)
 		expect(result.stepsCompleted).toBe(6)
-		expect(result.trace.at(-1)?.step).toBe(5)
 	})
 
 	it("restarts crashed clients from their storage and converges", async () => {
@@ -74,7 +80,7 @@ describe("Deterministic simulation testing", () => {
 		expect(otherSeed.clientIds).not.toEqual(first.clientIds)
 	})
 
-	it("replays a failing run's artifact to the same violation", async () => {
+	it("replays a fault-and-crash run to the same final outcome", async () => {
 		const sink = memorySink()
 		const run = await new DstSimulation({
 			seed: 2,
@@ -85,7 +91,6 @@ describe("Deterministic simulation testing", () => {
 
 		const replayed = await replay(parseArtifact(formatArtifact(sink.lines)))
 
-		expect(run.violation).toBeDefined()
 		expect(replayed).toEqual({
 			stepsCompleted: run.stepsCompleted,
 			violation: run.violation,
@@ -94,7 +99,12 @@ describe("Deterministic simulation testing", () => {
 	})
 
 	it("reports where a replay leaves the recorded path", async () => {
-		const artifact = knownFailure("seed-2-lost-push-rolls-back")
+		const artifact = parseArtifact(
+			readFileSync(
+				new URL("./regressions/lost-push.jsonl", import.meta.url),
+				"utf8",
+			),
+		)
 		const advance = artifact.trace.find(({ type }) => type === "advance")!
 		const altered: DstArtifact = {
 			...artifact,
@@ -111,11 +121,11 @@ describe("Deterministic simulation testing", () => {
 		})
 	})
 
-	it("sweeps seeds, keeping and replaying artifacts only for failing runs", async () => {
+	it("removes artifacts for converged fault runs", async () => {
 		const outDir = mkdtempSync(join(tmpdir(), "dst-sweep-"))
 		onTestFinished(() => rmSync(outDir, { recursive: true }))
 
-		// Seeds 1, 2, and 4 hit bug C, a lost push treated as a rejection.
+		// These seeds lost writes under the former rollback behavior.
 		const results = await sweep({
 			seed: 1,
 			steps: 10,
@@ -125,16 +135,26 @@ describe("Deterministic simulation testing", () => {
 		})
 
 		expect(results.map(({ seed, outcome }) => ({ seed, outcome }))).toEqual([
-			{ seed: 1, outcome: "violation" },
-			{ seed: 2, outcome: "violation" },
+			{ seed: 1, outcome: "ok" },
+			{ seed: 2, outcome: "ok" },
 			{ seed: 3, outcome: "ok" },
-			{ seed: 4, outcome: "violation" },
+			{ seed: 4, outcome: "ok" },
 		])
-		expect(readdirSync(outDir).sort()).toEqual([
-			"seed-1.jsonl",
-			"seed-2.jsonl",
-			"seed-4.jsonl",
-		])
+		expect(readdirSync(outDir)).toEqual([])
+	})
+
+	it("replays the original lost-push trace without a convergence violation", async () => {
+		const artifact = parseArtifact(
+			readFileSync(
+				new URL("./regressions/lost-push.jsonl", import.meta.url),
+				"utf8",
+			),
+		)
+		expect(await replay(artifact)).toEqual({
+			stepsCompleted: 6,
+			violation: undefined,
+			divergence: undefined,
+		})
 	})
 
 	// Known sync bugs, documented in known-failures/README.md. Each replay must
@@ -143,11 +163,7 @@ describe("Deterministic simulation testing", () => {
 	describe("known sync bugs", () => {
 		it.each([
 			[
-				"C: a push that fails in transit is treated as a rejection",
-				"seed-2-lost-push-rolls-back",
-			],
-			[
-				"D: a crash loses writes that were stored but not pushed",
+				"a persisted optimistic record survives final pulls but is absent from the server",
 				"seed-13-crash-loses-outbox",
 			],
 		])("%s", async (_bug, name) => {

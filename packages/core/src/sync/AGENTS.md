@@ -31,7 +31,8 @@ const remote: RemoteApi<Schema> = {
 3. **Pull**: `SyncEngine` fetches a patch for the scan window, which the client's subscriptions build.
 4. **Rebuild**: `SyncEngine` privately owns `PendingWrites`, which keeps pending mutations and the base, the server's latest value for each record they write. The engine borrows the client's database and opens the reconciliation transaction itself. A pull updates the base from the patch, drops mutations up to `lastMutationId`, resets those records to their base values, and replays the rest in order. Nothing is undone, so mutations carry no undo values.
 5. **Clear**: explicit `clear()` discards pending mutations, base records, and the local database. It starts a new client identity with a reset counter and cookie, preserves connected/disconnected state, and ignores old-session pull responses. Await clearing before starting new work. Already dispatched writes are not cancelled or undone on the server.
-6. **Pokes**: the remote tells a client when to pull.
+6. **Delivery**: each commit queues one push of the current pending snapshot. Failure rejects that commit promise but retains the mutation. A later commit includes older unacknowledged mutations; reconnect pulls first, then pushes anything still pending. There is no automatic retry, backoff, or confirming-pull loop. Without another commit or reconnect, a lost request stays pending locally.
+7. **Pokes**: the remote tells a client when to pull. TaskQueue coalesces queued pulls; a poke during an in-flight pull queues a subsequent pull. Only a pull acknowledgement removes pending mutations, not a successful push response.
 
 A confirmed write outside every subscription disappears on the next pull, because the server never sends that record back.
 

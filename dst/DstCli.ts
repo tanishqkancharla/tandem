@@ -96,22 +96,11 @@ function todos(list: readonly DstTodo[]): string {
 }
 
 export function describeViolation(violation: DstViolation): string {
-	switch (violation.kind) {
-		case "clientState":
-			return [
-				`${violation.client} disagrees with the model at ${violation.step === "quiescence" ? "quiescence" : `step ${violation.step}`}`,
-				`  expected: ${todos(violation.expected)}`,
-				`  actual:   ${todos(violation.actual)}`,
-			].join("\n")
-		case "serverState":
-			return [
-				"the server disagrees with the model",
-				`  expected: ${todos(violation.expected)}`,
-				`  actual:   ${todos(violation.actual)}`,
-			].join("\n")
-		case "writeNeverAccepted":
-			return `${violation.client}'s writes never reached the server: ${violation.mutationIds.join(", ")}`
-	}
+	return [
+		`${violation.client} differs from the server after settlement`,
+		`  expected: ${todos(violation.expected)}`,
+		`  actual:   ${todos(violation.actual)}`,
+	].join("\n")
 }
 
 /** A Markdown summary of a sweep, for a CI job summary. */

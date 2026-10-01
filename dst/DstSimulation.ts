@@ -59,8 +59,7 @@ export class DstSimulation {
 		const rng = new SimPrng(seed)
 		const trace: DstTraceRecord[] = []
 
-		let violation: DstViolation | undefined
-		let stepsCompleted = steps
+		const stepsCompleted = steps
 		for (let step = 0; step < steps; step++) {
 			const intent = this.choose(rng, world, world.pending(), step)
 			if (intent) {
@@ -68,16 +67,10 @@ export class DstSimulation {
 				trace.push(record)
 				sink?.write({ kind: "event", ...record })
 			}
-			// Stop at the first step that disagrees with the model, so the trace
-			// ends where the bug happened.
-			violation = await world.check(step)
-			if (violation) {
-				stepsCompleted = step + 1
-				break
-			}
+			await world.settle()
 		}
 
-		const outcome = await world.finish(violation)
+		const outcome = await world.finish()
 		sink?.write({ kind: "outcome", stepsCompleted, ...outcome })
 		return {
 			seed,

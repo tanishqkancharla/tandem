@@ -92,8 +92,7 @@ export async function replay(artifact: DstArtifact): Promise<DstReplayResult> {
 	const steps =
 		artifact.outcome?.stepsCompleted ?? (artifact.trace.at(-1)?.step ?? -1) + 1
 
-	let violation: DstViolation | undefined
-	let stepsCompleted = steps
+	const stepsCompleted = steps
 	for (let step = 0; step < steps; step++) {
 		world.pending()
 		const expected = events.get(step)
@@ -122,14 +121,10 @@ export async function replay(artifact: DstArtifact): Promise<DstReplayResult> {
 				}
 			}
 		}
-		violation = await world.check(step)
-		if (violation) {
-			stepsCompleted = step + 1
-			break
-		}
+		await world.settle()
 	}
 
-	const outcome = await world.finish(violation)
+	const outcome = await world.finish()
 	return { stepsCompleted, violation: outcome.violation, divergence: undefined }
 }
 

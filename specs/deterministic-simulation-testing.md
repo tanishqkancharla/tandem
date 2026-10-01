@@ -1,5 +1,7 @@
 # Deterministic simulation testing
 
+Current contract: [the retention spec's phase 5](retry-unacknowledged-pushes.md) supersedes the reference-model checks below. DST runs all scheduled events, stops faults, reconnects and pulls every client, then compares subscribed views with the authoritative server. Historical mutations need not survive a crash; ghost local records still violate convergence. The original design follows for context.
+
 ## Problem overview
 
 `dst/` can stand up two clients and a server, but it cannot find the bugs it is built to find. A step runs one mutation all the way to completion before the next one starts, so no two operations are ever in flight together. The interleavings that break sync engines are unreachable by construction.

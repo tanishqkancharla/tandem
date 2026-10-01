@@ -1,6 +1,6 @@
 # Retry unacknowledged pushes
 
-Fix for [#43](https://github.com/tanishqkancharla/tandem/issues/43), building on [PR #46](https://github.com/tanishqkancharla/tandem/pull/46), which added numeric mutation IDs and base-plus-pending reconciliation. Phases 1, 2, 2.5, and 3 are implemented. Phases 4–5 remain planned.
+Retention fix for [#43](https://github.com/tanishqkancharla/tandem/issues/43), building on [PR #46](https://github.com/tanishqkancharla/tandem/pull/46), which added numeric mutation IDs and base-plus-pending reconciliation. Phases 1, 2, 2.5, and 3 are implemented. The phase-4 automatic retry experiment has been removed: delivery waits for another commit or reconnect. Phase 5 is implemented locally: DST checks final server-authoritative convergence after healthy settlement. Automatic delivery without another action and crash-durable pending writes remain out of scope.
 
 ## Problem
 
@@ -69,7 +69,7 @@ Incomplete client persistence and restoring an older server database are separat
 
 ## Solution
 
-Keep each mutation pending until a pull acknowledges it. Retry delivery in ID order. The server stores each client's last processed ID in the same database transaction as the mutation's effects and skips IDs it already processed.
+Keep each mutation pending until a pull acknowledges it. Each commit pushes the current pending list in ID order, including older unacknowledged mutations. Reconnect pulls first and then pushes remaining mutations. The server stores each client's last processed ID in the same database transaction as the mutation's effects and skips IDs it already processed. There is no automatic retry or backoff.
 
 ```mermaid
 sequenceDiagram
@@ -81,19 +81,21 @@ sequenceDiagram
     S->>D: Atomically commit effects and lastMutationId = 7
     S--xC: Push response lost
     Note over C: Mutation 7 stays pending and visible
-    C->>S: Retry mutation 7 after a fresh tick
+    C->>C: Later, commit mutation 8
+    C->>S: Push pending mutations 7 and 8
     S->>D: Read lastMutationId = 7
-    S-->>C: Already processed; no effects reapplied
+    S->>D: Skip 7; apply and acknowledge 8
+    S-->>C: Success
     C->>S: Pull
-    S-->>C: Patch and lastMutationId = 7
-    C->>C: Apply patch; drop mutation 7; rebuild
+    S-->>C: Patch and lastMutationId = 8
+    C->>C: Apply patch; drop mutations 7 and 8; rebuild
 ```
 
-The scope is retrying pushes, durable server deduplication, and acknowledgement-driven removal. Client-crash persistence (#44) and cookie-based recovery from lost pull responses remain separate work. Fault sweeps may still expose those failures.
+The scope is retaining writes, safe redelivery on later actions, durable server deduplication, and acknowledgement-driven removal. A final lost request can remain pending indefinitely if no further commit or reconnect occurs. Client-crash persistence (#44) and cookie-based recovery from lost pull responses remain separate work.
 
 ## Implementation phases
 
-Each phase is one commit with its focused tests. Land them in order: consecutive client IDs, durable server deduplication, engine ownership of synchronization state, acknowledgement-owned pending writes together with strict gap enforcement, automatic retries, then DST integration. Phase 2.5 separates the ownership refactor from phase 3's behavior change. Deduplication must precede resending, and strict gap enforcement must not precede removal of destructive rollback. Phase 2 alone preserves today's gap acceptance; it does not fix lost writes.
+Each phase is one commit with its focused tests. The implemented order is consecutive client IDs, durable server deduplication, engine ownership of synchronization state, then acknowledgement-owned pending writes together with strict gap enforcement. Phase 2.5 separates the ownership refactor from phase 3's behavior change. Deduplication must precede resending, and strict gap enforcement must not precede removal of destructive rollback. Automatic scheduling is no longer part of this plan; phase numbers stay unchanged for existing references.
 
 ### ✅ Phase 1: Allocate IDs only for successful local commits
 
@@ -388,7 +390,7 @@ Queries and draft creation keep the direct client-to-database edge. Subscribing 
 +    delegate to engine when present; otherwise clear database directly
 ```
 
-This phase preserves transport behavior, including the duplicate send queue and failed-push rollback, so the refactor can be verified independently. The engine exists whenever a remote is configured, even before connection, and survives disconnect/reconnect. Local commits do not wait behind network tasks. Repository type checks and all 133 tests passed after the ownership move. Phase 3 removes the duplicate queue and changes retention. Explicit `clear()` discards local history and starts a new sync session; automatic retries remain phase 4.
+This phase preserves transport behavior, including the duplicate send queue and failed-push rollback, so the refactor can be verified independently. The engine exists whenever a remote is configured, even before connection, and survives disconnect/reconnect. Local commits do not wait behind network tasks. Repository type checks and all 133 tests passed after the ownership move. Phase 3 removes the duplicate queue and changes retention. Explicit `clear()` discards local history and starts a new sync session.
 
 ### ✅ Phase 3: Retain unacknowledged writes and enforce consecutive delivery
 
@@ -422,7 +424,7 @@ sequenceDiagram
     Note over E,S: Mutation 1 exists on neither side
 ```
 
-After phase 3: delivery failure leaves mutation 1 pending and visible. A new local write schedules a push containing both mutations. The strict server accepts them consecutively; only a later pull acknowledgement removes them from `PendingWrites`. This example uses another write to trigger delivery, not phase 4's automatic retry timer.
+After phase 3: delivery failure leaves mutation 1 pending and visible. A new local write schedules a push containing both mutations. The strict server accepts them consecutively; only a later pull acknowledgement removes them from `PendingWrites`. Another write triggers delivery; there is no automatic retry timer.
 
 ```mermaid
 sequenceDiagram
@@ -509,7 +511,7 @@ flowchart TD
     F --> B
 ```
 
-A snapshot prevents newly committed writes from changing an in-flight request. Validate that lost requests and responses leave optimistic values visible, a later queued push includes the retained writes, and a pull removes only the acknowledged prefix, including when its patch is empty. Repeat the demonstrated sequence: lose mutation 1's request, commit mutation 2, and verify both reach the strict server in order. Direct requests containing a gap must leave the missing ID unacknowledged. Automatic retries remain for phase 4; this commit changes ownership and enforcement, not scheduling.
+A snapshot prevents newly committed writes from changing an in-flight request. Validate that lost requests and responses leave optimistic values visible, a later queued push includes the retained writes, and a pull removes only the acknowledged prefix, including when its patch is empty. Repeat the demonstrated sequence: lose mutation 1's request, commit mutation 2, and verify both reach the strict server in order. Direct requests containing a gap must leave the missing ID unacknowledged. This commit changes ownership and enforcement, not scheduling.
 
 Keep the current public `commit()` promise meaning: it reports the initial push attempt, not eventual pull confirmation. An attempt may reject while the mutation remains queued. Disconnect does not roll back pending writes.
 
@@ -583,77 +585,107 @@ sequenceDiagram
 
 Clearing does not undo server writes or cancel requests already dispatched. Those records may return on a later pull. Tests cover offline clearing followed by successful sync, and a delayed old pull that must not prune the new session's first write.
 
-Verification: core/server sync tests, repository type-checks, and lint pass. Four DST expectations still fail because they encode the old rollback violation or seed outcomes. The lost-request recording now reaches `writeNeverAccepted` at quiescence instead of losing the optimistic value at step 5: retention works, but automatic retry remains phase 4. Keep the recording and update the independent model and expectations in phase 5.
+The lost-request recording no longer loses the optimistic value at step 5. Phase 5 supplies an explicit reconnect during settlement, so its retained mutation reaches the server and both clients converge. This does not promise automatic delivery without another action.
 
-### Phase 4: Schedule retries until confirmation
+### Phase 4: Automatic retry removed from scope
 
-Retained writes must make progress without another user action. Add a coalesced retry cycle to `SyncEngine`, preserving serialized push/pull execution. [[packages/core/src/utils/TaskQueue.ts#TaskQueue]] can reuse an active batch's resolved delay, so retries must wait for a fresh timer tick rather than re-enqueue immediately into that batch.
+The local retry/backoff implementation was removed in favor of the committed phase-3 behavior. `TaskQueue` only batches, coalesces, and serializes explicitly requested pushes and pulls. No retry timers, background task hosts, first-attempt receipts, or automatic push-and-confirm cycles remain.
 
 ```diff
- Sync scheduling:
--    run only the explicitly queued push or pull
-+    when connected and pending work exists:
-+        run one serialized sync attempt
-+        attempt push(snapshot of pending mutations)
-+        attempt pull even if push failed
-+        if pending work remains:
-+            schedule one further attempt after a fresh timer tick
-+
-+    when disconnected:
-+        do not run or keep scheduling network attempts
-+
-+    when reconnected:
-+        resume sync for pending work
+ commit(transaction):
+     commit locally and retain the mutation
+-    schedule background sync; return separate first-push receipt
++    return queue.enqueue(push)
+
+ push():
+     send snapshot of all pending mutations
+-    confirm with pull; decide done / again / retry
+-    retry automatically with exponential backoff
++    return success or failure to the caller; retain pending mutations
+
+ pull():
+     apply patch; prune acknowledged mutations; replay the rest
+-    reset or cancel retry scheduling
+
+ reconnect():
+     pull, then push remaining pending mutations once
 ```
 
 ```mermaid
-flowchart TD
-    A[Local commit or reconnect] --> B{Connected?}
-    B -->|No| C[Retain pending writes; wait for reconnect]
-    B -->|Yes| D[Push pending snapshot]
-    D -->|Success or delivery failure| E[Attempt pull]
-    E --> F{Unacknowledged writes remain?}
-    F -->|Yes| G[Wait for fresh timer tick]
-    G --> B
-    F -->|No| H[Stop retry scheduling]
+sequenceDiagram
+    participant A as Application
+    participant C as Client
+    participant S as Server
+    A->>C: Commit mutation 1
+    C->>C: Retain optimistic write
+    C--xS: Push lost
+    C-->>A: Commit rejects
+    Note over C: Keep mutation 1; no retry scheduled
+    A->>C: Later, commit mutation 2
+    C->>S: Push pending [1, 2]
+    S-->>C: Success
+    C-->>A: Commit resolves
+    S->>C: Poke
+    C->>S: Pull
+    S-->>C: Acknowledge through 2
+    C->>C: Prune both mutations
 ```
 
-A failed push may have committed, so a pull can confirm it without another delivery. A successful push also needs a confirming pull; a lost poke must not strand the pending list. Never await a pull queued behind the currently running task from inside that task. Background retries handle and log their own errors without changing the initial commit promise's outcome.
+Pokes and explicit pulls acknowledge writes; pulls do not resend them. If a success response or poke is lost, retaining an already-applied mutation is safe because the server deduplicates its next delivery. Without another action, however, a lost request stays local. Pending mutation history is still not crash-durable.
 
-Validate retry progress without another write, lost confirming pulls and pokes, writes arriving during an in-flight attempt, and disconnect/reconnect. A deterministic timer test must prove retries wait for a new tick, stop after confirmation, and never overlap.
+Existing tests cover retention after a lost request, delivery with the next write, reconnect delivery, lost responses, and acknowledgement-driven removal.
 
-### Phase 5: Integrate retries into deterministic simulation
+### ✅ Phase 5: Check final server-authoritative convergence
 
-Update the independent server reference model to recognize duplicate deliveries, then retire the fixed #43 recording. This commit changes the simulation and regression artifacts, not the protocol. Focused behavior tests belong to phases 1–4 rather than being deferred here.
+Implemented locally. The server replaces the independent reference model as DST's authority. All clients subscribe to the entire `todos` collection. A run may lose in-memory writes on crash, but every final client view must match the server after faults stop and synchronization settles. Protocol tests separately cover mutation ordering and deduplication.
 
 ```diff
- DST ReferenceModel.accepted:
--    apply every mutation in a delivered push
-+    receive client identity alongside mutations
-+    track last processed ID per client independently
-+    skip duplicates and apply only the new consecutive suffix
+ simulate or replay:
+     apply each scheduled event
+-    compare clients and server against ReferenceModel; stop on mismatch
++    settle local work so the next event sees stable call boundaries
++    continue through every requested event
 
- DST regression artifacts:
--    assert the #43 recording still reproduces its known violation
-+    verify the reproduction now preserves pending writes and converges
-+    remove the fixed recording and its known-failure entry
-+    run fault sweeps; distinguish remaining pull-recovery and crash failures
+ finish:
+     disable faults and drain held calls
+     restart crashed clients from existing storage
++    disconnect and reconnect every client
++        pull acknowledgements, then push retained pending mutations
++    drain held calls and poke events
+     pull every client and drain again
+-    require every historical mutation to be accepted
+-    compare server and clients with independent model
++    compare every client's subscribed view directly with server state
+
+ regressions:
+-    lost request is a known failure
++    original lost-request trace converges after reconnect
++    ghost local records still fail final convergence
 ```
 
 ```mermaid
-flowchart TD
-    A[Observed successful push with client identity] --> B[Independent per-client processed ID]
-    B --> C[Skip duplicates and apply new consecutive suffix]
-    C --> D[Expected server state]
-    E[Received server state plus pending writes] --> F[Expected client state]
-    D --> G[Compare implementation with model]
-    F --> G
-    G --> H[Replay regression and sweep fault seeds]
+sequenceDiagram
+    participant D as DST
+    participant C as Every client
+    participant G as Gatekeeper
+    participant S as Server
+    D->>G: Stop faults and drain calls
+    D->>C: Restart down clients from storage
+    D->>C: Disconnect and reconnect
+    C->>G: Pull, then push remaining mutations
+    D->>G: Drain calls and pokes
+    G->>S: Deliver healthy traffic
+    S-->>C: Responses and acknowledgements
+    D->>C: Pull final state
+    D->>G: Drain calls and pokes
+    D->>S: Read authoritative state
+    D->>C: Read subscribed view
+    Note over D,S: Require every client view to equal server state
 ```
 
-The DST client's expected state remains the last received server state plus its unacknowledged writes. The server-side reference model needs duplicate suppression because it currently applies every observed successful push, including retries.
+The original lost-push recording now lives at `dst/regressions/lost-push.jsonl` and passes. `seed-13-crash-loses-outbox.jsonl` remains a known failure because a ghost record survives final pulls, not because every pre-crash write must reach the server. Removing that ghost would satisfy the contract without adding persistence.
 
-Run the #43 replay and `pnpm dst:run --seed 2 --steps 10 --fault-rate 0.1`, then broader fault sweeps. Delete the recording only after establishing that the delivery bug is fixed, not merely because scheduling changes invalidate an old trace. Report unrelated pull-recovery and client-crash failures separately.
+Validation: two sweeps of seeds 1–30, 300 steps each, with fault rate 0.1. The fault-only sweep converged for 29 seeds and reproduced a final mismatch at seed 10. Adding crash rate 0.02 converged for 29 seeds and reproduced a mismatch at seed 7. Both failures leave an extra client record absent from the server; neither sweep reported replay nondeterminism or execution errors. These remaining reconciliation failures are not fixed by changing the DST contract.
 
 ## References
 
@@ -663,7 +695,7 @@ Run the #43 replay and `pnpm dst:run --seed 2 --steps 10 --fault-rate 0.1`, then
 - [[packages/core/src/utils/TaskQueue.ts]] — task batching and timer ownership.
 - [[packages/server/src/TandemServer.ts]] — mutation processing and pull responses.
 - [[packages/server/src/storage/TandemServerStorage.ts]] — server storage contract.
-- [[dst/ReferenceModel.ts]] — independently expected client and server state.
+- [[dst/DstWorld.ts]] — healthy settlement and final client/server comparison.
 - [[dst/known-failures/README.md]] — replay artifact and remaining failures.
 
 ```source-diff:phase1-client:packages/core/src/TandemClient.ts
