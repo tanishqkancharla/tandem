@@ -1,6 +1,6 @@
 # Retry unacknowledged pushes
 
-Fix for [#43](https://github.com/tanishqkancharla/tandem/issues/43), building on [PR #46](https://github.com/tanishqkancharla/tandem/pull/46), which added numeric mutation IDs and base-plus-pending reconciliation. Phases 1 and 2 are implemented, verified, and committed locally; phases 3–5 remain planned.
+Fix for [#43](https://github.com/tanishqkancharla/tandem/issues/43), building on [PR #46](https://github.com/tanishqkancharla/tandem/pull/46), which added numeric mutation IDs and base-plus-pending reconciliation. Phases 1, 2, and 2.5 are committed locally; phases 3–5 remain planned.
 
 ## Problem
 
@@ -93,11 +93,11 @@ The scope is retrying pushes, durable server deduplication, and acknowledgement-
 
 ## Implementation phases
 
-Each phase is one commit with its focused tests. Land them in order: consecutive client IDs, durable server deduplication, acknowledgement-owned pending writes together with strict gap enforcement, automatic retries, then DST integration. Deduplication must precede resending, and strict gap enforcement must not precede removal of destructive rollback. Phase 2 alone preserves today's gap acceptance; it does not fix lost writes.
+Each phase is one commit with its focused tests. Land them in order: consecutive client IDs, durable server deduplication, engine ownership of synchronization state, acknowledgement-owned pending writes together with strict gap enforcement, automatic retries, then DST integration. Phase 2.5 separates the ownership refactor from phase 3's behavior change. Deduplication must precede resending, and strict gap enforcement must not precede removal of destructive rollback. Phase 2 alone preserves today's gap acceptance; it does not fix lost writes.
 
 ### ✅ Phase 1: Allocate IDs only for successful local commits
 
-Implemented. [[packages/core/src/TandemClient.ts#TandemClient]] now advances the counter only after `PendingWrites.commitAndTrack` succeeds. A failed local transaction does not consume a mutation ID. This establishes the consecutive sequence the server will enforce in phase 3 without changing delivery behavior.
+Implemented. [[phase1-client:new:193-202]] advances the counter only after `PendingWrites.commitAndTrack` succeeds. A failed local transaction does not consume a mutation ID. This establishes the consecutive sequence the server will enforce in phase 3 without changing delivery behavior.
 
 ```diff
  TandemClient.commit(transaction):
@@ -114,19 +114,24 @@ flowchart TD
     B -->|No| C[Leave counter and pending list unchanged]
     B -->|Yes| D[Track mutation and advance counter]
     D --> E[Queue push]
+    %% ref node:A [[phase1-client:new:193-196]]
+    %% ref node:B [[phase1-client:new:197-200]]
+    %% ref node:D [[phase1-client:new:197-201]]
 ```
 
 A temporary regression test created a real local transaction conflict, verified that the failed draft was not replayed, then checked that the server acknowledged the next write as ID 2 rather than 3. It failed before the fix and passed afterward; the test was removed at the user's request. Repository type-checks, tests, and lint passed with the fix.
 
 ### ✅ Phase 2: Make server processing durable and idempotent
 
-Implemented locally. [[packages/server/src/TandemServer.ts#TandemServer]] skips processed mutations and makes pulls report durable acknowledgements. Effects and acknowledgements commit together, so retrying an old mutation cannot overwrite a newer edit, even after reopening JSON storage.
+Implemented locally. [[phase2-server:new:295-327]] skips processed mutations and makes pulls report durable acknowledgements. Effects and acknowledgements commit together, so retrying an old mutation cannot overwrite a newer edit, even after reopening JSON storage.
 
-Mutations run in request order, with one transaction per new mutation. [[packages/server/src/storage/TandemServerStorage.ts]] includes client metadata outside application records. Strict gap rejection remains deferred to phase 3, where the client stops discarding failed pushes. Phase 2 retains the existing gap acceptance rather than introducing a new lockout.
+Mutations run in request order, with one transaction per new mutation. [[phase2-schema:new:9-16]] includes client metadata outside application records. Strict gap rejection remains deferred to phase 3, where the client stops discarding failed pushes. Phase 2 retains the existing gap acceptance rather than introducing a new lockout.
 
 The shared storage contract owns `TandemTuple`; JSON storage trusts that schema when reading its own files rather than maintaining runtime shape validation. File-I/O and JSON syntax errors still propagate. One root client and its root transactions use the full `TandemTuple<Schema>`. Internal casts narrow collection and metadata views before selecting their subspaces. Query APIs retain full record keys and use a narrowed view of the same root. Both namespaces commit through one transaction; Tandem's public operations are unchanged.
 
 The local `tuple-database` spike showed that distributing prefix calculation alone does not resolve generic subspace results. Explicit namespace types work for the tested string-ID collection operations, but do not yet cover Tandem's compound IDs and aggregate query APIs. The implementation therefore keeps the existing tuple schema and confines casts to internal view boundaries. No fork changes are integrated, pushed, or pinned as dependencies.
+
+The committed changes include the root-client view [[phase2-server:new:150-165]], transaction-query view [[phase2-transaction:new:86-94]], and JSON loading boundary [[phase2-json:new:130-141]].
 
 ```diff
  Server storage tuples:
@@ -181,38 +186,301 @@ flowchart TD
     B -->|Higher ID| F[Stage effects and ID in one transaction]
     F --> H[Atomic commit]
     H --> I[Pull reads consistent patch and durable ID]
+    %% ref node:Q [[phase2-server:new:196-212]]
+    %% ref node:A [[phase2-server:new:329-342]]
+    %% ref node:C [[phase2-server:new:300-302]]
+    %% ref node:F [[phase2-server:new:304-315]]
+    %% ref node:H [[phase2-server:new:322-325]]
+    %% ref node:I [[phase2-server:new:349-351]]
 ```
 
 Verified retries after another client's newer edit and reopening JSON storage, concurrent duplicate pushes during a blocked storage commit, ordered pull and application commit, partial-batch failure and retry, empty mutations, and the existing failed-storage-commit checks. Repository type-checks and all 133 tests pass. The client still has its old rollback behavior; strict gap rejection and retries are not enabled yet.
 
+The test diffs cover concurrent delivery [[phase2-server-tests:new:536-584]], restart-safe deduplication [[phase2-json-tests:new:84-146]], and the storage commit gate [[phase2-storage-fixture:new:16-25]].
+
+### ✅ Phase 2.5: Move synchronization state into SyncEngine
+
+Implemented, verified, and committed locally. `SyncEngine` owns the `PendingWrites` instance and mutation counter and borrows the existing database. `PendingWrites` stays a private reconciliation helper, with its mutation list and server-base map together. `TandemClient` no longer receives callbacks from the engine to apply pulls or roll back writes.
+
+The dependency triangle has three top-level components. `TandemClient` exposes the application API and owns the database lifetime. `SyncEngine` coordinates synchronized commits and remote events. `Database` stores and queries local records. `PendingWrites` appears explicitly below, nested inside its engine owner rather than as another top-level service.
+
+```mermaid
+flowchart TD
+    subgraph Engine[SyncEngine ownership]
+        E[SyncEngine]
+        P[PendingWrites: mutations and server base]
+        E -->|owns and invokes| P
+    end
+    C[TandemClient] -->|commit, pull, connect, clear| E[SyncEngine]
+    C -->|transact, query, local subscriptions| D[Database]
+    E -->|read base, commit, apply reconciliation| D
+    %% ref node:C [[packages/core/src/TandemClient.ts#TandemClient]]
+    %% ref node:E [[packages/core/src/sync/SyncEngine.ts#SyncEngine]]
+    %% ref node:P [[packages/core/src/sync/PendingWrites.ts#PendingWrites]]
+    %% ref node:D [[packages/core/src/Database.ts#Database]]
+```
+
+`PendingWrites` owns the pending mutation list and per-record server base, not the database or connection. `commitAndTrack` invokes read/commit callbacks supplied by its owner; `applyPull` and `rollBackRejected` stage changes in a transaction supplied by that owner. These helper-to-owner callbacks remain internal to the synchronization component after the move. The sequences show them rather than implying that the helper owns a database connection.
+
+Before: committing touches client-owned reconciliation state, then hands the mutation to a separately maintained engine queue. A failed delivery calls back across the boundary into the client, which changes the database again.
+
+```mermaid
+sequenceDiagram
+    participant A as App
+    participant C as TandemClient
+    participant P as PendingWrites (client-owned)
+    participant E as SyncEngine
+    participant D as Database
+    participant R as Remote
+    A->>C: commit(tx)
+    C->>C: Choose mutation ID
+    C->>P: commitAndTrack(mutation, callbacks)
+    P->>C: readCommittedRecord callback
+    C->>D: Read original record values
+    D-->>C: Original values
+    C-->>P: Base values
+    P->>C: commit callback
+    C->>D: Commit local transaction
+    C-->>P: Local commit succeeds
+    P->>P: Save base and pending mutation
+    P-->>C: Tracking completes
+    C->>C: Advance ID
+    C->>E: queuePush(mutation)
+    E->>R: Push queued mutation
+    R-->>E: Delivery fails
+    E->>C: handleRollback(mutation) callback
+    C->>D: Open reconciliation transaction
+    C->>P: rollBackRejected(tx, mutations)
+    P->>D: Stage base reset and remaining writes in tx
+    P-->>C: Rebuild staged
+    C->>D: Commit reconciliation transaction
+    E-->>C: Attempt rejects
+    C-->>A: Commit promise rejects
+```
+
+After this ownership-only refactor: the client delegates once. The engine performs the synchronous local work before scheduling the network attempt. Even the old rollback behavior now stays inside the engine instead of calling back into the client; phase 3 removes that rollback.
+
+```mermaid
+sequenceDiagram
+    participant A as App
+    participant C as TandemClient
+    box SyncEngine ownership
+    participant E as SyncEngine
+    participant P as PendingWrites (private)
+    end
+    participant D as Database
+    participant R as Remote
+    A->>C: commit(tx)
+    C->>E: commit(tx)
+    E->>E: Choose mutation ID
+    E->>P: commitAndTrack(mutation, callbacks)
+    P->>E: readCommittedRecord callback
+    E->>D: Read original record values
+    D-->>E: Original values
+    E-->>P: Base values
+    P->>E: commit callback
+    E->>D: Commit local transaction
+    E-->>P: Local commit succeeds
+    P->>P: Save base and pending mutation
+    P-->>E: Tracking completes
+    E->>E: Advance ID; schedule push
+    Note over C,D: Local write is visible before the network attempt
+    E->>R: Push queued mutation
+    R-->>E: Delivery fails
+    E->>D: Open reconciliation transaction
+    E->>P: rollBackRejected(tx, mutations)
+    P->>D: Stage base reset and remaining writes in tx
+    P-->>E: Rebuild staged
+    E->>D: Commit reconciliation transaction
+    Note over E,D: Rollback retained here; removed in phase 3
+    E-->>C: Attempt rejects
+    C-->>A: Commit promise rejects
+```
+
+Pull has the same simplification. Before, the engine fetches data but asks the client to own reconciliation:
+
+```mermaid
+sequenceDiagram
+    participant A as App
+    participant C as TandemClient
+    participant P as PendingWrites (client-owned)
+    participant E as SyncEngine
+    participant D as Database
+    participant R as Remote
+    A->>C: pullFromRemote()
+    C->>E: queuePull()
+    E->>R: Pull subscribed records
+    R-->>E: Patch and acknowledgement
+    E->>C: applyPull(response) callback
+    C->>D: Open transaction
+    C->>P: applyPull(tx, response)
+    P->>P: Update base and prune acknowledged mutations
+    P->>D: Stage patch, base reset, and pending replay in tx
+    P-->>C: Reconciliation staged
+    C->>D: Commit transaction
+    C-->>E: Reconciliation completes
+    E-->>C: Pull completes
+    C-->>A: Promise resolves
+```
+
+After, the engine owns the whole pull operation. A remote poke enters directly at the engine and follows the same path; neither path asks the client to manage synchronization state.
+
+```mermaid
+sequenceDiagram
+    participant A as App
+    participant C as TandemClient
+    box SyncEngine ownership
+    participant E as SyncEngine
+    participant P as PendingWrites (private)
+    end
+    participant D as Database
+    participant R as Remote
+    A->>C: pullFromRemote()
+    C->>E: queuePull()
+    E->>R: Pull subscribed records
+    R-->>E: Patch and acknowledgement
+    E->>D: Open transaction
+    E->>P: applyPull(tx, response)
+    P->>P: Update base and prune acknowledged mutations
+    P->>D: Stage patch, base reset, and pending replay in tx
+    P-->>E: Reconciliation staged
+    E->>D: Commit reconciled transaction
+    E-->>C: Pull completes
+    C-->>A: Promise resolves
+```
+
+Queries and draft creation keep the direct client-to-database edge. Subscribing has two deliberate calls: a local database subscription and an engine scan-window registration. Local notifications still return to application callbacks; those are result delivery, not synchronization callbacks into the client. Clients without a configured remote commit directly to the database and need no pending history.
+
+```diff
+ TandemClient state:
+     db, optional syncEngine
+-    pendingWrites, mutationCount
+
+ TandemClient construction:
++    create database before engine; pass the same database to engine
+-    pass applyPull and rollback callbacks
+
+ TandemClient.commit(tx):
+-    allocate ID; capture base; commit and track; queuePush(mutation)
++    delegate to syncEngine.commit(tx), or db.commit(tx) without a remote
+
+ SyncEngine state:
++    pendingWrites, mutationCount, borrowed database operations
+     existing transport queue and connection state
+
+ PendingWrites state and algorithm:
+     mutations, server base, commitAndTrack, applyPull, rollBackRejected
+-    instance owned and invoked by TandemClient
++    instance owned and invoked privately by SyncEngine
+     no algorithm change in this phase
+
+ SyncEngine.commit(tx):
++    capture base and commit locally through PendingWrites
++    track mutation and advance ID only after local success
++    enqueue the existing push operation
+
+ SyncEngine.pull() / failed push:
+-    call back into TandemClient for reconciliation
++    open local transaction; invoke private PendingWrites helper; commit
+
+ TandemClient.clear():
+-    clear pending state and database directly
++    delegate to engine when present; otherwise clear database directly
+```
+
+This phase preserves transport behavior, including the duplicate send queue and failed-push rollback, so the refactor can be verified independently. The engine exists whenever a remote is configured, even before connection, and survives disconnect/reconnect. Local commits do not wait behind network tasks. Repository type checks and all 133 tests passed after the ownership move. Phase 3 removes the duplicate queue, changes retention, and prevents `clear()` from discarding unacknowledged history; automatic retries remain phase 4.
+
 ### Phase 3: Retain unacknowledged writes and enforce consecutive delivery
 
-`PendingWrites`, owned by `TandemClient`, already tracks unacknowledged mutations. Expose a snapshot to [[packages/core/src/sync/SyncEngine.ts#SyncEngine]] instead of maintaining a second list with a different lifetime. Remove transport-triggered rollback and enable strict server gap checks in this same commit. Phase 2 makes resending the snapshot safe; retention prevents the demonstrated missing-history lockout.
+`PendingWrites`, now privately owned by `SyncEngine`, tracks unacknowledged mutations. Push a snapshot of that state instead of maintaining a second list with a different lifetime. Remove transport-triggered rollback and enable strict server gap checks in this same commit. Phase 2 makes resending the snapshot safe; retention prevents the demonstrated missing-history lockout. Reject `clear()` while mutations remain unacknowledged rather than discard IDs the server still expects.
+
+Before phase 3: a lost request removes the optimistic write and its pending mutation. The next write sends only mutation 2. The phase 2 server still accepts gaps, so mutation 1 is permanently lost rather than retried.
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant C as TandemClient
+    participant E as SyncEngine / private PendingWrites
+    participant S as Phase 2 server
+    App->>C: Commit mutation 1
+    C->>E: commit(tx)
+    E->>E: Apply optimistic write; track and queue mutation 1
+    E->>E: Take send queue and clear it
+    E--xS: Push mutation 1 lost before delivery
+    E->>E: Remove pending mutation and roll back optimistic write
+    E-->>C: Initial attempt rejects
+    C-->>App: Initial commit attempt rejects
+    App->>C: Commit mutation 2
+    C->>E: commit(tx)
+    E->>E: Apply optimistic write; track and queue mutation 2
+    E->>S: Push only mutation 2
+    S->>S: Accept gap; commit effects and acknowledgement 2
+    S-->>E: Push succeeds
+    E->>S: Later pull
+    S-->>E: Patch and lastMutationId = 2
+    E->>E: Apply pull; discard acknowledged pending writes
+    Note over E,S: Mutation 1 exists on neither side
+```
+
+After phase 3 (planned): delivery failure leaves mutation 1 pending and visible. A new local write schedules a push containing both mutations. The strict server accepts them consecutively; only a later pull acknowledgement removes them from `PendingWrites`. This example uses another write to trigger delivery, not phase 4's automatic retry timer.
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant C as TandemClient
+    participant E as SyncEngine / private PendingWrites
+    participant S as Strict server
+    App->>C: Commit mutation 1
+    C->>E: commit(tx)
+    E->>E: Apply optimistic write; retain mutation 1; schedule push
+    E->>E: Snapshot pending mutation 1
+    E--xS: Push mutation 1 lost before delivery
+    E-->>C: Report failure without rollback
+    C-->>App: Initial commit attempt rejects
+    Note over E: Mutation 1 remains pending and visible
+    App->>C: Commit mutation 2
+    C->>E: commit(tx)
+    E->>E: Apply optimistic write; retain mutation 2; schedule push
+    E->>E: Snapshot mutations 1 and 2 in ID order
+    E->>S: Push mutations 1 and 2
+    S->>S: Expect 1; atomically commit effects and acknowledgement 1
+    S->>S: Expect 2; atomically commit effects and acknowledgement 2
+    S-->>E: Push succeeds
+    Note over E: Both mutations remain pending until pull confirmation
+    E->>S: Later pull
+    S-->>E: Patch and lastMutationId = 2
+    E->>E: Update base; discard IDs up to 2; rebuild remaining writes
+    Note over E,S: Both writes survive; no acknowledged mutations remain pending
+```
+
+If the first request committed but its response was lost, the same snapshot is safe: the server skips mutation 1 using its durable acknowledgement, then processes mutation 2. If it receives mutation 2 while still expecting 1, it reports the gap without applying or acknowledging mutation 2.
 
 ```diff
  SyncEngine:
 -    pendingMutations = []
-+    readPendingMutations = callback into PendingWrites
++    pendingWrites is the only maintained mutation list
 
- SyncEngine.queuePush():
+ SyncEngine.commit(tx):
+     capture base; commit locally; track mutation; advance ID
 -    append mutation to pendingMutations
      schedule push
 
  SyncEngine.push():
 -    mutations = pendingMutations
 -    pendingMutations = []
-+    mutations = snapshot(readPendingMutations())  // ascending ID order
++    mutations = pendingWrites.snapshot()  // ascending ID order
      attempt remote.push(clientId, mutations)
      if failed:
 -        handleRollback(mutations)
 +        retain all pending mutations
          report delivery failure
 
- TandemClient:
--    rollback(mutations)
-
  PendingWrites:
 -    rollBackRejected(mutations)
+
+ SyncEngine.clear():
++    if pendingWrites is not empty: return an error without changing state
+     clear local database without resetting mutation IDs
 
  PendingWrites.applyPull(patch, lastMutationId):
      update server base from patch
@@ -322,3 +590,769 @@ Run the #43 replay and `pnpm dst:run --seed 2 --steps 10 --fault-rate 0.1`, then
 - [[packages/server/src/storage/TandemServerStorage.ts]] — server storage contract.
 - [[dst/ReferenceModel.ts]] — independently expected client and server state.
 - [[dst/known-failures/README.md]] — replay artifact and remaining failures.
+
+```source-diff:phase1-client:packages/core/src/TandemClient.ts
+diff --git a/packages/core/src/TandemClient.ts b/packages/core/src/TandemClient.ts
+index 332f74f..d24ff13 100644
+--- a/packages/core/src/TandemClient.ts
++++ b/packages/core/src/TandemClient.ts
+@@ -190,15 +190,15 @@ export class TandemClient<
+ 		}
+ 
+ 		this.logger.info({ message: "committing transaction" })
+-		this.mutationCount += 1
+ 		const mutation: Mutation<Schema> = {
+ 			ops: transaction.ops,
+-			id: tag<MutationId>(this.mutationCount),
++			id: tag<MutationId>(this.mutationCount + 1),
+ 		}
+ 		this.pendingWrites.commitAndTrack(mutation, {
+ 			readCommittedRecord: ({ collection, id }) => this.db.get(collection, id),
+ 			commit: () => this.db.commit(transaction),
+ 		})
++		this.mutationCount += 1
+ 
+ 		const commitPromise =
+ 			this.syncEngine?.queuePush(mutation) ?? Promise.resolve()
+```
+
+```source-diff:phase2-server:packages/server/src/TandemServer.ts
+diff --git a/packages/server/src/TandemServer.ts b/packages/server/src/TandemServer.ts
+index 0d623db..e50062c 100644
+--- a/packages/server/src/TandemServer.ts
++++ b/packages/server/src/TandemServer.ts
+@@ -15,6 +15,7 @@ import type {
+ 	ScanWindow,
+ 	AnyRelations,
+ 	RuntimeSchemaDefinition,
++	SchemaToTupleSchema,
+ } from "@tanishqkancharla/tandem-core"
+ import { tag, unreachable, untag } from "@tanishqkancharla/tandem-core"
+ import {
+@@ -30,6 +31,7 @@ import {
+ 	subscribeQueryAsync,
+ } from "tuple-database"
+ import type {
++	AsyncTupleRootTransactionApi,
+ 	AsyncTupleStorageApi,
+ 	ReadOnlyAsyncTupleDatabaseClientApi,
+ 	WriteOps,
+@@ -37,6 +39,7 @@ import type {
+ import { TandemServerError } from "./TandemServerError.js"
+ import { TandemServerTransaction } from "./TandemServerTransaction.js"
+ import type {
++	TandemClientTuple,
+ 	TandemTuple,
+ 	TandemServerStorageApi,
+ } from "./storage/TandemServerStorage.js"
+@@ -71,15 +74,12 @@ type SyncedRecordKey<
+ }[Collection]
+ 
+ type SyncClientState<Schema extends AnySchema> = {
+-	lastMutationId?: MutationId
+ 	poke?: ClientApi["poke"]
+ 	scanWindowKey?: string
+ 	syncedRecordKeys?: SyncedRecordKey<Schema>[]
+ }
+ 
+ type CommitOptions = {
+-	advanceWithoutWrites?: boolean
+-	onCommitted?: () => void
+ 	operation: "commit" | "push"
+ }
+ 
+@@ -142,18 +142,26 @@ export class TandemServer<
+ 	private readonly tupleDb: AsyncTupleDatabaseClient<TandemTuple<Schema>>
+ 	private readonly rng?: RngApi
+ 	private revision = 0
++	// Tuple transactions batch writes but do not snapshot reads or serialize
++	// asynchronous storage commits. Order sync reads and commits here.
++	private queue: Promise<void> = Promise.resolve()
+ 
+ 	constructor(args: TandemServerArgs<Schema, Relations>) {
+ 		this.relations = args.relations
+ 		this.rng = args.rng
+-		this.tupleDb = new AsyncTupleDatabaseClient<TandemTuple<Schema>>(
+-			new AsyncTupleDatabase(
+-				tandemStorageToTupleDatabaseStorage(args.storage),
+-				{
+-					rng: args.rng,
+-				},
+-			),
++		const database = new AsyncTupleDatabase(
++			tandemStorageToTupleDatabaseStorage(args.storage),
++			{ rng: args.rng },
+ 		)
++		this.tupleDb = new AsyncTupleDatabaseClient<TandemTuple<Schema>>(database)
++	}
++
++	private get recordDb() {
++		// Query APIs retain full ["record", ...] keys. This is the same client,
++		// narrowed for those APIs, not a subspace that strips the record prefix.
++		return this.tupleDb as unknown as AsyncTupleDatabaseClient<
++			SchemaToTupleSchema<Schema>
++		>
+ 	}
+ 
+ 	transact(): TandemServerTransaction<Schema, Relations> {
+@@ -163,13 +171,12 @@ export class TandemServer<
+ 		)
+ 	}
+ 
+-	async commit(
++	commit(
+ 		transaction: TandemServerTransaction<Schema, Relations>,
+ 	): Promise<void> {
+-		const result = await this.commitTransaction(transaction, {
+-			operation: "commit",
+-		})
+-		if (result instanceof Error) throw result
++		return this.run(() =>
++			this.commitTransaction(transaction, { operation: "commit" }),
++		)
+ 	}
+ 
+ 	connect: RemoteApi<Schema>["connect"] = ({ clientId, poke }) => {
+@@ -187,21 +194,29 @@ export class TandemServer<
+ 		})
+ 	}
+ 
+-	push: RemoteApi<Schema>["push"] = async ({ clientId, mutations }) => {
+-		const result = await this.applyPush(clientId, mutations)
+-		if (result instanceof Error) throw result
+-	}
++	push: RemoteApi<Schema>["push"] = ({ clientId, mutations }) =>
++		this.run(() => this.applyPush(clientId, mutations))
+ 
+-	pull: RemoteApi<Schema>["pull"] = async (args) => {
+-		const result = await this.readPull(args)
+-		if (result instanceof Error) throw result
++	pull: RemoteApi<Schema>["pull"] = (args) =>
++		this.run(() => this.readPull(args))
++
++	private run<T>(operation: () => Promise<T | TandemServerError>): Promise<T> {
++		const result = this.queue.then(async () => {
++			const value = await operation()
++			if (value instanceof Error) throw value
++			return value
++		})
++		this.queue = result.then(
++			() => undefined,
++			() => undefined,
++		)
+ 		return result
+ 	}
+ 
+ 	async query<Query extends RelationalQuery<Schema, Relations>>(
+ 		query: Query,
+ 	): Promise<RelationalQueryResult<Schema, Relations, Query>> {
+-		const result = await this.runQuery(this.tupleDb, query, "query")
++		const result = await this.runQuery(this.recordDb, query, "query")
+ 		if (result instanceof Error) throw result
+ 		return result
+ 	}
+@@ -214,7 +229,7 @@ export class TandemServer<
+ 		TandemServerSubscription<RelationalQueryResult<Schema, Relations, Query>>
+ 	> {
+ 		const subscription = await subscribeQueryAsync(
+-			this.tupleDb,
++			this.recordDb,
+ 			(db) => this.runQuery(db, query, "subscribe"),
+ 			(result) => {
+ 				if (result instanceof Error) {
+@@ -255,7 +270,7 @@ export class TandemServer<
+ 	}
+ 
+ 	private runQuery<Query extends RelationalQuery<Schema, Relations>>(
+-		db: ReadOnlyAsyncTupleDatabaseClientApi<TandemTuple<Schema>>,
++		db: ReadOnlyAsyncTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
+ 		query: Query,
+ 		operation: "query" | "subscribe",
+ 	): Promise<
+@@ -277,34 +292,52 @@ export class TandemServer<
+ 		return created
+ 	}
+ 
+-	private applyPush(
++	private async applyPush(
+ 		clientId: ClientId,
+ 		mutations: Mutation<Schema>[],
+ 	): Promise<TandemServerError | undefined> {
+-		if (mutations.length === 0) return Promise.resolve(undefined)
+-
+-		const transaction = this.transact()
+-		const staged = errore.try(() => {
+-			for (const mutation of mutations) {
++		for (const mutation of mutations) {
++			const lastMutationId = await this.readLastMutationId(clientId, "push")
++			if (lastMutationId instanceof Error) return lastMutationId
++			if (mutation.id <= lastMutationId) continue
++
++			const tupleTx = this.tupleDb.transact(this.rng?.randomId())
++			const transaction = new TandemServerTransaction(tupleTx, this.relations)
++			// Narrow before selecting the namespace: tuple-database cannot resolve
++			// subspace types through the generic application-record union.
++			const clientTx = (
++				tupleTx as unknown as AsyncTupleRootTransactionApi<TandemClientTuple>
++			).subspace(["client"])
++			const staged = errore.try(() => {
+ 				for (const operation of mutation.ops) {
+ 					applyMutationOperation(transaction, operation)
+ 				}
++				clientTx.set([clientId], { lastMutationId: mutation.id })
++			})
++			if (staged instanceof Error) {
++				await transaction.cancel()
++				return new TandemServerError({ operation: "push", cause: staged })
+ 			}
+-		})
+-		if (staged instanceof Error) {
+-			return Promise.resolve(
+-				new TandemServerError({ operation: "push", cause: staged }),
+-			)
++
++			const committed = await this.commitTransaction(transaction, {
++				operation: "push",
++			})
++			if (committed instanceof Error) return committed
+ 		}
++	}
+ 
+-		const lastMutationId = mutations.at(-1)?.id
+-		return this.commitTransaction(transaction, {
+-			advanceWithoutWrites: true,
+-			onCommitted: () => {
+-				this.getSyncClient(clientId).lastMutationId = lastMutationId
+-			},
+-			operation: "push",
+-		})
++	private async readLastMutationId(
++		clientId: ClientId,
++		operation: "push" | "pull",
++	) {
++		const metadata = (
++			this.tupleDb as unknown as AsyncTupleDatabaseClient<TandemClientTuple>
++		).subspace(["client"])
++		const client = await metadata
++			.get([clientId])
++			.catch((cause) => new TandemServerError({ operation, cause }))
++		if (client instanceof Error) return client
++		return client?.lastMutationId ?? tag<MutationId>(0)
+ 	}
+ 
+ 	private async readPull(
+@@ -316,6 +349,8 @@ export class TandemServer<
+ 		const client = this.getSyncClient(clientId)
+ 		const scanWindowKey = this.encodeScanWindow(scanWindow)
+ 		if (scanWindowKey instanceof Error) return scanWindowKey
++		const lastMutationId = await this.readLastMutationId(clientId, "pull")
++		if (lastMutationId instanceof Error) return lastMutationId
+ 
+ 		const revision = this.revision
+ 		const cookieRevision = cookie === undefined ? undefined : untag(cookie)
+@@ -326,7 +361,7 @@ export class TandemServer<
+ 			cookieRevision !== revision
+ 		const records = shouldRead
+ 			? await executeScanWindowAsync<Schema, Relations>(
+-					this.tupleDb,
++					this.recordDb,
+ 					this.relations,
+ 					scanWindow,
+ 				).catch((cause) => new TandemServerError({ operation: "pull", cause }))
+@@ -341,8 +376,6 @@ export class TandemServer<
+ 					(previous) => !containsRecordKey(currentRecordKeys, previous),
+ 				)
+ 			: []
+-		const lastMutationId = client.lastMutationId ?? tag<MutationId>(0)
+-
+ 		client.scanWindowKey = scanWindowKey
+ 		if (shouldRead) client.syncedRecordKeys = currentRecordKeys
+ 
+@@ -373,9 +406,8 @@ export class TandemServer<
+ 					new TandemServerError({ operation: options.operation, cause }),
+ 			)
+ 		if (hasWrites instanceof Error) return hasWrites
+-		if (!hasWrites && !options.advanceWithoutWrites) return
++		if (!hasWrites) return
+ 
+-		options.onCommitted?.()
+ 		this.revision += 1
+ 		this.emitPokes()
+ 	}
+```
+
+```source-diff:phase2-transaction:packages/server/src/TandemServerTransaction.ts
+diff --git a/packages/server/src/TandemServerTransaction.ts b/packages/server/src/TandemServerTransaction.ts
+index ad4bb5d..5e023ef 100644
+--- a/packages/server/src/TandemServerTransaction.ts
++++ b/packages/server/src/TandemServerTransaction.ts
+@@ -6,6 +6,7 @@ import type {
+ 	RelationalQuery,
+ 	RelationalQueryResult,
+ 	AnyRelations,
++	SchemaToTupleSchema,
+ } from "@tanishqkancharla/tandem-core"
+ import {
+ 	collectionIdToTuple,
+@@ -82,8 +83,12 @@ export class TandemServerTransaction<
+ 	async query<Query extends RelationalQuery<Schema, Relations>>(
+ 		query: Query,
+ 	): Promise<RelationalQueryResult<Schema, Relations, Query>> {
++		// Query execution uses full record keys on the shared root transaction.
++		const records = this.tupleDbTx as unknown as AsyncTupleRootTransactionApi<
++			SchemaToTupleSchema<Schema>
++		>
+ 		const result = await executeQueryAsync<Schema, Relations, Query>(
+-			this.tupleDbTx,
++			records,
+ 			this.relations,
+ 			query,
+ 		).catch((cause) => new TandemServerError({ operation: "query", cause }))
+```
+
+```source-diff:phase2-schema:packages/server/src/storage/TandemServerStorage.ts
+diff --git a/packages/server/src/storage/TandemServerStorage.ts b/packages/server/src/storage/TandemServerStorage.ts
+index 3248e12..4ac6541 100644
+--- a/packages/server/src/storage/TandemServerStorage.ts
++++ b/packages/server/src/storage/TandemServerStorage.ts
+@@ -1,10 +1,19 @@
+ import type {
+ 	AnySchema,
++	ClientId,
++	MutationId,
+ 	SchemaToTupleSchema,
+ } from "@tanishqkancharla/tandem-core"
+ import type { ScanStorageArgs, WriteOps } from "tuple-database"
+ 
+-export type TandemTuple<Schema extends AnySchema> = SchemaToTupleSchema<Schema>
++export type TandemClientTuple = {
++	key: ["client", ClientId]
++	value: { lastMutationId: MutationId }
++}
++
++export type TandemTuple<Schema extends AnySchema> =
++	| SchemaToTupleSchema<Schema>
++	| TandemClientTuple
+ 
+ export interface TandemServerStorageApi<Schema extends AnySchema> {
+ 	scan(args?: ScanStorageArgs): Promise<TandemTuple<Schema>[]>
+```
+
+```source-diff:phase2-json:packages/server/src/storage/TandemServerJsonFileStorage.ts
+diff --git a/packages/server/src/storage/TandemServerJsonFileStorage.ts b/packages/server/src/storage/TandemServerJsonFileStorage.ts
+index 1d8c3ca..8c1cbe5 100644
+--- a/packages/server/src/storage/TandemServerJsonFileStorage.ts
++++ b/packages/server/src/storage/TandemServerJsonFileStorage.ts
+@@ -1,12 +1,7 @@
+ import crypto from "node:crypto"
+ import fs from "node:fs/promises"
+ import path from "node:path"
+-import type {
+-	AnySchema,
+-	CollectionId,
+-	CollectionIdPart,
+-} from "@tanishqkancharla/tandem-core"
+-import { collectionIdToTuple } from "@tanishqkancharla/tandem-core/internal"
++import type { AnySchema } from "@tanishqkancharla/tandem-core"
+ import * as errore from "errore"
+ import { InMemoryTupleStorage } from "tuple-database"
+ import type { ScanStorageArgs, WriteOps } from "tuple-database"
+@@ -19,11 +14,6 @@ export type TandemServerJsonFileStorageArgs = {
+ 	filePath: string
+ }
+ 
+-type StoredTandemTuple = {
+-	key: ["record", collection: string, ...id: CollectionIdPart[]]
+-	value: Record<string, unknown> & { id: CollectionId }
+-}
+-
+ type FileOperation =
+ 	| "clean up temporary file for"
+ 	| "create directory for"
+@@ -55,62 +45,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
+ 	return typeof value === "object" && value !== null && !Array.isArray(value)
+ }
+ 
+-function isCollectionIdPart(value: unknown): value is CollectionIdPart {
+-	return typeof value === "string" || typeof value === "number"
+-}
+-
+-function isCollectionId(value: unknown): value is CollectionId {
+-	return (
+-		isCollectionIdPart(value) ||
+-		(Array.isArray(value) &&
+-			value.length > 0 &&
+-			value.every(isCollectionIdPart))
+-	)
+-}
+-
+-function isStoredTandemTuple(value: unknown): value is StoredTandemTuple {
+-	if (!isRecord(value) || !Array.isArray(value.key)) return false
+-	const key = value.key
+-	if (key.length < 3 || key[0] !== "record") return false
+-	if (typeof key[1] !== "string") return false
+-	if (!key.slice(2).every(isCollectionIdPart)) return false
+-	if (!isRecord(value.value)) return false
+-	if (!isCollectionId(value.value.id)) return false
+-
+-	const idTuple = collectionIdToTuple(value.value.id)
+-	return (
+-		idTuple.length === key.length - 2 &&
+-		idTuple.every((part, index) => part === key[index + 2])
+-	)
+-}
+-
+ function isNotFoundError(value: unknown): boolean {
+ 	return isRecord(value) && value.code === "ENOENT"
+ }
+ 
+-function parseTuples({ filePath, raw }: { filePath: string; raw: string }) {
+-	const parsed = errore.try({
+-		// Wrap the unknown JSON value so Error remains a discriminable union.
+-		try: () => ({ value: JSON.parse(raw) as unknown }),
+-		catch: (cause) =>
+-			new TandemServerJsonFileStorageError({
+-				operation: "parse",
+-				filePath,
+-				cause,
+-			}),
+-	})
+-	if (parsed instanceof Error) return parsed
+-	if (Array.isArray(parsed.value) && parsed.value.every(isStoredTandemTuple)) {
+-		return parsed.value
+-	}
+-
+-	return new TandemServerJsonFileStorageError({
+-		operation: "parse",
+-		filePath,
+-		cause: new Error("Expected a JSON array of Tandem tuples"),
+-	})
+-}
+-
+ export class TandemServerJsonFileStorage<
+ 	Schema extends AnySchema = AnySchema,
+ > implements TandemServerStorageApi<Schema> {
+@@ -128,7 +66,7 @@ export class TandemServerJsonFileStorage<
+ 			if (initialized instanceof Error) return initialized
+ 
+ 			// tuple-database's in-memory storage erases its tuple generic. The data
+-			// entered this adapter through typed writes or the validated JSON boundary.
++			// comes from typed writes or a file previously written by this adapter.
+ 			return this.scanMemory(this.memory, args)
+ 		})
+ 	}
+@@ -189,7 +127,15 @@ export class TandemServerJsonFileStorage<
+ 		if (raw instanceof Error && isNotFoundError(raw.cause)) return undefined
+ 		if (raw instanceof Error) return raw
+ 
+-		const tuples = parseTuples({ filePath: this.args.filePath, raw })
++		const tuples = errore.try({
++			try: () => JSON.parse(raw) as TandemTuple<Schema>[],
++			catch: (cause) =>
++				new TandemServerJsonFileStorageError({
++					operation: "parse",
++					filePath: this.args.filePath,
++					cause,
++				}),
++		})
+ 		if (tuples instanceof Error) return tuples
+ 
+ 		this.memory.commit({ set: tuples })
+```
+
+```source-diff:phase2-server-tests:packages/server/test/TandemServer.spec.ts
+diff --git a/packages/server/test/TandemServer.spec.ts b/packages/server/test/TandemServer.spec.ts
+index e598d8d..a1f13e4 100644
+--- a/packages/server/test/TandemServer.spec.ts
++++ b/packages/server/test/TandemServer.spec.ts
+@@ -6,6 +6,7 @@ import {
+ } from "@tanishqkancharla/tandem-core"
+ import type {
+ 	ClientId,
++	Mutation,
+ 	MutationId,
+ 	Patch,
+ 	RemoteApi,
+@@ -503,7 +504,7 @@ test("remote pushes preserve operation order and acknowledge the last mutation o
+ 		scanWindow,
+ 	})
+ 	expect(acknowledged.lastMutationId).toBe(2)
+-	expect(acknowledged.cookie).toBe(1)
++	expect(acknowledged.cookie).not.toBe(initial.cookie)
+ 	expect(acknowledged.patch.set).toEqual([
+ 		{
+ 			collection: "threads",
+@@ -532,6 +533,141 @@ test("remote pushes preserve operation order and acknowledge the last mutation o
+ 	await server.close()
+ })
+ 
++test("concurrent duplicate pushes are skipped and pulls wait for committed effects", async () => {
++	const { server, storage } = createServer()
++	const clientId = tag<ClientId>("concurrent-client")
++	const scanWindow: ScanWindow<TestSchema> = [{ collection: "users" }]
++	const mutations: Mutation<TestSchema>[] = [
++		{
++			id: tag<MutationId>(1),
++			ops: [
++				{
++					type: "set",
++					collection: "users",
++					value: { id: "user-1", name: "Ada" },
++				},
++			],
++		},
++	]
++	let pokes = 0
++	await server.connect({
++		clientId,
++		poke: () => {
++			pokes += 1
++			return Promise.resolve()
++		},
++	})
++	const gate = storage.pauseNextCommit()
++	const first = server.push({ clientId, mutations })
++	await gate.entered
++	const duplicate = server.push({ clientId, mutations })
++	const pull = server.pull({ clientId, scanWindow })
++	const edit = server.transact()
++	edit.set("users", { id: "user-1", name: "Grace" })
++	const commit = server.commit(edit)
++	gate.release()
++	await Promise.all([first, duplicate, commit])
++
++	expect(await pull).toMatchObject({
++		lastMutationId: 1,
++		patch: {
++			set: [{ collection: "users", value: { id: "user-1", name: "Ada" } }],
++		},
++	})
++	expect(await server.query({ collection: "users" })).toEqual([
++		{ id: "user-1", name: "Grace" },
++	])
++	expect(pokes).toBe(2)
++	await server.close()
++})
++
++test("retrying a partially committed batch skips its prefix and processes its suffix", async () => {
++	const { server, storage } = createServer()
++	const clientId = tag<ClientId>("batch-client")
++	const scanWindow: ScanWindow<TestSchema> = [{ collection: "users" }]
++	const mutations: Mutation<TestSchema>[] = [
++		{
++			id: tag<MutationId>(1),
++			ops: [
++				{
++					type: "set",
++					collection: "users",
++					value: { id: "user-1", name: "Ada" },
++				},
++			],
++		},
++		{
++			id: tag<MutationId>(2),
++			ops: [
++				{
++					type: "set",
++					collection: "users",
++					value: { id: "user-2", name: "Grace" },
++				},
++			],
++		},
++	]
++	const storageCause = new Error("second mutation fails")
++	const disconnect = await server.connect({
++		clientId,
++		poke: () => {
++			storage.failNextCommit(storageCause)
++			return Promise.resolve()
++		},
++	})
++	await expect(server.push({ clientId, mutations })).rejects.toMatchObject({
++		cause: storageCause,
++	})
++	await disconnect()
++	expect(await server.pull({ clientId, scanWindow })).toMatchObject({
++		lastMutationId: 1,
++		patch: {
++			set: [{ collection: "users", value: { id: "user-1", name: "Ada" } }],
++		},
++	})
++
++	const edit = server.transact()
++	edit.set("users", { id: "user-1", name: "Newer edit" })
++	await server.commit(edit)
++	await server.push({ clientId, mutations })
++	expect(await server.pull({ clientId, scanWindow })).toMatchObject({
++		lastMutationId: 2,
++	})
++	expect(await server.query({ collection: "users" })).toEqual([
++		{ id: "user-1", name: "Newer edit" },
++		{ id: "user-2", name: "Grace" },
++	])
++	await server.close()
++})
++
++test("empty mutations advance acknowledgement once, without re-poking on retry", async () => {
++	const { server } = createServer()
++	const clientId = tag<ClientId>("empty-client")
++	let pokes = 0
++	await server.connect({
++		clientId,
++		poke: () => {
++			pokes += 1
++			return Promise.resolve()
++		},
++	})
++	const mutations: Mutation<TestSchema>[] = [
++		{ id: tag<MutationId>(1), ops: [] },
++	]
++	await server.push({ clientId, mutations })
++	const confirmed = await server.pull({ clientId, scanWindow: [] })
++	await server.push({ clientId, mutations })
++	expect(
++		await server.pull({ clientId, scanWindow: [], cookie: confirmed.cookie }),
++	).toEqual({
++		cookie: confirmed.cookie,
++		lastMutationId: 1,
++		patch: { set: [], remove: [] },
++	})
++	expect(pokes).toBe(1)
++	await server.close()
++})
++
+ test("push acknowledgement is visible to the pull started by its poke", async () => {
+ 	const { server } = createServer()
+ 	const clientId = tag<ClientId>("poked-client")
+```
+
+```source-diff:phase2-json-tests:packages/server/test/TandemServerJsonFileStorage.spec.ts
+diff --git a/packages/server/test/TandemServerJsonFileStorage.spec.ts b/packages/server/test/TandemServerJsonFileStorage.spec.ts
+index 2d458c0..f39115d 100644
+--- a/packages/server/test/TandemServerJsonFileStorage.spec.ts
++++ b/packages/server/test/TandemServerJsonFileStorage.spec.ts
+@@ -1,7 +1,13 @@
+ import fs from "node:fs/promises"
+ import os from "node:os"
+ import path from "node:path"
+-import { collection, defineSchema } from "@tanishqkancharla/tandem-core"
++import { collection, defineSchema, tag } from "@tanishqkancharla/tandem-core"
++import type {
++	ClientId,
++	Mutation,
++	MutationId,
++	ScanWindow,
++} from "@tanishqkancharla/tandem-core"
+ import { expect, test as baseTest } from "vitest"
+ import { TandemServer, TandemServerJsonFileStorage } from "../src/index.js"
+ 
+@@ -75,6 +81,69 @@ test("persists TandemServer transactions across storage instances", async ({
+ 	await thirdServer.close()
+ })
+ 
++test("reopened servers acknowledge retries without overwriting another client's edit", async ({
++	filePath,
++}) => {
++	const clientId = tag<ClientId>("retry-client")
++	const otherClientId = tag<ClientId>("other-client")
++	const scanWindow: ScanWindow<TodoSchema> = [{ collection: "todos" }]
++	const mutations: Mutation<TodoSchema>[] = [
++		{
++			id: tag<MutationId>(1),
++			ops: [
++				{
++					type: "set",
++					collection: "todos",
++					value: { id: "todo-1", title: "Original", completed: false },
++				},
++			],
++		},
++	]
++	const first = createServer(filePath)
++	await first.push({ clientId, mutations })
++	await first.push({
++		clientId: otherClientId,
++		mutations: [
++			{
++				id: tag<MutationId>(1),
++				ops: [
++					{
++						type: "set",
++						collection: "todos",
++						value: { id: "todo-1", title: "Newer edit", completed: true },
++					},
++				],
++			},
++		],
++	})
++	await first.close()
++
++	const reopened = createServer(filePath)
++	const before = await reopened.pull({ clientId, scanWindow })
++	let pokes = 0
++	await reopened.connect({
++		clientId,
++		poke: () => {
++			pokes += 1
++			return Promise.resolve()
++		},
++	})
++	await reopened.push({ clientId, mutations })
++	expect(before.lastMutationId).toBe(1)
++	expect(
++		await reopened.pull({ clientId, scanWindow, cookie: before.cookie }),
++	).toEqual({
++		cookie: before.cookie,
++		lastMutationId: 1,
++		patch: { set: [], remove: [] },
++	})
++	expect(await reopened.query({ collection: "todos" })).toEqual([
++		{ id: "todo-1", title: "Newer edit", completed: true },
++	])
++	expect(pokes).toBe(0)
++	await reopened.close()
++})
++
+ test("rejects malformed storage files at the adapter boundary", async ({
+ 	filePath,
+ }) => {
+```
+
+```source-diff:phase2-storage-fixture:packages/server/test/TandemServerStorage.fixture.ts
+diff --git a/packages/server/test/TandemServerStorage.fixture.ts b/packages/server/test/TandemServerStorage.fixture.ts
+index fd0894e..1040e5a 100644
+--- a/packages/server/test/TandemServerStorage.fixture.ts
++++ b/packages/server/test/TandemServerStorage.fixture.ts
+@@ -13,6 +13,16 @@ export class TestTandemServerStorage<
+ 	closed = false
+ 	private nextCommitError: Error | undefined
+ 	private nextScanError: Error | undefined
++	private nextCommitGate:
++		| { entered: () => void; wait: Promise<void> }
++		| undefined
++
++	pauseNextCommit() {
++		const entered = Promise.withResolvers<void>()
++		const release = Promise.withResolvers<void>()
++		this.nextCommitGate = { entered: entered.resolve, wait: release.promise }
++		return { entered: entered.promise, release: release.resolve }
++	}
+ 
+ 	failNextCommit(error: Error) {
+ 		this.nextCommitError = error
+@@ -32,7 +42,13 @@ export class TestTandemServerStorage<
+ 		return Promise.resolve(this.memory.scan(args) as TandemTuple<Schema>[])
+ 	}
+ 
+-	commit(writes: WriteOps<TandemTuple<Schema>>): Promise<void> {
++	async commit(writes: WriteOps<TandemTuple<Schema>>): Promise<void> {
++		const gate = this.nextCommitGate
++		this.nextCommitGate = undefined
++		if (gate) {
++			gate.entered()
++			await gate.wait
++		}
+ 		if (this.nextCommitError) {
+ 			const error = this.nextCommitError
+ 			this.nextCommitError = undefined
+```

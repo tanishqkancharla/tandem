@@ -10,22 +10,12 @@ import type {
 	RuntimeSchemaDefinition,
 } from "./schema/Schema.js"
 import type { TandemClientStorageApi } from "./clientStorage/TandemClientStorage.js"
-import { PendingWrites } from "./sync/PendingWrites.js"
-import {
-	SyncEngine,
-	type ClientId,
-	type Patch,
-	type RemoteApi,
-} from "./sync/SyncEngine.js"
-import {
-	Transaction,
-	type Mutation,
-	type MutationId,
-} from "./transaction/Transaction.js"
+import { SyncEngine, type ClientId, type RemoteApi } from "./sync/SyncEngine.js"
+import { Transaction } from "./transaction/Transaction.js"
 import { ConsoleLoggerSink, Logger, type LoggerApi } from "./utils/Logger.js"
 import { randomId, type RngApi } from "./utils/randomId.js"
 import type { TimerApi } from "./utils/Timer.js"
-import { tag, type AsyncUnsubscribe } from "./utils/typeUtils.js"
+import type { AsyncUnsubscribe } from "./utils/typeUtils.js"
 
 export type TandemClientArgs<
 	Schema extends AnySchema,
@@ -74,10 +64,6 @@ export class TandemClient<
 	private readonly logger: LoggerApi
 	private readonly rng: RngApi
 
-	private readonly pendingWrites = new PendingWrites<Schema>()
-	// Not reset by clear(): the server acknowledges every id up to the last one it
-	// applied for this client id, so a reused id would count as acknowledged.
-	private mutationCount = 0
 	constructor({
 		schema,
 		relations,
@@ -93,20 +79,6 @@ export class TandemClient<
 		this.clientId = this.rng.randomId() as ClientId
 		this.logger = logger ?? new Logger({ sinks: new ConsoleLoggerSink() })
 
-		this.syncEngine = remote
-			? new SyncEngine({
-					remote,
-					clientId: this.clientId,
-					handleRollback: (mutationsToRollback) => {
-						this.rollback(mutationsToRollback)
-					},
-					applyPull: (args) => this.applyPull(args),
-					autoConnect,
-					logger: this.logger.scope("sync-engine"),
-					syncInterval,
-				})
-			: undefined
-
 		this.db = new Database({
 			schema,
 			relations,
@@ -115,6 +87,17 @@ export class TandemClient<
 			clientStorageWriteInterval,
 			rng: this.rng,
 		})
+
+		this.syncEngine = remote
+			? new SyncEngine({
+					remote,
+					db: this.db,
+					clientId: this.clientId,
+					autoConnect,
+					logger: this.logger.scope("sync-engine"),
+					syncInterval,
+				})
+			: undefined
 
 		this.ready = this.db.ready
 	}
@@ -126,26 +109,6 @@ export class TandemClient<
 
 		this.logger.info({ message: "pulling from remote" })
 		return this.syncEngine.queuePull()
-	}
-
-	private applyPull({
-		patch,
-		lastMutationId,
-	}: {
-		patch: Patch<Schema>
-		lastMutationId: MutationId
-	}) {
-		this.logger.info({ message: "applying pull" })
-		const tx = this.db.makeTupleDbTransaction()
-		this.pendingWrites.applyPull(tx, { patch, lastMutationId })
-		tx.commit()
-	}
-
-	private rollback(mutationsToRollback: readonly Mutation<Schema>[]) {
-		this.logger.info({ message: "rolling back" })
-		const tx = this.db.makeTupleDbTransaction()
-		this.pendingWrites.rollBackRejected(tx, mutationsToRollback)
-		tx.commit()
 	}
 
 	query<Query extends RelationalQuery<Schema, Relations>>(
@@ -190,18 +153,11 @@ export class TandemClient<
 		}
 
 		this.logger.info({ message: "committing transaction" })
-		const mutation: Mutation<Schema> = {
-			ops: transaction.ops,
-			id: tag<MutationId>(this.mutationCount + 1),
+		if (!this.syncEngine) {
+			this.db.commit(transaction)
+			return Promise.resolve()
 		}
-		this.pendingWrites.commitAndTrack(mutation, {
-			readCommittedRecord: ({ collection, id }) => this.db.get(collection, id),
-			commit: () => this.db.commit(transaction),
-		})
-		this.mutationCount += 1
-
-		const commitPromise =
-			this.syncEngine?.queuePush(mutation) ?? Promise.resolve()
+		const commitPromise = this.syncEngine.commit(transaction)
 
 		// Ignored commit promises should not surface unhandled rejections.
 		commitPromise.catch(() => {})
@@ -236,9 +192,7 @@ export class TandemClient<
 	async clear() {
 		this.logger.info({ message: "clearing database" })
 
-		this.pendingWrites.clearAll()
-
-		// Clear the database
-		await this.db.clear()
+		if (this.syncEngine) await this.syncEngine.clear()
+		else await this.db.clear()
 	}
 }

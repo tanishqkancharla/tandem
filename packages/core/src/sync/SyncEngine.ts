@@ -1,9 +1,16 @@
+import type { Database } from "../Database.js"
 import type { EncodedQuery, ScanWindow } from "../query/Query.js"
 import type { AnySchema, CollectionName } from "../schema/Schema.js"
-import type { Mutation, MutationId } from "../transaction/Transaction.js"
+import type {
+	Mutation,
+	MutationId,
+	Transaction,
+} from "../transaction/Transaction.js"
 import type { LoggerApi } from "../utils/Logger.js"
 import { TaskQueue } from "../utils/TaskQueue.js"
 import { Timer, type TimerApi } from "../utils/Timer.js"
+import { tag } from "../utils/typeUtils.js"
+import { PendingWrites } from "./PendingWrites.js"
 import type {
 	AsyncUnsubscribe,
 	Tagged,
@@ -77,8 +84,7 @@ export namespace PatchApi {
 export type SyncEngineArgs<Schema extends AnySchema> = {
 	clientId: ClientId
 	remote: SyncEngine<Schema>["remote"]
-	handleRollback: SyncEngine<Schema>["handleRollback"]
-	applyPull: SyncEngine<Schema>["applyPull"]
+	db: SyncEngine<Schema>["db"]
 	autoConnect?: boolean
 	logger: SyncEngine<Schema>["logger"]
 	syncInterval: number | TimerApi
@@ -87,15 +93,15 @@ export type SyncEngineArgs<Schema extends AnySchema> = {
 export class SyncEngine<Schema extends AnySchema> {
 	private syncQueue: TaskQueue<"pull" | "push">
 	private pendingMutations: Mutation<Schema>[] = []
+	private readonly pendingWrites = new PendingWrites<Schema>()
+	// Keep IDs monotonic for this client identity, including across clear().
+	private mutationCount = 0
+	private readonly db: Pick<
+		Database<Schema>,
+		"get" | "commit" | "makeTupleDbTransaction" | "clear"
+	>
 	private readonly remote: RemoteApi<Schema>
 	private readonly logger: LoggerApi
-	private readonly handleRollback: (
-		mutationsToRollback: readonly Mutation<Schema>[],
-	) => void
-	private readonly applyPull: (args: {
-		patch: Patch<Schema>
-		lastMutationId: MutationId
-	}) => void
 
 	private readonly clientId: ClientId
 	private cookie?: Cookie
@@ -106,8 +112,7 @@ export class SyncEngine<Schema extends AnySchema> {
 	constructor(args: SyncEngineArgs<Schema>) {
 		this.logger = args.logger
 		this.remote = args.remote
-		this.handleRollback = args.handleRollback
-		this.applyPull = args.applyPull
+		this.db = args.db
 		this.clientId = args.clientId
 		const timer =
 			typeof args.syncInterval === "number"
@@ -200,10 +205,21 @@ export class SyncEngine<Schema extends AnySchema> {
 
 		this.cookie = cookie
 
-		this.applyPull({ patch, lastMutationId })
+		const tx = this.db.makeTupleDbTransaction()
+		this.pendingWrites.applyPull(tx, { patch, lastMutationId })
+		tx.commit()
 	}
 
-	queuePush(mutation: Mutation<Schema>): Promise<void> {
+	commit(transaction: Transaction<Schema>): Promise<void> {
+		const mutation: Mutation<Schema> = {
+			ops: transaction.ops,
+			id: tag<MutationId>(this.mutationCount + 1),
+		}
+		this.pendingWrites.commitAndTrack(mutation, {
+			readCommittedRecord: ({ collection, id }) => this.db.get(collection, id),
+			commit: () => this.db.commit(transaction),
+		})
+		this.mutationCount += 1
 		this.logger.info({ message: "queueing push" })
 		this.pendingMutations.push(mutation)
 		return this.syncQueue.enqueue("push")
@@ -225,8 +241,15 @@ export class SyncEngine<Schema extends AnySchema> {
 		} catch (error) {
 			this.logger.error({ message: "error applying mutation", error })
 
-			this.handleRollback(mutations)
+			const tx = this.db.makeTupleDbTransaction()
+			this.pendingWrites.rollBackRejected(tx, mutations)
+			tx.commit()
 			throw error
 		}
+	}
+
+	async clear() {
+		this.pendingWrites.clearAll()
+		await this.db.clear()
 	}
 }
