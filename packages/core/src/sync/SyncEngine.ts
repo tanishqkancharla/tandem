@@ -86,6 +86,8 @@ export type PatchRemoveOp<Schema extends AnySchema> = {
 }[CollectionName<Schema>]
 
 export type Patch<Schema extends AnySchema = AnySchema> = {
+	/** Replace the confirmed replica with this snapshot before replaying pending writes. */
+	reset?: boolean
 	set?: PatchSetOp<Schema>[]
 	remove?: PatchRemoveOp<Schema>[]
 }
@@ -260,11 +262,10 @@ export class SyncEngine<Schema extends AnySchema> {
 			patch: PatchApi.toString(patch),
 		})
 
-		this.cookie = cookie
-
 		const tx = this.db.makeTupleDbTransaction()
 		this.pendingWrites.applyPull(tx, { patch, lastMutationId })
 		tx.commit()
+		this.cookie = cookie
 	}
 
 	commit(transaction: Transaction<Schema>): Promise<void> {

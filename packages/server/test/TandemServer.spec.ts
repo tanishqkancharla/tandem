@@ -131,6 +131,61 @@ function patchRemoveKeys(patch: Patch<TestSchema>) {
 		.toSorted()
 }
 
+test("lost subscription responses and server restarts reset an unknown view", async () => {
+	const { server, storage } = createServer()
+	await seed(server)
+	const clientId = tag<ClientId>("reset-client")
+	const initial = await server.pull({
+		clientId,
+		scanWindow: [{ collection: "users" }],
+	})
+	assert(!("error" in initial))
+	expect(initial.patch.reset).toBe(true)
+
+	// The subscription changes without a database revision change, and its response is lost.
+	const lost = await server.pull({
+		clientId,
+		cookie: initial.cookie,
+		scanWindow: [],
+	})
+	assert(!("error" in lost))
+	expect(lost.cookie).not.toBe(initial.cookie)
+	expect(lost.patch.remove).toEqual([{ collection: "users", id: "user-1" }])
+	const retry = await server.pull({
+		clientId,
+		cookie: initial.cookie,
+		scanWindow: [],
+	})
+	assert(!("error" in retry))
+	expect(retry.patch).toEqual({ reset: true, set: [], remove: [] })
+
+	// Losing a reset is recoverable too, with a nonempty authoritative snapshot.
+	const reset = await server.pull({
+		clientId,
+		cookie: initial.cookie,
+		scanWindow: [{ collection: "users" }],
+	})
+	assert(!("error" in reset))
+	expect(reset.patch).toEqual({
+		reset: true,
+		set: [{ collection: "users", value: { id: "user-1", name: "Ada" } }],
+		remove: [],
+	})
+
+	// A new server instance must not accept the old instance's cookie.
+	const restarted = new TandemServer({ schema, relations, storage })
+	const recovered = await restarted.pull({
+		clientId,
+		cookie: reset.cookie,
+		scanWindow: [{ collection: "users" }],
+	})
+	assert(!("error" in recovered))
+	expect(recovered.patch).toEqual(reset.patch)
+	expect(recovered.cookie).not.toBe(reset.cookie)
+	await restarted.close()
+	await server.close()
+})
+
 test("transactions provide typed CRUD and read their staged writes", async () => {
 	const { server, storage } = createServer()
 	const tx = server.transact()
@@ -497,7 +552,7 @@ test("remote pushes preserve operation order and acknowledge the last mutation o
 
 	// Push and pull work without a prior connect registration.
 	assert(!("error" in initial))
-	expect(initial.cookie).toBe(0)
+	expect(initial.patch.reset).toBe(true)
 	await server.push({ clientId, mutations })
 	const acknowledged = await server.pull({
 		clientId,
