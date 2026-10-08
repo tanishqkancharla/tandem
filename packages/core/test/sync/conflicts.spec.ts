@@ -76,6 +76,72 @@ const conflictTest = test.extend<{
 })
 
 describe("TandemClient sync conflicts", () => {
+	conflictTest(
+		"a lost removal response recovers without losing pending writes",
+		async ({ makeTodoGatekeeper, server }) => {
+			let loseResponse = false
+			const remote: RemoteApi<TestsSchema> = {
+				connect: (client) =>
+					server.connect({ ...client, poke: async () => {} }),
+				push: (args) => server.push(args),
+				pull: async (args) => {
+					const response = await server.pull(args)
+					if (loseResponse) {
+						loseResponse = false
+						return { error: "unavailable", message: "Lost response" }
+					}
+					return response
+				},
+			}
+			const gatekeeper = await makeTodoGatekeeper({ remote })
+			const { client1 } = gatekeeper
+			const subscription = client1.subscribe({ collection: "todos" })
+			const seedTx = server.transact()
+			seedTx.set("todos", todo("ghost"))
+			seedTx.set("todos", todo("edited"))
+			await server.commit(seedTx)
+			await (
+				await client1.pullFromRemote()
+			).result
+
+			// Keep a local edit pending while the server deletes both old records.
+			await gatekeeper.activateGates()
+			const editTx = client1.transact()
+			const edited = todo("edited", { text: "Pending edit" })
+			editTx.set("todos", edited)
+			const edit = await client1.commit(editTx)
+			await edit.fail(new Error("Lost request"))
+			await expect(edit.result).rejects.toThrow("Lost request")
+			await gatekeeper.deactivateGatesAndSettle()
+			const deleteTx = server.transact()
+			deleteTx.remove("todos", "ghost")
+			deleteTx.remove("todos", "edited")
+			await server.commit(deleteTx)
+			loseResponse = true
+			await expect((await client1.pullFromRemote()).result).rejects.toThrow()
+
+			// Retrying the old cookie resets the replica but replays the pending edit.
+			await (
+				await client1.pullFromRemote()
+			).result
+			expect(client1.query({ collection: "todos" })).toEqual([edited])
+
+			// Confirm outside the subscribed window: the old base must not reappear.
+			subscription.destroy()
+			await (
+				await client1.disconnect()
+			).result
+			await (
+				await client1.connect()
+			).result
+			await (
+				await client1.pullFromRemote()
+			).result
+			expect(await server.query({ collection: "todos" })).toEqual([edited])
+			expect(client1.query({ collection: "todos" })).toEqual([])
+		},
+	)
+
 	test("retains a lost push and delivers it with the next write", async ({
 		gatekeeper,
 	}) => {

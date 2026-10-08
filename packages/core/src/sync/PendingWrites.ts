@@ -157,6 +157,16 @@ export class PendingWrites<Schema extends AnySchema> {
 			lastMutationId,
 		}: { patch: Patch<Schema>; lastMutationId: MutationId },
 	): void {
+		if (patch.reset) {
+			for (const { key } of tx.scan({})) tx.remove(key)
+			// Pending records absent from the snapshot have an empty confirmed base.
+			for (const entry of this.base.values()) {
+				entry.server = {
+					type: "remove",
+					...mutationOpToRecordRef(entry.server),
+				}
+			}
+		}
 		for (const op of patch.set ?? []) {
 			this.applyServerOp(tx, { type: "set", ...op })
 		}

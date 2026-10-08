@@ -18,7 +18,7 @@ import type {
 	RuntimeSchemaDefinition,
 	SchemaToTupleSchema,
 } from "@tanishqkancharla/tandem-core"
-import { tag, unreachable, untag } from "@tanishqkancharla/tandem-core"
+import { tag, unreachable } from "@tanishqkancharla/tandem-core"
 import {
 	collectionIdsEqual,
 	executeQueryAsync,
@@ -77,6 +77,8 @@ type SyncedRecordKey<
 
 type SyncClientState<Schema extends AnySchema> = {
 	poke?: ClientApi["poke"]
+	cookie?: Cookie
+	revision?: number
 	scanWindowKey?: string
 	syncedRecordKeys?: SyncedRecordKey<Schema>[]
 }
@@ -378,12 +380,10 @@ export class TandemServer<
 		if (lastMutationId instanceof Error) return lastMutationId
 
 		const revision = this.revision
-		const cookieRevision = cookie === undefined ? undefined : untag(cookie)
+		const shouldReset = cookie === undefined || cookie !== client.cookie
 		const scanWindowChanged = client.scanWindowKey !== scanWindowKey
 		const shouldRead =
-			client.syncedRecordKeys === undefined ||
-			scanWindowChanged ||
-			cookieRevision !== revision
+			shouldReset || scanWindowChanged || client.revision !== revision
 		const records = shouldRead
 			? await executeScanWindowAsync<Schema, Relations>(
 					this.recordDb,
@@ -399,17 +399,22 @@ export class TandemServer<
 		const currentRecordKeys = records.map((record) =>
 			scanWindowRecordToKey(record),
 		)
-		const remove: PatchRemoveOp<Schema>[] = shouldRead
-			? (client.syncedRecordKeys ?? []).filter(
-					(previous) => !containsRecordKey(currentRecordKeys, previous),
-				)
-			: []
+		const remove: PatchRemoveOp<Schema>[] =
+			shouldRead && !shouldReset
+				? (client.syncedRecordKeys ?? []).filter(
+						(previous) => !containsRecordKey(currentRecordKeys, previous),
+					)
+				: []
 		client.scanWindowKey = scanWindowKey
-		if (shouldRead) client.syncedRecordKeys = currentRecordKeys
+		if (shouldRead) {
+			client.syncedRecordKeys = currentRecordKeys
+			client.revision = revision
+			client.cookie = tag<Cookie>(this.rng?.randomId() ?? crypto.randomUUID())
+		}
 
 		return {
-			cookie: tag<Cookie>(revision),
-			patch: { set: records, remove },
+			cookie: client.cookie!,
+			patch: { ...(shouldReset ? { reset: true } : {}), set: records, remove },
 			lastMutationId,
 		}
 	}

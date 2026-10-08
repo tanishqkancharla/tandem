@@ -12,14 +12,6 @@ import {
 } from "./DstReplay.js"
 import { DstSimulation } from "./DstSimulation.js"
 
-function knownFailure(name: string): DstArtifact {
-	return parseArtifact(
-		readFileSync(new URL(`./known-failures/${name}.jsonl`, import.meta.url), {
-			encoding: "utf8",
-		}),
-	)
-}
-
 describe("Deterministic simulation testing", () => {
 	it("converges to the server with interleaved calls and no faults", async () => {
 		const result = await new DstSimulation({ seed: 3, steps: 300 }).execute()
@@ -157,22 +149,27 @@ describe("Deterministic simulation testing", () => {
 		})
 	})
 
-	// Known sync bugs, documented in known-failures/README.md. Each replay must
-	// still reach its recorded violation. When a bug is fixed, or the recording
-	// no longer applies, the test fails; then delete the recording.
-	describe("known sync bugs", () => {
-		it.each([
-			[
-				"a persisted optimistic record survives final pulls but is absent from the server",
-				"seed-13-crash-loses-outbox",
-			],
-		])("%s", async (_bug, name) => {
-			const artifact = knownFailure(name)
-
-			const replayed = await replay(artifact)
-
-			expect(replayed.divergence).toBeUndefined()
-			expect(replayed.violation).toEqual(artifact.outcome?.violation)
+	it("replays the crash ghost trace and removes stale persisted records", async () => {
+		const artifact = parseArtifact(
+			readFileSync(
+				new URL("./regressions/crash-ghost.jsonl", import.meta.url),
+				"utf8",
+			),
+		)
+		expect(await replay(artifact)).toEqual({
+			stepsCompleted: 15,
+			violation: undefined,
+			divergence: undefined,
 		})
+	})
+
+	it.each([
+		{ seed: 10, steps: 300, faultRate: 0.1 },
+		{ seed: 7, steps: 300, faultRate: 0.1, crashRate: 0.02 },
+	])("converges after lost removals and restarts: %j", async (options) => {
+		const result = await new DstSimulation(options).execute()
+		expect(result.violation).toBeUndefined()
+		expect(result.states.client1).toEqual(result.states.server)
+		expect(result.states.client2).toEqual(result.states.server)
 	})
 })
