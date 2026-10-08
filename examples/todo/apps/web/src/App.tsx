@@ -4,7 +4,6 @@ import {
 	Checkbox,
 	colors,
 	Flex,
-	Padding,
 	radius,
 	shadow,
 	text,
@@ -39,12 +38,19 @@ const cardClass = style(shadow.subtle, radius.lg, {
 	overflow: "hidden",
 })
 
-const titleClass = style(text("xl", 600, "highContrast"))
-const subtitleClass = style(text("sm", 400, "lowContrast"))
-const countClass = style(text("xs", 500, "accent"))
-const emptyClass = style(text("sm", 400, "lowContrast"), {
-	textAlign: "center",
-})
+const titleClass = style(
+	text({ size: "xl", fontWeight: 600, color: "highContrast" }),
+)
+const subtitleClass = style(
+	text({ size: "sm", fontWeight: 400, color: "lowContrast" }),
+)
+const countClass = style(text({ size: "xs", fontWeight: 500, color: "accent" }))
+const emptyClass = style(
+	text({ size: "sm", fontWeight: 400, color: "lowContrast" }),
+	{
+		textAlign: "center",
+	},
+)
 const growClass = style({
 	flex: "1 1 auto",
 	minWidth: 0,
@@ -101,7 +107,7 @@ export function App() {
 
 	return (
 		<div className={page}>
-			<Padding xy={8}>
+			<Flex column padding={8}>
 				<div className={shell}>
 					<Flex column gap={6}>
 						<Flex column gap={1}>
@@ -112,7 +118,7 @@ export function App() {
 						</Flex>
 
 						<div className={card}>
-							<Padding xy={4}>
+							<Flex column padding={4}>
 								<form
 									onSubmit={(event) => {
 										event.preventDefault()
@@ -132,14 +138,14 @@ export function App() {
 										<Button type="submit">Add</Button>
 									</Flex>
 								</form>
-							</Padding>
+							</Flex>
 
 							{todos.length === 0 ? (
-								<Padding x={4} y={8}>
+								<Flex column px={4} py={8}>
 									<p className={empty}>
 										Nothing here yet. Add a task to get started.
 									</p>
-								</Padding>
+								</Flex>
 							) : (
 								<Flex column>
 									{todos.map((todo) => (
@@ -147,7 +153,7 @@ export function App() {
 											key={todo.id}
 											className={todo.complete ? completedRow : row}
 										>
-											<Padding x={4} y={3}>
+											<Flex column px={4} py={3}>
 												<Flex row alignItems="center" gap={3}>
 													<div className={grow}>
 														<Checkbox
@@ -166,19 +172,19 @@ export function App() {
 														Delete
 													</Button>
 												</Flex>
-											</Padding>
+											</Flex>
 										</div>
 									))}
 								</Flex>
 							)}
 
-							<Padding x={4} y={3}>
+							<Flex column px={4} py={3}>
 								<p className={count}>{remaining} remaining</p>
-							</Padding>
+							</Flex>
 						</div>
 					</Flex>
 				</div>
-			</Padding>
+			</Flex>
 		</div>
 	)
 }

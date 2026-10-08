@@ -29,8 +29,19 @@ This codebase uses the [errore.org](https://errore.org) convention. Always read 
 
 ## Cursor Cloud specific instructions
 
-Tandem is a pnpm (`pnpm@12.3.4`) + Turborepo monorepo of three publishable **libraries** (`@tanishqkancharla/tandem-core`, `@tanishqkancharla/tandem-server`, `@tanishqkancharla/tandem-react`) plus examples. Standard commands live in the root `package.json` and delegate to Turbo: `pnpm build`, `pnpm lint`, `pnpm type-check`, `pnpm format`, `pnpm test`.
+Tandem is a pnpm (`pnpm@12.10.1`) + Turborepo monorepo of three publishable **libraries** (`@tanishqkancharla/tandem-core`, `@tanishqkancharla/tandem-server`, `@tanishqkancharla/tandem-react`) plus examples. Standard commands live in the root `package.json` and delegate to Turbo: `pnpm build`, `pnpm lint`, `pnpm type-check`, `pnpm format`, `pnpm test`.
 
 - The default `pnpm test` runs fully in-process: `@tanishqkancharla/tandem-core` uses `fake-indexeddb`, and `@tanishqkancharla/tandem-server` covers `TandemServer` with memory and JSON-file storage.
 - The todo example has Hono and Vite development servers. Run its consumer-level tests with `pnpm --filter @tandem/example-todo-web test:e2e`.
 - Sync gotcha when writing demos/tests: the sync engine only propagates data for scan windows a client is subscribed to. A client must `subscribe(...)` (or call `pullFromRemote()`) before committed records from another client sharing the same remote will appear locally.
+
+<!-- BEGIN:turborepo-agent-rules -->
+
+# This is NOT the Turborepo you know
+
+Turborepo configuration, task behavior, and CLI commands can vary between installed versions and may differ from your training data. Resolve the `turbo` package from this file's directory or relevant workspace; in monorepos, it may not be visible from the repository root. For example, run `node -p "require.resolve('turbo/package.json')"` from a workspace that depends on `turbo`.
+
+Read `docs/README.md` inside that installed package first, then read the relevant pages from its `docs/` directory before changing Turborepo configuration or commands. Heed deprecation notices. These bundled docs match the installed package version and are available without network access.
+
+This block is written and re-added by `turbo` before repository-scoped commands when an AI agent is detected. In the Turborepo source repository, its template is defined in `crates/turborepo-cli/src/cli/agent_guidance.rs`. Removing the managed block while updates are enabled means a later qualifying invocation will add it again. Set `"agentGuidance": false` in the root `turbo.json` or `turbo.jsonc` to opt out; this does not remove an existing block. Keep the block committed with your work to avoid an uncommitted change on the next agent invocation.
+<!-- END:turborepo-agent-rules -->
