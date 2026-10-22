@@ -13,7 +13,6 @@ import type {
 	RemoteApi,
 	RemoteMutationGapError,
 	RngApi,
-	ScanWindow,
 	AnyRelations,
 	RuntimeSchemaDefinition,
 	SchemaToTupleSchema,
@@ -78,8 +77,6 @@ type SyncedRecordKey<
 type SyncClientState<Schema extends AnySchema> = {
 	poke?: ClientApi["poke"]
 	cookie?: Cookie
-	revision?: number
-	scanWindowKey?: string
 	syncedRecordKeys?: SyncedRecordKey<Schema>[]
 }
 
@@ -145,7 +142,6 @@ export class TandemServer<
 	private readonly syncClients = new Map<ClientId, SyncClientState<Schema>>()
 	private readonly tupleDb: AsyncTupleDatabaseClient<TandemTuple<Schema>>
 	private readonly rng?: RngApi
-	private revision = 0
 	// Tuple transactions batch writes but do not snapshot reads or serialize
 	// asynchronous storage commits. Order sync reads and commits here.
 	private queue: Promise<void> = Promise.resolve()
@@ -370,8 +366,8 @@ export class TandemServer<
 	> {
 		const { clientId, cookie, scanWindow } = args
 		const client = this.getSyncClient(clientId)
-		const scanWindowKey = this.encodeScanWindow(scanWindow)
-		if (scanWindowKey instanceof Error)
+		const serialized = errore.try(() => JSON.stringify(scanWindow))
+		if (serialized instanceof Error)
 			return {
 				error: "invalid-request",
 				message: "Scan window must be serializable",
@@ -379,18 +375,12 @@ export class TandemServer<
 		const lastMutationId = await this.readLastMutationId(clientId, "pull")
 		if (lastMutationId instanceof Error) return lastMutationId
 
-		const revision = this.revision
 		const shouldReset = cookie === undefined || cookie !== client.cookie
-		const scanWindowChanged = client.scanWindowKey !== scanWindowKey
-		const shouldRead =
-			shouldReset || scanWindowChanged || client.revision !== revision
-		const records = shouldRead
-			? await executeScanWindowAsync<Schema, Relations>(
-					this.recordDb,
-					this.relations,
-					scanWindow,
-				).catch((cause) => new TandemServerError({ operation: "pull", cause }))
-			: []
+		const records = await executeScanWindowAsync<Schema, Relations>(
+			this.recordDb,
+			this.relations,
+			scanWindow,
+		).catch((cause) => new TandemServerError({ operation: "pull", cause }))
 		if (records instanceof InvalidScanWindowError) {
 			return { error: "invalid-request", message: records.message }
 		}
@@ -399,33 +389,20 @@ export class TandemServer<
 		const currentRecordKeys = records.map((record) =>
 			scanWindowRecordToKey(record),
 		)
-		const remove: PatchRemoveOp<Schema>[] =
-			shouldRead && !shouldReset
-				? (client.syncedRecordKeys ?? []).filter(
-						(previous) => !containsRecordKey(currentRecordKeys, previous),
-					)
-				: []
-		client.scanWindowKey = scanWindowKey
-		if (shouldRead) {
-			client.syncedRecordKeys = currentRecordKeys
-			client.revision = revision
-			client.cookie = tag<Cookie>(this.rng?.randomId() ?? crypto.randomUUID())
-		}
+		const remove: PatchRemoveOp<Schema>[] = shouldReset
+			? []
+			: (client.syncedRecordKeys ?? []).filter(
+					(previous) => !containsRecordKey(currentRecordKeys, previous),
+				)
+		const nextCookie = tag<Cookie>(this.rng?.randomId() ?? crypto.randomUUID())
+		client.syncedRecordKeys = currentRecordKeys
+		client.cookie = nextCookie
 
 		return {
-			cookie: client.cookie!,
+			cookie: nextCookie,
 			patch: { ...(shouldReset ? { reset: true } : {}), set: records, remove },
 			lastMutationId,
 		}
-	}
-
-	private encodeScanWindow(
-		scanWindow: ScanWindow<Schema>,
-	): TandemServerError | string {
-		const result = errore.try(() => JSON.stringify(scanWindow))
-		return result instanceof Error
-			? new TandemServerError({ operation: "pull", cause: result })
-			: result
 	}
 
 	private async commitTransaction(
@@ -441,7 +418,6 @@ export class TandemServer<
 		if (hasWrites instanceof Error) return hasWrites
 		if (!hasWrites) return
 
-		this.revision += 1
 		this.emitPokes()
 	}
 

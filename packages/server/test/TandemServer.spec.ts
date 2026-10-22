@@ -186,6 +186,59 @@ test("lost subscription responses and server restarts reset an unknown view", as
 	await server.close()
 })
 
+test("pull reads external writes with the same cookie and recovers a lost removal response", async () => {
+	const { server, storage } = createServer()
+	const seedTx = server.transact()
+	seedTx.set("users", { id: "user-1", name: "Ada" })
+	seedTx.set("users", { id: "user-2", name: "Grace" })
+	await server.commit(seedTx)
+	const clientId = tag<ClientId>("external-writes-client")
+	const scanWindow: ScanWindow<TestSchema> = [{ collection: "users" }]
+	const initial = await server.pull({ clientId, scanWindow })
+	assert(!("error" in initial))
+
+	// External writes do not pass through the server or change the subscription window.
+	await storage.commit({
+		set: [
+			{
+				key: ["record", "users", "user-1"],
+				value: { id: "user-1", name: "Updated Ada" },
+			},
+			{
+				key: ["record", "users", "user-3"],
+				value: { id: "user-3", name: "Lin" },
+			},
+		],
+		remove: [["record", "users", "user-2"]],
+	})
+	const changed = await server.pull({
+		clientId,
+		scanWindow,
+		cookie: initial.cookie,
+	})
+	assert(!("error" in changed))
+	const expectedSet = [
+		{ collection: "users", value: { id: "user-1", name: "Updated Ada" } },
+		{ collection: "users", value: { id: "user-3", name: "Lin" } },
+	]
+	expect(changed.patch).toEqual({
+		set: expectedSet,
+		remove: [{ collection: "users", id: "user-2" }],
+	})
+	expect(changed.cookie).not.toBe(initial.cookie)
+	expect(changed.lastMutationId).toBe(0)
+
+	// If the response was lost, retrying its old cookie still delivers the deletion by reset.
+	const retry = await server.pull({
+		clientId,
+		scanWindow,
+		cookie: initial.cookie,
+	})
+	assert(!("error" in retry))
+	expect(retry.patch).toEqual({ reset: true, set: expectedSet, remove: [] })
+	await server.close()
+})
+
 test("transactions provide typed CRUD and read their staged writes", async () => {
 	const { server, storage } = createServer()
 	const tx = server.transact()
@@ -575,15 +628,30 @@ test("remote pushes preserve operation order and acknowledge the last mutation o
 		},
 	])
 
-	// Unchanged pulls stay empty but still carry the acknowledgement.
+	// Unchanged pulls resend current records and still carry the acknowledgement.
 	const unchanged = await server.pull({
 		clientId,
 		cookie: acknowledged.cookie,
 		scanWindow,
 	})
-	expect(unchanged).toEqual({
-		cookie: acknowledged.cookie,
-		patch: { set: [], remove: [] },
+	assert(!("error" in unchanged))
+	expect(unchanged.cookie).not.toBe(acknowledged.cookie)
+	expect(unchanged).toMatchObject({
+		patch: {
+			set: [
+				{
+					collection: "threads",
+					value: {
+						id: "thread-1",
+						ownerId: "user-1",
+						title: "Last write wins",
+						status: "open",
+						createdAt: 2,
+					},
+				},
+			],
+			remove: [],
+		},
 		lastMutationId: 2,
 	})
 
@@ -762,8 +830,7 @@ test("empty mutations advance acknowledgement once, without re-poking on retry",
 	await server.push({ clientId, mutations })
 	expect(
 		await server.pull({ clientId, scanWindow: [], cookie: confirmed.cookie }),
-	).toEqual({
-		cookie: confirmed.cookie,
+	).toMatchObject({
 		lastMutationId: 1,
 		patch: { set: [], remove: [] },
 	})
@@ -930,15 +997,16 @@ test("pull diffs filtered, paginated, and nested client views", async () => {
 	expect(patchSetKeys(shrunk.patch)).toEqual(["threads.thread-2"])
 	expect(patchRemoveKeys(shrunk.patch)).toEqual(["users.user-1"])
 
-	// An unchanged cookie and scan window avoid another snapshot patch.
+	// An unchanged cookie and scan window still read and resend the current page.
 	const unchanged = await server.pull({
 		clientId,
 		cookie: shrunk.cookie,
 		scanWindow: rootOnlyPage,
 	})
 	assert(!("error" in unchanged))
-	expect(unchanged.patch).toEqual({ set: [], remove: [] })
-	expect(unchanged.cookie).toBe(shrunk.cookie)
+	expect(patchSetKeys(unchanged.patch)).toEqual(["threads.thread-2"])
+	expect(unchanged.patch.remove).toEqual([])
+	expect(unchanged.cookie).not.toBe(shrunk.cookie)
 
 	await server.close()
 })
@@ -1070,8 +1138,7 @@ test("failed pushes do not acknowledge, advance, or poke", async () => {
 		cookie: initial.cookie,
 		scanWindow,
 	})
-	expect(afterFailure).toEqual({
-		cookie: initial.cookie,
+	expect(afterFailure).toMatchObject({
 		patch: { set: [], remove: [] },
 		lastMutationId: 0,
 	})

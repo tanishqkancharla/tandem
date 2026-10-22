@@ -1,12 +1,12 @@
 # Authoritative storage sync
 
-Phase 1 is implemented and verified. Phases 2 and 3 remain planned. The server still skips some storage scans until Phase 2 lands; this adapter change alone does not guarantee client convergence.
+Phases 1 and 2 are implemented and verified. Every pull now reads current storage, so external changes become visible on the next pull or reconnect. Phase 3, storage-triggered client pokes, remains planned.
 
 ## Problem overview
 
-External writes can leave subscribed clients stale indefinitely. `TandemServer.readPull` skips scanning application records when its local revision, the client's cookie, and the subscription window have not changed. An external write changes none of those inputs, so manual pulls and reconnects can keep returning empty patches.
+Before Phase 2, external writes could leave subscribed clients stale indefinitely. `TandemServer.readPull` skipped scanning application records when its local revision, the client's cookie, and the subscription window had not changed. An external write changed none of those inputs, so manual pulls and reconnects kept returning empty patches.
 
-The current pull path assumes every application write passed through Tandem:
+The old pull path assumed every application write passed through Tandem:
 
 ```callstack
  TandemServer.pull [[packages/server/src/TandemServer.ts#TandemServer.pull]]
@@ -175,7 +175,7 @@ index 8c1cbe5..f682a7f 100644
  	private async writeToDisk(tuples: TandemTuple<Schema>[]) {
 ```
 
-### Phase 2: Make each pull authoritative
+### ✅ Phase 2: Make each pull authoritative
 
 Today
 
@@ -187,8 +187,22 @@ Execute the requested scan window on every pull. Remove the server revision, per
 
 Cookie comparison still decides whether a response is a reset or a diff. For a valid cookie, compare the previous keys with the current scan results to derive removals. For a missing or mismatched cookie, return the existing reset snapshot. Issue a fresh cookie for each generated view so losing any response still makes an old-cookie retry reset safely.
 
+Every pull now executes the requested scan window. The local revision and cached window no longer gate storage reads:
+
+```callstack
+ TandemServer.pull [[packages/server/src/TandemServer.ts#TandemServer.pull]]
+ └── TandemServer.readPull [[packages/server/src/TandemServer.ts#TandemServer.readPull]]
+    ├── TandemServer.readLastMutationId # retain acknowledgement ordering
+-   ├── skip scanning an unchanged revision and window [[authoritative-pull:old:382-388]]
++   ├── executeScanWindowAsync # read current records every time [[authoritative-pull:new:379-383]]
++   ├── compare previous and current record keys # derive removals [[authoritative-pull:new:392-397]]
++   └── publish fresh cookie and current keys # retain lost-response recovery [[authoritative-pull:new:398-405]]
+```
+
+The server publishes its new cookie and key history only after validation and reads succeed. The implementation keeps the existing queue and reset protocol:
+
 ```tsx
-// Proposed behavior; error conversion and request validation are omitted here.
+// Implemented behavior; error conversion and request validation are omitted here.
 async function readPull(request) {
   const client = getSyncClient(request.clientId)
   const lastMutationId = await readLastMutationId(request.clientId)
@@ -208,11 +222,133 @@ async function readPull(request) {
 }
 ```
 
-The pseudocode names the behavior, not new required helpers. Keep reads and publication of the new cookie and key set within the existing server queue, and publish that state only after all required reads succeed. Preserve the existing acknowledgement ordering and error behavior.
+The pseudocode names the behavior, not new helpers. Reads and publication stay within the existing server queue; acknowledgement ordering and error behavior are unchanged. Unchanged pulls resend current records and advance the cookie rather than returning a cached empty patch.
 
-Extend `packages/server/test/TandemServer.spec.ts` to pull a view, directly change its backing storage, and pull with the same cookie and window. Verify an insert, an update, and a deletion arrive without a Tandem commit. Replace the existing unchanged-view assertion: another pull may resend current records and advance the cookie rather than returning an empty patch with the same cookie.
+The regression in [[packages/server/test/TandemServer.spec.ts]] pulls a view, directly updates, inserts, and deletes backing records, then pulls with the same cookie and window. The response includes current records and the missing key. Retrying the old cookie simulates losing that deletion response and returns a reset with the authoritative records.
 
-Add a two-client regression in the existing core sync tests using Gatekeeper and an externally writable backing-storage fixture. Verify manual pull and reconnect recover external changes. Rerun the lost-removal-response test to ensure rescanning preserves deletion recovery and pending writes. Existing relational and paginated scan-window coverage must continue passing.
+The two-client Gatekeeper regression in [[packages/core/test/sync/basic.spec.ts]] uses real JSON-file storage. One client pulls manually and the other reconnects after external updates, inserts, and removals. Both converge. Swapping refresh paths after removing every remaining record also clears both clients' views.
+
+Both new regressions failed against the old server and pass with the change. `pnpm run type-check`, `pnpm test` (166 tests), and `pnpm run lint` pass, including lost-removal-response recovery, pending-write replay, relational queries, and paginated windows. The following patch records the Phase 2 implementation. Phase 3 notifications and safety polling are not part of this change.
+
+```source-diff:authoritative-pull:packages/server/src/TandemServer.ts
+diff --git a/packages/server/src/TandemServer.ts b/packages/server/src/TandemServer.ts
+index 84990e9..cae1cd0 100644
+--- a/packages/server/src/TandemServer.ts
++++ b/packages/server/src/TandemServer.ts
+@@ -13,7 +13,6 @@ import type {
+ 	RemoteApi,
+ 	RemoteMutationGapError,
+ 	RngApi,
+-	ScanWindow,
+ 	AnyRelations,
+ 	RuntimeSchemaDefinition,
+ 	SchemaToTupleSchema,
+@@ -78,8 +77,6 @@ type SyncedRecordKey<
+ type SyncClientState<Schema extends AnySchema> = {
+ 	poke?: ClientApi["poke"]
+ 	cookie?: Cookie
+-	revision?: number
+-	scanWindowKey?: string
+ 	syncedRecordKeys?: SyncedRecordKey<Schema>[]
+ }
+ 
+@@ -145,7 +142,6 @@ export class TandemServer<
+ 	private readonly syncClients = new Map<ClientId, SyncClientState<Schema>>()
+ 	private readonly tupleDb: AsyncTupleDatabaseClient<TandemTuple<Schema>>
+ 	private readonly rng?: RngApi
+-	private revision = 0
+ 	// Tuple transactions batch writes but do not snapshot reads or serialize
+ 	// asynchronous storage commits. Order sync reads and commits here.
+ 	private queue: Promise<void> = Promise.resolve()
+@@ -370,8 +366,8 @@ export class TandemServer<
+ 	> {
+ 		const { clientId, cookie, scanWindow } = args
+ 		const client = this.getSyncClient(clientId)
+-		const scanWindowKey = this.encodeScanWindow(scanWindow)
+-		if (scanWindowKey instanceof Error)
++		const serialized = errore.try(() => JSON.stringify(scanWindow))
++		if (serialized instanceof Error)
+ 			return {
+ 				error: "invalid-request",
+ 				message: "Scan window must be serializable",
+@@ -379,18 +375,12 @@ export class TandemServer<
+ 		const lastMutationId = await this.readLastMutationId(clientId, "pull")
+ 		if (lastMutationId instanceof Error) return lastMutationId
+ 
+-		const revision = this.revision
+ 		const shouldReset = cookie === undefined || cookie !== client.cookie
+-		const scanWindowChanged = client.scanWindowKey !== scanWindowKey
+-		const shouldRead =
+-			shouldReset || scanWindowChanged || client.revision !== revision
+-		const records = shouldRead
+-			? await executeScanWindowAsync<Schema, Relations>(
+-					this.recordDb,
+-					this.relations,
+-					scanWindow,
+-				).catch((cause) => new TandemServerError({ operation: "pull", cause }))
+-			: []
++		const records = await executeScanWindowAsync<Schema, Relations>(
++			this.recordDb,
++			this.relations,
++			scanWindow,
++		).catch((cause) => new TandemServerError({ operation: "pull", cause }))
+ 		if (records instanceof InvalidScanWindowError) {
+ 			return { error: "invalid-request", message: records.message }
+ 		}
+@@ -399,35 +389,22 @@ export class TandemServer<
+ 		const currentRecordKeys = records.map((record) =>
+ 			scanWindowRecordToKey(record),
+ 		)
+-		const remove: PatchRemoveOp<Schema>[] =
+-			shouldRead && !shouldReset
+-				? (client.syncedRecordKeys ?? []).filter(
+-						(previous) => !containsRecordKey(currentRecordKeys, previous),
+-					)
+-				: []
+-		client.scanWindowKey = scanWindowKey
+-		if (shouldRead) {
+-			client.syncedRecordKeys = currentRecordKeys
+-			client.revision = revision
+-			client.cookie = tag<Cookie>(this.rng?.randomId() ?? crypto.randomUUID())
+-		}
++		const remove: PatchRemoveOp<Schema>[] = shouldReset
++			? []
++			: (client.syncedRecordKeys ?? []).filter(
++					(previous) => !containsRecordKey(currentRecordKeys, previous),
++				)
++		const nextCookie = tag<Cookie>(this.rng?.randomId() ?? crypto.randomUUID())
++		client.syncedRecordKeys = currentRecordKeys
++		client.cookie = nextCookie
+ 
+ 		return {
+-			cookie: client.cookie!,
++			cookie: nextCookie,
+ 			patch: { ...(shouldReset ? { reset: true } : {}), set: records, remove },
+ 			lastMutationId,
+ 		}
+ 	}
+ 
+-	private encodeScanWindow(
+-		scanWindow: ScanWindow<Schema>,
+-	): TandemServerError | string {
+-		const result = errore.try(() => JSON.stringify(scanWindow))
+-		return result instanceof Error
+-			? new TandemServerError({ operation: "pull", cause: result })
+-			: result
+-	}
+-
+ 	private async commitTransaction(
+ 		transaction: TandemServerTransaction<Schema, Relations>,
+ 		options: CommitOptions,
+@@ -441,7 +418,6 @@ export class TandemServer<
+ 		if (hasWrites instanceof Error) return hasWrites
+ 		if (!hasWrites) return
+ 
+-		this.revision += 1
+ 		this.emitPokes()
+ 	}
+ 
+```
 
 ### Phase 3: Let storage changes request client refreshes
 

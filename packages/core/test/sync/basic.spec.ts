@@ -1,8 +1,15 @@
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import {
 	type LoggerApi,
 	type RemoteApi,
 	TandemClient,
 } from "@tanishqkancharla/tandem-core"
+import {
+	TandemServer,
+	TandemServerJsonFileStorage,
+} from "@tanishqkancharla/tandem-server"
 import * as errore from "errore"
 import { describe, expect, vi } from "vitest"
 import {
@@ -67,7 +74,97 @@ const schemaSyncTest = test.extend<{
 	},
 })
 
+const externalStorageTest = test.extend<{
+	backingStorage: TandemServerJsonFileStorage<TestsSchema>
+	server: TandemServer<TestsSchema, {}>
+}>({
+	backingStorage: async ({}, use) => {
+		const directory = await fs.mkdtemp(
+			path.join(os.tmpdir(), "tandem-external-sync-"),
+		)
+		await using cleanup = new errore.AsyncDisposableStack()
+		cleanup.defer(() => fs.rm(directory, { recursive: true, force: true }))
+		await use(
+			new TandemServerJsonFileStorage({
+				filePath: path.join(directory, "storage.json"),
+			}),
+		)
+	},
+	server: async ({ backingStorage }, use) => {
+		const server = new TandemServer({
+			schema: testsRuntimeSchema,
+			relations: {},
+			storage: backingStorage,
+		})
+		await use(server)
+		await server.close()
+	},
+})
+
 describe("TandemClient sync", () => {
+	externalStorageTest(
+		"manual pulls and reconnects recover external writes for both clients",
+		async ({ gatekeeper, server, backingStorage }) => {
+			const { client1, client2 } = gatekeeper
+			const query = { collection: "todos" } as const
+			const original = todo("a", { text: "Original" })
+			const removed = todo("b", { text: "Remove externally" })
+			const seedTx = server.transact()
+			seedTx.set("todos", original)
+			seedTx.set("todos", removed)
+			await server.commit(seedTx)
+			for (const client of [client1, client2]) {
+				client.subscribe(query)
+				await (
+					await client.pullFromRemote()
+				).result
+			}
+			await gatekeeper.deactivateGatesAndSettle()
+
+			// External updates, inserts, and removals arrive through either refresh path.
+			const updated = todo("a", { text: "External update", done: true })
+			const inserted = todo("c", { text: "External insert" })
+			await backingStorage.commit({
+				set: [updated, inserted].map((value) => ({
+					key: ["record", "todos", value.id],
+					value,
+				})),
+				remove: [["record", "todos", removed.id]],
+			})
+			await (
+				await client1.pullFromRemote()
+			).result
+			await (
+				await client2.disconnect()
+			).result
+			await (
+				await client2.connect()
+			).result
+			expect(client1.query(query)).toEqual([updated, inserted])
+			expect(client2.query(query)).toEqual([updated, inserted])
+
+			// Swap refresh paths and remove every record, so an empty window clears old data too.
+			await backingStorage.commit({
+				remove: [updated, inserted].map((value) => [
+					"record",
+					"todos",
+					value.id,
+				]),
+			})
+			await (
+				await client1.disconnect()
+			).result
+			await (
+				await client1.connect()
+			).result
+			await (
+				await client2.pullFromRemote()
+			).result
+			expect(client1.query(query)).toEqual([])
+			expect(client2.query(query)).toEqual([])
+		},
+	)
+
 	test("drops a confirmed write that no subscription covers", async ({
 		gatekeeper,
 	}) => {

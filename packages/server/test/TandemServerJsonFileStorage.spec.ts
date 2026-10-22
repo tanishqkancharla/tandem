@@ -133,10 +133,17 @@ test("reopened servers acknowledge retries without overwriting another client's 
 	expect(before.lastMutationId).toBe(1)
 	expect(
 		await reopened.pull({ clientId, scanWindow, cookie: before.cookie }),
-	).toEqual({
-		cookie: before.cookie,
+	).toMatchObject({
 		lastMutationId: 1,
-		patch: { set: [], remove: [] },
+		patch: {
+			set: [
+				{
+					collection: "todos",
+					value: { id: "todo-1", title: "Newer edit", completed: true },
+				},
+			],
+			remove: [],
+		},
 	})
 	expect(await reopened.query({ collection: "todos" })).toEqual([
 		{ id: "todo-1", title: "Newer edit", completed: true },
