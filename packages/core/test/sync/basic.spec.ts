@@ -76,6 +76,10 @@ const schemaSyncTest = test.extend<{
 
 const externalStorageTest = test.extend<{
 	backingStorage: TandemServerJsonFileStorage<TestsSchema>
+	storageChanges: {
+		subscribe: (onChange: () => void) => () => void
+		notify: () => void
+	}
 	server: TandemServer<TestsSchema, {}>
 }>({
 	backingStorage: async ({}, use) => {
@@ -90,11 +94,30 @@ const externalStorageTest = test.extend<{
 			}),
 		)
 	},
-	server: async ({ backingStorage }, use) => {
-		const server = new TandemServer({
+	storageChanges: async ({}, use) => {
+		const listeners = new Set<() => void>()
+		await use({
+			subscribe: (onChange) => {
+				listeners.add(onChange)
+				return () => {
+					listeners.delete(onChange)
+				}
+			},
+			notify: () => {
+				for (const onChange of listeners) onChange()
+			},
+		})
+	},
+	server: async ({ backingStorage, storageChanges }, use) => {
+		const server = new TandemServer<TestsSchema, {}>({
 			schema: testsRuntimeSchema,
 			relations: {},
-			storage: backingStorage,
+			storage: {
+				scan: (args) => backingStorage.scan(args),
+				commit: (writes) => backingStorage.commit(writes),
+				close: () => backingStorage.close(),
+				subscribe: storageChanges.subscribe,
+			},
 		})
 		await use(server)
 		await server.close()
@@ -102,6 +125,78 @@ const externalStorageTest = test.extend<{
 })
 
 describe("TandemClient sync", () => {
+	externalStorageTest(
+		"storage notifications refresh both clients without manual pulls",
+		async ({ gatekeeper, backingStorage, storageChanges }) => {
+			const { client1, client2 } = gatekeeper
+			const query = { collection: "todos" } as const
+			for (const client of [client1, client2]) {
+				client.subscribe(query)
+				await (
+					await client.pullFromRemote()
+				).result
+			}
+			await gatekeeper.deactivateGatesAndSettle()
+
+			// A notification after external inserts prompts both clients to read storage.
+			const original = todo("a", { text: "Original" })
+			const removed = todo("b", { text: "Remove externally" })
+			await backingStorage.commit({
+				set: [original, removed].map((value) => ({
+					key: ["record", "todos", value.id],
+					value,
+				})),
+			})
+			storageChanges.notify()
+			await expectQuery(client1, query).toResolveTo([original, removed])
+			await expectQuery(client2, query).toResolveTo([original, removed])
+
+			// Duplicate notifications preserve updates and deletion history.
+			const updated = todo("a", { text: "External update", priority: 9 })
+			await backingStorage.commit({
+				set: [{ key: ["record", "todos", updated.id], value: updated }],
+				remove: [["record", "todos", removed.id]],
+			})
+			storageChanges.notify()
+			storageChanges.notify()
+			await expectQuery(client1, query).toResolveTo([updated])
+			await expectQuery(client2, query).toResolveTo([updated])
+		},
+	)
+
+	externalStorageTest(
+		"a storage notification during a pull refreshes again after the old response",
+		async ({ gatekeeper, backingStorage, storageChanges }) => {
+			const { client1 } = gatekeeper
+			const query = { collection: "todos" } as const
+			const original = todo("a", { text: "Before the pull" })
+			await backingStorage.commit({
+				set: [{ key: ["record", "todos", original.id], value: original }],
+			})
+			client1.subscribe(query)
+			await (
+				await client1.pullFromRemote()
+			).result
+			await gatekeeper.deactivateGatesAndSettle()
+			await gatekeeper.activateGates()
+			const pull = await client1.pullFromRemote()
+			await pull.continueTo("server")
+			pull.assertSentBy("server").assertWaitingFor("client1")
+
+			// The old response is held in flight while storage changes and notifies.
+			const updated = todo("a", { text: "Changed during the pull" })
+			await backingStorage.commit({
+				set: [{ key: ["record", "todos", updated.id], value: updated }],
+			})
+			storageChanges.notify()
+			await pull.continueToCompletion()
+
+			// Delivering pending work must run a fresh pull, not discard the notification.
+			await gatekeeper.deactivateGatesAndSettle()
+			await expectQuery(client1, query).toResolveTo([updated])
+		},
+	)
+
 	externalStorageTest(
 		"manual pulls and reconnects recover external writes for both clients",
 		async ({ gatekeeper, server, backingStorage }) => {

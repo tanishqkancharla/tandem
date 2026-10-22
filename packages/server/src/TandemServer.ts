@@ -142,6 +142,8 @@ export class TandemServer<
 	private readonly syncClients = new Map<ClientId, SyncClientState<Schema>>()
 	private readonly tupleDb: AsyncTupleDatabaseClient<TandemTuple<Schema>>
 	private readonly rng?: RngApi
+	private readonly unsubscribeStorage?: () => void
+	private closed = false
 	// Tuple transactions batch writes but do not snapshot reads or serialize
 	// asynchronous storage commits. Order sync reads and commits here.
 	private queue: Promise<void> = Promise.resolve()
@@ -154,6 +156,10 @@ export class TandemServer<
 			{ rng: args.rng },
 		)
 		this.tupleDb = new AsyncTupleDatabaseClient<TandemTuple<Schema>>(database)
+		this.unsubscribeStorage = args.storage.subscribe?.(() => {
+			if (this.closed) return
+			this.emitPokes()
+		})
 	}
 
 	private get recordDb() {
@@ -272,6 +278,8 @@ export class TandemServer<
 	}
 
 	async close(): Promise<void> {
+		this.closed = true
+		this.unsubscribeStorage?.()
 		for (const destroy of this.subscriptions) destroy()
 		this.syncClients.clear()
 

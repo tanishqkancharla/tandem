@@ -1,6 +1,6 @@
 # Authoritative storage sync
 
-Phases 1 and 2 are implemented and verified. Every pull now reads current storage, so external changes become visible on the next pull or reconnect. Phase 3, storage-triggered client pokes, remains planned.
+All three phases are implemented and verified. Every pull reads current storage. Adapters with change notifications can now trigger client pulls through the optional storage subscription. The JSON-file adapter has no watcher and still needs an existing pull trigger for external edits.
 
 ## Problem overview
 
@@ -350,7 +350,7 @@ index 84990e9..cae1cd0 100644
  
 ```
 
-### Phase 3: Let storage changes request client refreshes
+### ✅ Phase 3: Let storage changes request client refreshes
 
 Today
 
@@ -360,18 +360,34 @@ Proposed
 
 Add an optional synchronous `subscribe` method to the server-storage interface. It registers a callback and returns a synchronous unsubscribe function. The constructor registers once when the adapter supports it; `close` unregisters before closing storage. The subscription belongs to the server instance, not to each connected client.
 
+The storage callback now reaches the same poke path as a Tandem commit. It requests client refreshes without resetting cookies or deleting previously synchronized record keys:
+
+```callstack
+ TandemServer.constructor
++└── TandemServerStorageApi.subscribe # register one backend listener [[storage-change-hook:new:23-29]]
++   └── TandemServer.emitPokes # request client pulls unless closing [[storage-pokes:new:159-162]]
+ TandemServer.close
++├── mark the server closed # ignore notifications during teardown [[storage-pokes:new:281]]
++└── unsubscribe from storage # release the backend listener [[storage-pokes:new:282]]
+```
+
+The callback returns immediately. Closing marks the server closed before calling the unsubscribe function, so even an already queued notification cannot request new work during teardown:
+
 ```tsx
-// Proposed addition to TandemServerStorageApi.
+// Optional addition to TandemServerStorageApi.
 interface StorageChangeNotifications {
   subscribe?(onChange: () => void): () => void
 }
 
-// Proposed server integration, in addition to existing commit-triggered pokes.
+// Implemented server integration, in addition to existing commit-triggered pokes.
+let closed = false
 const unsubscribe = storage.subscribe?.(() => {
+  if (closed) return
   emitPokes() // Request pulls; do not clear cookies or previously sent keys.
 })
 
 async function close() {
+  closed = true
   unsubscribe?.()
   await closeExistingServerResources()
 }
@@ -381,9 +397,72 @@ An adapter must signal after changed data becomes readable through `scan`, inclu
 
 No revision increment is needed after Phase 2 because every pull already scans. The server is invalidating the client's assumption that its view is current, not discarding the history needed for deletion diffs. Existing client `TaskQueue` behavior coalesces pending pulls and schedules a subsequent pull when a notification arrives during an in-flight one.
 
-Keep pokes after Tandem commits for adapters without subscriptions. If an adapter also reports those writes, duplicate pokes are acceptable. Register before the server is exposed to requests, ignore late notifications after close begins, and release the listener during server cleanup. A backend connection that needs asynchronous setup should be prepared by the adapter before constructing the server; this hook does not introduce a new server readiness API.
+Pokes after Tandem commits remain unchanged for adapters without subscriptions. If an adapter also reports those writes, duplicate pokes are acceptable. Registration happens before the constructor returns, and the server releases the listener during cleanup. A backend connection that needs asynchronous setup should be prepared by the adapter before constructing the server; this hook does not introduce a new server readiness API.
 
-Extend the backing-storage test adapter to publish notifications for simulated external commits. Through Gatekeeper, verify two subscribed clients observe external inserts, updates, and deletions without an explicit pull in the test. Also cover a notification arriving during a pull and closing a server without leaving a live listener. Reuse the existing lost-response and mutation-replay tests rather than introducing new wire messages or a second reconciliation algorithm.
+The notification-capable fixture in [[packages/core/test/sync/basic.spec.ts]] wraps real JSON-file storage with a controllable change source. Two subscribed clients observe external inserts, updates, and deletions after notifications, without a manual pull after those writes. Duplicate notifications are harmless. Another regression holds an old pull response in flight, changes storage, and notifies; after that response arrives, the client performs another pull and converges.
+
+The lifecycle regression in [[packages/server/test/TandemServer.spec.ts]] verifies one backend listener with multiple connected clients, deletion diffs after duplicate notifications, listener release, and ignored callbacks during and after close. All three new regressions fail against the Phase 2 server and pass with this change. `pnpm run type-check`, `pnpm test` (169 tests), `pnpm run lint`, and targeted formatting checks pass, including existing lost-response and pending-write replay coverage.
+
+The implementation adds no polling, JSON-file watcher, client protocol messages, or invalidation for server-side query subscriptions. These patches record the optional adapter contract and server integration.
+
+```source-diff:storage-change-hook:packages/server/src/storage/TandemServerStorage.ts
+diff --git a/packages/server/src/storage/TandemServerStorage.ts b/packages/server/src/storage/TandemServerStorage.ts
+index 4ac6541..bcfcb76 100644
+--- a/packages/server/src/storage/TandemServerStorage.ts
++++ b/packages/server/src/storage/TandemServerStorage.ts
+@@ -20,5 +20,13 @@ export interface TandemServerStorageApi<Schema extends AnySchema> {
+ 
+ 	commit(writes: WriteOps<TandemTuple<Schema>>): Promise<void>
+ 
++	/**
++	 * Optional change notifications, including external writes when supported.
++	 * Notify after changes are readable through scan. Duplicate notifications are
++	 * allowed. Callbacks request refreshes synchronously; do not await client pulls.
++	 * Return a synchronous unsubscribe function.
++	 */
++	subscribe?(onChange: () => void): () => void
++
+ 	close(): Promise<void>
+ }
+```
+
+The server owns the listener alongside its other resources and stops notifications before closing them:
+
+```source-diff:storage-pokes:packages/server/src/TandemServer.ts
+diff --git a/packages/server/src/TandemServer.ts b/packages/server/src/TandemServer.ts
+index cae1cd0..5dfc355 100644
+--- a/packages/server/src/TandemServer.ts
++++ b/packages/server/src/TandemServer.ts
+@@ -142,6 +142,8 @@ export class TandemServer<
+ 	private readonly syncClients = new Map<ClientId, SyncClientState<Schema>>()
+ 	private readonly tupleDb: AsyncTupleDatabaseClient<TandemTuple<Schema>>
+ 	private readonly rng?: RngApi
++	private readonly unsubscribeStorage?: () => void
++	private closed = false
+ 	// Tuple transactions batch writes but do not snapshot reads or serialize
+ 	// asynchronous storage commits. Order sync reads and commits here.
+ 	private queue: Promise<void> = Promise.resolve()
+@@ -154,6 +156,10 @@ export class TandemServer<
+ 			{ rng: args.rng },
+ 		)
+ 		this.tupleDb = new AsyncTupleDatabaseClient<TandemTuple<Schema>>(database)
++		this.unsubscribeStorage = args.storage.subscribe?.(() => {
++			if (this.closed) return
++			this.emitPokes()
++		})
+ 	}
+ 
+ 	private get recordDb() {
+@@ -272,6 +278,8 @@ export class TandemServer<
+ 	}
+ 
+ 	async close(): Promise<void> {
++		this.closed = true
++		this.unsubscribeStorage?.()
+ 		for (const destroy of this.subscriptions) destroy()
+ 		this.syncClients.clear()
+ 
+```
 
 ## References
 

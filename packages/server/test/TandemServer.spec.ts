@@ -1056,6 +1056,77 @@ test("pull returns unavailable on a storage failure and a later pull recovers", 
 	await server.close()
 })
 
+test("storage notifications preserve deletion history and release their listener on close", async () => {
+	const storage = new TestTandemServerStorage<TestSchema>()
+	const listeners = new Set<() => void>()
+	const server = new TandemServer({
+		schema,
+		relations,
+		storage: {
+			scan: (args) => storage.scan(args),
+			commit: (writes) => storage.commit(writes),
+			close: () => storage.close(),
+			subscribe: (onChange) => {
+				listeners.add(onChange)
+				return () => {
+					// A notification already queued by the backend may arrive during teardown.
+					onChange()
+					listeners.delete(onChange)
+				}
+			},
+		},
+	})
+	const clientId = tag<ClientId>("storage-notifications-client")
+	let pokes = 0
+	await server.connect({
+		clientId,
+		poke: () => {
+			pokes += 1
+			return Promise.resolve()
+		},
+	})
+	await server.connect({
+		clientId: tag<ClientId>("second-storage-notifications-client"),
+		poke: () => Promise.resolve(),
+	})
+	expect(listeners.size).toBe(1)
+	const onChange = [...listeners][0]!
+	await storage.commit({
+		set: [
+			{
+				key: ["record", "users", "user-1"],
+				value: { id: "user-1", name: "Ada" },
+			},
+		],
+	})
+	const scanWindow: ScanWindow<TestSchema> = [{ collection: "users" }]
+	const initial = await server.pull({ clientId, scanWindow })
+	assert(!("error" in initial))
+
+	// Duplicate notifications request pulls without discarding the prior keys or cookie.
+	await storage.commit({ remove: [["record", "users", "user-1"]] })
+	onChange()
+	onChange()
+	expect(pokes).toBe(2)
+	const changed = await server.pull({
+		clientId,
+		scanWindow,
+		cookie: initial.cookie,
+	})
+	assert(!("error" in changed))
+	expect(changed.patch).toEqual({
+		set: [],
+		remove: [{ collection: "users", id: "user-1" }],
+	})
+
+	// Close detaches the backend listener and ignores notifications once teardown starts.
+	await server.close()
+	expect(listeners.size).toBe(0)
+	expect(storage.closed).toBe(true)
+	onChange()
+	expect(pokes).toBe(2)
+})
+
 test("application commits poke connected clients until they disconnect or close", async () => {
 	const { server, storage } = createServer()
 	const firstPoke = vi.fn()
