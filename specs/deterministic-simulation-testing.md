@@ -2,7 +2,7 @@
 
 ## Problem overview
 
-The current DST controls concurrent work, drops network handoffs, crashes and restarts clients over durable storage, and records replayable JSONL traces. Those mechanisms already exist in [[dst/DstSimulation.ts]], [[dst/DstWorld.ts]], and [[dst/DstReplay.ts]]. Phase 1 is implemented locally and uncommitted; phases 2–7 remain planned.
+The current DST controls concurrent work, drops network handoffs, crashes and restarts clients over durable storage, and records replayable JSONL traces. Those mechanisms already exist in [[dst/DstSimulation.ts]], [[dst/DstWorld.ts]], and [[dst/DstReplay.ts]]. Phase 1 is committed locally; phase 2 is in progress and phases 3–7 remain planned.
 
 Before phase 1, the workload had two hard-coded clients, three record IDs, and a four-pending-call threshold that included timer and pull calls. Topology, ID pools, contention, and outstanding commit count are now configurable. The remaining workload is narrow: one flat `todos` collection and one operation per transaction. Every client subscribes to the entire collection. At the end, `finish()` disables gates, drains work, restarts clients, reconnects, and explicitly pulls before comparing each client's query result to the server.
 
@@ -84,24 +84,25 @@ Before this phase, `clientNames`, generation counters, harness registrations, fi
 
 **Proposed**
 
-Add client count, record count, shared-write rate, and maximum outstanding mutations to the run configuration and CLI. Record resolved values so replay constructs the same topology. This is implemented locally; the changes below are uncommitted.
+Add client count, record count, shared-write rate, and maximum outstanding mutations to the run configuration and CLI. Record resolved values so replay constructs the same topology. This is committed locally; nothing has been pushed.
 
 ```changes
+35c9e96
 ```
 
 The existing owners remain responsible for construction, scheduling, and replay:
 
 ```callstack
- DstSimulation.execute [[dst/DstSimulation.ts#DstSimulation.execute]]
--├── DstWorld.start(seed) [[dst/DstWorld.ts#DstWorld.start]]
-+├── DstWorld.start(options) [[dst/DstWorld.ts#DstWorld.start]]
-+│   └── buildHarness # register configured timers, stores, then clients [[dst/DstWorld.ts#buildHarness]]
-+└── DstSimulation.choose # bound outstanding commits independently of timer/pull calls [[dst/DstSimulation.ts#DstSimulation.choose]]
- replay [[dst/DstReplay.ts#replay]]
-+└── DstWorld.start(artifact.options) [[dst/DstWorld.ts#DstWorld.start]]
+ DstSimulation.execute [[35c9e96:dst/DstSimulation.ts#L77-L105]]
+-├── DstWorld.start(seed)
++├── DstWorld.start(options) [[35c9e96:dst/DstWorld.ts#L303-L330]]
++│   └── buildHarness # register configured timers, stores, then clients [[35c9e96:dst/DstWorld.ts#L589-L643]]
++└── DstSimulation.choose # bound outstanding commits independently of timer/pull calls [[35c9e96:dst/DstSimulation.ts#L108-L143]]
+ replay [[35c9e96:dst/DstReplay.ts#L87-L100]]
++└── DstWorld.start(artifact.options) [[35c9e96:dst/DstWorld.ts#L303-L330]]
 ```
 
-Stable participant names and independent seeded ID streams survive dynamic construction and replay. Gatekeeper registrations use loops while retaining existing crash semantics; dynamic-key assertions stay at the construction boundary. [[dst/DstSimulation.ts#resolveRunOptions]] supplies these defaults:
+Stable participant names and independent seeded ID streams survive dynamic construction and replay. Gatekeeper registrations use loops while retaining existing crash semantics; dynamic-key assertions stay at the construction boundary. [[35c9e96:dst/DstSimulation.ts#L38-L50]] supplies these defaults:
 
 | CLI flag | Default | Meaning |
 | --- | --- | --- |
