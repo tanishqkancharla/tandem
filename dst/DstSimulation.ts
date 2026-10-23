@@ -111,6 +111,27 @@ export class DstSimulation {
 			const client = rng.pick(writers)
 			const id = rng.pick(poolOfIds)
 			if (rng.boolean(0.2)) return { type: "remove", client, id }
+			const todos = world.todosOf(client)
+			if (todos.length > 0 && rng.boolean(0.5)) {
+				// Target the local view so updates carry intent, not mostly missing-record no-ops.
+				const todo = rng.pick(todos)
+				const text = `Updated ${todo.id} (rev ${step})`
+				const done = !todo.done
+				const priority = rng.int(1, 5)
+				return {
+					type: "update",
+					client,
+					id: todo.id,
+					payload: rng.pick([
+						{ text },
+						{ done },
+						{ priority },
+						{ text, done },
+						{ text, priority },
+						{ done, priority },
+					]),
+				}
+			}
 			return {
 				type: "set",
 				client,

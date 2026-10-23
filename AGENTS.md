@@ -16,6 +16,10 @@ Tests should protect user-facing behavior and developer experience, not internal
 
 When writing tests, load the `testing` skill.
 
+## Deterministic simulation testing
+
+When changing Tandem behavior, ensure `dst/` can exercise the affected behavior through the public API. Extend the generator, driver, trace, and replay when adding operations. Include checks that distinguish correct behavior from mere convergence, and run relevant seed sweeps with network faults and crashes. Passing seeds that never exercise the changed behavior do not establish coverage.
+
 ## Error handling (errore.org)
 
 This codebase uses the [errore.org](https://errore.org) convention. Always read the `errore` skill (`.agents/skills/errore/SKILL.md`) before editing TypeScript that handles failures. Always `import * as errore from "errore"`.

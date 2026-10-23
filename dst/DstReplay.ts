@@ -139,6 +139,7 @@ function cannotApply(
 				? undefined
 				: `${record.call} is not held at a boundary`
 		case "set":
+		case "update":
 		case "remove":
 			return world.writers.includes(record.client)
 				? undefined
@@ -158,6 +159,13 @@ function intentOf(record: DstTraceRecord): DstIntent {
 	switch (record.type) {
 		case "set":
 			return { type: "set", client: record.client, item: record.item }
+		case "update":
+			return {
+				type: "update",
+				client: record.client,
+				id: record.id,
+				payload: record.payload,
+			}
 		case "remove":
 			return { type: "remove", client: record.client, id: record.id }
 		case "advance":

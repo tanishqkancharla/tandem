@@ -76,6 +76,162 @@ const conflictTest = test.extend<{
 })
 
 describe("TandemClient sync conflicts", () => {
+	conflictTest.for(["client1", "client2"] as const)(
+		"preserves disjoint fields and orders competing assignments with %s pushing first",
+		async (firstName, { makeTodoGatekeeper, server }) => {
+			const remote: RemoteApi<TestsSchema> = {
+				connect: (client) =>
+					server.connect({ ...client, poke: async () => {} }),
+				pull: (args) => server.pull(args),
+				push: (args) => server.push(args),
+			}
+			const gatekeeper = await makeTodoGatekeeper({ remote })
+			const { client1, client2 } = gatekeeper
+			client1.subscribe({ collection: "todos" })
+			client2.subscribe({ collection: "todos" })
+			const seedTx = server.transact()
+			seedTx.set("todos", todo("shared", { text: "Original", priority: 3 }))
+			await server.commit(seedTx)
+			await (
+				await client1.pullFromRemote()
+			).result
+			await (
+				await client2.pullFromRemote()
+			).result
+
+			// Both clients capture assignments from the same base, before either delivery.
+			await (
+				await client1.disconnect()
+			).result
+			await (
+				await client2.disconnect()
+			).result
+			const firstTx = client1.transact()
+			firstTx.update("todos", "shared", { done: true, priority: 5 })
+			await (
+				await client1.commit(firstTx)
+			).result
+			const secondTx = client2.transact()
+			secondTx.update("todos", "shared", { text: "Remote title", priority: 9 })
+			await (
+				await client2.commit(secondTx)
+			).result
+
+			// The later writer pulls the first writer's base before its own push starts.
+			const first = gatekeeper[firstName]
+			const laterName = firstName === "client1" ? "client2" : "client1"
+			const later = gatekeeper[laterName]
+			await (
+				await first.connect()
+			).result
+			await gatekeeper.activateGates()
+			const connecting = await later.connect()
+			await connecting.continueTo("server") // Register the connection.
+			await connecting.continueTo(laterName)
+			await connecting.continueTo("server") // Read the confirmed base.
+			await connecting.continueTo(laterName) // Apply pull and replay, then queue push.
+			connecting.assertSentBy(laterName).assertWaitingFor("server")
+			const merged = [
+				todo("shared", {
+					text: "Remote title",
+					done: true,
+					priority: firstName === "client1" ? 9 : 5,
+				}),
+			]
+			expect(later.query({ collection: "todos" })).toEqual(merged)
+			expect(await server.query({ collection: "todos" })).toEqual([
+				firstName === "client1"
+					? todo("shared", { text: "Original", done: true, priority: 5 })
+					: todo("shared", { text: "Remote title", done: false, priority: 9 }),
+			])
+
+			// Server order decides priority; the independent title and done edits both survive.
+			await connecting.continueToCompletion()
+			await connecting.result
+			const firstPull = await first.pullFromRemote()
+			await firstPull.continueToCompletion()
+			await firstPull.result
+			const laterPull = await later.pullFromRemote()
+			await laterPull.continueToCompletion()
+			await laterPull.result
+			expect(await server.query({ collection: "todos" })).toEqual(merged)
+			expect(client1.query({ collection: "todos" })).toEqual(merged)
+			expect(client2.query({ collection: "todos" })).toEqual(merged)
+		},
+	)
+
+	conflictTest(
+		"a pending field update cannot resurrect a record deleted before replay or delivery",
+		async ({ makeTodoGatekeeper, server }) => {
+			const remote: RemoteApi<TestsSchema> = {
+				connect: (client) =>
+					server.connect({ ...client, poke: async () => {} }),
+				pull: (args) => server.pull(args),
+				push: (args) => server.push(args),
+			}
+			const gatekeeper = await makeTodoGatekeeper({ remote })
+			const { client1, client2 } = gatekeeper
+			client1.subscribe({ collection: "todos" })
+			client2.subscribe({ collection: "todos" })
+			const seedTx = server.transact()
+			seedTx.set("todos", todo("deleted", { text: "Original", priority: 3 }))
+			seedTx.set("todos", todo("survivor", { priority: 8 }))
+			await server.commit(seedTx)
+			await (
+				await client1.pullFromRemote()
+			).result
+			await (
+				await client2.pullFromRemote()
+			).result
+
+			// The offline writer still sees the record when it captures its assignment.
+			await (
+				await client1.disconnect()
+			).result
+			const updateTx = client1.transact()
+			updateTx.update("todos", "deleted", { done: true })
+			await (
+				await client1.commit(updateTx)
+			).result
+			const removeTx = client2.transact()
+			removeTx.remove("todos", "deleted")
+			await (
+				await client2.commit(removeTx)
+			).result
+
+			// Replay sees confirmed absence while the update remains undelivered.
+			await gatekeeper.activateGates()
+			const connecting = await client1.connect()
+			await connecting.continueTo("server")
+			await connecting.continueTo("client1")
+			await connecting.continueTo("server")
+			await connecting.continueTo("client1")
+			connecting.assertSentBy("client1").assertWaitingFor("server")
+			const expected = [todo("survivor", { priority: 8 })]
+			expect(client1.query({ collection: "todos" })).toEqual(expected)
+			expect(await server.query({ collection: "todos" })).toEqual(expected)
+
+			// Delivery is also update-only; acknowledging it leaves every replica unchanged.
+			await connecting.continueToCompletion()
+			await connecting.result
+			const writerPull = await client1.pullFromRemote()
+			await writerPull.continueToCompletion()
+			await writerPull.result
+			const observerPull = await client2.pullFromRemote()
+			await observerPull.continueToCompletion()
+			await observerPull.result
+			expect(await server.query({ collection: "todos" })).toEqual(expected)
+			expect(client1.query({ collection: "todos" })).toEqual(expected)
+			expect(client2.query({ collection: "todos" })).toEqual(expected)
+			expect(
+				await server.pull({
+					clientId: client1.clientId,
+					scanWindow: [{ collection: "todos" }],
+				}),
+			).toMatchObject({ lastMutationId: 1 })
+		},
+	)
+
 	conflictTest(
 		"partial updates preserve same-value intent without replacing untouched remote fields",
 		async ({ makeTodoGatekeeper, server }) => {
@@ -836,6 +992,7 @@ describe("TandemClient sync conflicts", () => {
 
 	test("replays a pending mutation's operations in order across a pull", async ({
 		gatekeeper,
+		server,
 	}) => {
 		const { client1, client2 } = gatekeeper
 		const client1Subscription = client1.subscribe({ collection: "todos" })
@@ -849,13 +1006,19 @@ describe("TandemClient sync conflicts", () => {
 			todo("todo-1", { text: "Original" }),
 		])
 
-		// Offline, client1 creates and deletes a draft in one transaction
+		// Offline, replacement resets earlier fields and later updates apply to that replacement.
 		await (
 			await client1.disconnect()
 		).result
 		const draftTx = client1.transact()
-		draftTx.set("todos", todo("draft", { text: "Never kept" }))
+		draftTx.set("todos", todo("draft", { text: "Discarded", done: true }))
+		draftTx.update("todos", "draft", { priority: 2 })
 		draftTx.remove("todos", "draft")
+		draftTx.set("todos", todo("draft", { text: "Replacement", priority: 4 }))
+		draftTx.update("todos", "draft", { text: "Final", priority: 7 })
+		draftTx.set("todos", todo("temporary"))
+		draftTx.update("todos", "temporary", { done: true })
+		draftTx.remove("todos", "temporary")
 		await (
 			await client1.commit(draftTx)
 		).result
@@ -866,13 +1029,31 @@ describe("TandemClient sync conflicts", () => {
 		await (
 			await client2.commit(remoteTx)
 		).result
-		await (
-			await client1.connect()
-		).result
-
-		expect(client1.query({ collection: "todos" })).toEqual([
+		await gatekeeper.activateGates()
+		const connecting = await client1.connect()
+		await connecting.continueTo("server")
+		await connecting.continueTo("client1")
+		await connecting.continueTo("server")
+		await connecting.continueTo("client1")
+		connecting.assertSentBy("client1").assertWaitingFor("server")
+		const expected = [
+			todo("draft", { text: "Final", done: false, priority: 7 }),
+			todo("todo-1", { text: "Changed remotely" }),
+		]
+		expect(client1.query({ collection: "todos" })).toEqual(expected)
+		expect(await server.query({ collection: "todos" })).toEqual([
 			todo("todo-1", { text: "Changed remotely" }),
 		])
+
+		// The server applies the same operation order as replay, including the final removal.
+		await connecting.continueToCompletion()
+		await connecting.result
+		await gatekeeper.deactivateGatesAndSettle()
+		expect(await server.query({ collection: "todos" })).toEqual(expected)
+		await (
+			await client2.pullFromRemote()
+		).result
+		expect(client2.query({ collection: "todos" })).toEqual(expected)
 		client1Subscription.destroy()
 		client2Subscription.destroy()
 	})

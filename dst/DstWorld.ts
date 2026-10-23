@@ -192,6 +192,14 @@ export type DstTraceRecord =
 			item: DstTodo
 	  }
 	| {
+			type: "update"
+			step: number
+			client: DstClientName
+			mutationId: number
+			id: string
+			payload: Partial<Omit<DstTodo, "id">>
+	  }
+	| {
 			type: "remove"
 			step: number
 			client: DstClientName
@@ -221,6 +229,12 @@ function settle(): Promise<void> {
 /** A change the run applies in one step; its trace record adds what it observed. */
 export type DstIntent =
 	| { type: "set"; client: DstClientName; item: DstTodo }
+	| {
+			type: "update"
+			client: DstClientName
+			id: string
+			payload: Partial<Omit<DstTodo, "id">>
+	  }
 	| { type: "remove"; client: DstClientName; id: string }
 	| { type: "advance"; call: string }
 	| { type: "drop"; call: string }
@@ -314,6 +328,7 @@ export class DstWorld implements AsyncDisposable {
 	async apply(step: number, intent: DstIntent): Promise<DstTraceRecord> {
 		switch (intent.type) {
 			case "set":
+			case "update":
 			case "remove":
 				return this.write(step, intent)
 			case "advance": {
@@ -430,13 +445,16 @@ export class DstWorld implements AsyncDisposable {
 
 	private write(
 		step: number,
-		intent: Extract<DstIntent, { type: "set" | "remove" }>,
+		intent: Extract<DstIntent, { type: "set" | "update" | "remove" }>,
 	): DstTraceRecord {
 		const client = this.harness[intent.client]
 		const tx = client.transact()
 		switch (intent.type) {
 			case "set":
 				tx.set("todos", intent.item)
+				break
+			case "update":
+				tx.update("todos", intent.id, intent.payload)
 				break
 			case "remove":
 				tx.remove("todos", intent.id)
@@ -485,7 +503,7 @@ export class DstWorld implements AsyncDisposable {
 		return target
 	}
 
-	private todosOf(name: DstClientName): DstTodo[] {
+	todosOf(name: DstClientName): DstTodo[] {
 		return [...this.harness[name].query({ collection: "todos" })].sort(byId)
 	}
 

@@ -420,6 +420,208 @@ describe("TandemClient persistence", () => {
 		)
 	}
 
+	test("recovers an accepted field update after a lost reply and ignores its explicit duplicate", async ({
+		makeStorage,
+		server,
+		logger,
+		rng,
+	}) => {
+		const initial = todo("lost-update", { text: "Before", priority: 3 })
+		const seedTx = server.transact()
+		seedTx.set("todos", initial)
+		await server.commit(seedTx)
+		const requests: Parameters<RemoteApi<TestsSchema>["push"]>[0][] = []
+		await using harness = createCheckpointGatekeeper({
+			storage: makeStorage<TestsSchema>(),
+			server: {
+				connect: server.connect,
+				pull: server.pull,
+				push: async (args) => {
+					requests.push(args)
+					return server.push(args)
+				},
+			},
+			logger,
+			rng,
+		})
+		const { client } = harness
+		await client.ready
+		client.subscribe({ collection: "todos" })
+		await (
+			await client.connect()
+		).result
+		const clientId = client.clientId
+
+		// Lose the response only after the real server has accepted the durable update.
+		const tx = client.transact()
+		tx.update("todos", initial.id, { done: true })
+		await harness.activateGates()
+		const commit = await client.commit(tx)
+		await commit.continueTo("storage")
+		await commit.continueTo("client")
+		await commit.continueTo("client")
+		await commit.continueTo("server")
+		commit.assertSentBy("server")
+		expect(await server.query({ collection: "todos" })).toEqual([
+			todo("lost-update", { text: "Before", done: true, priority: 3 }),
+		])
+		await commit.fail(new Error("Field update reply lost"))
+		await expect(commit.result).rejects.toThrow("Field update reply lost")
+		const [acceptedRequest] = requests
+		assert(acceptedRequest)
+		expect(acceptedRequest.clientId).toBe(clientId)
+		expect(acceptedRequest.mutations.map(({ id }) => id)).toEqual([1])
+		await harness.crash("client")
+		await harness.deactivateGatesAndSettle()
+		await harness.restart("client")
+		await client.ready
+		expect(client.clientId).toBe(clientId)
+		expect(client.query({ collection: "todos" })).toEqual([
+			todo("lost-update", { text: "Before", done: true, priority: 3 }),
+		])
+
+		// Reapplying this duplicate would undo another writer's SAME-field correction.
+		const correctionTx = server.transact()
+		await correctionTx.update("todos", initial.id, {
+			done: false,
+			text: "Corrected after acceptance",
+		})
+		await server.commit(correctionTx)
+		expect(await server.push(acceptedRequest)).toEqual({ ok: true })
+		const corrected = todo("lost-update", {
+			text: "Corrected after acceptance",
+			done: false,
+			priority: 3,
+		})
+		expect(await server.query({ collection: "todos" })).toEqual([corrected])
+
+		// Reconnect pulls the acknowledgement before pushing, so no accepted update is resent.
+		client.subscribe({ collection: "todos" })
+		await (
+			await client.connect()
+		).result
+		expect(client.query({ collection: "todos" })).toEqual([corrected])
+		expect(requests).toHaveLength(1)
+		await (
+			await client.disconnect()
+		).result
+	})
+
+	test("restores later field updates after checkpointing a partial acknowledgement", async ({
+		makeStorage,
+		server,
+		logger,
+		rng,
+	}) => {
+		const initial = todo("partial-ack", { text: "Initial", priority: 3 })
+		const seedTx = server.transact()
+		seedTx.set("todos", initial)
+		await server.commit(seedTx)
+		const storage = makeStorage<TestsSchema>()
+		const requests: Parameters<RemoteApi<TestsSchema>["push"]>[0][] = []
+		await using harness = new Gatekeeper()
+			.add("delivery", () => ({
+				push: (args: Parameters<RemoteApi<TestsSchema>["push"]>[0]) => {
+					requests.push(args)
+					return server.push(args)
+				},
+			}))
+			.add(
+				"client",
+				({ delivery }) =>
+					new TandemClient<TestsSchema>({
+						clientStorage: storage,
+						clientStorageWriteInterval: 0,
+						remote: {
+							connect: (client) =>
+								server.connect({ ...client, poke: async () => {} }),
+							pull: server.pull,
+							push: delivery.push,
+						},
+						logger,
+						rng: rng.create("partial-ack-client"),
+						autoConnect: false,
+						syncInterval: 0,
+					}),
+			)
+			.build()
+		const { client } = harness
+		await client.ready
+		client.subscribe({ collection: "todos" })
+		await (
+			await client.connect()
+		).result
+		const clientId = client.clientId
+		const firstTx = client.transact()
+		firstTx.update("todos", initial.id, { done: true })
+		await (
+			await client.commit(firstTx)
+		).result
+		await (
+			await client.disconnect()
+		).result
+		const laterTx = client.transact()
+		laterTx.update("todos", initial.id, { priority: 8 })
+		await (
+			await client.commit(laterTx)
+		).result
+		const correctionTx = server.transact()
+		await correctionTx.update("todos", initial.id, {
+			done: false,
+			text: "New confirmed title",
+		})
+		await server.commit(correctionTx)
+
+		// Pull acknowledges only the first update; the later priority stays optimistic.
+		await harness.activateGates()
+		const connecting = await client.connect()
+		connecting.assertWaitingFor("delivery")
+		const merged = todo("partial-ack", {
+			text: "New confirmed title",
+			done: false,
+			priority: 8,
+		})
+		expect(client.query({ collection: "todos" })).toEqual([merged])
+		expect(await server.query({ collection: "todos" })).toEqual([
+			todo("partial-ack", {
+				text: "New confirmed title",
+				done: false,
+				priority: 3,
+			}),
+		])
+		await connecting.fail(new Error("Later delivery interrupted"))
+		await expect(connecting.result).rejects.toThrow(
+			"Later delivery interrupted",
+		)
+		await harness.crash("client")
+		await harness.deactivateGatesAndSettle()
+		await harness.restart("client")
+		await client.ready
+
+		// The partial acknowledgement and remaining field intent survive together on disk.
+		expect(client.clientId).toBe(clientId)
+		expect(client.query({ collection: "todos" })).toEqual([merged])
+		client.subscribe({ collection: "todos" })
+		await (
+			await client.connect()
+		).result
+		await (
+			await client.pullFromRemote()
+		).result
+		expect(client.query({ collection: "todos" })).toEqual([merged])
+		expect(await server.query({ collection: "todos" })).toEqual([merged])
+		expect(requests.map(({ clientId }) => clientId)).toEqual([
+			clientId,
+			clientId,
+		])
+		expect(
+			requests.map(({ mutations }) => mutations.map(({ id }) => id)),
+		).toEqual([[1], [2]])
+		await (
+			await client.disconnect()
+		).result
+	})
+
 	checkpointTest(
 		"blocks transactions and connection until hydration",
 		async ({ checkpoint, checkpointScan }) => {
@@ -1005,6 +1207,7 @@ describe("TandemClient persistence", () => {
 		await (
 			await first.client.connect()
 		).result
+		const clientId = first.client.clientId
 		await (
 			await first.client.disconnect()
 		).result
@@ -1016,6 +1219,8 @@ describe("TandemClient persistence", () => {
 		await (
 			await first.client.flushClientStorage()
 		).result
+		expect(await remote.query({ collection: "events" })).toEqual([previous])
+		await first.crash("client")
 		await storage.close()
 
 		const remoteTx = remote.transact()
@@ -1025,8 +1230,14 @@ describe("TandemClient persistence", () => {
 			dbName,
 			schema: testsEventRuntimeSchema,
 		})
+		const requests: Parameters<RemoteApi<TestsEventSchema>["push"]>[0][] = []
 		await using harness = new Gatekeeper()
-			.add("delivery", () => ({ push: remote.push }))
+			.add("delivery", () => ({
+				push: (args: Parameters<RemoteApi<TestsEventSchema>["push"]>[0]) => {
+					requests.push(args)
+					return remote.push(args)
+				},
+			}))
 			.add(
 				"client",
 				({ delivery }) =>
@@ -1047,21 +1258,35 @@ describe("TandemClient persistence", () => {
 			)
 			.build()
 		await harness.client.ready
+		expect(harness.client.clientId).toBe(clientId)
+		expect(harness.client.query({ collection: "events" })).toEqual([pending])
+		expect(
+			harness.client.query({ collection: "events" })[0]?.startAt,
+		).toBeInstanceOf(EventStart)
 		harness.client.subscribe({ collection: "events" })
 		await harness.activateGates()
 		const connecting = await harness.client.connect()
 		connecting.assertWaitingFor("delivery")
 
 		// Reconnect's pull has replayed the pending date, without overwriting the remote title.
-		const merged = { ...confirmed, startAt: pending.startAt }
+		const merged = {
+			id: "event-1",
+			title: "Remote title",
+			startAt: new EventStart("2026-05-06T18:30:00.000Z"),
+		}
 		expect(harness.client.query({ collection: "events" })).toEqual([merged])
 		expect(await remote.query({ collection: "events" })).toEqual([confirmed])
 		await connecting.continueToCompletion()
+		await connecting.result
 		await harness.deactivateGatesAndSettle()
 		expect(await remote.query({ collection: "events" })).toEqual([merged])
 		expect(
 			(await remote.query({ collection: "events" }))[0]?.startAt,
 		).toBeInstanceOf(EventStart)
+		expect(requests.map(({ clientId }) => clientId)).toEqual([clientId])
+		expect(
+			requests.map(({ mutations }) => mutations.map(({ id }) => id)),
+		).toEqual([[1]])
 
 		// Acknowledgement prunes the update, so later remote corrections survive another pull.
 		await (

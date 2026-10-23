@@ -22,6 +22,41 @@ describe("Deterministic simulation testing", () => {
 		expect(result.states.client2).toEqual(result.states.server)
 	})
 
+	it.each(["client1", "client2"] as const)(
+		"preserves disjoint offline field updates when %s edits completion",
+		async (completionClient) => {
+			await using world = await DstWorld.start(2)
+			await world.apply(0, {
+				type: "set",
+				client: "client1",
+				item: { id: "shared", text: "Original", done: false, priority: 3 },
+			})
+			// Both clients receive the base and disconnect before editing it.
+			await world.finish()
+			await world.apply(1, {
+				type: "update",
+				client: completionClient,
+				id: "shared",
+				payload: { done: true, priority: 8 },
+			})
+			await world.apply(2, {
+				type: "update",
+				client: completionClient === "client1" ? "client2" : "client1",
+				id: "shared",
+				payload: { text: "Concurrent title" },
+			})
+
+			const result = await world.finish()
+			// Convergence alone would also pass if the server replaced the whole record.
+			expect(result.states.server).toEqual([
+				{ id: "shared", text: "Concurrent title", done: true, priority: 8 },
+			])
+			expect(result.violation).toBeUndefined()
+			expect(result.states.client1).toEqual(result.states.server)
+			expect(result.states.client2).toEqual(result.states.server)
+		},
+	)
+
 	it("settles a final lost request by reconnecting and delivering retained writes", async () => {
 		await using world = await DstWorld.start(2)
 		const item = {
@@ -102,6 +137,17 @@ describe("Deterministic simulation testing", () => {
 
 		const replayed = await replay(parseArtifact(formatArtifact(sink.lines)))
 
+		const updates = run.trace.filter((record) => record.type === "update")
+		expect(updates.length).toBeGreaterThan(0)
+		const fieldCounts = updates.map(
+			({ payload }) => Object.keys(payload).length,
+		)
+		expect(fieldCounts).toContain(1)
+		expect(fieldCounts).toContain(2)
+		for (const { payload } of updates) {
+			expect(payload).not.toHaveProperty("id")
+			expect(Object.keys(payload).length).toBeLessThan(3)
+		}
 		expect(replayed).toEqual({
 			stepsCompleted: run.stepsCompleted,
 			violation: run.violation,
