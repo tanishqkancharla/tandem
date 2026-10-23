@@ -3,7 +3,7 @@ import {
 	type TodoRemoteRequest,
 	type TodoSchema,
 } from "@tandem/example-todo-shared"
-import { matchBy } from "@tanishqkancharla/tandem-core"
+import { matchBy, MutationApi } from "@tanishqkancharla/tandem-core"
 import {
 	TandemServer,
 	TandemServerJsonFileStorage,
@@ -15,6 +15,8 @@ class TodoHonoError extends errore.createTaggedError({
 	name: "TodoHonoError",
 	message: "Todo HTTP server failed to $operation",
 }) {}
+
+const mutationCodec = MutationApi.codec(schema)
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -29,8 +31,21 @@ function isTodoRemoteRequest(value: unknown): value is TodoRemoteRequest {
 }
 
 function validateRequest(value: unknown) {
-	if (isTodoRemoteRequest(value)) return value
-	return new TodoHonoError({ operation: "validate request" })
+	if (!isTodoRemoteRequest(value))
+		return new TodoHonoError({ operation: "validate request" })
+	if (value.action === "pull") return value
+	return errore.try({
+		try: () => ({
+			...value,
+			args: {
+				...value.args,
+				mutations: value.args.mutations.map((mutation) =>
+					mutationCodec.decode(mutation),
+				),
+			},
+		}),
+		catch: (cause) => new TodoHonoError({ operation: "decode request", cause }),
+	})
 }
 
 type TodoServer = TandemServer<TodoSchema, {}>

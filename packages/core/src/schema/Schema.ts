@@ -72,7 +72,7 @@ export type RuntimeSchemaDefinition<Schema extends AnySchema = AnySchema> = {
 		readonly [Collection in CollectionName<Schema>]: NamedCollectionDefinition<
 			Schema[Collection],
 			Collection,
-			unknown
+			PartialObjectCodec<Schema[Collection], unknown>
 		>
 	}
 }

@@ -2,6 +2,7 @@ import type {
 	TupleRootTransactionApi,
 	TupleTransactionApi,
 } from "tuple-database"
+import * as errore from "errore"
 import type {
 	TandemClientBase,
 	TandemClientTuple,
@@ -12,10 +13,13 @@ import type {
 	CollectionIdTuple,
 	CollectionName,
 	CollectionScanArgs,
+	RuntimeSchemaDefinition,
 } from "../schema/Schema.js"
 import { collectionIdToTuple } from "../schema/Schema.js"
 import type { EncodedQuery, ScanWindow } from "../query/Query.js"
 import type { Tagged } from "../utils/typeUtils.js"
+import { codec as createCodec, type Codec } from "../utils/Codec.js"
+import { isObject } from "../utils/objectUtils.js"
 
 // Namespace-wide reconciliation handles records from any collection in Schema.
 // Public collection methods below retain collection-specific record and ID types.
@@ -117,7 +121,124 @@ export type Mutation<Schema extends AnySchema> = {
 	id: MutationId
 }
 
+class MutationCodecInputError extends errore.createTaggedError({
+	name: "MutationCodecInputError",
+	message: "Invalid mutation: $detail",
+}) {}
+
 export namespace MutationApi {
+	/** Serialize at transport boundaries; RemoteApi itself carries runtime values. */
+	export function codec<Schema extends AnySchema>(
+		schema: RuntimeSchemaDefinition<Schema>,
+	): Codec<Mutation<Schema>, unknown> {
+		function transform(input: unknown, direction: "encode" | "decode") {
+			if (
+				!isObject(input) ||
+				!Number.isSafeInteger(input.id) ||
+				(input.id as number) < 1 ||
+				!Array.isArray(input.ops)
+			) {
+				return new MutationCodecInputError({
+					detail: "expected an id and operations",
+				})
+			}
+			const ops: Record<string, unknown>[] = []
+			for (const operation of input.ops) {
+				if (
+					!isObject(operation) ||
+					typeof operation.collection !== "string" ||
+					!Object.hasOwn(schema.collections, operation.collection)
+				) {
+					return new MutationCodecInputError({ detail: "unknown collection" })
+				}
+				const valueCodec = schema.collections[operation.collection].codec
+				// Field codecs are consumer code and can throw on invalid wire values.
+				const transformed = errore.try({
+					try: (): Record<string, unknown> | MutationCodecInputError => {
+						switch (operation.type) {
+							case "set":
+								return {
+									...operation,
+									value: valueCodec
+										? valueCodec[direction](operation.value)
+										: operation.value,
+								}
+							case "update": {
+								const identity = valueCodec
+									? (valueCodec[direction]({ id: operation.id }) as {
+											id: unknown
+										})
+									: { id: operation.id }
+								return {
+									...operation,
+									id: identity.id,
+									payload: valueCodec
+										? valueCodec[direction](operation.payload)
+										: operation.payload,
+								}
+							}
+							case "remove": {
+								const identity = valueCodec
+									? (valueCodec[direction]({ id: operation.id }) as {
+											id: unknown
+										})
+									: { id: operation.id }
+								return { ...operation, id: identity.id }
+							}
+							default:
+								return new MutationCodecInputError({
+									detail: "unknown operation type",
+								})
+						}
+					},
+					catch: (cause) =>
+						new MutationCodecInputError({
+							detail: "collection codec rejected input",
+							cause,
+						}),
+				})
+				if (transformed instanceof Error) return transformed
+				if (direction === "decode") {
+					const id =
+						operation.type === "set"
+							? isObject(transformed.value)
+								? transformed.value.id
+								: undefined
+							: transformed.id
+					const parts = Array.isArray(id) ? id : [id]
+					if (
+						parts.length === 0 ||
+						parts.some(
+							(part) =>
+								typeof part !== "string" &&
+								!(typeof part === "number" && Number.isFinite(part)),
+						)
+					) {
+						return new MutationCodecInputError({
+							detail: "expected a record identity",
+						})
+					}
+				}
+				ops.push(transformed)
+			}
+			return { ...input, ops }
+		}
+
+		return createCodec(
+			"Mutation",
+			(input) => {
+				const output = transform(input, "encode")
+				if (output instanceof Error) throw output
+				return output
+			},
+			(input) => {
+				const output = transform(input, "decode")
+				if (output instanceof Error) throw output
+				return output as Mutation<Schema>
+			},
+		)
+	}
+
 	function opToDebugString(op: MutationOp<AnySchema>): string {
 		switch (op.type) {
 			case "set":

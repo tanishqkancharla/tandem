@@ -1,7 +1,12 @@
 import {
+	codec,
 	collection,
+	date,
 	defineRelations,
 	defineSchema,
+	MutationApi,
+	partialObject,
+	string,
 	tag,
 } from "@tanishqkancharla/tandem-core"
 import type {
@@ -858,6 +863,61 @@ test.each([{ id: "other" }, null, []])(
 		await server.close()
 	},
 )
+
+test("wire mutation decoding restores runtime fields and identities before server application", async () => {
+	type Event = { id: number; title: string; startAt: Date }
+	const eventSchema = defineSchema({
+		events: collection<Event>({
+			codec: partialObject({
+				id: codec<number, string>(
+					"eventId",
+					(id) => `event-${id}`,
+					(id) => Number((id as string).slice(6)),
+				),
+				title: string,
+				startAt: date,
+			}),
+		}),
+	})
+	const server = new TandemServer({
+		schema: eventSchema,
+		relations: {},
+		storage: new TestTandemServerStorage<{ events: Event }>(),
+	})
+	const initial = {
+		id: 42,
+		title: "Keep title",
+		startAt: new Date("2026-01-02T12:00:00.000Z"),
+	}
+	const nextDate = new Date("2026-03-04T18:30:00.000Z")
+	const mutationCodec = MutationApi.codec(eventSchema)
+	const mutation: Mutation<{ events: Event }> = {
+		id: tag<MutationId>(1),
+		ops: [
+			{ type: "set", collection: "events", value: initial },
+			{
+				type: "update",
+				collection: "events",
+				id: 42,
+				payload: { startAt: nextDate },
+			},
+			{ type: "set", collection: "events", value: { ...initial, id: 93 } },
+			{ type: "remove", collection: "events", id: 93 },
+		],
+	}
+	const wire = JSON.stringify(mutationCodec.encode(mutation))
+	const decoded = mutationCodec.decode(JSON.parse(wire))
+	expect(
+		await server.push({
+			clientId: tag<ClientId>("wire-client"),
+			mutations: [decoded],
+		}),
+	).toEqual({ ok: true })
+	expect(await server.query({ collection: "events" })).toEqual([
+		{ ...initial, startAt: nextDate },
+	])
+	await server.close()
+})
 
 test("concurrent duplicate pushes are skipped and pulls wait for committed effects", async () => {
 	const { server, storage } = createServer()

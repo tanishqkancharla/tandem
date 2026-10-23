@@ -34,6 +34,8 @@ await db.commit(tx)
 
 Ops store only the new value, id, or partial payload, never the previous value. Replay reapplies each op in order. The protocol supports `update`, but the public transaction updater still accepts a callback and records its result as `set` until the partial-update API phase.
 
+`MutationApi.codec(schema)` belongs at a transport boundary: encode mutations before serializing and decode them before calling a runtime remote. It runs collection codecs on set values, update payloads, and identities; it preserves mutation IDs and operation order. Decode all mutations before applying the request so a codec failure cannot apply a prefix. Do not run validation-only encode/decode passes in `TandemServer`.
+
 ## Common patterns
 
 **Optimistic updates:**

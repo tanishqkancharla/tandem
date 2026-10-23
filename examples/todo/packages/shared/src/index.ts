@@ -1,17 +1,46 @@
 import {
+	codec,
 	collection,
 	defineSchema,
+	literal,
+	oneOf,
+	partialObject,
+	string,
 	t,
 	type RemoteApi,
 } from "@tanishqkancharla/tandem-core"
 
+const number = codec<number, number>(
+	"number",
+	(value) => {
+		if (typeof value !== "number" || !Number.isFinite(value))
+			throw new Error("Expected a finite number")
+		return value
+	},
+	(value) => {
+		if (typeof value !== "number" || !Number.isFinite(value))
+			throw new Error("Expected a finite number")
+		return value
+	},
+)
+
 export const schema = defineSchema({
-	todos: collection({
-		id: t.id(),
-		text: t.string(),
-		complete: t.boolean(),
-		createdAt: t.number(),
-	}),
+	todos: collection(
+		{
+			id: t.id(),
+			text: t.string(),
+			complete: t.boolean(),
+			createdAt: t.number(),
+		},
+		{
+			codec: partialObject({
+				id: string,
+				text: string,
+				complete: oneOf(literal(true), literal(false)),
+				createdAt: number,
+			}),
+		},
+	),
 })
 
 export type Todo = {

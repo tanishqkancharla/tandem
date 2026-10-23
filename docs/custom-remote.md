@@ -45,6 +45,28 @@ Apply the mutations in order. Each `set` carries a full record, and each `remove
 
 Reject if the mutations cannot be applied. The client then rolls back the whole batch locally, and each affected `commit` promise rejects. Authorization and validation belong here too: reject a push the client may not make.
 
+## Mutation codecs at the wire boundary
+
+`RemoteApi` carries runtime values. Use `MutationApi.codec(schema)` when a transport serializes push mutations: encode before sending JSON and decode after parsing it, before calling `server.push`. It applies each collection's codec to set values, update payloads, and record identities without changing operation order or mutation IDs.
+
+```tsx
+const mutationCodec = MutationApi.codec(schema)
+const body = JSON.stringify({
+	clientId,
+	mutations: mutations.map((mutation) => mutationCodec.encode(mutation)),
+})
+
+// Server HTTP handler, after checking the request envelope:
+const decoded = request.mutations.map((mutation) =>
+	mutationCodec.decode(mutation),
+)
+await server.push({ clientId: request.clientId, mutations: decoded })
+```
+
+Decode the request's mutations before applying any of them. Return `invalid-request` if decoding fails; do not acknowledge or apply a prefix of an undecodable request. `TandemServer` does not repeat collection encoding or decoding when applying runtime operations.
+
+Collection codecs are optional; collections without them pass their values through and require JSON-native values or transport-owned validation. This codec handles push mutations only, not pull response records, authentication, or authorization. The [todo HTTP transport](../examples/todo/apps/server/src/app.ts) shows the complete request path.
+
 ## `pull`
 
 Return a patch that moves the client from the state at `cookie` to the current state, limited to the records `scanWindow` covers.

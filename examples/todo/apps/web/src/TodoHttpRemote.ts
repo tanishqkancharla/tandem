@@ -1,9 +1,11 @@
-import type {
-	TodoPullResult,
-	TodoPushResult,
-	TodoRemoteRequest,
-	TodoSchema,
+import {
+	schema,
+	type TodoPullResult,
+	type TodoPushResult,
+	type TodoRemoteRequest,
+	type TodoSchema,
 } from "@tandem/example-todo-shared"
+import { MutationApi } from "@tanishqkancharla/tandem-core"
 import type {
 	RemoteApi,
 	RemoteRequestError,
@@ -15,6 +17,8 @@ class TodoHttpRemoteError extends errore.createTaggedError({
 	message: "Todo remote $operation request failed",
 }) {}
 
+const mutationCodec = MutationApi.codec(schema)
+
 async function request<Result>({
 	operation,
 	body,
@@ -23,7 +27,20 @@ async function request<Result>({
 	body: TodoRemoteRequest
 }): Promise<Result | RemoteRequestError> {
 	const serialized = errore.try({
-		try: () => JSON.stringify(body),
+		try: () =>
+			JSON.stringify(
+				body.action === "push"
+					? {
+							...body,
+							args: {
+								...body.args,
+								mutations: body.args.mutations.map((mutation) =>
+									mutationCodec.encode(mutation),
+								),
+							},
+						}
+					: body,
+			),
 		catch: (cause) => new TodoHttpRemoteError({ operation, cause }),
 	})
 	if (serialized instanceof Error)
