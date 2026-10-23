@@ -1,0 +1,41 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "tandem-demo-app",
+	"main": "src/worker.ts",
+	"compatibility_date": "2026-10-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"assets": { "directory": "./public", "binding": "ASSETS" },
+	"vars": {
+		"APP_ID": "tandem-demo-app",
+		// Set by the deploy script to the coordinator's workers.dev origin.
+		"COORDINATOR_URL": "http://127.0.0.1:8789"
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "tandem-demo-app",
+			"database_id": "00000000-0000-0000-0000-000000000000",
+			"migrations_dir": "migrations"
+		}
+	],
+	"observability": { "enabled": true },
+	// Secrets: TANDEM_SECRET (shared with the coordinator), DEMO_ACCESS_KEY.
+	"env": {
+		// A second, fully separate app (own D1 database and secret) for isolation tests.
+		"second": {
+			"name": "tandem-demo-app-second",
+			"vars": {
+				"APP_ID": "tandem-demo-app-second",
+				"COORDINATOR_URL": "http://127.0.0.1:8789"
+			},
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "tandem-demo-app-second",
+					"database_id": "00000000-0000-0000-0000-000000000001",
+					"migrations_dir": "migrations"
+				}
+			]
+		}
+	}
+}

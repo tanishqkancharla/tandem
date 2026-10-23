@@ -1,0 +1,13 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "tandem-demo-coordinator",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-10-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"durable_objects": {
+		"bindings": [{ "name": "TANDEM_COORDINATOR", "class_name": "TandemCoordinator" }]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["TandemCoordinator"] }],
+	"observability": { "enabled": true }
+	// Secrets: TANDEM_APPS = {"<appId>": {"bridgeUrl": "https://.../tandem/bridge", "secret": "<32+ chars>"}}
+}

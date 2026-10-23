@@ -1,0 +1,26 @@
+{
+	"name": "@tandem/example-cloudflare-d1-app",
+	"private": true,
+	"type": "module",
+	"description": "Serverless todo app: Worker + D1 as the source of truth, synced through a Tandem coordinator",
+	"scripts": {
+		"dev": "wrangler dev",
+		"build:client": "esbuild src/client.ts --bundle --format=esm --outfile=public/app.js",
+		"deploy": "pnpm run build:client && wrangler deploy",
+		"type-check": "tsc --noEmit",
+		"lint": "oxlint src test --deny-warnings",
+		"format": "oxfmt \"src/**/*.ts\" \"test/**/*.ts\"",
+		"test:e2e": "vitest run --config vitest.config.ts"
+	},
+	"dependencies": {
+		"@tanishqkancharla/tandem-cloudflare": "workspace:*",
+		"@tanishqkancharla/tandem-core": "workspace:*"
+	},
+	"devDependencies": {
+		"@types/node": "^26.6.4",
+		"esbuild": "^0.25.0",
+		"typescript": "^7.0.2",
+		"vitest": "^5.0.3",
+		"wrangler": "^4.152.0"
+	}
+}
