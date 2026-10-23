@@ -264,16 +264,46 @@ test("transactions provide typed CRUD and read their staged writes", async () =>
 		createdAt: 1,
 	})
 	expect(await tx.list("threads")).toHaveLength(1)
-	await tx.update("threads", "thread-1", (thread) => ({
-		...thread,
+
+	// Invalid arguments cannot change identity or stage a partial assignment.
+	for (const payload of [
+		null,
+		[],
+		{ id: "thread-2", title: "Do not apply" },
+		() => ({ title: "Legacy" }),
+	]) {
+		await expect(
+			tx.update("threads", "thread-1", payload as never),
+		).rejects.toThrow()
+	}
+
+	// Copy assignments before awaiting a read, and preserve earlier staged fields.
+	const assignments = { title: "Published" }
+	const updating = tx.update("threads", "thread-1", assignments)
+	assignments.title = "Do not apply"
+	await updating
+	await tx.update("threads", "thread-1", { status: "closed" })
+	await tx.update("threads", "thread-1", {})
+	await tx.update("threads", "missing", { title: "Do not create" })
+	expect(await tx.get("threads", "thread-1")).toEqual({
+		id: "thread-1",
+		ownerId: "user-1",
 		title: "Published",
-	}))
+		status: "closed",
+		createdAt: 1,
+	})
 	await server.commit(tx)
 
 	const verify = server.transact()
-	expect(await verify.get("threads", "thread-1")).toMatchObject({
-		title: "Published",
-	})
+	expect(await verify.list("threads")).toEqual([
+		{
+			id: "thread-1",
+			ownerId: "user-1",
+			title: "Published",
+			status: "closed",
+			createdAt: 1,
+		},
+	])
 	verify.remove("threads", "thread-1")
 	expect(await verify.get("threads", "thread-1")).toBeUndefined()
 	await verify.cancel()
@@ -306,10 +336,7 @@ test("compound IDs support exact reads and ordered prefix scans", async () => {
 		}),
 	).toEqual([{ id: ["session-1", 2], body: "Second" }])
 
-	await tx.update("entries", ["session-1", 1], (entry) => ({
-		...entry,
-		body: "Updated",
-	}))
+	await tx.update("entries", ["session-1", 1], { body: "Updated" })
 	tx.remove("entries", ["session-1", 2])
 	await server.commit(tx)
 
@@ -488,18 +515,12 @@ test("subscriptions recompute for root and included records until destroyed", as
 	])
 
 	const rootUpdate = server.transact()
-	await rootUpdate.update("threads", "thread-1", (thread) => ({
-		...thread,
-		title: "Updated",
-	}))
+	await rootUpdate.update("threads", "thread-1", { title: "Updated" })
 	await server.commit(rootUpdate)
 	expect(results.at(-1)).toMatchObject([{ title: "Updated" }])
 
 	const includedUpdate = server.transact()
-	await includedUpdate.update("messages", "message-1", (message) => ({
-		...message,
-		body: "Edited",
-	}))
+	await includedUpdate.update("messages", "message-1", { body: "Edited" })
 	await server.commit(includedUpdate)
 	expect(results.at(-1)).toMatchObject([
 		{ messages: [{ body: "Edited" }, { body: "Latest" }] },
@@ -508,10 +529,7 @@ test("subscriptions recompute for root and included records until destroyed", as
 	const resultCount = results.length
 	subscription.destroy()
 	const afterDestroy = server.transact()
-	await afterDestroy.update("threads", "thread-1", (thread) => ({
-		...thread,
-		title: "Ignored",
-	}))
+	await afterDestroy.update("threads", "thread-1", { title: "Ignored" })
 	await server.commit(afterDestroy)
 	expect(results).toHaveLength(resultCount)
 })
@@ -1196,10 +1214,7 @@ test("pull diffs filtered, paginated, and nested client views", async () => {
 
 	// A filtered row leaving the page removes it and promotes the next row.
 	const closeTopTx = server.transact()
-	await closeTopTx.update("threads", "thread-3", (thread) => ({
-		...thread,
-		status: "closed",
-	}))
+	await closeTopTx.update("threads", "thread-3", { status: "closed" })
 	await server.commit(closeTopTx)
 	const promoted = await server.pull({
 		clientId,
@@ -1219,11 +1234,10 @@ test("pull diffs filtered, paginated, and nested client views", async () => {
 
 	// A row entering above the page displaces the previous page member.
 	const openNewestTx = server.transact()
-	await openNewestTx.update("threads", "thread-2", (thread) => ({
-		...thread,
+	await openNewestTx.update("threads", "thread-2", {
 		status: "open",
 		createdAt: 4,
-	}))
+	})
 	await server.commit(openNewestTx)
 	const displaced = await server.pull({
 		clientId,

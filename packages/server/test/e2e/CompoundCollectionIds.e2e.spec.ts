@@ -87,10 +87,9 @@ test("compound IDs remain queryable across durable server restarts", async ({
 	await readTx.cancel()
 
 	const updateTx = secondServer.transact()
-	await updateTx.update("entries", ["session-1", "messages", 1], (entry) => ({
-		...entry,
+	await updateTx.update("entries", ["session-1", "messages", 1], {
 		body: "Updated",
-	}))
+	})
 	updateTx.remove("entries", ["session-1", "messages", 2])
 	await secondServer.commit(updateTx)
 	await secondServer.close()

@@ -77,6 +77,66 @@ const conflictTest = test.extend<{
 
 describe("TandemClient sync conflicts", () => {
 	conflictTest(
+		"partial updates preserve same-value intent without replacing untouched remote fields",
+		async ({ makeTodoGatekeeper, server }) => {
+			const remote: RemoteApi<TestsSchema> = {
+				connect: (client) =>
+					server.connect({ ...client, poke: async () => {} }),
+				pull: (args) => server.pull(args),
+				push: (args) => server.push(args),
+			}
+			const gatekeeper = await makeTodoGatekeeper({ remote })
+			const { client1, client2 } = gatekeeper
+			client1.subscribe({ collection: "todos" })
+			client2.subscribe({ collection: "todos" })
+			const seedTx = server.transact()
+			seedTx.set("todos", todo("shared", { text: "Original", priority: 3 }))
+			await server.commit(seedTx)
+			await (
+				await client1.pullFromRemote()
+			).result
+			await (
+				await client2.pullFromRemote()
+			).result
+
+			// A stale client deliberately assigns its existing value after another client changes it.
+			const remoteTx = client2.transact()
+			remoteTx.update("todos", "shared", {
+				done: true,
+				text: "Remote title",
+				priority: 9,
+			})
+			await (
+				await client2.commit(remoteTx)
+			).result
+			expect(client1.query({ collection: "todos" })).toEqual([
+				todo("shared", { text: "Original", done: false, priority: 3 }),
+			])
+			const localTx = client1.transact()
+			const assignments = { done: false }
+			localTx.update("todos", "shared", assignments)
+			assignments.done = true
+			await (
+				await client1.commit(localTx)
+			).result
+
+			// Both subscribed clients and the server retain the untouched title and priority.
+			await (
+				await client1.pullFromRemote()
+			).result
+			await (
+				await client2.pullFromRemote()
+			).result
+			const expected = [
+				todo("shared", { text: "Remote title", done: false, priority: 9 }),
+			]
+			expect(await server.query({ collection: "todos" })).toEqual(expected)
+			expect(client1.query({ collection: "todos" })).toEqual(expected)
+			expect(client2.query({ collection: "todos" })).toEqual(expected)
+		},
+	)
+
+	conflictTest(
 		"pull writes invalidate drafts even when replay preserves the optimistic record",
 		async ({ makeTodoGatekeeper, server }) => {
 			const remote: RemoteApi<TestsSchema> = {
@@ -105,10 +165,7 @@ describe("TandemClient sync conflicts", () => {
 
 			// A pull conflicts with the draft even when replay preserves the value it read.
 			const draftTx = client1.transact()
-			draftTx.update("todos", "shared", (record) => ({
-				...record,
-				priority: 9,
-			}))
+			draftTx.update("todos", "shared", { priority: 9 })
 			draftTx.set("todos", todo("ghost", { text: "Rejected draft" }))
 			const remoteTx = server.transact()
 			remoteTx.set(
@@ -129,10 +186,7 @@ describe("TandemClient sync conflicts", () => {
 
 			// A fresh transaction sends both pending edits without a ghost write or mutation-ID gap.
 			const retryTx = client1.transact()
-			retryTx.update("todos", "shared", (record) => ({
-				...record,
-				priority: 9,
-			}))
+			retryTx.update("todos", "shared", { priority: 9 })
 			await (
 				await client1.commit(retryTx)
 			).result

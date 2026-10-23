@@ -71,6 +71,14 @@ await server.commit(tx)
 
 A transaction also has `list`, `scan`, `update`, `remove`, `query`, and `cancel`.
 
+`update` accepts partial assignments and awaits the current record. Reads in the same transaction see those assignments; missing records and empty payloads are no-ops. Supplied nested objects and arrays replace their entire field. Use `set` for complete replacements; updates cannot change identity or delete fields.
+
+```tsx
+const tx = server.transact()
+await tx.update("todos", "welcome", { complete: true })
+await server.commit(tx)
+```
+
 ## Compound IDs
 
 A record ID can be a tuple. Tandem stores its parts in order, and `scan` accepts a prefix of them.

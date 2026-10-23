@@ -92,12 +92,14 @@ tx.set("todos", {
 	complete: false,
 	createdAt: Date.now(),
 })
-tx.update("todos", "todo-1", (todo) => ({ ...todo, complete: true }))
+tx.update("todos", "todo-1", { complete: true })
 tx.remove("todos", "todo-2")
 await db.commit(tx)
 ```
 
 A transaction also exposes `get`, `list`, and `scan` for reads that should see its own uncommitted writes.
+
+`update` assigns only supplied top-level fields on an existing record. Omitted fields stay unchanged; supplied objects and arrays replace that entire field. Identity cannot change, missing records and empty payloads are no-ops, and field deletion is not supported. Use `set` for a complete replacement.
 
 ## 4. Use it in React
 
@@ -146,7 +148,8 @@ export function App() {
 	})
 
 	const toggleTodo = useTransaction((tx, id: string) => {
-		tx.update("todos", id, (todo) => ({ ...todo, complete: !todo.complete }))
+		const todo = tx.get("todos", id)
+		if (todo) tx.update("todos", id, { complete: !todo.complete })
 	})
 
 	return (

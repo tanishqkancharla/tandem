@@ -41,12 +41,15 @@ describe("TandemClient local data", () => {
 
 		// Updating and removing records is reflected in subsequent queries
 		const updateTx = client1.transact()
-		updateTx.update("todos", "todo-1", (record) => ({
-			...record,
-			done: true,
-			priority: 5,
-		}))
+		const assignments = { done: true, priority: 5 }
+		updateTx.update("todos", "todo-1", assignments)
+		assignments.priority = 99
+		updateTx.update("todos", "todo-1", { text: "Updated draft" })
+		expect(updateTx.get("todos", "todo-1")).toEqual(
+			todo("todo-1", { text: "Updated draft", done: true, priority: 5 }),
+		)
 		updateTx.remove("todos", "todo-2")
+		updateTx.update("todos", "todo-2", { done: false })
 		await (
 			await client1.commit(updateTx)
 		).result
@@ -66,7 +69,64 @@ describe("TandemClient local data", () => {
 			todo("todo-3", { text: "Fix the sync bug", priority: 3 }),
 		])
 		expect(deletedTodo).toEqual([])
+		expect(
+			client1.query({ collection: "todos", where: { id: "todo-1" } }),
+		).toEqual([
+			todo("todo-1", { text: "Updated draft", done: true, priority: 5 }),
+		])
 		subscription.destroy()
+	})
+
+	test("partial updates replace nested fields and reject malformed payloads", async ({
+		logger,
+	}) => {
+		type Item = {
+			id: string
+			title: string
+			settings: { theme: string; locale?: string }
+			labels: string[]
+		}
+		await using gatekeeper = new Gatekeeper()
+			.add("client", () => new TandemClient<{ items: Item }>({ logger }))
+			.build()
+		const { client } = gatekeeper
+		await client.ready
+		const tx = client.transact()
+		tx.set("items", {
+			id: "item-1",
+			title: "Keep title",
+			settings: { theme: "light", locale: "en" },
+			labels: ["one", "two"],
+		})
+
+		// A supplied nested object or array replaces that entire field.
+		tx.update("items", "item-1", {
+			settings: { theme: "dark" },
+			labels: ["three"],
+		})
+		tx.update("items", "item-1", {})
+		tx.update("items", "missing", { title: "Do not create" })
+
+		// Invalid arguments fail without changing identity or staging other fields.
+		for (const payload of [
+			null,
+			[],
+			{ id: "item-2", title: "Do not apply" },
+			() => ({ title: "Legacy" }),
+		]) {
+			expect(() => tx.update("items", "item-1", payload as never)).toThrow()
+		}
+		await (
+			await client.commit(tx)
+		).result
+		expect(client.query({ collection: "items" })).toEqual([
+			{
+				id: "item-1",
+				title: "Keep title",
+				settings: { theme: "dark" },
+				labels: ["three"],
+			},
+		])
 	})
 
 	test("runs flat queries unchanged when constructed with a runtime schema", async ({
@@ -169,10 +229,7 @@ describe("TandemClient local data", () => {
 
 		// Completing a todo removes it from the open-only subscription
 		const completeOpenTodoTx = client1.transact()
-		completeOpenTodoTx.update("todos", "todo-1", (record) => ({
-			...record,
-			done: true,
-		}))
+		completeOpenTodoTx.update("todos", "todo-1", { done: true })
 		await (
 			await client1.commit(completeOpenTodoTx)
 		).result
@@ -229,7 +286,7 @@ describe("TandemClient local data", () => {
 
 		// Committing operations against missing records is a harmless no-op
 		const noopTx = client1.transact()
-		noopTx.update("todos", "missing", (record) => ({ ...record, done: true }))
+		noopTx.update("todos", "missing", { done: true })
 		noopTx.remove("todos", "missing")
 		await (
 			await client1.commit(noopTx)

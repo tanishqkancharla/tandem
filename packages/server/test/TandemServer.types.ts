@@ -99,6 +99,20 @@ if ("error" in pullResponse) {
 
 const transaction = server.transact()
 expectTypeOf(server.commit(transaction)).toEqualTypeOf<Promise<void>>()
+expectTypeOf(
+	transaction.update("threads", "thread-1", { title: "Partial" }),
+).toEqualTypeOf<Promise<typeof transaction>>()
+void transaction.update("entries", ["session-1", 1], { body: "Partial" })
+// @ts-expect-error Update IDs stay correlated with the selected collection.
+void transaction.update("entries", "entry-1", { body: "Invalid" })
+// @ts-expect-error Update payload fields belong to the selected collection.
+void transaction.update("users", "user-1", { title: "Invalid" })
+// @ts-expect-error Update field values retain their runtime types.
+void transaction.update("threads", "thread-1", { rank: "Invalid" })
+// @ts-expect-error Record identity is not an editable field.
+void transaction.update("threads", "thread-1", { id: "thread-2" })
+// @ts-expect-error Update callbacks are replaced by explicit partial objects.
+void transaction.update("threads", "thread-1", () => ({ id: "thread-1" }))
 
 // @ts-expect-error The underlying tuple transaction is an implementation detail.
 void transaction.tupleDbTx

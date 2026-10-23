@@ -24,6 +24,7 @@ import {
 	executeQueryAsync,
 	executeScanWindowAsync,
 	InvalidScanWindowError,
+	UpdatePayloadError,
 } from "@tanishqkancharla/tandem-core/internal"
 import type { ScanWindowRecord } from "@tanishqkancharla/tandem-core/internal"
 import * as errore from "errore"
@@ -130,35 +131,19 @@ async function applyMutationOperation<
 				catch: (cause) => new TandemServerError({ operation: "push", cause }),
 			})
 		case "update": {
-			const { payload } = operation
-			if (
-				typeof payload !== "object" ||
-				payload === null ||
-				Array.isArray(payload)
-			) {
-				return {
-					error: "invalid-request",
-					message: "Update payload must be an object",
-				}
-			}
-			if (Object.hasOwn(payload, "id")) {
-				return {
-					error: "invalid-request",
-					message: "An update cannot change record identity",
-				}
-			}
 			const updated = await transaction
-				.update(
-					operation.collection,
-					operation.id,
-					(current) =>
-						// TypeScript cannot recover the generic record from its Readonly view.
-						({
-							...current,
-							...payload,
-						}) as unknown as Schema[typeof operation.collection],
+				.update(operation.collection, operation.id, operation.payload)
+				.catch((cause) =>
+					cause instanceof UpdatePayloadError
+						? cause
+						: new TandemServerError({ operation: "push", cause }),
 				)
-				.catch((cause) => new TandemServerError({ operation: "push", cause }))
+			if (updated instanceof UpdatePayloadError) {
+				return {
+					error: "invalid-request",
+					message: updated.message,
+				}
+			}
 			if (updated instanceof Error) return updated
 			return
 		}

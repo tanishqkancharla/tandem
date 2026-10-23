@@ -253,10 +253,9 @@ describe("TandemClient relations", () => {
 
 			// Updating a nested included relation also re-emits the parent row
 			const updateProfileTx = client.transact()
-			updateProfileTx.update("profiles", "profile-1", (profile) => ({
-				...profile,
+			updateProfileTx.update("profiles", "profile-1", {
 				displayName: "Countess Lovelace",
-			}))
+			})
 			await (
 				await client.commit(updateProfileTx)
 			).result

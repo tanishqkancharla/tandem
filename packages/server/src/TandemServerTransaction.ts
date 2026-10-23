@@ -11,6 +11,7 @@ import type {
 import {
 	collectionIdToTuple,
 	executeQueryAsync,
+	validateUpdatePayload,
 } from "@tanishqkancharla/tandem-core/internal"
 import * as errore from "errore"
 import type { AsyncTupleRootTransactionApi } from "tuple-database"
@@ -155,11 +156,17 @@ export class TandemServerTransaction<
 		return this
 	}
 
+	/** Assigns supplied top-level fields only if the record exists. */
 	async update<Collection extends CollectionName<Schema>>(
 		collection: Collection,
 		id: Schema[Collection]["id"],
-		updateFn: (record: Readonly<Schema[Collection]>) => Schema[Collection],
+		payload: Partial<Omit<Schema[Collection], "id">> & { id?: never },
 	): Promise<this> {
+		const invalid = validateUpdatePayload(payload)
+		if (invalid instanceof Error) throw invalid
+		const assignments = { ...payload }
+		if (Object.keys(assignments).length === 0) return this
+
 		const transaction = getCollectionTransaction(this.tupleDbTx, collection)
 		const key = collectionIdToTuple(id) as CollectionTupleKey<
 			Schema,
@@ -169,13 +176,10 @@ export class TandemServerTransaction<
 			.get(key)
 			.catch((cause) => new TandemServerError({ operation: "update", cause }))
 		if (existing instanceof Error) throw existing
-		if (!existing) return this
-
-		const updated = updateFn(existing)
-		if (updated === existing) return this
+		if (existing === undefined) return this
 
 		const result = stageTransactionWrite("update", () => {
-			transaction.set(key, updated)
+			transaction.set(key, { ...existing, ...assignments })
 		})
 		if (result instanceof Error) throw result
 		return this

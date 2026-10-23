@@ -63,10 +63,7 @@ test("persists TandemServer transactions across storage instances", async ({
 	])
 
 	const complete = secondServer.transact()
-	await complete.update("todos", "todo-1", (todo) => ({
-		...todo,
-		completed: true,
-	}))
+	await complete.update("todos", "todo-1", { completed: true })
 	await secondServer.commit(complete)
 	await secondServer.close()
 

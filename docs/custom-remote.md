@@ -41,7 +41,7 @@ Any signal works: a WebSocket message, an SSE event, or a polling timer.
 
 ## `push`
 
-Apply the mutations in order. Each `set` carries a full record, and each `remove` carries an ID. Mutation IDs are per-client counters, so they arrive in increasing order. After they are applied, remember the last mutation ID for `clientId` so `pull` can report it.
+Apply the mutations in order. Each `set` carries a full record, each `remove` carries an ID, and each `update` carries an ID and partial `payload`. Merge updates into the current record, preserving omitted fields and leaving missing records absent. Mutation IDs are per-client counters, so they arrive in increasing order. After they are applied, remember the last mutation ID for `clientId` so `pull` can report it.
 
 Reject if the mutations cannot be applied. The client then rolls back the whole batch locally, and each affected `commit` promise rejects. Authorization and validation belong here too: reject a push the client may not make.
 

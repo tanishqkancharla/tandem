@@ -87,7 +87,7 @@ export function App() {
 	})
 
 	const setComplete = useTransaction((tx, id: string, complete: boolean) => {
-		tx.update("todos", id, (todo) => ({ ...todo, complete }))
+		tx.update("todos", id, { complete })
 	})
 
 	const removeTodo = useTransaction((tx, id: string) => {

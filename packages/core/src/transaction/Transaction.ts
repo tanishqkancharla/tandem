@@ -121,6 +121,24 @@ export type Mutation<Schema extends AnySchema> = {
 	id: MutationId
 }
 
+/** @internal */
+export class UpdatePayloadError extends errore.createTaggedError({
+	name: "UpdatePayloadError",
+	message: "$detail",
+}) {}
+
+/** @internal */
+export function validateUpdatePayload(payload: unknown) {
+	if (!isObject(payload) || Array.isArray(payload))
+		return new UpdatePayloadError({
+			detail: "Update payload must be an object",
+		})
+	if (Object.hasOwn(payload, "id"))
+		return new UpdatePayloadError({
+			detail: "An update cannot change record identity",
+		})
+}
+
 class MutationCodecInputError extends errore.createTaggedError({
 	name: "MutationCodecInputError",
 	message: "Invalid mutation: $detail",
@@ -383,15 +401,17 @@ export class Transaction<Schema extends AnySchema> {
 		return this
 	}
 
-	/**
-	 * Updates a record in the database with the given updater function *only if
-	 * the record exists*.
-	 */
+	/** Assigns supplied top-level fields only if the record exists. */
 	update<Collection extends CollectionName<Schema>>(
 		collection: Collection,
 		id: Schema[Collection]["id"],
-		updateFn: (record: Readonly<Schema[Collection]>) => Schema[Collection],
+		payload: Partial<Omit<Schema[Collection], "id">> & { id?: never },
 	): Transaction<Schema> {
+		const invalid = validateUpdatePayload(payload)
+		if (invalid instanceof Error) throw invalid
+		const assignments = { ...payload }
+		if (Object.keys(assignments).length === 0) return this
+
 		const tupleSchemaKey = collectionIdToTuple(id) as CollectionTupleKey<
 			Schema,
 			Collection
@@ -404,13 +424,8 @@ export class Transaction<Schema extends AnySchema> {
 		const prevRecord = transaction.get(tupleSchemaKey)
 		if (prevRecord === undefined) return this
 
-		const updatedRecord = updateFn(prevRecord)
-		if (updatedRecord === prevRecord) {
-			return this
-		}
-
-		transaction.set(tupleSchemaKey, updatedRecord)
-		this.ops.push({ type: "set", collection, value: updatedRecord })
+		transaction.set(tupleSchemaKey, { ...prevRecord, ...assignments })
+		this.ops.push({ type: "update", collection, id, payload: assignments })
 
 		return this
 	}

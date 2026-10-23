@@ -178,6 +178,17 @@ function checkPartialCollectionTypes() {
 	function checkWrites(client: TandemClient<Schema>) {
 		const tx = client.transact()
 		tx.set("events", { id: "event-1" })
+		tx.update("events", "event-1", { startAt: new Date() })
+		// @ts-expect-error The partial update identity retains the collection's ID type.
+		tx.update("events", 12, { title: "Planning" })
+		// @ts-expect-error Identity cannot be changed through an update payload.
+		tx.update("events", "event-1", { id: "event-2" })
+		// @ts-expect-error Updates accept only declared collection fields.
+		tx.update("events", "event-1", { unknown: true })
+		// @ts-expect-error Updates use runtime field types, not encoded values.
+		tx.update("events", "event-1", { startAt: "2026-10-23" })
+		// @ts-expect-error Callback-returning-record updates are no longer supported.
+		tx.update("events", "event-1", () => ({ id: "event-1" }))
 		// @ts-expect-error A record still needs identity, unlike a codec payload.
 		tx.set("events", { startAt: new Date() })
 		// @ts-expect-error The identity type comes from the declared id field codec.

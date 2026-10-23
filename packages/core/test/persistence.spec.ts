@@ -977,46 +977,50 @@ describe("TandemClient persistence", () => {
 		}
 		const confirmed = { ...previous, title: "Remote title" }
 		const seedTx = remote.transact()
-		seedTx.set("events", confirmed)
+		seedTx.set("events", previous)
 		await remote.commit(seedTx)
 
-		// Seed the durable protocol boundary while the public update API remains unchanged.
+		// Save field intent through the public API while disconnected, then reopen the store.
 		const dbName = rng.next("pending-field-update")
 		const storage = makeStorage<TestsEventSchema>({
 			dbName,
 			schema: testsEventRuntimeSchema,
 		})
-		await storage.commit({
-			set: [
-				{
-					key: ["replica"],
-					value: {
-						clientId: tag<ClientId>("field-client"),
-						lastIssuedMutationId: tag<MutationId>(1),
-					},
-				},
-				{ key: ["record", "events", previous.id], value: pending },
-				{
-					key: ["base", "events", previous.id],
-					value: {
-						server: { type: "set", value: previous },
-						lastWrittenBy: tag<MutationId>(1),
-					},
-				},
-				{
-					key: ["outbox", tag<MutationId>(1)],
-					value: [
-						{
-							type: "update",
-							collection: "events",
-							id: previous.id,
-							payload: { startAt: pending.startAt },
-						},
-					],
-				},
-			],
-		})
+		await using first = new Gatekeeper()
+			.add(
+				"client",
+				() =>
+					new TandemClient<TestsEventSchema>({
+						schema: testsEventRuntimeSchema,
+						clientStorage: storage,
+						remote,
+						logger,
+						autoConnect: false,
+						syncInterval: 0,
+					}),
+			)
+			.build()
+		await first.client.ready
+		first.client.subscribe({ collection: "events" })
+		await (
+			await first.client.connect()
+		).result
+		await (
+			await first.client.disconnect()
+		).result
+		const updateTx = first.client.transact()
+		updateTx.update("events", previous.id, { startAt: pending.startAt })
+		await (
+			await first.client.commit(updateTx)
+		).result
+		await (
+			await first.client.flushClientStorage()
+		).result
 		await storage.close()
+
+		const remoteTx = remote.transact()
+		await remoteTx.update("events", previous.id, { title: confirmed.title })
+		await remote.commit(remoteTx)
 		const reopened = makeStorage<TestsEventSchema>({
 			dbName,
 			schema: testsEventRuntimeSchema,
