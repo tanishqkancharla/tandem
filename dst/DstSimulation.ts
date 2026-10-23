@@ -28,6 +28,27 @@ export interface DstRunOptions {
 	faultRate?: number
 	/** Chance per step that a running client crashes. */
 	crashRate?: number
+	clientCount?: number
+	/** Number of ids in each shared or client-owned pool. */
+	recordCount?: number
+	maxMutationsInFlight?: number
+	/** Chance of targeting the shared pool rather than the writer's own pool. */
+	sharedWriteRate?: number
+}
+
+export function resolveRunOptions(
+	options: DstRunOptions,
+): Required<DstRunOptions> {
+	return {
+		seed: options.seed,
+		steps: options.steps,
+		faultRate: options.faultRate ?? 0,
+		crashRate: options.crashRate ?? 0,
+		clientCount: options.clientCount ?? 2,
+		recordCount: options.recordCount ?? 3,
+		maxMutationsInFlight: options.maxMutationsInFlight ?? 4,
+		sharedWriteRate: options.sharedWriteRate ?? 1,
+	}
 }
 
 export type DstRunResult = {
@@ -38,26 +59,28 @@ export type DstRunResult = {
 	states: DstFinalStates
 	violation: DstViolation | undefined
 	maxPendingCalls: number
+	maxMutationsInFlight: number
 }
 
-/** A new mutation starts only while fewer calls than this are in flight. */
-const maxCallsInFlight = 4
 /** How often a step starts a mutation rather than advancing a pending call. */
 const mutateRate = 0.35
 /** Share of new writes the server makes itself rather than a client. */
 const serverWriteRate = 0.4
 /** Chance per step that a crashed client restarts. */
 const restartRate = 0.25
-const poolOfIds = ["item-1", "item-2", "item-3"]
 
 /** A random run: each step applies one event chosen from what is possible now. */
 export class DstSimulation {
-	constructor(private readonly options: DstRunOptions) {}
+	private readonly options: Required<DstRunOptions>
+
+	constructor(options: DstRunOptions) {
+		this.options = resolveRunOptions(options)
+	}
 
 	async execute(sink?: DstArtifactSink): Promise<DstRunResult> {
 		const { seed, steps } = this.options
 		sink?.write({ kind: "header", format: 1, options: this.options })
-		await using world = await DstWorld.start(seed)
+		await using world = await DstWorld.start(this.options)
 		// Drives choices only; ids come from their own streams.
 		const rng = new SimPrng(seed)
 		const trace: DstTraceRecord[] = []
@@ -81,6 +104,7 @@ export class DstSimulation {
 			trace,
 			...outcome,
 			maxPendingCalls: world.maxPendingCalls,
+			maxMutationsInFlight: world.maxMutationsInFlight,
 		}
 	}
 
@@ -90,8 +114,13 @@ export class DstSimulation {
 		pending: readonly DstPendingCall[],
 		step: number,
 	): DstIntent | undefined {
-		const faultRate = this.options.faultRate ?? 0
-		const crashRate = this.options.crashRate ?? 0
+		const {
+			faultRate,
+			crashRate,
+			maxMutationsInFlight,
+			recordCount,
+			sharedWriteRate,
+		} = this.options
 		// Faults model lost network messages, never a failed timer or disk write.
 		const droppable = pending.filter(isNetworkHandoff)
 		const { down, running, writers } = world
@@ -108,13 +137,15 @@ export class DstSimulation {
 		}
 		if (
 			writers.length > 0 &&
-			(pending.length === 0 ||
-				(pending.length < maxCallsInFlight && rng.boolean(mutateRate)))
+			world.mutationsInFlight < maxMutationsInFlight &&
+			(pending.length === 0 || rng.boolean(mutateRate))
 		) {
 			if (rng.boolean(serverWriteRate)) {
 				// Mostly its own records, as an agent streaming replies would, but
 				// also ones clients share, so writers conflict.
-				const id = rng.pick(rng.boolean(0.7) ? serverOwnedIds : poolOfIds)
+				const id = rng.boolean(0.7)
+					? rng.pick(serverOwnedIds)
+					: `item-${rng.int(1, recordCount)}`
 				if (rng.boolean(0.2)) return { type: "serverRemove", id }
 				return {
 					type: "serverSet",
@@ -127,12 +158,12 @@ export class DstSimulation {
 				}
 			}
 			const client = rng.pick(writers)
-			const id = rng.pick(poolOfIds)
+			const prefix = rng.boolean(sharedWriteRate) ? "item-" : `${client}-item-`
+			const id = `${prefix}${rng.int(1, recordCount)}`
 			if (rng.boolean(0.2)) return { type: "remove", client, id }
-			// Only the server writes its own records.
 			const todos = world
 				.todosOf(client)
-				.filter(({ id }) => !serverOwnedIds.includes(id))
+				.filter((todo) => todo.id.startsWith(prefix))
 			if (todos.length > 0 && rng.boolean(0.5)) {
 				// Target the local view so updates carry intent, not mostly missing-record no-ops.
 				const todo = rng.pick(todos)

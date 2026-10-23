@@ -13,14 +13,14 @@ import {
  * step, then the outcome. A run that hangs or throws leaves the lines it wrote.
  */
 export type DstArtifactLine =
-	| { kind: "header"; format: 1; options: DstRunOptions }
+	| { kind: "header"; format: 1; options: Required<DstRunOptions> }
 	| ({ kind: "event" } & DstTraceRecord)
 	| ({ kind: "outcome"; stepsCompleted: number } & DstOutcome)
 
 export type DstArtifactSink = { write(line: DstArtifactLine): void }
 
 export type DstArtifact = {
-	options: DstRunOptions
+	options: Required<DstRunOptions>
 	trace: DstTraceRecord[]
 	/** Missing when the run stopped before writing it. */
 	outcome?: { stepsCompleted: number } & DstOutcome
@@ -87,7 +87,7 @@ export type DstReplayResult = {
  * on and the ids it generated; otherwise the replay stops with a divergence.
  */
 export async function replay(artifact: DstArtifact): Promise<DstReplayResult> {
-	await using world = await DstWorld.start(artifact.options.seed)
+	await using world = await DstWorld.start(artifact.options)
 	const events = new Map(artifact.trace.map((record) => [record.step, record]))
 	const steps =
 		artifact.outcome?.stepsCompleted ?? (artifact.trace.at(-1)?.step ?? -1) + 1

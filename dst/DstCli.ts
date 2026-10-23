@@ -8,6 +8,7 @@ import {
 	DstSimulation,
 	type DstTodo,
 	type DstViolation,
+	resolveRunOptions,
 } from "./DstSimulation.js"
 
 export class DstRunError extends errore.createTaggedError({
@@ -115,6 +116,7 @@ export function sweepSummary(
 	options: DstRunOptions & { runs: number },
 	results: readonly DstSweepRun[],
 ): string {
+	const workload = resolveRunOptions(options)
 	const count = (outcome: DstSweepRun["outcome"]) =>
 		results.filter((result) => result.outcome === outcome).length
 	const failures = results.filter(({ outcome }) => outcome !== "ok")
@@ -122,6 +124,7 @@ export function sweepSummary(
 		`### DST sweep: seeds ${options.seed}–${options.seed + options.runs - 1}`,
 		"",
 		`${options.steps} steps, fault rate ${options.faultRate ?? 0}, crash rate ${options.crashRate ?? 0}.`,
+		`${workload.clientCount} clients, ${workload.recordCount} ids per pool, max ${workload.maxMutationsInFlight} mutations in flight, shared write rate ${workload.sharedWriteRate}.`,
 		"",
 		`| ok | violation | nondeterministic | error |`,
 		`|---|---|---|---|`,

@@ -1,6 +1,8 @@
+import { spawnSync } from "node:child_process"
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { matchBy } from "@tanishqkancharla/tandem-core"
 import { describe, expect, it, onTestFinished } from "vitest"
 import { sweep } from "./DstCli.js"
 import {
@@ -14,18 +16,58 @@ import { DstSimulation } from "./DstSimulation.js"
 import { DstWorld, serverOwnedIds } from "./DstWorld.js"
 
 describe("Deterministic simulation testing", () => {
-	it("converges to the server with interleaved calls and no faults", async () => {
-		const result = await new DstSimulation({ seed: 3, steps: 300 }).execute()
+	it.each([1, 2, 3, 5, 10])(
+		"converges with %i clients and interleaved calls",
+		async (clientCount) => {
+			const sink = memorySink()
+			const result = await new DstSimulation({
+				seed: 3,
+				steps: 1000,
+				clientCount,
+			}).execute(sink)
+			const names = Array.from(
+				{ length: clientCount },
+				(_, i): `client${number}` => `client${i + 1}`,
+			)
 
-		expect(result.violation).toBeUndefined()
-		expect(result.states.client1).toEqual(result.states.server)
-		expect(result.states.client2).toEqual(result.states.server)
-	})
+			expect(result.violation).toBeUndefined()
+			expect(result.states.server.length).toBeGreaterThan(0)
+			expect(Object.keys(result.states)).toEqual(["server", ...names])
+			expect(new Set(result.clientIds).size).toBe(clientCount)
+			for (const name of names)
+				expect(result.states[name]).toEqual(result.states.server)
+			expect(
+				new Set(
+					result.trace.flatMap((event) =>
+						event.type === "set" ||
+						event.type === "update" ||
+						event.type === "remove"
+							? [event.client]
+							: [],
+					),
+				),
+			).toEqual(new Set(names))
+			expect(sink.lines[0]).toEqual({
+				kind: "header",
+				format: 1,
+				options: {
+					seed: 3,
+					steps: 1000,
+					clientCount,
+					recordCount: 3,
+					maxMutationsInFlight: 4,
+					sharedWriteRate: 1,
+					faultRate: 0,
+					crashRate: 0,
+				},
+			})
+		},
+	)
 
 	it.each(["client1", "client2"] as const)(
 		"preserves disjoint offline field updates when %s edits completion",
 		async (completionClient) => {
-			await using world = await DstWorld.start(2)
+			await using world = await DstWorld.start({ seed: 2 })
 			await world.apply(0, {
 				type: "set",
 				client: "client1",
@@ -58,7 +100,7 @@ describe("Deterministic simulation testing", () => {
 	)
 
 	it("settles a final lost request by reconnecting and delivering retained writes", async () => {
-		await using world = await DstWorld.start(2)
+		await using world = await DstWorld.start({ seed: 2 })
 		const item = {
 			id: "item-3",
 			text: "Retained write",
@@ -105,14 +147,95 @@ describe("Deterministic simulation testing", () => {
 		expect(result.violation).toBeUndefined()
 	})
 
-	it("keeps several calls in flight at once", async () => {
-		const result = await new DstSimulation({ seed: 3, steps: 300 }).execute()
+	it.each([1, 6])(
+		"bounds outstanding mutations at %i independently of other calls",
+		async (limit) => {
+			const result = await new DstSimulation({
+				seed: 3,
+				steps: 300,
+				clientCount: 5,
+				maxMutationsInFlight: limit,
+			}).execute()
 
-		expect(result.maxPendingCalls).toBeGreaterThanOrEqual(2)
+			expect(result.violation).toBeUndefined()
+			expect(result.maxMutationsInFlight).toBe(limit)
+			expect(result.maxPendingCalls).toBeGreaterThan(limit)
+		},
+	)
+
+	it("holds concurrent writes from distinct clients through their result", async () => {
+		await using world = await DstWorld.start({ seed: 3, clientCount: 3 })
+		const items = world.clientNames.map((client, index) => ({
+			id: client,
+			text: `From ${client}`,
+			done: false,
+			priority: index + 1,
+		}))
+		for (const [index, client] of world.clientNames.entries()) {
+			await world.apply(index, { type: "set", client, item: items[index] })
+		}
+		await world.settle()
+		const calls = world.pending()
+		expect(new Set(calls.map(({ label }) => label))).toEqual(
+			new Set(["client1.commit", "client2.commit", "client3.commit"]),
+		)
+		const first = calls[0]
+		await world.apply(3, { type: "advance", call: first.name })
+		await world.settle()
+		expect(world.mutationsInFlight).toBe(3)
+
+		const result = await world.finish()
+		expect(world.mutationsInFlight).toBe(0)
+		expect(result.violation).toBeUndefined()
+		expect(result.states.server).toEqual(items)
 	})
 
+	it.each([
+		{ sharedWriteRate: 0, recordCount: 1 },
+		{ sharedWriteRate: 1, recordCount: 7 },
+	])(
+		"targets configured record pools: %j",
+		async ({ sharedWriteRate, recordCount }) => {
+			const result = await new DstSimulation({
+				seed: 3,
+				steps: 300,
+				clientCount: 3,
+				recordCount,
+				sharedWriteRate,
+			}).execute()
+			const ids = result.trace.flatMap((event) => {
+				if (
+					event.type !== "set" &&
+					event.type !== "update" &&
+					event.type !== "remove"
+				)
+					return []
+				const id = matchBy(event, "type", {
+					set: ({ item }) => item.id,
+					update: ({ id }) => id,
+					remove: ({ id }) => id,
+				})
+				const prefix = sharedWriteRate === 1 ? "item-" : `${event.client}-item-`
+				expect(id.startsWith(prefix)).toBe(true)
+				return [Number(id.slice(prefix.length))]
+			})
+
+			expect(result.violation).toBeUndefined()
+			expect(ids).toContain(recordCount)
+			expect(ids.every((id) => id >= 1 && id <= recordCount)).toBe(true)
+		},
+	)
+
 	it("reproduces a run exactly from its seed, including every generated id", async () => {
-		const options = { seed: 42, steps: 300, faultRate: 0.1 }
+		const options = {
+			seed: 42,
+			steps: 300,
+			faultRate: 0.1,
+			clientCount: 5,
+			recordCount: 7,
+			maxMutationsInFlight: 6,
+			sharedWriteRate: 0.4,
+		}
 
 		const first = await new DstSimulation(options).execute()
 		const second = await new DstSimulation(options).execute()
@@ -156,6 +279,10 @@ describe("Deterministic simulation testing", () => {
 			steps: 300,
 			faultRate: 0.1,
 			crashRate: 0.02,
+			clientCount: 5,
+			recordCount: 9,
+			maxMutationsInFlight: 3,
+			sharedWriteRate: 0.4,
 		}).execute(sink)
 
 		const replayed = await replay(parseArtifact(formatArtifact(sink.lines)))
@@ -179,12 +306,9 @@ describe("Deterministic simulation testing", () => {
 	})
 
 	it("reports where a replay leaves the recorded path", async () => {
-		const artifact = parseArtifact(
-			readFileSync(
-				new URL("./regressions/lost-push.jsonl", import.meta.url),
-				"utf8",
-			),
-		)
+		const sink = memorySink()
+		await new DstSimulation({ seed: 2, steps: 12 }).execute(sink)
+		const artifact = parseArtifact(formatArtifact(sink.lines))
 		const advance = artifact.trace.find(({ type }) => type === "advance")!
 		const altered: DstArtifact = {
 			...artifact,
@@ -223,46 +347,34 @@ describe("Deterministic simulation testing", () => {
 		expect(readdirSync(outDir)).toEqual([])
 	})
 
-	it("replays the lost-push trace through checkpointing without a convergence violation", async () => {
+	it("reproduces the known removal inconsistency after crashes", async () => {
 		const artifact = parseArtifact(
 			readFileSync(
-				new URL("./regressions/lost-push.jsonl", import.meta.url),
+				new URL("./known-failures/crash-removal.jsonl", import.meta.url),
 				"utf8",
 			),
 		)
-		expect(await replay(artifact)).toEqual({
-			stepsCompleted: 12,
-			violation: undefined,
-			divergence: undefined,
-		})
-	})
+		const result = await replay(artifact)
 
-	it("replays the crash trace and delivers the durable optimistic write", async () => {
-		const artifact = parseArtifact(
-			readFileSync(
-				new URL("./regressions/crash-ghost.jsonl", import.meta.url),
-				"utf8",
-			),
+		// Preserve the failing outcome until fixed, then remove this recording.
+		expect(result).toEqual({
+			stepsCompleted: 1000,
+			divergence: undefined,
+			violation: artifact.outcome?.violation,
+		})
+		expect(result.violation).toMatchObject({
+			client: "client4",
+			step: "quiescence",
+		})
+		expect(result.violation?.expected.map(({ id }) => id)).not.toContain(
+			"client4-item-1",
 		)
-		expect(await replay(artifact)).toEqual({
-			stepsCompleted: 6,
-			violation: undefined,
-			divergence: undefined,
+		expect(result.violation?.actual).toContainEqual({
+			id: "client4-item-1",
+			text: "Note client4-item-1 (rev 176)",
+			done: true,
+			priority: 1,
 		})
-
-		// Convergence alone could pass by discarding the write. Check delivery too.
-		await using world = await DstWorld.start(artifact.options.seed)
-		for (const event of artifact.trace) {
-			world.pending()
-			await world.apply(event.step, event)
-			await world.settle()
-		}
-		const result = await world.finish()
-		expect(result.states.server).toEqual([
-			{ id: "item-1", text: "Optimistic ghost", done: false, priority: 5 },
-		])
-		expect(result.states.client1).toEqual(result.states.server)
-		expect(result.states.client2).toEqual(result.states.server)
 	})
 
 	it.each([
@@ -273,5 +385,30 @@ describe("Deterministic simulation testing", () => {
 		expect(result.violation).toBeUndefined()
 		expect(result.states.client1).toEqual(result.states.server)
 		expect(result.states.client2).toEqual(result.states.server)
+	})
+
+	it.each([
+		["client-count", "0"],
+		["record-count", "-1"],
+		["max-mutations-in-flight", "1.5"],
+		["steps", "9007199254740992"],
+		["runs", "0"],
+		["shared-write-rate", "1.1"],
+		["fault-rate", "-0.1"],
+		["crash-rate", "Infinity"],
+	])("rejects --%s=%s at the CLI boundary", (name, value) => {
+		const result = spawnSync(
+			process.execPath,
+			[
+				"--import",
+				"tsx",
+				new URL("./cli.ts", import.meta.url).pathname,
+				`--${name}=${value}`,
+			],
+			{ cwd: new URL(".", import.meta.url), encoding: "utf8" },
+		)
+
+		expect(result.status).toBe(2)
+		expect(result.stderr).toContain(`--${name} must be`)
 	})
 })

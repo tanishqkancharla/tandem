@@ -1,7 +1,9 @@
 import {
 	Gatekeeper,
+	GatekeeperError,
 	type CallHandle,
 	type GatekeeperEvents,
+	type Harness,
 	type PendingCall,
 } from "@tanishqkancharla/gatekeeper"
 import {
@@ -169,8 +171,7 @@ export function isNetworkHandoff({ sentBy, waitingFor }: PendingCall): boolean {
 	return sentBy === "server" || waitingFor === "server"
 }
 
-export const clientNames = ["client1", "client2"] as const
-export type DstClientName = (typeof clientNames)[number]
+export type DstClientName = `client${number}`
 
 /** Each participant's todos when the run ended; null for a client that was down. */
 export type DstFinalStates = Record<"server", DstTodo[]> &
@@ -210,6 +211,11 @@ export type DstFaultKind =
 export class DstFaultError extends errore.createTaggedError({
 	name: "DstFaultError",
 	message: "$call: $kind",
+}) {}
+
+class DstCommitError extends errore.createTaggedError({
+	name: "DstCommitError",
+	message: "$client commit failed",
 }) {}
 
 export type DstBoundary = { call: string; sentBy: string; waitingFor: string }
@@ -287,17 +293,14 @@ export type DstOutcome = {
 }
 
 /**
- * The simulated system: a server, two clients with timers and durable storage,
+ * The simulated system: a server, clients with timers and durable storage,
  * and the Gatekeeper harness that orders their handoffs.
  * A random run and a replay drive it through the same events.
  */
 export class DstWorld implements AsyncDisposable {
 	private readonly crashed = new Set<DstClientName>()
 	// Counts restarts, so work begun for an earlier incarnation stops.
-	private readonly generations: Record<DstClientName, number> = {
-		client1: 0,
-		client2: 0,
-	}
+	private readonly generations: Record<DstClientName, number>
 	// The generation whose storage has loaded, so it can take writes.
 	private readonly loaded = new Map<DstClientName, number>()
 	// Trace IDs only; correctness does not depend on tracking every mutation.
@@ -305,6 +308,8 @@ export class DstWorld implements AsyncDisposable {
 	private readonly callNames = new Map<CallHandle<unknown>, string>()
 	private readonly labelCounts = new Map<string, number>()
 	private readonly deliveredEvents = new Set<CallHandle<unknown>>()
+	// Count commits through their result, not just until their first held handoff.
+	private activeMutations = 0
 	// Controls resolve when their call reaches its next boundary, which can
 	// depend on other held calls, so a step starts them without waiting.
 	private readonly inFlight: Promise<unknown>[] = []
@@ -315,14 +320,42 @@ export class DstWorld implements AsyncDisposable {
 	private lastStep = -1
 	private orderViolation: DstViolation | undefined
 	maxPendingCalls = 0
+	maxMutationsInFlight = 0
 
-	private constructor(
-		private readonly server: TandemServer<DstSchema, {}>,
-		private readonly storage: InMemoryServerStorage,
-		private readonly harness: DstHarness,
-	) {}
+	readonly clientNames: readonly DstClientName[]
+	private readonly server: TandemServer<DstSchema, {}>
+	private readonly harness: DstHarness
+	private readonly storage: InMemoryServerStorage
 
-	static async start(seed: number): Promise<DstWorld> {
+	private constructor({
+		server,
+		harness,
+		clientNames,
+		storage,
+	}: {
+		server: TandemServer<DstSchema, {}>
+		harness: DstHarness
+		clientNames: readonly DstClientName[]
+		storage: InMemoryServerStorage
+	}) {
+		this.server = server
+		this.harness = harness
+		this.clientNames = clientNames
+		this.storage = storage
+		this.generations = Object.fromEntries(clientNames.map((name) => [name, 0]))
+	}
+
+	static async start({
+		seed,
+		clientCount = 2,
+	}: {
+		seed: number
+		clientCount?: number
+	}): Promise<DstWorld> {
+		const clientNames = Array.from(
+			{ length: clientCount },
+			(_, index): DstClientName => `client${index + 1}`,
+		)
 		const storage = new InMemoryServerStorage()
 		const server = new TandemServer<DstSchema, {}>({
 			schema: dstSchemaDefinition,
@@ -333,22 +366,27 @@ export class DstWorld implements AsyncDisposable {
 		let world: DstWorld | undefined
 		const harness = buildHarness({
 			server,
+			clientNames,
 			// A restart runs the factory again with the next generation's ids.
 			idSource: (label) =>
 				SimPrng.idSource(seed, `${label}.${world?.generations[label] ?? 0}`),
 		})
-		world = new DstWorld(server, storage, harness)
+		world = new DstWorld({ server, storage, harness, clientNames })
 		for (const name of clientNames) await world.boot(name)
 		await harness.activateGates()
 		return world
 	}
 
 	get running(): readonly DstClientName[] {
-		return clientNames.filter((name) => !this.crashed.has(name))
+		return this.clientNames.filter((name) => !this.crashed.has(name))
 	}
 
 	get down(): readonly DstClientName[] {
-		return clientNames.filter((name) => this.crashed.has(name))
+		return this.clientNames.filter((name) => this.crashed.has(name))
+	}
+
+	get mutationsInFlight(): number {
+		return this.activeMutations
 	}
 
 	/** Running clients whose storage has loaded, so they can take writes. */
@@ -425,7 +463,7 @@ export class DstWorld implements AsyncDisposable {
 
 	/** Each client's server-owned records only move forward through server history. */
 	private observeOrder() {
-		for (const name of clientNames) {
+		for (const name of this.clientNames) {
 			if (this.loaded.get(name) !== this.generations[name]) {
 				for (const id of serverOwnedIds) this.shown.delete(`${name}:${id}`)
 				continue
@@ -465,7 +503,7 @@ export class DstWorld implements AsyncDisposable {
 			await this.harness.restart(name)
 			await this.boot(name)
 		}
-		for (const name of clientNames) {
+		for (const name of this.clientNames) {
 			await (
 				await this.harness[name].disconnect()
 			).result
@@ -474,7 +512,7 @@ export class DstWorld implements AsyncDisposable {
 			).result
 		}
 		await this.drain()
-		for (const name of clientNames) {
+		for (const name of this.clientNames) {
 			await (
 				await this.harness[name].pullFromRemote()
 			).result
@@ -483,10 +521,14 @@ export class DstWorld implements AsyncDisposable {
 
 		const states: DstFinalStates = {
 			server: await this.serverTodos(),
-			client1: this.crashed.has("client1") ? null : this.todosOf("client1"),
-			client2: this.crashed.has("client2") ? null : this.todosOf("client2"),
+			...Object.fromEntries(
+				this.clientNames.map((name) => [
+					name,
+					this.crashed.has(name) ? null : this.todosOf(name),
+				]),
+			),
 		}
-		const client = clientNames.find(
+		const client = this.clientNames.find(
 			(name) => JSON.stringify(states[name]) !== JSON.stringify(states.server),
 		)
 		const violation: DstViolation | undefined =
@@ -500,7 +542,7 @@ export class DstWorld implements AsyncDisposable {
 						actual: this.todosOf(client),
 					}
 				: undefined)
-		const clientIds = clientNames.map((name) =>
+		const clientIds = this.clientNames.map((name) =>
 			this.crashed.has(name) ? null : this.harness[name].clientId,
 		)
 		for (const name of this.running) {
@@ -514,7 +556,9 @@ export class DstWorld implements AsyncDisposable {
 	/** Releases every gate and lets all work in flight finish. */
 	async drain(): Promise<void> {
 		await this.harness.deactivateGatesAndSettle()
-		await Promise.all(this.inFlight)
+		const results = await Promise.all(this.inFlight)
+		const error = results.find((result) => result instanceof Error)
+		if (error instanceof Error) throw error
 	}
 
 	async [Symbol.asyncDispose](): Promise<void> {
@@ -543,9 +587,34 @@ export class DstWorld implements AsyncDisposable {
 		}
 		const mutationId = (this.writeCounts.get(intent.client) ?? 0) + 1
 		this.writeCounts.set(intent.client, mutationId)
+		const generation = this.generations[intent.client]
+		this.activeMutations += 1
+		this.maxMutationsInFlight = Math.max(
+			this.maxMutationsInFlight,
+			this.mutationsInFlight,
+		)
 		// The handle arrives only once the commit reaches a boundary, which may
 		// wait on another held call. Its call shows up in pending() then.
-		this.inFlight.push(client.commit(tx))
+		this.inFlight.push(
+			client.commit(tx).then(async (handle) => {
+				const result = await handle.result.catch(
+					(cause: unknown) =>
+						new DstCommitError({ client: intent.client, cause }),
+				)
+				this.activeMutations -= 1
+				if (result instanceof Error) {
+					// Faults and terminated incarnations are already recorded in the trace.
+					if (
+						result.cause instanceof DstFaultError ||
+						(result.cause instanceof GatekeeperError &&
+							(this.crashed.has(intent.client) ||
+								this.generations[intent.client] !== generation))
+					)
+						return
+					return result
+				}
+			}),
+		)
 		return { ...intent, step, mutationId }
 	}
 
@@ -613,9 +682,11 @@ function boundaryOf(call: DstPendingCall): DstBoundary {
 
 function buildHarness({
 	server,
+	clientNames,
 	idSource,
 }: {
 	server: TandemServer<DstSchema, {}>
+	clientNames: readonly DstClientName[]
 	idSource: (label: DstClientName) => RngApi
 }) {
 	const logger = new Logger({ sinks: [] })
@@ -641,29 +712,34 @@ function buildHarness({
 		return client
 	}
 
-	return new Gatekeeper()
-		.add("server", () => server)
-		.add("client1Timer", () => new DstTimer(), timerGates)
-		.add("client2Timer", () => new DstTimer(), timerGates)
-		.add("client1Storage", () => new DstClientStorage())
-		.add("client2Storage", () => new DstClientStorage())
-		.add("client1", ({ server, client1Timer, client1Storage }, { events }) =>
-			createClient(
-				"client1",
-				remoteWithPokeEvents(server, events),
-				client1Timer,
-				client1Storage,
-			),
-		)
-		.add("client2", ({ server, client2Timer, client2Storage }, { events }) =>
-			createClient(
-				"client2",
-				remoteWithPokeEvents(server, events),
-				client2Timer,
-				client2Storage,
-			),
-		)
-		.build()
+	let builder = new Gatekeeper().add("server", () => server)
+	// Register dependencies before any client, preserving stable construction order.
+	for (const name of clientNames) {
+		builder = builder.add(`${name}Timer`, () => new DstTimer(), timerGates)
+	}
+	for (const name of clientNames) {
+		builder = builder.add(`${name}Storage`, () => new DstClientStorage())
+	}
+	for (const name of clientNames) {
+		builder = builder.add(name, (services, { events }) => {
+			// Gatekeeper's fluent type cannot accumulate runtime-generated keys.
+			const dependencies = services as typeof services &
+				Record<`${DstClientName}Timer`, TimerApi> &
+				Record<`${DstClientName}Storage`, TandemClientStorageApi<DstSchema>>
+			return createClient(
+				name,
+				remoteWithPokeEvents(services.server, events),
+				dependencies[`${name}Timer`],
+				dependencies[`${name}Storage`],
+			)
+		})
+	}
+	return builder.build() as DstHarness
 }
 
-type DstHarness = ReturnType<typeof buildHarness>
+type DstHarness = Harness<
+	{ server: TandemServer<DstSchema, {}> } & Record<
+		DstClientName,
+		TandemClient<DstSchema>
+	>
+>
