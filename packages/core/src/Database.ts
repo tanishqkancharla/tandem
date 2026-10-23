@@ -31,6 +31,8 @@ import {
 import {
 	type MutationId,
 	type MutationOp,
+	type SetMutationOp,
+	type RemoveMutationOp,
 	type TupleClientBase,
 	type TupleClientOutbox,
 	type TupleClientRecord,
@@ -55,6 +57,7 @@ function mutationOpToRecordKey<Schema extends AnySchema>(
 		case "set":
 			return [op.collection, ...collectionIdToTuple<CollectionId>(op.value.id)]
 		case "remove":
+		case "update":
 			return [op.collection, ...collectionIdToTuple<CollectionId>(op.id)]
 		default:
 			return unreachable(op)
@@ -73,6 +76,13 @@ function applyOp<Schema extends AnySchema>(
 		case "remove":
 			transaction.records.remove(key)
 			return
+		case "update": {
+			const current = transaction.records.get(key)
+			if (current !== undefined) {
+				transaction.records.set(key, { ...current, ...op.payload })
+			}
+			return
+		}
 		default:
 			return unreachable(op)
 	}
@@ -367,7 +377,7 @@ export class Database<
 
 	private applyServerOp(
 		transaction: Transaction<Schema>,
-		op: MutationOp<Schema>,
+		op: SetMutationOp<Schema> | RemoveMutationOp<Schema>,
 	): void {
 		const recordKey = mutationOpToRecordKey(op)
 		const base = transaction.bases.get(recordKey)

@@ -13,6 +13,7 @@ export class TestTandemServerStorage<
 	closed = false
 	private nextCommitError: Error | undefined
 	private nextScanError: Error | undefined
+	private nextScanNamespace: TandemTuple<Schema>["key"][0] | undefined
 	private nextCommitGate:
 		| { entered: () => void; wait: Promise<void> }
 		| undefined
@@ -28,14 +29,20 @@ export class TestTandemServerStorage<
 		this.nextCommitError = error
 	}
 
-	failNextScan(error: Error) {
+	failNextScan(error: Error, namespace?: TandemTuple<Schema>["key"][0]) {
 		this.nextScanError = error
+		this.nextScanNamespace = namespace
 	}
 
 	scan(args?: ScanStorageArgs): Promise<TandemTuple<Schema>[]> {
-		if (this.nextScanError) {
+		if (
+			this.nextScanError &&
+			(this.nextScanNamespace === undefined ||
+				args?.gte?.[0] === this.nextScanNamespace)
+		) {
 			const error = this.nextScanError
 			this.nextScanError = undefined
+			this.nextScanNamespace = undefined
 			return Promise.reject(error)
 		}
 

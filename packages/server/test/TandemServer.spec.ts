@@ -11,6 +11,7 @@ import type {
 	Patch,
 	RemoteApi,
 	ScanWindow,
+	UpdateMutationOp,
 } from "@tanishqkancharla/tandem-core"
 import { assert, expect, expectTypeOf, test, vi } from "vitest"
 import { TandemServer } from "../src/index.js"
@@ -657,6 +658,206 @@ test("remote pushes preserve operation order and acknowledge the last mutation o
 
 	await server.close()
 })
+
+test("update pushes merge supplied fields in operation order and skip accepted retries", async () => {
+	const { server } = createServer()
+	await seed(server)
+	const clientId = tag<ClientId>("field-writer")
+	const request = {
+		clientId,
+		mutations: [
+			{
+				id: tag<MutationId>(1),
+				ops: [
+					{
+						type: "update",
+						collection: "threads",
+						id: "thread-1",
+						payload: { title: "Edited" },
+					},
+					{
+						type: "update",
+						collection: "threads",
+						id: "thread-1",
+						payload: { status: "closed" },
+					},
+					{
+						type: "set",
+						collection: "entries",
+						value: { id: ["session", 7], body: "Draft" },
+					},
+					{
+						type: "update",
+						collection: "entries",
+						id: ["session", 7],
+						payload: { body: "Published" },
+					},
+					{ type: "remove", collection: "threads", id: "thread-2" },
+					{
+						type: "update",
+						collection: "threads",
+						id: "thread-2",
+						payload: { title: "Must not resurrect" },
+					},
+				],
+			},
+		],
+	} satisfies Parameters<RemoteApi<TestSchema>["push"]>[0]
+	expect(await server.push(request)).toEqual({ ok: true })
+	expect(
+		await server.query({ collection: "threads", where: { id: "thread-1" } }),
+	).toEqual([
+		{
+			id: "thread-1",
+			ownerId: "user-1",
+			title: "Edited",
+			status: "closed",
+			createdAt: 1,
+		},
+	])
+	expect(await server.query({ collection: "entries" })).toEqual([
+		{ id: ["session", 7], body: "Published" },
+	])
+	expect(
+		await server.query({ collection: "threads", where: { id: "thread-2" } }),
+	).toEqual([])
+
+	// Another client changes the same field after acceptance; a retry cannot undo it.
+	expect(
+		await server.push({
+			clientId: tag<ClientId>("other-writer"),
+			mutations: [
+				{
+					id: tag<MutationId>(1),
+					ops: [
+						{
+							type: "update",
+							collection: "threads",
+							id: "thread-1",
+							payload: { title: "Later edit" },
+						},
+					],
+				},
+			],
+		}),
+	).toEqual({ ok: true })
+	expect(await server.push(request)).toEqual({ ok: true })
+	const pulled = await server.pull({
+		clientId,
+		scanWindow: [{ collection: "threads", where: [["id", "=", "thread-1"]] }],
+	})
+	expect(pulled).toMatchObject({
+		lastMutationId: 1,
+		patch: {
+			set: [
+				{
+					collection: "threads",
+					value: {
+						id: "thread-1",
+						ownerId: "user-1",
+						title: "Later edit",
+						status: "closed",
+						createdAt: 1,
+					},
+				},
+			],
+		},
+	})
+	await server.close()
+})
+
+test("a failed update read discards earlier operations and does not acknowledge the mutation", async () => {
+	const { server, storage } = createServer()
+	await seed(server)
+	const clientId = tag<ClientId>("failed-update")
+	const request = {
+		clientId,
+		mutations: [
+			{
+				id: tag<MutationId>(1),
+				ops: [
+					{
+						type: "set",
+						collection: "users",
+						value: { id: "must-rollback", name: "Uncommitted" },
+					},
+					{
+						type: "update",
+						collection: "threads",
+						id: "thread-1",
+						payload: { title: "Retried" },
+					},
+				],
+			},
+		],
+	} satisfies Parameters<RemoteApi<TestSchema>["push"]>[0]
+	storage.failNextScan(new Error("record read failed"), "record")
+	expect(await server.push(request)).toMatchObject({ error: "unavailable" })
+	expect(await server.query({ collection: "users" })).toEqual([
+		{ id: "user-1", name: "Ada" },
+	])
+	expect(
+		await server.pull({
+			clientId,
+			scanWindow: [{ collection: "threads", where: [["id", "=", "thread-1"]] }],
+		}),
+	).toMatchObject({
+		lastMutationId: 0,
+		patch: { set: [{ value: { title: "Alpha" } }] },
+	})
+
+	// The same mutation ID can succeed once the read recovers.
+	expect(await server.push(request)).toEqual({ ok: true })
+	expect(
+		await server.query({ collection: "users", where: { id: "must-rollback" } }),
+	).toEqual([{ id: "must-rollback", name: "Uncommitted" }])
+	expect(
+		await server.pull({
+			clientId,
+			scanWindow: [{ collection: "threads", where: [["id", "=", "thread-1"]] }],
+		}),
+	).toMatchObject({
+		lastMutationId: 1,
+		patch: { set: [{ value: { title: "Retried", status: "open" } }] },
+	})
+	await server.close()
+})
+
+test.each([{ id: "other" }, null, []])(
+	"rejects invalid update payload %j without partial effects",
+	async (payload) => {
+		const { server } = createServer()
+		const clientId = tag<ClientId>("invalid-update")
+		expect(
+			await server.push({
+				clientId,
+				mutations: [
+					{
+						id: tag<MutationId>(1),
+						ops: [
+							{
+								type: "set",
+								collection: "users",
+								value: { id: "user-1", name: "Uncommitted" },
+							},
+							{
+								type: "update",
+								collection: "users",
+								id: "user-1",
+								payload: payload as UpdateMutationOp<TestSchema>["payload"],
+							},
+						],
+					},
+				],
+			}),
+		).toMatchObject({ error: "invalid-request" })
+		expect(await server.query({ collection: "users" })).toEqual([])
+		expect(await server.pull({ clientId, scanWindow: [] })).toMatchObject({
+			lastMutationId: 0,
+		})
+		await server.close()
+	},
+)
 
 test("concurrent duplicate pushes are skipped and pulls wait for committed effects", async () => {
 	const { server, storage } = createServer()

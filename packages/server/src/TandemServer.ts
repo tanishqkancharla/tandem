@@ -11,6 +11,7 @@ import type {
 	RelationalQuery,
 	RelationalQueryResult,
 	RemoteApi,
+	RemoteInvalidRequestError,
 	RemoteMutationGapError,
 	RngApi,
 	AnyRelations,
@@ -104,20 +105,63 @@ function containsRecordKey<Schema extends AnySchema>(
 	)
 }
 
-function applyMutationOperation<
+async function applyMutationOperation<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema>,
 >(
 	transaction: TandemServerTransaction<Schema, Relations>,
 	operation: MutationOp<Schema>,
-) {
+): Promise<TandemServerError | RemoteInvalidRequestError | undefined> {
 	switch (operation.type) {
 		case "set":
-			transaction.set(operation.collection, operation.value)
-			return
+			return errore.try({
+				try: () => {
+					transaction.set(operation.collection, operation.value)
+					return undefined
+				},
+				catch: (cause) => new TandemServerError({ operation: "push", cause }),
+			})
 		case "remove":
-			transaction.remove(operation.collection, operation.id)
+			return errore.try({
+				try: () => {
+					transaction.remove(operation.collection, operation.id)
+					return undefined
+				},
+				catch: (cause) => new TandemServerError({ operation: "push", cause }),
+			})
+		case "update": {
+			const { payload } = operation
+			if (
+				typeof payload !== "object" ||
+				payload === null ||
+				Array.isArray(payload)
+			) {
+				return {
+					error: "invalid-request",
+					message: "Update payload must be an object",
+				}
+			}
+			if (Object.hasOwn(payload, "id")) {
+				return {
+					error: "invalid-request",
+					message: "An update cannot change record identity",
+				}
+			}
+			const updated = await transaction
+				.update(
+					operation.collection,
+					operation.id,
+					(current) =>
+						// TypeScript cannot recover the generic record from its Readonly view.
+						({
+							...current,
+							...payload,
+						}) as unknown as Schema[typeof operation.collection],
+				)
+				.catch((cause) => new TandemServerError({ operation: "push", cause }))
+			if (updated instanceof Error) return updated
 			return
+		}
 		default:
 			return unreachable(operation)
 	}
@@ -315,7 +359,12 @@ export class TandemServer<
 	private async applyPush(
 		clientId: ClientId,
 		mutations: Mutation<Schema>[],
-	): Promise<TandemServerError | RemoteMutationGapError | undefined> {
+	): Promise<
+		| TandemServerError
+		| RemoteInvalidRequestError
+		| RemoteMutationGapError
+		| undefined
+	> {
 		for (const mutation of mutations) {
 			const lastMutationId = await this.readLastMutationId(clientId, "push")
 			if (lastMutationId instanceof Error) return lastMutationId
@@ -335,12 +384,16 @@ export class TandemServer<
 			const clientTx = (
 				tupleTx as unknown as AsyncTupleRootTransactionApi<TandemClientTuple>
 			).subspace(["client"])
-			const staged = errore.try(() => {
-				for (const operation of mutation.ops) {
-					applyMutationOperation(transaction, operation)
+			for (const operation of mutation.ops) {
+				const staged = await applyMutationOperation(transaction, operation)
+				if (staged !== undefined) {
+					await transaction.cancel()
+					return staged
 				}
-				clientTx.set([clientId], { lastMutationId: mutation.id })
-			})
+			}
+			const staged = errore.try(() =>
+				clientTx.set([clientId], { lastMutationId: mutation.id }),
+			)
 			if (staged instanceof Error) {
 				await transaction.cancel()
 				return new TandemServerError({ operation: "push", cause: staged })

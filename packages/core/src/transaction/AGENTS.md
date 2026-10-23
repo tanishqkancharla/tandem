@@ -8,15 +8,15 @@ Records data modifications as mutations. A transaction applies its writes locall
 
 ```typescript
 // Simple mutations
-const tx = db.transact();
-tx.set("User", { id: "123", name: "John" });
-tx.remove("Task", "456");
-await db.commit(tx);
+const tx = db.transact()
+tx.set("User", { id: "123", name: "John" })
+tx.remove("Task", "456")
+await db.commit(tx)
 
 // Batch mutations
-const tx = db.transact();
-users.forEach((user) => tx.set("User", user));
-await db.commit(tx);
+const tx = db.transact()
+users.forEach((user) => tx.set("User", user))
+await db.commit(tx)
 ```
 
 ## How it works
@@ -30,8 +30,9 @@ await db.commit(tx);
 
 - `set` - Create or update record
 - `remove` - Delete record by id, recorded even when the record isn't local
+- `update` - Assign supplied top-level payload fields on an existing record; missing records remain absent
 
-Ops store only the new value or the id, never the previous value. Replay reapplies each op in order.
+Ops store only the new value, id, or partial payload, never the previous value. Replay reapplies each op in order. The protocol supports `update`, but the public transaction updater still accepts a callback and records its result as `set` until the partial-update API phase.
 
 ## Common patterns
 
@@ -39,14 +40,14 @@ Ops store only the new value or the id, never the previous value. Replay reappli
 
 ```typescript
 // Changes appear immediately
-tx.set("User", updatedUser);
-db.commit(tx); // Async, doesn't block UI
+tx.set("User", updatedUser)
+db.commit(tx) // Async, doesn't block UI
 ```
 
 **Batch operations:**
 
 ```typescript
-const tx = db.transact();
-largeDataSet.forEach((item) => tx.set("Item", item));
-await db.commit(tx); // Single transaction
+const tx = db.transact()
+largeDataSet.forEach((item) => tx.set("Item", item))
+await db.commit(tx) // Single transaction
 ```

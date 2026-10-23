@@ -25,6 +25,7 @@ export type {
 	MutationOp,
 	RemoveMutationOp,
 	SetMutationOp,
+	UpdateMutationOp,
 } from "./transaction/Transaction.js"
 export { MutationApi } from "./transaction/Transaction.js"
 export { TandemClientStorage } from "./clientStorage/TandemClientStorage.js"

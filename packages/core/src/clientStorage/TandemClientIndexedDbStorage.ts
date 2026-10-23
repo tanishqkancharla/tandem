@@ -105,6 +105,12 @@ function createTupleCodec<Schema extends AnySchema>(
 								? { ...op, value: valueCodec[direction](op.value) }
 								: op
 						}
+						case "update": {
+							const valueCodec = codecs?.[op.collection]
+							return valueCodec
+								? { ...op, payload: valueCodec[direction](op.payload) }
+								: op
+						}
 						case "remove":
 							return op
 						default:

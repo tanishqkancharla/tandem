@@ -841,6 +841,12 @@ describe("TandemClient persistence", () => {
 				value: [
 					{ type: "remove", collection: "events", id: "event-2" },
 					{ type: "set", collection: "events", value: edited },
+					{
+						type: "update",
+						collection: "events",
+						id: event.id,
+						payload: { startAt: edited.startAt },
+					},
 					{ type: "remove", collection: "events", id: event.id },
 				],
 			},
@@ -861,6 +867,10 @@ describe("TandemClient persistence", () => {
 		const set = outbox.value[1]
 		assert(set?.type === "set")
 		expect(set.value.startAt).toBeInstanceOf(EventStart)
+		const update = outbox.value[2]
+		assert(update?.type === "update")
+		expect(update.payload).toEqual({ startAt: edited.startAt })
+		expect(update.payload.startAt).toBeInstanceOf(EventStart)
 		const base = restored.find(
 			(tuple) => tuple.key[0] === "base" && tuple.key[2] === event.id,
 		)
@@ -889,54 +899,184 @@ describe("TandemClient persistence", () => {
 		expect(await reopened.scan()).toHaveLength(4)
 	})
 
-	test("does not persist a batch prefix when an outbox codec fails", async ({
+	test.for(["set", "update"] as const)(
+		"does not persist a batch prefix when an outbox %s codec fails",
+		async (type, { makeStorage, rng }) => {
+			const storage = makeStorage<TestsEventSchema>({
+				dbName: rng.next("failed-outbox-codec"),
+				codecs: {
+					events: partialObject({
+						id: string,
+						title: string,
+						startAt: codec<EventStart, string>(
+							"reject",
+							() => {
+								throw new Error("Cannot encode event")
+							},
+							(value) => new EventStart(value as string),
+						),
+					}),
+				},
+			})
+			await expect(
+				storage.commit({
+					set: [
+						{
+							key: ["replica"],
+							value: {
+								clientId: tag<ClientId>("client-a"),
+								lastIssuedMutationId: tag<MutationId>(1),
+							},
+						},
+						{
+							key: ["outbox", tag<MutationId>(1)],
+							value: [
+								type === "set"
+									? {
+											type,
+											collection: "events",
+											value: {
+												id: "event-1",
+												title: "Rejected",
+												startAt: new EventStart("2026-05-04"),
+											},
+										}
+									: {
+											type,
+											collection: "events",
+											id: "event-1",
+											payload: { startAt: new EventStart("2026-05-04") },
+										},
+							],
+						},
+					],
+				}),
+			).rejects.toThrow("Cannot encode event")
+			expect(await storage.scan()).toEqual([])
+		},
+	)
+
+	test("replays restored field updates over a new base before delivering their runtime payloads", async ({
 		makeStorage,
+		makeRemote,
+		logger,
 		rng,
 	}) => {
-		const storage = makeStorage<TestsEventSchema>({
-			dbName: rng.next("failed-outbox-codec"),
-			codecs: {
-				events: partialObject({
-					id: string,
-					title: string,
-					startAt: codec<EventStart, string>(
-						"reject",
-						() => {
-							throw new Error("Cannot encode event")
-						},
-						(value) => new EventStart(value as string),
-					),
-				}),
-			},
+		const remote = makeRemote({
+			schema: testsEventRuntimeSchema,
+			relations: {},
 		})
-		await expect(
-			storage.commit({
-				set: [
-					{
-						key: ["replica"],
-						value: {
-							clientId: tag<ClientId>("client-a"),
-							lastIssuedMutationId: tag<MutationId>(1),
+		const previous = {
+			id: "event-1",
+			title: "Old title",
+			startAt: new EventStart("2026-05-04T12:00:00.000Z"),
+		}
+		const pending = {
+			...previous,
+			startAt: new EventStart("2026-05-06T18:30:00.000Z"),
+		}
+		const confirmed = { ...previous, title: "Remote title" }
+		const seedTx = remote.transact()
+		seedTx.set("events", confirmed)
+		await remote.commit(seedTx)
+
+		// Seed the durable protocol boundary while the public update API remains unchanged.
+		const dbName = rng.next("pending-field-update")
+		const storage = makeStorage<TestsEventSchema>({
+			dbName,
+			schema: testsEventRuntimeSchema,
+		})
+		await storage.commit({
+			set: [
+				{
+					key: ["replica"],
+					value: {
+						clientId: tag<ClientId>("field-client"),
+						lastIssuedMutationId: tag<MutationId>(1),
+					},
+				},
+				{ key: ["record", "events", previous.id], value: pending },
+				{
+					key: ["base", "events", previous.id],
+					value: {
+						server: { type: "set", value: previous },
+						lastWrittenBy: tag<MutationId>(1),
+					},
+				},
+				{
+					key: ["outbox", tag<MutationId>(1)],
+					value: [
+						{
+							type: "update",
+							collection: "events",
+							id: previous.id,
+							payload: { startAt: pending.startAt },
 						},
-					},
-					{
-						key: ["outbox", tag<MutationId>(1)],
-						value: [
-							{
-								type: "set",
-								collection: "events",
-								value: {
-									id: "event-1",
-									title: "Rejected",
-									startAt: new EventStart("2026-05-04"),
-								},
-							},
-						],
-					},
-				],
-			}),
-		).rejects.toThrow("Cannot encode event")
-		expect(await storage.scan()).toEqual([])
+					],
+				},
+			],
+		})
+		await storage.close()
+		const reopened = makeStorage<TestsEventSchema>({
+			dbName,
+			schema: testsEventRuntimeSchema,
+		})
+		await using harness = new Gatekeeper()
+			.add("delivery", () => ({ push: remote.push }))
+			.add(
+				"client",
+				({ delivery }) =>
+					new TandemClient<TestsEventSchema>({
+						schema: testsEventRuntimeSchema,
+						clientStorage: reopened,
+						clientStorageWriteInterval: 0,
+						logger,
+						autoConnect: false,
+						syncInterval: 0,
+						remote: {
+							connect: (client) =>
+								remote.connect({ ...client, poke: async () => {} }),
+							pull: remote.pull,
+							push: delivery.push,
+						},
+					}),
+			)
+			.build()
+		await harness.client.ready
+		harness.client.subscribe({ collection: "events" })
+		await harness.activateGates()
+		const connecting = await harness.client.connect()
+		connecting.assertWaitingFor("delivery")
+
+		// Reconnect's pull has replayed the pending date, without overwriting the remote title.
+		const merged = { ...confirmed, startAt: pending.startAt }
+		expect(harness.client.query({ collection: "events" })).toEqual([merged])
+		expect(await remote.query({ collection: "events" })).toEqual([confirmed])
+		await connecting.continueToCompletion()
+		await harness.deactivateGatesAndSettle()
+		expect(await remote.query({ collection: "events" })).toEqual([merged])
+		expect(
+			(await remote.query({ collection: "events" }))[0]?.startAt,
+		).toBeInstanceOf(EventStart)
+
+		// Acknowledgement prunes the update, so later remote corrections survive another pull.
+		await (
+			await harness.client.pullFromRemote()
+		).result
+		const correction = {
+			...confirmed,
+			startAt: new EventStart("2026-05-08T08:00:00.000Z"),
+		}
+		const correctionTx = remote.transact()
+		correctionTx.set("events", correction)
+		await remote.commit(correctionTx)
+		await (
+			await harness.client.pullFromRemote()
+		).result
+		expect(harness.client.query({ collection: "events" })).toEqual([correction])
+		await (
+			await harness.client.disconnect()
+		).result
 	})
 
 	test("reloads persisted records after recreating the app", async ({

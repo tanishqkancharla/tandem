@@ -92,9 +92,20 @@ export type RemoveMutationOp<Schema extends AnySchema> = {
 	}
 }[CollectionName<Schema>]
 
+export type UpdateMutationOp<Schema extends AnySchema> = {
+	type: "update"
+} & {
+	[Collection in CollectionName<Schema>]: {
+		collection: Collection
+		id: Schema[Collection]["id"]
+		payload: Partial<Omit<Schema[Collection], "id">> & { id?: never }
+	}
+}[CollectionName<Schema>]
+
 export type MutationOp<Schema extends AnySchema> =
 	| SetMutationOp<Schema>
 	| RemoveMutationOp<Schema>
+	| UpdateMutationOp<Schema>
 
 /**
  * A per-client counter: a client's first committed mutation is 1, and each
@@ -117,6 +128,8 @@ export namespace MutationApi {
 				)}`
 			case "remove":
 				return `remove (${op.collection}) ${op.id}`
+			case "update":
+				return `update (${op.collection}) ${op.id} ${JSON.stringify(op.payload, undefined, 2)}`
 		}
 	}
 

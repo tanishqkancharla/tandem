@@ -3,7 +3,7 @@ import {
 	defineRelations,
 	defineSchema,
 } from "@tanishqkancharla/tandem-core"
-import type { RemoteApi } from "@tanishqkancharla/tandem-core"
+import type { RemoteApi, UpdateMutationOp } from "@tanishqkancharla/tandem-core"
 import { expectTypeOf } from "vitest"
 import type { TandemServerStorageApi } from "../src/index.js"
 import { TandemServer } from "../src/index.js"
@@ -43,6 +43,43 @@ const server = new TandemServer({ schema, relations, storage })
 expectTypeOf(server).toEqualTypeOf<TandemServer<AppSchema, typeof relations>>()
 const remote: RemoteApi<AppSchema> = server
 void remote
+
+const update: UpdateMutationOp<AppSchema> = {
+	type: "update",
+	collection: "entries",
+	id: ["session-1", 7],
+	payload: { body: "Partial assignment" },
+}
+expectTypeOf(update.payload.body).toEqualTypeOf<string | undefined>()
+const wrongIdentity = {
+	type: "update",
+	collection: "entries",
+	id: "entry-1",
+	payload: { body: "Invalid" },
+} as const
+// @ts-expect-error Update identity must match its collection's ID type.
+void (wrongIdentity satisfies UpdateMutationOp<AppSchema>)
+void ({
+	type: "update",
+	collection: "users",
+	id: "user-1",
+	// @ts-expect-error Payload fields belong to the selected collection.
+	payload: { body: "Invalid" },
+} satisfies UpdateMutationOp<AppSchema>)
+void ({
+	type: "update",
+	collection: "threads",
+	id: "thread-1",
+	// @ts-expect-error Supplied field values retain their declared runtime types.
+	payload: { rank: "wrong" },
+} satisfies UpdateMutationOp<AppSchema>)
+void ({
+	type: "update",
+	collection: "users",
+	id: "user-1",
+	// @ts-expect-error Record identity is not an editable payload field.
+	payload: { id: "user-2" },
+} satisfies UpdateMutationOp<AppSchema>)
 
 declare const pushResponse: Awaited<ReturnType<typeof remote.push>>
 // @ts-expect-error A failed push does not have the success marker.
