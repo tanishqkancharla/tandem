@@ -5,10 +5,11 @@ import {
 	type TodoRemoteRequest,
 	type TodoSchema,
 } from "@tandem/example-todo-shared"
-import { MutationApi } from "@tanishqkancharla/tandem-core"
-import type {
-	RemoteApi,
-	RemoteRequestError,
+import {
+	connectTandemEventSource,
+	MutationApi,
+	type RemoteApi,
+	type RemoteRequestError,
 } from "@tanishqkancharla/tandem-core"
 import * as errore from "errore"
 
@@ -72,18 +73,18 @@ async function request<Result>({
 }
 
 export class TodoHttpRemote implements RemoteApi<TodoSchema> {
-	private pollTimer: ReturnType<typeof setInterval> | undefined
-	private poke: (() => void) | undefined
+	private poke: (() => Promise<void>) | undefined
 
-	connect: RemoteApi<TodoSchema>["connect"] = ({ poke }) => {
+	connect: RemoteApi<TodoSchema>["connect"] = ({ clientId, poke }) => {
 		this.poke = poke
-		this.pollTimer = setInterval(poke, 1_000)
+		const disconnect = connectTandemEventSource({
+			url: `/api/tandem/events?clientId=${encodeURIComponent(clientId)}`,
+			poke,
+		})
 
 		return Promise.resolve(() => {
-			if (this.pollTimer) clearInterval(this.pollTimer)
-			this.pollTimer = undefined
-			this.poke = undefined
-			return Promise.resolve()
+			if (this.poke === poke) this.poke = undefined
+			return disconnect()
 		})
 	}
 
@@ -94,8 +95,8 @@ export class TodoHttpRemote implements RemoteApi<TodoSchema> {
 		})
 		if ("error" in result) return result
 
-		// Pull immediately to acknowledge this client's mutation.
-		this.poke?.()
+		// Pull now to acknowledge this client's mutation without waiting for the stream.
+		void this.poke?.()
 		return result
 	}
 

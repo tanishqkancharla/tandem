@@ -3,8 +3,14 @@ import {
 	type TodoRemoteRequest,
 	type TodoSchema,
 } from "@tandem/example-todo-shared"
-import { matchBy, MutationApi } from "@tanishqkancharla/tandem-core"
 import {
+	matchBy,
+	MutationApi,
+	tag,
+	type ClientId,
+} from "@tanishqkancharla/tandem-core"
+import {
+	createTandemEventStreamResponse,
 	TandemServer,
 	TandemServerJsonFileStorage,
 } from "@tanishqkancharla/tandem-server"
@@ -120,8 +126,24 @@ export async function createTodoApp({ filePath }: { filePath: string }) {
 	const server = await createTodoServer({ filePath })
 	if (server instanceof Error) return server
 
+	// Long-lived streams would otherwise keep the HTTP server from closing.
+	const eventStreams = new AbortController()
 	const app = new Hono()
 	app.get("/health", (context) => context.json({ status: "ok" }))
+	app.get("/api/tandem/events", async (context) => {
+		const clientId = context.req.query("clientId")
+		if (!clientId) {
+			return context.json(
+				{ error: "invalid-request", message: "Missing clientId" },
+				400,
+			)
+		}
+		return await createTandemEventStreamResponse({
+			remote: server,
+			clientId: tag<ClientId>(clientId),
+			signal: AbortSignal.any([context.req.raw.signal, eventStreams.signal]),
+		})
+	})
 	app.post("/api/tandem", async (context) => {
 		const json = await context.req
 			.json<unknown>()
@@ -154,6 +176,10 @@ export async function createTodoApp({ filePath }: { filePath: string }) {
 
 	return {
 		app,
-		close: () => server.close(),
+		endEventStreams: () => eventStreams.abort(),
+		close: () => {
+			eventStreams.abort()
+			return server.close()
+		},
 	}
 }
