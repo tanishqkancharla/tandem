@@ -1,0 +1,8 @@
+{
+	"name": "@tandem/example-cloudflare-d1",
+	"private": true,
+	"packageManager": "pnpm@12.10.1",
+	"scripts": {
+		"test": "pnpm --workspace-root --filter @tandem/example-cloudflare-d1-app test:e2e"
+	}
+}

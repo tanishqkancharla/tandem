@@ -6,6 +6,7 @@
 - [Quickstart](quickstart.md): build a synced todo app with React
 - [Queries](queries.md): query options, relations, and subscriptions
 - [Server](server.md): run `TandemServer` and connect clients to it
+- [Cloudflare coordinator](cloudflare.md): sync a serverless app's own database through a Durable Object
 
 ## Concepts
 

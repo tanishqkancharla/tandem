@@ -1,0 +1,20 @@
+{
+	"name": "@tandem/example-cloudflare-d1-coordinator",
+	"private": true,
+	"type": "module",
+	"description": "Tandem sync coordinator Worker with a hibernatable Durable Object",
+	"scripts": {
+		"dev": "wrangler dev",
+		"deploy": "wrangler deploy",
+		"type-check": "tsc --noEmit",
+		"lint": "oxlint src --deny-warnings",
+		"format": "oxfmt \"src/**/*.ts\""
+	},
+	"dependencies": {
+		"@tanishqkancharla/tandem-cloudflare": "workspace:*"
+	},
+	"devDependencies": {
+		"typescript": "^7.0.2",
+		"wrangler": "^4.152.0"
+	}
+}

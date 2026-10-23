@@ -1,0 +1,4 @@
+.deploy/
+apps/*/wrangler.deploy.json
+apps/*/.wrangler/
+apps/app/public/app.js
