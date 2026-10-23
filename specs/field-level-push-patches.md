@@ -2,7 +2,7 @@
 
 ## Problem overview
 
-`Transaction.update` currently calls an updater that returns a complete record and records the result as a `set`. The outbox, push request, server application, and client replay therefore treat an update as a whole-record replacement. Two clients editing different fields can overwrite each other's edits.
+Before this change, `Transaction.update` called an updater that returned a complete record and recorded the result as a `set`. The outbox, push request, server application, and client replay therefore treated an update as a whole-record replacement. Two clients editing different fields could overwrite each other's edits.
 
 ```callstack
  Transaction.update [[packages/core/src/transaction/Transaction.ts#Transaction.update]]
@@ -39,14 +39,14 @@ Both server application and local replay merge an update into the record visible
 
 The operation carries a partial `payload`. The schema owns serialization through one partial object codec, defined directly from field codecs. Use that same collection codec for records, confirmed bases, set values, and update payloads. No separate complete-record codec, derived update codec, or exposed codec source is needed.
 
-Phases one and two are committed locally. `partialObject` is the collection codec contract; storage, server push application, and replay support update operations. JSON transports encode and decode push mutations at the wire boundary; `TandemServer` applies runtime values without repeating collection codec calls. Public transaction updates still accept callbacks and produce sets; phases three and four remain planned.
+Phases one through three are committed locally: public client and server transactions accept explicit partial objects, and client updates emit field assignments. `partialObject` remains the collection codec contract, and JSON transports encode/decode mutations at the wire boundary rather than during server application. Phase four's full concurrency and recovery matrix remains planned.
 
 Field-removal semantics still need alignment. Object-owned updater methods are a possible future API, not part of this implementation.
 
 ## Goals
 
 - Preserve concurrent assignments to different top-level fields, including while a local update is pending during a pull.
-- Push only explicitly assigned or removed fields for an update.
+- Push only explicitly assigned fields for an update; field removal is deferred.
 - Keep atomic local checkpoints, mutation IDs, duplicate suppression, and ordered replay across restart.
 - Give client and server transactions the same update semantics, while retaining their synchronous and asynchronous read differences.
 
@@ -56,20 +56,20 @@ Deep merges, CRDTs, per-field clocks, atomic increments, object-method registrat
 
 ## Proposed semantics to align on
 
-| Case                                          | Proposed behavior                                                                              |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `update(collection, id, { done: true })`      | Assign only `done`; preserve other fields.                                                     |
-| Omitted property                              | Leave it untouched.                                                                            |
-| Explicit assignment equal to the local value  | Still record intent; a remote value may differ.                                                |
-| Nested object or array                        | Replace that top-level field; do not recursively merge.                                        |
-| `null`                                        | Assign `null` when the field type permits it.                                                  |
-| Explicit `undefined`                          | Remove an optional property; encode removal explicitly on the wire. This rule needs agreement. |
-| `id` in the partial object                    | Reject it; identity is not an editable field.                                                  |
-| Empty partial object                          | Add no update operation; leave existing empty-transaction mutation-ID behavior unchanged.      |
-| Record missing locally                        | No-op, matching today's update-only behavior. It cannot update an unseen server record.        |
-| Record missing on the server or during replay | No-op; do not resurrect it. The server still acknowledges a successfully processed mutation.   |
-| Multiple operations on one record             | Apply in original order; reads see earlier staged writes.                                      |
-| Concurrent writes to the same field           | The later server-applied assignment wins, regardless of client wall-clock time.                |
+| Case                                          | Proposed behavior                                                                                            |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `update(collection, id, { done: true })`      | Assign only `done`; preserve other fields.                                                                   |
+| Omitted property                              | Leave it untouched.                                                                                          |
+| Explicit assignment equal to the local value  | Still record intent; a remote value may differ.                                                              |
+| Nested object or array                        | Replace that top-level field; do not recursively merge.                                                      |
+| `null`                                        | Assign `null` when the field type permits it.                                                                |
+| Explicit `undefined`                          | Runtime assignment only where the field allows it; not deletion. JSON drops it, so wire removal is deferred. |
+| `id` in the partial object                    | Reject it; identity is not an editable field.                                                                |
+| Empty partial object                          | Add no update operation; leave existing empty-transaction mutation-ID behavior unchanged.                    |
+| Record missing locally                        | No-op, matching today's update-only behavior. It cannot update an unseen server record.                      |
+| Record missing on the server or during replay | No-op; do not resurrect it. The server still acknowledges a successfully processed mutation.                 |
+| Multiple operations on one record             | Apply in original order; reads see earlier staged writes.                                                    |
+| Concurrent writes to the same field           | The later server-applied assignment wins, regardless of client wall-clock time.                              |
 
 The recommendation is to replace the callback-returning-record update API, rather than keep two interpretations of `update`. Tandem is unreleased; existing callers can migrate to explicit partial objects. This is an alignment decision, not a compatibility requirement.
 
@@ -560,22 +560,26 @@ async function stageUpdate(tx, operation) {
 
 Verification passes: `pnpm test` passes all 10 tasks, including 101 core tests and 34 server tests. `pnpm build`, `pnpm type-check`, `pnpm lint`, and formatting checks pass. `pnpm --filter @tandem/example-todo-web test:e2e` passes all 8 tests. Public partial-update calls, field removal, and the full two-client concurrency matrix remain outside this phase.
 
-### Phase 3: Expose explicit partial updates in client and server transactions
+### ✅ Phase 3: Expose explicit partial updates in client and server transactions
 
 Today
 
-Both transaction classes accept an updater returning a complete record. Client updates record that result as a set. Application examples and tests use this callback form.
+Before this phase, both transaction classes accept an updater returning a complete record. Client updates record that result as a set. Application examples and tests use this callback form.
 
 Proposed
 
 Change both public update methods to accept a collection-specific partial object excluding `id`. Preserve update-only behavior and staged reads. Record field intent directly from supplied properties, including assignments equal to the local value; do not infer intent from value equality.
 
-Both transaction methods accept the same assignment shape. Only the server version awaits reads:
+```changes
+f06dbf5
+```
+
+Both committed transaction methods accept the same assignment shape, with no callback overload. Only the server version awaits reads; `UpdateFields` below illustrates the inline parameter type, not a new exported helper:
 
 ```tsx
 type UpdateFields<Record> = Partial<Omit<Record, "id">> & { id?: never }
 
-// Proposed calls; collection selects its record and ID types.
+// Implemented calls; collection selects its record and ID types.
 const fields: UpdateFields<EventRecord> = { title: "Planning" }
 tx.update("events", "event-1", fields)
 await serverTx.update("events", "event-1", fields)
@@ -584,15 +588,18 @@ await serverTx.update("events", "event-1", fields)
 The writer changes from recording a complete replacement to staging and recording supplied assignments:
 
 ```callstack
- Transaction.update [[packages/core/src/transaction/Transaction.ts#Transaction.update]]
+ Transaction.update [[f06dbf5:packages/core/src/transaction/Transaction.ts#L404-L433]]
 -├── call the updater to obtain a full replacement
 -└── append a set operation
-+├── normalize explicit assignments and optional-field removals
++├── validateUpdatePayload # reject non-object payloads and identity changes [[f06dbf5:packages/core/src/transaction/Transaction.ts#L124-L140]]
++├── copy supplied assignments, keeping equal values
 +├── merge into the transaction-visible record if present
 +└── append an update operation with the supplied field intent
- TandemServerTransaction.update [[packages/server/src/TandemServerTransaction.ts#TandemServerTransaction.update]]
+ TandemServerTransaction.update [[f06dbf5:packages/server/src/TandemServerTransaction.ts#L159-L188]]
 -└── await the record and call the updater
-+└── await the record and apply the same partial-update rules
++├── validateUpdatePayload # use the shared structural rules [[f06dbf5:packages/core/src/transaction/Transaction.ts#L124-L140]]
++├── copy assignments before awaiting the record
++└── assign supplied fields to the record if present
 ```
 
 The client stages the merged record directly, without calling public `set`, which would record a replacement operation as well. Copy the supplied assignments when recording the operation; do not select values later from the transaction's final record.
@@ -608,11 +615,27 @@ The client stages the merged record directly, without calling public `set`, whic
 └────────────────────┘     └─────────────────────┘
 ```
 
-Missing records and empty assignments return without adding an update operation:
+The shared internal validator checks operation structure, not field codec rules. It returns errors internally; public update methods throw them before staging any assignment. Push delegates to the server transaction's check rather than validating the same payload twice, and translates `UpdatePayloadError` into `invalid-request`:
+
+```tsx
+function validateUpdatePayload(payload) {
+	if (typeof payload !== "object" || payload === null || Array.isArray(payload))
+		return new UpdatePayloadError({
+			detail: "Update payload must be an object",
+		})
+	if (Object.hasOwn(payload, "id"))
+		return new UpdatePayloadError({
+			detail: "An update cannot change record identity",
+		})
+}
+```
+
+Missing records and empty assignments return without adding an update operation. A shallow copy captures the supplied field values at the call, so later changes to the caller's payload object cannot change a queued assignment:
 
 ```tsx
 function update(tx, collection, id, payload) {
-	validateUpdateInput(collection, payload) // Includes rejecting id changes.
+	const invalid = validateUpdatePayload(payload)
+	if (invalid instanceof Error) throw invalid
 	const assignments = { ...payload }
 	if (Object.keys(assignments).length === 0) return tx
 	const current = tx.get(collection, id)
@@ -624,7 +647,35 @@ function update(tx, collection, id, payload) {
 }
 ```
 
-This sketch shows assignments only; the unresolved removal rule still needs its own normalization. The server transaction method uses the same merge rule but awaits its record read. Equal values are intentionally not filtered out.
+Field removal is not included. The server transaction method copies assignments before its asynchronous read and stages the same shallow merge, but does not create a client outbox operation. Push application now calls this partial-object method directly, retaining its catch so read/write failures still cancel the mutation and return `unavailable`:
+
+```tsx
+async function updateServerTransaction(collection, id, payload) {
+	const invalid = validateUpdatePayload(payload)
+	if (invalid instanceof Error) throw invalid
+	const assignments = { ...payload }
+	if (Object.keys(assignments).length === 0) return this
+	const current = await readTransactionRecord(collection, id)
+	if (current === undefined) return this
+	stageRecord(collection, { ...current, ...assignments })
+	return this
+}
+```
+
+Push distinguishes the transaction's input error from storage failures without rerunning validation at [[f06dbf5:packages/server/src/TandemServer.ts#L133-L150]]. Either failure still cancels the mutation before acknowledgement:
+
+```tsx
+const updated = await tx.update(collection, id, payload).catch((cause) =>
+	cause instanceof UpdatePayloadError
+		? cause
+		: new TandemServerError({ operation: "push", cause }),
+)
+if (updated instanceof UpdatePayloadError)
+	return { error: "invalid-request", message: updated.message }
+if (updated instanceof Error) return updated
+```
+
+Equal values are intentionally not filtered out. Subsequent reads in the transaction see every earlier staged assignment:
 
 ```tsx
 // Starting record: { id: "todo-1", title: "old", done: false }.
@@ -642,9 +693,11 @@ await client.commit(tx)
 // Keep done: false in the first operation even if it was already false locally.
 ```
 
-Migrate existing consumers and documentation in this phase if replacement of the callback API is agreed. Keep replacements explicit through `set`. Type-level coverage should reject identity changes and wrong collection fields and reflect optional fields inferred from the codec; runtime coverage should exercise ordered mixed operations and reads within one transaction.
+Existing callers and documentation now use partial objects; replacements remain explicit through `set`. [[f06dbf5:packages/core/test/schema-api.spec.ts#L165-L202]] and [[f06dbf5:packages/server/test/TandemServer.types.ts#L100-L123]] cover collection-specific IDs, field types, immutable identity, codec-inferred optional fields, and rejection of callback updates. [[f06dbf5:packages/core/test/client.spec.ts#L7-L130]] and [[f06dbf5:packages/server/test/TandemServer.spec.ts#L248-L313]] exercise staged reads, copied assignments, malformed payload rejection, missing records, and ordered operations; the client workflow also verifies nested-field replacement.
 
-The feature becomes usable end to end here. Validate a real client push into `TandemServer` and the resulting subscribed reads, rather than checking only the emitted operation shape.
+The new [[f06dbf5:packages/core/test/sync/conflicts.spec.ts#L79-L143]] workflow sends updates from two public client APIs to a real server. A stale client deliberately assigns its existing `done: false` after another client changes it to `true`; both subscribed clients and the server must retain the other client's title and priority. [[f06dbf5:packages/core/test/persistence.spec.ts#L959-L1084]] now creates the pending custom-date update through the public API rather than hand-seeding checkpoint tuples, then reopens the store and verifies replay over a newer remote title.
+
+Verification passes: `pnpm test` completes all 10 tasks, including 103 core tests and 34 server tests. `pnpm build`, `pnpm type-check`, `pnpm lint`, and formatting checks pass. `pnpm --filter @tandem/example-todo-web test:e2e` passes all 8 tests, including completion persistence across reload and synchronization between browser clients. This phase does not claim phase four's full push-order, partial-acknowledgement, or lost-response recovery matrix.
 
 ### Phase 4: Verify concurrency and durable recovery
 
@@ -713,7 +766,7 @@ expect(B.get("todos", "todo-1")).toEqual(merged)
 
 Use separate pull and push steps or a gated remote before an in-flight push starts: Tandem serializes sync work, so holding a running push also prevents that client from pulling. A test must actually exercise replay over a changed base, not wait behind the push it blocks.
 
-Cover same-field server ordering, explicit same-value intent, nested-field replacement, optional-field removal, deletion before replay, and ordered set/update/remove combinations through observable records. Same-value intent needs a differing remote value: assigning local `done: false` must still overwrite a server `done: true` when applied later.
+Extend the phase-three controls with same-field server ordering, deletion before replay, and ordered set/update/remove combinations through observable records. Same-value intent already has a differing remote value: assigning local `done: false` must still overwrite a server `done: true` when applied later. Field removal remains outside this phase until its representation is agreed.
 
 For recovery, restart after a durable local commit but before delivery, then after server acceptance but before the pull acknowledgement. Confirm the original mutation ID is reused, duplicate delivery does not reapply assignments over newer server changes, and unrelated fields survive. Verify partial acknowledgement leaves later field updates replayable, and a failed server read cannot advance acknowledgement or commit a mutation prefix.
 
