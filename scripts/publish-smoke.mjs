@@ -4,6 +4,7 @@ import {
 	mkdirSync,
 	readFileSync,
 	readdirSync,
+	realpathSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs"
@@ -48,7 +49,8 @@ function main() {
 		console.log(`${pkg.manifest.name} packed ${tarballName}`)
 	}
 
-	const smokeRoot = join(tmpdir(), "tandem-publish-smoke")
+	// Resolve symlinks so the install-containment check below can compare paths.
+	const smokeRoot = join(realpathSync(tmpdir()), "tandem-publish-smoke")
 	rmSync(smokeRoot, { recursive: true, force: true })
 	mkdirSync(smokeRoot, { recursive: true })
 	const installed = installPackedPackages(smokeRoot, packed)
