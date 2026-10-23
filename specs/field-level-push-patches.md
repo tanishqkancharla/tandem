@@ -39,7 +39,7 @@ Both server application and local replay merge an update into the record visible
 
 The operation carries a partial `payload`. The schema owns serialization through one partial object codec, defined directly from field codecs. Use that same collection codec for records, confirmed bases, set values, and update payloads. No separate complete-record codec, derived update codec, or exposed codec source is needed.
 
-Phases one through three are committed locally: public client and server transactions accept explicit partial objects, and client updates emit field assignments. `partialObject` remains the collection codec contract, and JSON transports encode/decode mutations at the wire boundary rather than during server application. Phase four's full concurrency and recovery matrix remains planned.
+All four phases are implemented: public client and server transactions accept explicit partial objects, and client updates emit field assignments. `partialObject` remains the collection codec contract, and JSON transports encode/decode mutations at the wire boundary rather than during server application. Phase four verifies concurrency, durable recovery, and randomized partial-update execution and replay.
 
 Field-removal semantics still need alignment. Object-owned updater methods are a possible future API, not part of this implementation.
 
@@ -699,109 +699,230 @@ The new [[f06dbf5:packages/core/test/sync/conflicts.spec.ts#L79-L143]] workflow 
 
 Verification passes: `pnpm test` completes all 10 tasks, including 103 core tests and 34 server tests. `pnpm build`, `pnpm type-check`, `pnpm lint`, and formatting checks pass. `pnpm --filter @tandem/example-todo-web test:e2e` passes all 8 tests, including completion persistence across reload and synchronization between browser clients. This phase does not claim phase four's full push-order, partial-acknowledgement, or lost-response recovery matrix.
 
-### Phase 4: Verify concurrency and durable recovery
+### ✅ Phase 4: Verify concurrency and durable recovery
 
 Today
 
-The existing suite protects full-record outbox replay and checkpoint recovery. It does not establish field-preserving updates across concurrent clients, partial acknowledgements, and restarts.
+Phase three protects equal-value field intent and custom-field recovery before delivery. Existing whole-record checkpoint tests remain controls, but do not establish the full field-update push-order, partial-acknowledgement, or lost-response recovery scenarios.
 
 Proposed
 
 Extend consumer-level scenarios to distinguish field intent from a disguised full replacement. Use asymmetric fields and values so overwriting an untouched field cannot pass accidentally.
 
-Keep existing whole-record checkpoint tests as controls, then add consumer scenarios that inspect records after controlled delivery:
-
-```callstack
- exercise client workflows [[packages/core/test/sync/conflicts.spec.ts]]
--├── verify whole-record replacement and replay
-+├── verify disjoint-field edits survive either push order
-+└── verify pending updates replay over a changed confirmed base
- exercise durable recovery [[f6b65ee:packages/core/test/persistence.spec.ts#L291-L365]]
--└── restore set/remove checkpoints
-+└── restore update intent without duplicating an accepted mutation
+```changes
+a7ee51c
 ```
 
-The concurrency scenario must expose a pull while A's update remains pending. The expected state combines B's confirmed assignments with only A's explicitly written field:
+Implemented and verified in the commit above. This phase extends consumer tests and the DST driver; no library runtime changes were needed.
+
+Existing whole-record checkpoint tests remain controls. The added workflows use real clients, IndexedDB checkpoints, server transactions, and Gatekeeper-controlled handoffs:
+
+```callstack
+ exercise client workflows [[a7ee51c:packages/core/test/sync/conflicts.spec.ts#L79-L233]]
+-├── verify whole-record replacement and replay
++├── verify disjoint fields survive and competing assignments follow push order
++├── inspect replay before delivery, including deletion and mixed operation order
++└── verify both clients converge with the server
+ exercise durable recovery [[a7ee51c:packages/core/test/persistence.spec.ts#L423-L623]]
+-└── restore set/remove checkpoints
++├── restore custom field updates before delivery with the same identity and mutation ID
++├── reject an accepted duplicate after a newer same-field correction
++└── checkpoint partial acknowledgement and replay only the remaining update
+```
+
+The parameterized concurrency test runs both server application orders. Client 1 assigns `done: true, priority: 5`; client 2 assigns `text: "Remote title", priority: 9`. The independent `done` and `text` edits survive in either order, while the later server-applied priority wins:
 
 ```diagram
 ┌───────────────────┐     ┌─────────────────────────────┐
-│ B pushes title,   │────▶│ A pulls B's confirmed base │
+│ B pushes text,    │────▶│ A pulls B's confirmed base │
 │ priority changes  │     └──────────────┬──────────────┘
 └───────────────────┘                    ▼
                            ┌─────────────────────────────┐
-                           │ Replay A's pending done     │
+                           │ Replay A's done + priority  │
                            └──────────────┬──────────────┘
                                           ▼
                            ┌─────────────────────────────┐
-                           │ Preserve all three changes  │
+                           │ Keep B's text, A's priority │
                            └─────────────────────────────┘
 ```
 
-The fixture operations below are pseudocode for controlled delivery, not existing harness methods. Commit locally and flush storage without starting an in-flight push; explicitly deliver pushes and pulls to expose the pending-replay state.
+Both clients commit offline from the same base. Reconnecting the later writer pulls and replays before starting its push; four explicit Gatekeeper handoffs stop at that boundary in [[a7ee51c:packages/core/test/sync/conflicts.spec.ts#L79-L158]]. The sketch shows client 2 applied first:
 
 ```tsx
-type Todo = { id: string; title: string; done: boolean; priority: number }
-const initial: Todo = { id: "todo-1", title: "old", done: false, priority: 3 }
-const { A, B, sync } = await controlledSyncFixture(initial)
-await sync.subscribeBothToTodos()
+type Todo = { id: string; text: string; done: boolean; priority: number }
+// Both subscribed clients have { id: "shared", text: "Original", done: false, priority: 3 }.
+await (await client1.disconnect()).result
+await (await client2.disconnect()).result
+const firstTx = client1.transact()
+firstTx.update("todos", "shared", { done: true, priority: 5 })
+await (await client1.commit(firstTx)).result
+const secondTx = client2.transact()
+secondTx.update("todos", "shared", { text: "Remote title", priority: 9 })
+await (await client2.commit(secondTx)).result
 
-await sync.commitOffline(A, { id: "todo-1", payload: { done: true } })
-await sync.commitOffline(B, {
-	id: "todo-1",
-	payload: { title: "new", priority: 9 },
-})
-await sync.deliverPush(B)
-await sync.deliverPull(A) // Ack excludes A's pending mutation.
-
-const merged = { id: "todo-1", title: "new", done: true, priority: 9 }
-expect(A.get("todos", "todo-1")).toEqual(merged)
-
-await sync.deliverPush(A)
-await sync.deliverPull(A)
-await sync.deliverPull(B)
-expect(A.get("todos", "todo-1")).toEqual(merged)
-expect(B.get("todos", "todo-1")).toEqual(merged)
-// A companion scenario reverses the server application order.
+await (await client2.connect()).result
+await gatekeeper.activateGates()
+const connecting = await client1.connect()
+await connecting.continueTo("server")  // Register connection.
+await connecting.continueTo("client1")
+await connecting.continueTo("server")  // Pull confirmed base.
+await connecting.continueTo("client1") // Replay, then pause before push delivery.
+expect(client1.query({ collection: "todos" })).toEqual([
+	{ id: "shared", text: "Remote title", done: true, priority: 5 },
+])
+expect(await server.query({ collection: "todos" })).toEqual([
+	{ id: "shared", text: "Remote title", done: false, priority: 9 },
+])
+await connecting.continueToCompletion()
+await connecting.result
+// Pull both clients; all three replicas must now match the merged record.
+// The opposite order preserves the same text and done, with priority: 9.
 ```
 
-Use separate pull and push steps or a gated remote before an in-flight push starts: Tandem serializes sync work, so holding a running push also prevents that client from pulling. A test must actually exercise replay over a changed base, not wait behind the push it blocks.
+The distinct client and server assertions establish that replay happened while the update was still pending. Merely holding a running push and observing the optimistic record would not establish this: Tandem serializes sync work, so that push would also block the pull.
 
-Extend the phase-three controls with same-field server ordering, deletion before replay, and ordered set/update/remove combinations through observable records. Same-value intent already has a differing remote value: assigning local `done: false` must still overwrite a server `done: true` when applied later. Field removal remains outside this phase until its representation is agreed.
-
-For recovery, restart after a durable local commit but before delivery, then after server acceptance but before the pull acknowledgement. Confirm the original mutation ID is reused, duplicate delivery does not reapply assignments over newer server changes, and unrelated fields survive. Verify partial acknowledgement leaves later field updates replayable, and a failed server read cannot advance acknowledgement or commit a mutation prefix.
-
-Use a separate fixture for recovery. Make duplicate delivery observable by changing the same field after the first acceptance. Otherwise, accidentally applying an assignment twice would produce the same result and the test would miss broken duplicate suppression.
+[[a7ee51c:packages/core/test/sync/conflicts.spec.ts#L163-L233]] deletes a record while the other client's field update remains offline, then checks absence before delivery and after acknowledgement. It awaits each call's `result` as well as releasing its gates, and explicitly checks the public pull acknowledgement; unchanged records alone cannot distinguish successful no-op application from rejection. The expanded ordered-replay workflow at [[a7ee51c:packages/core/test/sync/conflicts.spec.ts#L993-L1059]] checks replacement and removal against both replay and server application:
 
 ```tsx
-const { A, B, server, sync } = await controlledSyncFixture({
-	id: "todo-1",
-	title: "old",
-	done: false,
-	priority: 3,
-})
-await sync.subscribeBothToTodos()
-await sync.commitOffline(A, { id: "todo-1", payload: { done: true } })
-const acceptedRequest = await sync.deliverPushAndLoseResponse(A)
-await sync.commitOffline(B, {
-	id: "todo-1",
-	payload: { done: false, title: "later edit" },
-})
-await sync.deliverPush(B)
-
-const reopenedA = await sync.restartFromSavedStorage(A)
-await server.push(acceptedRequest) // Force a duplicate of A's accepted mutation.
-await sync.reconnectAndSettle(reopenedA)
-
-expect(reopenedA.get("todos", "todo-1")).toEqual({
-	id: "todo-1",
-	title: "later edit",
-	done: false,
-	priority: 3,
-})
-// If the duplicate were reapplied, done would incorrectly become true.
+const tx = client1.transact()
+tx.set("todos", todo("draft", { text: "Discarded", done: true }))
+tx.update("todos", "draft", { priority: 2 })
+tx.remove("todos", "draft")
+tx.set("todos", todo("draft", { text: "Replacement", priority: 4 }))
+tx.update("todos", "draft", { text: "Final", priority: 7 })
+tx.set("todos", todo("temporary"))
+tx.update("todos", "temporary", { done: true })
+tx.remove("todos", "temporary")
+// After replay and delivery: draft has text: "Final", done: false, priority: 7.
+// temporary is absent. Sorting operations by type would produce a different result.
 ```
 
-Existing checkpoint durability and codec-failure tests remain controls. Run targeted core/server tests followed by repository type checks, tests, lint, and formatting checks. Record results here only after implementation; the draft is not evidence that the feature works.
+The custom-field scenario at [[a7ee51c:packages/core/test/persistence.spec.ts#L1161-L1311]] now explicitly crashes after a durable offline update and reopens the same IndexedDB database. It verifies the restored identity, `EventStart` instance, and original mutation ID before confirming delivery over a newer remote title:
+
+```tsx
+const updateTx = first.client.transact()
+updateTx.update("events", "event-1", {
+	startAt: new EventStart("2026-05-06T18:30:00.000Z"),
+})
+await (await first.client.commit(updateTx)).result // Disconnected; save, do not deliver.
+await (await first.client.flushClientStorage()).result
+await first.crash("client")
+await storage.close()
+// Reopen the database in a new harness and await ready before reconnecting.
+// Its first push retains clientId and mutation 1; startAt is an EventStart again.
+```
+
+The lost-response workflow at [[a7ee51c:packages/core/test/persistence.spec.ts#L423-L508]] lets the real server accept an update, drops its reply, and restarts before acknowledgement. Another server transaction then changes the same `done` field and the text before explicitly retrying the captured request. Without that same-field correction, applying the assignment twice would be unobservable:
+
+```tsx
+// The durable mutation assigned done: true; the server accepted it and its reply was lost.
+const [acceptedRequest] = requests
+await harness.crash("client")
+await harness.restart("client")
+await client.ready
+const correctionTx = server.transact()
+await correctionTx.update("todos", "lost-update", {
+	done: false,
+	text: "Corrected after acceptance",
+})
+await server.commit(correctionTx)
+await server.push(acceptedRequest) // Exact duplicate, with its original mutation ID.
+await (await client.connect()).result
+// Server and client retain done: false, corrected text, and untouched priority: 3.
+// Reconnect pulls the acknowledgement and does not send the accepted mutation again.
+```
+
+[[a7ee51c:packages/core/test/persistence.spec.ts#L510-L623]] checkpoints acknowledgement of mutation 1 while mutation 2 is still pending. The confirmed correction to `done` and `text` survives together with the optimistic priority, including across another restart:
+
+```tsx
+// Mutation 1 assigned done: true and was accepted; mutation 2 assigns priority: 8 offline.
+// The server then corrects done: false and text: "New confirmed title".
+await harness.activateGates()
+const connecting = await client.connect()
+connecting.assertWaitingFor("delivery") // Pull checkpointed acknowledgement 1 and replayed 2.
+expect(client.query({ collection: "todos" })).toEqual([
+	{ id: "partial-ack", text: "New confirmed title", done: false, priority: 8 },
+])
+await connecting.fail(new Error("Later delivery interrupted"))
+await expect(connecting.result).rejects.toThrow("Later delivery interrupted")
+await harness.crash("client")
+await harness.deactivateGatesAndSettle()
+await harness.restart("client")
+await client.ready
+// Resubscribe and reconnect: only mutation 2 is sent, under the saved client ID.
+// Public delivery IDs are [[1], [2]], not [[1], [1, 2]].
+```
+
+The existing [[packages/server/test/TandemServer.spec.ts#L792-L847]] control still proves that a failed update read rolls back earlier operations and cannot advance acknowledgement. Checkpoint durability, codec-failure atomicity, and whole-record recovery controls remain unchanged; field removal remains deferred.
+
+Review identified a false-positive deletion scenario: Gatekeeper's `continueToCompletion()` releases handoffs without propagating rejection. The corrected test now fails under both temporary server mutations: rejecting the missing-record update, and returning success without advancing acknowledgement. Neither injected mutation is retained.
+
+The DST generator now mixes partial updates with set/remove operations. It selects update targets from the client's current view, then assigns one or two of `text`, `done`, and `priority`; it never includes identity or all fields. This exercises actual pending updates rather than predominantly missing-record no-ops. [[a7ee51c:dst/DstSimulation.ts#L110-L134]] and [[a7ee51c:dst/DstWorld.ts#L445-L470]] drive the same public transaction API as applications:
+
+```callstack
+ DstSimulation.execute
+ ├── DstSimulation.choose [[a7ee51c:dst/DstSimulation.ts#L110-L134]]
++│   └── DstWorld.todosOf # select an existing local update target [[a7ee51c:dst/DstWorld.ts#L506-L508]]
+ └── DstWorld.apply [[a7ee51c:dst/DstWorld.ts#L327-L335]]
+-    └── DstWorld.write # stage set/remove
++    └── DstWorld.write # stage set/remove/update through public transactions [[a7ee51c:dst/DstWorld.ts#L445-L470]]
+ replay [[dst/DstReplay.ts#replay]]
++└── intentOf # reconstruct update identity and partial payload [[a7ee51c:dst/DstReplay.ts#L158-L178]]
+```
+
+The trace retains the explicit payload, so replay does not infer assignments from a full record or depend on the random chooser. The update members added to the intent and trace unions have this shape:
+
+```tsx
+type UpdateIntent = {
+	type: "update"
+	client: "client1" | "client2"
+	id: string
+	payload: Partial<Omit<DstTodo, "id">>
+}
+type UpdateTrace = UpdateIntent & { step: number; mutationId: number }
+
+// Generator: select an existing local record and a nonempty strict subset of its fields.
+const todo = rng.pick(world.todosOf(client))
+const intent = { type: "update", client, id: todo.id, payload: { done: !todo.done } }
+// Driver: apply the recorded intent unchanged, during random execution or replay.
+const tx = client.transact()
+tx.update("todos", intent.id, intent.payload)
+client.commit(tx) // Gatekeeper controls checkpoint, push, response, and crash handoffs.
+```
+
+The added update path shares the existing durable checkpoint and fault boundaries:
+
+```diagram
+┌───────────────────────┐     ┌───────────────────────┐
+│ Choose partial update │────▶│ Record explicit intent│
+└───────────────────────┘     └───────────┬───────────┘
+                                         │ random run or replay
+                                         ▼
+┌───────────────────────┐     ┌───────────────────────┐
+│ Fault/crash handoffs  │◀────│ tx.update → commit    │
+└───────────┬───────────┘     └───────────────────────┘
+            ▼
+┌───────────────────────┐
+│ Heal, replay, compare │
+└───────────────────────┘
+```
+
+[[a7ee51c:dst/dst.spec.ts#L25-L58]] checks disjoint offline edits in both reconnect orders against an independently specified merged record, not only convergence. Its fault-and-crash artifact test at [[a7ee51c:dst/dst.spec.ts#L128-L159]] requires both one- and two-field updates and replays the recorded handoffs without divergence. Root [[a7ee51c:AGENTS.md#L19-L22]] now requires changed Tandem behavior to remain exercisable through DST, including generation, driving, recording, replay, and meaningful behavioral checks.
+
+After adding partial updates, the DST regression sweep reruns 1,000 seeds with 1,000 steps per seed through the existing CLI, using `--runs 250 --steps 1000 --fail-on-violation` for each row:
+
+| Seed range | Network fault rate | Crash rate | Passed | Violations / nondeterministic / errors |
+| --- | --- | --- | --- | --- |
+| 1–250 | 0 | 0 | 250 | 0 / 0 / 0 |
+| 1001–1250 | 0.10 | 0 | 250 | 0 / 0 / 0 |
+| 2001–2250 | 0 | 0.05 | 250 | 0 / 0 / 0 |
+| 3001–3250 | 0.20 | 0.05 | 250 | 0 / 0 / 0 |
+
+The sweeps now exercise randomized field updates as well as synchronization and recovery. Their oracle still checks convergence against the authoritative server, not an independent model of every accepted field assignment; the focused consumer and DST scenarios above check field preservation.
+
+A temporary in-memory regression restored client updates to whole-record set operations. Both disjoint-edit DST scenarios failed with lost fields while the other 12 DST tests passed; removing the injection restored all 14 passing tests. This confirms that focused expected-record assertions detect the original bug even when convergence checks pass. The injection is not retained.
+
+Verification passes: targeted conflict, persistence, server, and DST tests pass all 90 cases. `pnpm test` completes all 10 tasks, including 108 core tests, 34 server tests, and 14 DST tests. `pnpm type-check` and `pnpm lint` complete all 14 tasks each, `pnpm build` completes all 7 tasks, and formatting checks plus `git diff --check` pass. No UI code changed in this phase; browser E2E was not rerun.
 
 ## References
 
