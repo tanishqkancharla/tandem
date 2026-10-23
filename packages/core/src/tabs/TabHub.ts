@@ -1,10 +1,7 @@
 import type { Database } from "../Database.js"
 import type { ScanWindow } from "../query/Query.js"
-import type {
-	AnyRelations,
-	AnySchema,
-	RuntimeSchemaDefinition,
-} from "../schema/Schema.js"
+import type { AnyRelations, AnySchema } from "../schema/Schema.js"
+import type { CollectionCodecs } from "../schema/collectionCodecs.js"
 import { collectionIdToTuple } from "../schema/Schema.js"
 import type {
 	ClientId,
@@ -44,7 +41,7 @@ export type TabHubArgs<
 	channel: TabChannelApi
 	db: Database<Schema, Relations>
 	syncEngine: SyncEngine<Schema>
-	schema?: RuntimeSchemaDefinition<Schema>
+	codecs: CollectionCodecs<Schema>
 	logger: LoggerApi
 	rng: RngApi
 }
@@ -69,7 +66,7 @@ export class TabHub<
 	private readonly channel: TabChannelApi
 	private readonly db: Database<Schema, Relations>
 	private readonly syncEngine: SyncEngine<Schema>
-	private readonly schema?: RuntimeSchemaDefinition<Schema>
+	private readonly codecs: CollectionCodecs<Schema>
 	private readonly logger: LoggerApi
 	private readonly rng: RngApi
 	private readonly sessions = new Map<ClientId, SessionState<Schema>>()
@@ -86,7 +83,7 @@ export class TabHub<
 		this.channel = args.channel
 		this.db = args.db
 		this.syncEngine = args.syncEngine
-		this.schema = args.schema
+		this.codecs = args.codecs
 		this.logger = args.logger
 		this.rng = args.rng
 		this.leaderId = args.rng.randomId()
@@ -178,13 +175,13 @@ export class TabHub<
 			case "push":
 				return this.push(
 					sessionId,
-					TabCodec.decodeMutations(this.schema, request.mutations),
+					TabCodec.decodeMutations(this.codecs, request.mutations),
 				)
 			case "pull":
 				return this.pull(sessionId, request.cookie, request.scanWindow)
 			case "connect":
 				this.connectedSessions.add(sessionId)
-				await this.updateConnection()
+				await this.updateConnection({ sync: true })
 				return { ok: true }
 			case "disconnect":
 				this.connectedSessions.delete(sessionId)
@@ -222,13 +219,14 @@ export class TabHub<
 	}
 
 	/** Connects the replica while any session wants it connected. */
-	private updateConnection() {
+	private updateConnection({ sync = false } = {}) {
 		this.connection = this.connection
 			.catch(() => {})
 			.then(async () => {
 				const wanted = !this.stopped && this.connectedSessions.size > 0
+				// Explicit connect requests retry pending sync on an existing connection too.
 				// Syncing runs in the background, so a stalled remote push never blocks this chain.
-				if (wanted && !this.syncEngine.isConnected)
+				if (wanted && (sync || !this.syncEngine.isConnected))
 					await this.syncEngine.connect({ waitForSync: false })
 				// A connect that finished after stop() must not sync beside the next leader.
 				const keep = !this.stopped && this.connectedSessions.size > 0
@@ -260,6 +258,9 @@ export class TabHub<
 				switch (op.type) {
 					case "set":
 						transaction.set(op.collection, op.value)
+						break
+					case "update":
+						transaction.update(op.collection, op.id, op.payload)
 						break
 					case "remove":
 						transaction.remove(op.collection, op.id)
@@ -339,7 +340,7 @@ export class TabHub<
 		const flushed = await this.db.flushClientStorage()
 		if (flushed instanceof Error)
 			return { error: "unavailable", message: flushed.message }
-		return TabCodec.encodePull(this.schema, response)
+		return TabCodec.encodePull(this.codecs, response)
 	}
 
 	private getSession(sessionId: ClientId): SessionState<Schema> {
@@ -399,6 +400,9 @@ export class TabHub<
 	}
 
 	private post(message: TabMessage) {
+		// A request still being served, or a queued poke, can reach here after
+		// stop() closed the channel. BroadcastChannel throws once closed.
+		if (this.stopped) return
 		this.channel.postMessage(message)
 	}
 }

@@ -64,9 +64,7 @@ type QueryNode<
 }
 
 type RecordsByCollection<Schema extends AnySchema> = {
-	readonly [
-		Collection in CollectionName<Schema>
-	]?: readonly Schema[Collection][]
+	readonly [Collection in CollectionName<Schema>]?: readonly Schema[Collection][]
 }
 
 type MutableRecordsByCollection<Schema extends AnySchema> = {

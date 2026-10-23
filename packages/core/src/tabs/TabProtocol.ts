@@ -1,9 +1,6 @@
 import type { ScanWindow } from "../query/Query.js"
-import type {
-	AnySchema,
-	CollectionName,
-	RuntimeSchemaDefinition,
-} from "../schema/Schema.js"
+import type { AnySchema, CollectionName } from "../schema/Schema.js"
+import type { CollectionCodecs } from "../schema/collectionCodecs.js"
 import type {
 	ClientId,
 	Cookie,
@@ -11,7 +8,6 @@ import type {
 	PullResponse,
 } from "../sync/SyncEngine.js"
 import type { Mutation, MutationOp } from "../transaction/Transaction.js"
-import type { Codec } from "../utils/Codec.js"
 import { unreachable } from "../utils/typeUtils.js"
 
 /** Calls a tab session makes on the leader tab. */
@@ -51,27 +47,18 @@ export type TabMessage =
 
 // Records cross tabs by structured clone, which drops class instances. Collection
 // codecs turn values into plain data first, as IndexedDB storage does.
-function getCodec<Schema extends AnySchema>(
-	schema: RuntimeSchemaDefinition<Schema> | undefined,
-	collection: CollectionName<Schema>,
-) {
-	return schema?.collections[collection]?.codec as
-		| Codec<unknown, unknown>
-		| undefined
-}
-
 function transformValue<Schema extends AnySchema>(
-	schema: RuntimeSchemaDefinition<Schema> | undefined,
+	codecs: CollectionCodecs<Schema>,
 	collection: CollectionName<Schema>,
 	value: unknown,
 	direction: "encode" | "decode",
 ) {
-	const codec = getCodec(schema, collection)
+	const codec = codecs[collection]
 	return codec ? codec[direction](value) : value
 }
 
 function transformMutations<Schema extends AnySchema>(
-	schema: RuntimeSchemaDefinition<Schema> | undefined,
+	codecs: CollectionCodecs<Schema>,
 	mutations: Mutation<Schema>[],
 	direction: "encode" | "decode",
 ): Mutation<Schema>[] {
@@ -82,7 +69,18 @@ function transformMutations<Schema extends AnySchema>(
 				case "set":
 					return {
 						...op,
-						value: transformValue(schema, op.collection, op.value, direction),
+						value: transformValue(codecs, op.collection, op.value, direction),
+					} as MutationOp<Schema>
+				// Partial-object codecs transform a payload's supplied fields only.
+				case "update":
+					return {
+						...op,
+						payload: transformValue(
+							codecs,
+							op.collection,
+							op.payload,
+							direction,
+						),
 					} as MutationOp<Schema>
 				case "remove":
 					return op
@@ -94,7 +92,7 @@ function transformMutations<Schema extends AnySchema>(
 }
 
 function transformPull<Schema extends AnySchema>(
-	schema: RuntimeSchemaDefinition<Schema> | undefined,
+	codecs: CollectionCodecs<Schema>,
 	response: PullResponse<Schema>,
 	direction: "encode" | "decode",
 ): PullResponse<Schema> {
@@ -106,7 +104,7 @@ function transformPull<Schema extends AnySchema>(
 				(op) =>
 					({
 						collection: op.collection,
-						value: transformValue(schema, op.collection, op.value, direction),
+						value: transformValue(codecs, op.collection, op.value, direction),
 					}) as PatchSetOp<Schema>,
 			),
 		},
@@ -115,22 +113,22 @@ function transformPull<Schema extends AnySchema>(
 
 export namespace TabCodec {
 	export const encodeMutations = <Schema extends AnySchema>(
-		schema: RuntimeSchemaDefinition<Schema> | undefined,
+		codecs: CollectionCodecs<Schema>,
 		mutations: Mutation<Schema>[],
-	) => transformMutations(schema, mutations, "encode")
+	) => transformMutations(codecs, mutations, "encode")
 
 	export const decodeMutations = <Schema extends AnySchema>(
-		schema: RuntimeSchemaDefinition<Schema> | undefined,
+		codecs: CollectionCodecs<Schema>,
 		mutations: Mutation<Schema>[],
-	) => transformMutations(schema, mutations, "decode")
+	) => transformMutations(codecs, mutations, "decode")
 
 	export const encodePull = <Schema extends AnySchema>(
-		schema: RuntimeSchemaDefinition<Schema> | undefined,
+		codecs: CollectionCodecs<Schema>,
 		response: PullResponse<Schema>,
-	) => transformPull(schema, response, "encode")
+	) => transformPull(codecs, response, "encode")
 
 	export const decodePull = <Schema extends AnySchema>(
-		schema: RuntimeSchemaDefinition<Schema> | undefined,
+		codecs: CollectionCodecs<Schema>,
 		response: PullResponse<Schema>,
-	) => transformPull(schema, response, "decode")
+	) => transformPull(codecs, response, "decode")
 }

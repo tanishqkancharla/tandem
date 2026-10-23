@@ -1,8 +1,5 @@
-import type {
-	AnyRelations,
-	AnySchema,
-	RuntimeSchemaDefinition,
-} from "../schema/Schema.js"
+import type { AnyRelations, AnySchema } from "../schema/Schema.js"
+import type { CollectionCodecs } from "../schema/collectionCodecs.js"
 import type {
 	ClientApi,
 	ClientId,
@@ -33,7 +30,7 @@ export type TabSessionArgs<
 > = {
 	name: string
 	environment: TabEnvironmentApi
-	schema?: RuntimeSchemaDefinition<Schema>
+	codecs: CollectionCodecs<Schema>
 	logger: LoggerApi
 	rng: RngApi
 	/** Starts the persisted replica and its hub once this tab wins the lock. */
@@ -52,7 +49,7 @@ export class TabSession<
 	Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
 > implements RemoteApi<Schema> {
 	private readonly channel: TabChannelApi
-	private readonly schema?: RuntimeSchemaDefinition<Schema>
+	private readonly codecs: CollectionCodecs<Schema>
 	private readonly logger: LoggerApi
 	private readonly rng: RngApi
 	private readonly onLeaderChange: () => void
@@ -67,7 +64,7 @@ export class TabSession<
 	private closed = false
 
 	constructor(args: TabSessionArgs<Schema, Relations>) {
-		this.schema = args.schema
+		this.codecs = args.codecs
 		this.logger = args.logger
 		this.rng = args.rng
 		this.onLeaderChange = args.onLeaderChange
@@ -110,7 +107,7 @@ export class TabSession<
 	push: RemoteApi<Schema>["push"] = async ({ clientId, mutations }) =>
 		(await this.request(clientId, {
 			method: "push",
-			mutations: TabCodec.encodeMutations(this.schema, mutations),
+			mutations: TabCodec.encodeMutations(this.codecs, mutations),
 		})) as PushResponse
 
 	pull: RemoteApi<Schema>["pull"] = async ({
@@ -124,7 +121,7 @@ export class TabSession<
 			scanWindow,
 		})) as PullResponse<Schema> | RemoteRequestError
 		if ("error" in response) return response
-		return TabCodec.decodePull(this.schema, response)
+		return TabCodec.decodePull(this.codecs, response)
 	}
 
 	/** Runs a client operation on the leader's replica. */

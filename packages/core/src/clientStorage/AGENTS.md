@@ -35,6 +35,8 @@ const db = new TandemClient({ schema, clientStorage: storage })
 
 IndexedDB applies the same collection codec to record values, nested `set` values in bases and outbox operations, and partial outbox `update` payloads. Metadata and `remove` markers pass through unchanged. Encoding completes before opening the write transaction, so a codec failure cannot persist a prefix of the batch.
 
+The adapter exposes its effective collection codecs through `codecs`, with explicit overrides taking precedence over schema codecs. Shared tab replication uses this same metadata to preserve runtime values across channels. Custom adapters can expose it through the optional `TandemClientStorageApi.codecs` field.
+
 `Database` commits records, bases, outbox entries, and replica metadata together in memory, then persists root tuple writes through the same storage API. Pushes wait for their complete mutation snapshot to reach storage. Pull checkpoints include the patch, acknowledgement pruning, and cookie. Clear runs after active saves and supersedes queued old-session writes.
 
 Startup loads every checkpoint namespace before installing the persistence subscriber. It preserves the saved identity, cookie, and mutation counter, initializing replica metadata only for a fresh store. Stored records already contain optimistic edits, so startup does not replay them again. `TandemClient.ready` resolves after hydration; transactions throw before readiness, and clear and connection wait for it. A scan failure rejects readiness without overwriting the saved checkpoint.

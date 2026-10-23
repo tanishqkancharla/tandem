@@ -10,6 +10,7 @@ import type {
 	RuntimeSchemaDefinition,
 } from "./schema/Schema.js"
 import type { TandemClientStorageApi } from "./clientStorage/TandemClientStorage.js"
+import { getSchemaCodecs } from "./schema/collectionCodecs.js"
 import { SyncEngine, type ClientId, type RemoteApi } from "./sync/SyncEngine.js"
 import {
 	browserTabEnvironment,
@@ -148,6 +149,7 @@ export class TandemClient<
 
 		const sharedTabs = resolveTabs(tabs, clientStorage, remote)
 		if (sharedTabs && remote && clientStorage) {
+			const codecs = { ...getSchemaCodecs(schema), ...clientStorage.codecs }
 			// This tab's replica lives in memory. The leader tab, possibly this one,
 			// holds the persisted replica and its remote connection.
 			this.db = new Database({
@@ -160,7 +162,7 @@ export class TandemClient<
 			})
 			this.tabSession = new TabSession<Schema, Relations>({
 				...sharedTabs,
-				schema,
+				codecs,
 				logger: this.logger.scope("tab-session"),
 				rng: this.rng,
 				lead: async (channel) => {
@@ -187,7 +189,7 @@ export class TandemClient<
 						channel,
 						db: leaderDb,
 						syncEngine: leaderSyncEngine,
-						schema,
+						codecs,
 						logger: this.logger.scope("tab-hub"),
 						rng: this.rng,
 					})

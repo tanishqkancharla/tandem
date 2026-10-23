@@ -5,6 +5,10 @@ import type { DBSchema, IDBPDatabase } from "idb"
 import type { ScanStorageArgs, WriteOps } from "tuple-database"
 import { decodeTuple, encodeTuple } from "tuple-database/helpers/codec.js"
 import type { AnySchema, RuntimeSchemaDefinition } from "../schema/Schema.js"
+import {
+	getSchemaCodecs,
+	type CollectionCodecs,
+} from "../schema/collectionCodecs.js"
 import type {
 	TandemClientBase,
 	TandemClientStorageApi,
@@ -36,27 +40,6 @@ export type TandemClientIndexedDbStorageArgs<
 	dbName: string
 	schema?: RuntimeSchemaDefinition<Schema>
 	codecs?: {
-		[K in keyof Schema]?: PartialObjectCodec<Schema[K], StorageSchema[K]>
-	}
-}
-
-function getSchemaCodecs<
-	Schema extends AnySchema,
-	StorageSchema extends AnyStorageSchema<Schema>,
->(
-	schema?: RuntimeSchemaDefinition<Schema>,
-):
-	| {
-			[K in keyof Schema]?: PartialObjectCodec<Schema[K], StorageSchema[K]>
-	  }
-	| undefined {
-	if (!schema) return undefined
-
-	return Object.fromEntries(
-		Object.entries(schema.collections)
-			.filter(([, collection]) => collection.codec)
-			.map(([name, collection]) => [name, collection.codec]),
-	) as {
 		[K in keyof Schema]?: PartialObjectCodec<Schema[K], StorageSchema[K]>
 	}
 }
@@ -151,6 +134,7 @@ export class TandemClientIndexedDbStorage<
 		[K in keyof Schema]?: Json
 	} = Schema,
 > implements TandemClientStorageApi<Schema> {
+	readonly codecs: CollectionCodecs<Schema>
 	private connection?: Promise<IDBPDatabase<TandemIndexedDbSchema>>
 	private readonly tupleCodec: Codec<
 		TandemClientTuple<Schema>,
@@ -167,10 +151,11 @@ export class TandemClientIndexedDbStorage<
 		schema,
 		codecs,
 	}: TandemClientIndexedDbStorageArgs<Schema, StorageSchema>) {
-		this.tupleCodec = createTupleCodec<Schema>({
+		this.codecs = {
 			...getSchemaCodecs(schema),
 			...codecs,
-		})
+		}
+		this.tupleCodec = createTupleCodec<Schema>(this.codecs)
 		this.dbName = dbName
 	}
 

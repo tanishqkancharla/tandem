@@ -6,6 +6,7 @@ import type {
 	SchemaToTupleSchema,
 } from "../schema/Schema.js"
 import type { ScanWindow } from "../query/Query.js"
+import type { CollectionCodecs } from "../schema/collectionCodecs.js"
 import type { ClientId, Cookie } from "../sync/SyncEngine.js"
 import type { Mutation, MutationId } from "../transaction/Transaction.js"
 import { isEqual } from "../utils/objectUtils.js"
@@ -55,6 +56,8 @@ export interface TandemClientStorageApi<Schema extends AnySchema> {
 	 * same name elect one tab to own the storage and sync for the others.
 	 */
 	readonly name?: string
+	/** Effective record codecs, also used when values cross tab channels. */
+	readonly codecs?: CollectionCodecs<Schema>
 	scan(args?: ScanStorageArgs): Promise<TandemClientTuple<Schema>[]>
 	/** Apply the whole batch atomically; resolve only after it is durable. */
 	commit(writes: WriteOps<TandemClientTuple<Schema>>): Promise<void>

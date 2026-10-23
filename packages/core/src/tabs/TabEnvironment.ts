@@ -82,7 +82,7 @@ export class InMemoryTab implements TabEnvironmentApi {
 
 	openChannel(name: string): TabChannelApi {
 		const channel = new InMemoryChannel(this.tabs, name, this)
-		if (this.closed) channel.close()
+		if (this.closed) channel.discard()
 		else this.tabs.channels.add(channel)
 		return channel
 	}
@@ -99,7 +99,7 @@ export class InMemoryTab implements TabEnvironmentApi {
 			this.release(name)
 		}
 		for (const channel of this.tabs.channels) {
-			if (channel.tab === this) channel.close()
+			if (channel.tab === this) channel.discard()
 		}
 	}
 
@@ -125,6 +125,7 @@ export class InMemoryTab implements TabEnvironmentApi {
 class InMemoryChannel implements TabChannelApi {
 	private readonly listeners = new Set<TabMessageListener>()
 	private closed = false
+	private discarded = false
 
 	constructor(
 		private readonly tabs: InMemoryTabs,
@@ -133,7 +134,12 @@ class InMemoryChannel implements TabChannelApi {
 	) {}
 
 	postMessage(message: unknown) {
-		if (this.closed) return
+		// A discarded channel belongs to a tab the browser has already ended,
+		// where this code would never have run. A channel its owner closed is
+		// still live code, and BroadcastChannel throws InvalidStateError there.
+		if (this.discarded) return
+		if (this.closed)
+			throw new Error("Failed to post message on a closed tab channel")
 		for (const channel of this.tabs.channels) {
 			if (channel === this || channel.name !== this.name) continue
 			// Like BroadcastChannel: each receiver gets its own structured clone, later.
@@ -153,6 +159,12 @@ class InMemoryChannel implements TabChannelApi {
 	close() {
 		this.closed = true
 		this.tabs.channels.delete(this)
+	}
+
+	/** @internal Ends the channel with its tab, rather than by its owner. */
+	discard() {
+		this.discarded = true
+		this.close()
 	}
 
 	private deliver(data: unknown) {

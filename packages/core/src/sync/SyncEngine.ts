@@ -172,8 +172,10 @@ export class SyncEngine<Schema extends AnySchema> {
 	 * false`, resolves once connected and syncs in the background.
 	 */
 	async connect({ waitForSync = true } = {}): Promise<AsyncUnsubscribe> {
-		const connected = await this.connectToRemote()
-		if (connected instanceof Error) throw connected
+		if (!this.isConnected) {
+			const connected = await this.connectToRemote()
+			if (connected instanceof Error) throw connected
+		}
 		const synced = this.queuePull().then(async () => {
 			if (this.db.outbox.scan({ limit: 1 }).length) {
 				await this.syncQueue.enqueue("push")

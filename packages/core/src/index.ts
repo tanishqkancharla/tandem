@@ -37,6 +37,7 @@ export type {
 } from "./clientStorage/TandemClientStorage.js"
 export { WriteOpsApi } from "./clientStorage/TandemClientStorage.js"
 export { TandemClientIndexedDbStorage } from "./clientStorage/TandemClientIndexedDbStorage.js"
+export type { CollectionCodecs } from "./schema/collectionCodecs.js"
 export type {
 	AnyStorageSchema,
 	TandemClientIndexedDbStorageArgs,

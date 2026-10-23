@@ -2,6 +2,8 @@ import {
 	codec,
 	collection,
 	defineSchema,
+	partialObject,
+	string,
 	type AnySchema,
 	type ClientApi,
 	type Mutation,
@@ -16,6 +18,8 @@ import {
 	InMemoryTabs,
 	type InMemoryTab,
 } from "@tanishqkancharla/tandem-core/internal"
+import { Gatekeeper } from "@tanishqkancharla/gatekeeper"
+import * as errore from "errore"
 import { describe, expect, vi } from "vitest"
 import { test, todo, type TestsSchema } from "./fixtures.js"
 
@@ -68,6 +72,7 @@ function createTabs<Schema extends AnySchema>({
 		connectDelayMs: 0,
 		/** Pushes that reached the remote while it was stalled. */
 		stalledPushes: 0,
+		failedPushes: 0,
 	}
 	const unavailable = {
 		error: "unavailable",
@@ -83,6 +88,9 @@ function createTabs<Schema extends AnySchema>({
 		const storage = makeStorage({ dbName, schema })
 		const tabStorage: TandemClientStorageApi<Schema> = {
 			name: storage.name,
+			get codecs() {
+				return storage.codecs
+			},
 			scan: (args) => (alive ? storage.scan(args) : never()),
 			commit: async (writes) => {
 				if (!alive) return never()
@@ -111,7 +119,10 @@ function createTabs<Schema extends AnySchema>({
 					remote.stalledPushes += 1
 					return never()
 				}
-				if (remote.down) return unavailable
+				if (remote.down) {
+					remote.failedPushes += 1
+					return unavailable
+				}
 				for (const mutation of args.mutations)
 					pushed.push({ clientId: args.clientId, mutation })
 				return server.push(args)
@@ -393,6 +404,84 @@ describe("TandemClient tabs", () => {
 		},
 	)
 
+	for (const reconnectingTab of ["client1", "client2"] as const) {
+		tabsTest(
+			`${reconnectingTab} reconnects an existing leader after a failed push`,
+			async ({ tabs, server }) => {
+				const first = await tabs.open("tab1", { autoConnect: false })
+				const second = await tabs.open("tab2", { autoConnect: false })
+				await using gatekeeper = new Gatekeeper()
+					.add("client1", () => first.client)
+					.add("client2", () => second.client)
+					.build()
+				const { client1, client2 } = gatekeeper
+				client1.subscribe({ collection: "todos" })
+				await (
+					await client1.connect()
+				).result
+				await (
+					await client1.pullFromRemote()
+				).result
+
+				// The leader has a connection, but delivery of this durable write fails.
+				tabs.remote.down = true
+				const tx = client2.transact()
+				tx.set("todos", todo("retry"))
+				await (
+					await client2.commit(tx)
+				).result
+				await expect.poll(() => tabs.remote.failedPushes).toBeGreaterThan(0)
+
+				// Either tab can retry delivery without another write or a leader change.
+				tabs.remote.down = false
+				await (
+					await gatekeeper[reconnectingTab].connect()
+				).result
+				await expect
+					.poll(() => server.query({ collection: "todos" }))
+					.toEqual([todo("retry")])
+			},
+		)
+	}
+
+	tabsTest(
+		"reconnecting an existing leader does not wait for a stalled push",
+		async ({ tabs }) => {
+			const first = await tabs.open("tab1", { autoConnect: false })
+			await using gatekeeper = new Gatekeeper()
+				.add("client1", () => first.client)
+				.build()
+			const { client1 } = gatekeeper
+			await (
+				await client1.connect()
+			).result
+			await (
+				await client1.pullFromRemote()
+			).result
+			tabs.remote.pushHangs = true
+			const tx = client1.transact()
+			tx.set("todos", todo("stalled-reconnect"))
+			await (
+				await client1.commit(tx)
+			).result
+			await expect.poll(() => tabs.remote.stalledPushes).toBeGreaterThan(0)
+
+			// Reconnect schedules synchronization without blocking connection control.
+			await (
+				await client1.connect()
+			).result
+			await (
+				await client1.disconnect()
+			).result
+			await (
+				await client1.flushClientStorage()
+			).result
+			await (
+				await client1.close()
+			).result
+		},
+	)
+
 	tabsTest(
 		"commits, flushes, and handoff do not wait for a stalled remote",
 		async ({ tabs }) => {
@@ -439,6 +528,12 @@ describe("TandemClient tabs", () => {
 			const tx = first.client.transact()
 			tx.set("todos", todo("before-clear"))
 			await first.client.commit(tx)
+			// commit resolves once leader storage holds the write, and clear discards
+			// pending mutations. Let this one reach the remote, so what the test
+			// checks afterwards is that clear leaves server writes alone.
+			await expect
+				.poll(() => server.query({ collection: "todos" }))
+				.toEqual([todo("before-clear")])
 
 			await first.client.clear()
 			expect(first.client.query({ collection: "todos" })).toEqual([])
@@ -540,6 +635,10 @@ describe("TandemClient tabs", () => {
 
 	class EventStart {
 		constructor(readonly iso: string) {}
+
+		format() {
+			return this.iso
+		}
 	}
 
 	type EventsSchema = {
@@ -550,20 +649,135 @@ describe("TandemClient tabs", () => {
 		events: collection<EventsSchema["events"], { id: string; startAt: string }>(
 			{
 				fields: ["id", "startAt"],
-				codec: codec<EventsSchema["events"], { id: string; startAt: string }>(
-					"event",
-					(input) => {
-						const event = input as EventsSchema["events"]
-						return { id: event.id, startAt: event.startAt.iso }
-					},
-					(input) => {
-						const event = input as { id: string; startAt: string }
-						return { id: event.id, startAt: new EventStart(event.startAt) }
-					},
-				),
+				codec: partialObject({
+					id: string,
+					startAt: codec<EventStart, string>(
+						"event-start",
+						(input) => (input as EventStart).iso,
+						(input) => new EventStart(input as string),
+					),
+				}),
 			},
 		),
 	}) as RuntimeSchemaDefinition<EventsSchema>
+
+	for (const configuration of [
+		"explicit",
+		"storage-schema",
+		"override",
+	] as const) {
+		test(`${configuration} storage codecs preserve methods through startup and handoff`, async ({
+			makeRemote,
+			makeStorage,
+			logger,
+			rng,
+		}) => {
+			class StorageEventStart extends EventStart {
+				override format() {
+					return `Event starts at ${this.iso}`
+				}
+			}
+			const storageCodec = partialObject({
+				id: string,
+				startAt: codec<EventStart, string>(
+					"storage-event-start",
+					(input) => (input as EventStart).iso,
+					(input) => new StorageEventStart(input as string),
+				),
+			})
+			const storageSchema = defineSchema({
+				events: collection<
+					EventsSchema["events"],
+					{ id: string; startAt: string }
+				>({
+					fields: ["id", "startAt"],
+					codec: storageCodec,
+				}),
+			})
+			const server = makeRemote({ schema: eventsSchema, relations: {} })
+			const tabs = createTabs<EventsSchema>({
+				server,
+				schema: configuration === "override" ? eventsSchema : undefined,
+				dbName: rng.next("storage-codecs"),
+				makeStorage: ({ dbName }) =>
+					makeStorage<EventsSchema>({
+						dbName,
+						schema:
+							configuration === "storage-schema" ? storageSchema : undefined,
+						codecs:
+							configuration === "storage-schema"
+								? undefined
+								: { events: storageCodec },
+					}),
+				logger,
+				rng,
+			})
+			await using cleanup = new errore.AsyncDisposableStack()
+			cleanup.defer(() => tabs.close())
+			const first = await tabs.open("tab1", { autoConnect: false })
+			const second = await tabs.open("tab2", { autoConnect: false })
+			await using gatekeeper = new Gatekeeper()
+				.add("client1", () => first.client)
+				.add("client2", () => second.client)
+				.build()
+			const { client1, client2 } = gatekeeper
+			client1.subscribe({ collection: "events" })
+			client2.subscribe({ collection: "events" })
+			const iso = "2026-10-22T09:00:00.000Z"
+			const expected = `Event starts at ${iso}`
+
+			// Forwarding must restore the methods supplied by the storage codec.
+			const tx = client2.transact()
+			tx.set("events", { id: "launch", startAt: new StorageEventStart(iso) })
+			await (
+				await client2.commit(tx)
+			).result
+			await expect
+				.poll(() =>
+					client1.query({ collection: "events" })[0]?.startAt.format(),
+				)
+				.toBe(expected)
+
+			// A new tab's initial snapshot must preserve the same runtime values.
+			const third = await tabs.open("tab3", { autoConnect: false })
+			await using thirdGatekeeper = new Gatekeeper()
+				.add("client", () => third.client)
+				.build()
+			expect(
+				thirdGatekeeper.client
+					.query({ collection: "events" })[0]
+					?.startAt.format(),
+			).toBe(expected)
+
+			// Takeover and an actual storage reload must use those codecs too.
+			await (
+				await client1.close()
+			).result
+			const afterTx = client2.transact()
+			afterTx.set("events", {
+				id: "after",
+				startAt: new StorageEventStart(iso),
+			})
+			await (
+				await client2.commit(afterTx)
+			).result
+			await (
+				await client2.close()
+			).result
+			await (
+				await thirdGatekeeper.client.close()
+			).result
+			const restored = await tabs.open("tab4", { autoConnect: false })
+			await using restoredGatekeeper = new Gatekeeper()
+				.add("client", () => restored.client)
+				.build()
+			expect(
+				restoredGatekeeper.client
+					.query({ collection: "events" })
+					.map((event) => event.startAt.format()),
+			).toEqual([expected, expected])
+		})
+	}
 
 	test("collection codecs restore values that cross tabs", async ({
 		makeRemote,
