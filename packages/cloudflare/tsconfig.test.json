@@ -1,0 +1,21 @@
+{
+	"extends": "../../tsconfig.json",
+	"compilerOptions": {
+		"outDir": "./dist",
+		"rootDir": ".",
+		"types": ["node"],
+		"noEmit": true,
+		"composite": false,
+		"declaration": false,
+		"declarationMap": false,
+		"paths": {
+			"@tanishqkancharla/tandem-core": ["../core/src/index.ts"],
+			"@tanishqkancharla/tandem-core/internal": ["../core/src/internal.ts"],
+			"@tanishqkancharla/tandem-server": ["../server/src/index.ts"],
+			"@tanishqkancharla/tandem-cloudflare": ["./src/index.ts"],
+			"@tanishqkancharla/tandem-cloudflare/client": ["./src/client/index.ts"]
+		}
+	},
+	"include": ["src/**/*.ts", "test/**/*.ts"],
+	"references": [{ "path": "../core" }, { "path": "../server" }]
+}

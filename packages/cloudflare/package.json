@@ -1,0 +1,54 @@
+{
+	"name": "@tanishqkancharla/tandem-cloudflare",
+	"version": "0.3.1",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"source": "./src/index.ts",
+	"author": "Tanishq Kancharla <tanishqkancharla3@gmail.com>",
+	"description": "Cloudflare Durable Object sync coordinator for Tandem apps with their own database",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/tanishqkancharla/tandem.git",
+		"directory": "packages/cloudflare"
+	},
+	"files": [
+		"dist",
+		"!dist/**/*.map"
+	],
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js",
+			"default": "./dist/index.js"
+		},
+		"./client": {
+			"types": "./dist/client/index.d.ts",
+			"import": "./dist/client/index.js",
+			"default": "./dist/client/index.js"
+		}
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"build": "rm -rf dist tsconfig.tsbuildinfo && tsc",
+		"prepublishOnly": "pnpm run build",
+		"type-check": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit",
+		"format": "oxfmt \"src/**/*.ts\" \"test/**/*.ts\"",
+		"lint": "oxlint src --fix && tsc --noEmit",
+		"test": "vitest run --config ../../vitest.config.js"
+	},
+	"dependencies": {
+		"@tanishqkancharla/tandem-core": "workspace:*",
+		"@tanishqkancharla/tandem-server": "workspace:*",
+		"errore": "^0.14.1",
+		"tuple-database": "github:tanishqkancharla/tuple-database#ebe6b84edbc1371d0eb611cf5ca28d2f76be38db"
+	},
+	"devDependencies": {
+		"@types/node": "^26.6.4",
+		"typescript": "^7.0.2",
+		"vitest": "^5.0.3"
+	}
+}
