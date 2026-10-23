@@ -194,8 +194,10 @@ export class TandemServer<
 			if (disconnected) return Promise.resolve()
 			disconnected = true
 
-			const current = this.syncClients.get(clientId)
-			if (current?.poke === poke) current.poke = undefined
+			// Release the client's view; a later pull from it receives a reset snapshot.
+			if (this.syncClients.get(clientId)?.poke === poke) {
+				this.syncClients.delete(clientId)
+			}
 			return Promise.resolve()
 		})
 	}

@@ -186,6 +186,43 @@ test("lost subscription responses and server restarts reset an unknown view", as
 	await server.close()
 })
 
+test("disconnecting releases a client's view so its next pull resets", async () => {
+	const { server } = createServer()
+	await seed(server)
+	const clientId = tag<ClientId>("released-client")
+	const scanWindow: ScanWindow<TestSchema> = [{ collection: "users" }]
+	const disconnect = await server.connect({
+		clientId,
+		poke: () => Promise.resolve(),
+	})
+	const initial = await server.pull({ clientId, scanWindow })
+	assert(!("error" in initial))
+
+	// While connected, the same cookie receives a diff.
+	const diff = await server.pull({
+		clientId,
+		cookie: initial.cookie,
+		scanWindow,
+	})
+	assert(!("error" in diff))
+	expect(diff.patch.reset).toBeUndefined()
+
+	// After disconnecting, the server keeps no view, so the latest cookie resets.
+	await disconnect()
+	const afterDisconnect = await server.pull({
+		clientId,
+		cookie: diff.cookie,
+		scanWindow,
+	})
+	assert(!("error" in afterDisconnect))
+	expect(afterDisconnect.patch).toEqual({
+		reset: true,
+		set: [{ collection: "users", value: { id: "user-1", name: "Ada" } }],
+		remove: [],
+	})
+	await server.close()
+})
+
 test("pull reads external writes with the same cookie and recovers a lost removal response", async () => {
 	const { server, storage } = createServer()
 	const seedTx = server.transact()
