@@ -34,7 +34,7 @@ const client = new TandemClient({ schema, remote: server })
 
 Across a network, the client's `remote` is a transport that forwards `push` and `pull` to the server and calls `poke` when there may be new data. The [Quickstart](quickstart.md#5-add-a-server) shows a minimal HTTP transport, and [`examples/todo`](../examples/todo) has a complete Hono server.
 
-After every commit that writes data, the server pokes each connected client.
+After every commit that writes data, the server pokes each connected client. Disconnecting releases that client's view, so its next pull receives a reset snapshot.
 
 ## Read and write on the server
 
@@ -109,6 +109,6 @@ interface TandemServerStorageApi<Schema> {
 
 ## Limitations
 
-- Records are durable when storage is durable. Sync metadata (revisions, acknowledged mutation IDs, client scan windows) lives in the server process and resets on restart.
-- Pokes come from the `TandemServer` instance that committed the write. Writes made by other processes or directly to the database do not poke clients.
+- Records and each client's last applied mutation ID are durable when storage is durable; they commit together. Per-client views (cookies and previously sent record keys) live in the server process. After a restart or disconnect, a client's next pull receives a reset snapshot.
+- Pokes come from the `TandemServer` instance that committed the write, or from the storage adapter's optional `subscribe` notifications. Writes made elsewhere poke clients only if the adapter reports them.
 - The server does no authentication or authorization. Check requests in your transport before calling `push` or `pull`.
