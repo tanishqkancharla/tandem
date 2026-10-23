@@ -5,7 +5,7 @@ import {
 	type AnyRelations,
 	type AnySchema,
 	collection,
-	type Codec,
+	type PartialObjectCodec,
 	defineSchema,
 	Logger,
 	type RelationalQuery,
@@ -132,7 +132,7 @@ function createRng(): DemoRng {
 export type MakeStorageOptions<Schema extends AnySchema = AnySchema> = {
 	dbName?: string
 	schema?: RuntimeSchemaDefinition<Schema>
-	codecs?: Record<string, Codec<any, any>>
+	codecs?: Record<string, PartialObjectCodec<any, any>>
 }
 
 export type MakeRemote = {

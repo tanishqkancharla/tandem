@@ -1,4 +1,5 @@
-import { isObject, isString, mapValues } from "./objectUtils.js"
+import * as errore from "errore"
+import { isObject, isString } from "./objectUtils.js"
 import { Assert, TestExtends } from "./typeUtils.js"
 
 export type Codec<I, O> = {
@@ -11,6 +12,19 @@ export type AnyCodec = Codec<any, any>
 
 export type Encoded<T> = T extends Codec<any, infer O> ? O : never
 export type Decoded<T> = T extends Codec<infer I, any> ? I : never
+
+declare const partialObjectRecord: unique symbol
+
+/** Transforms supplied fields only; omissions and cross-field invariants are not validated. */
+export type PartialObjectCodec<I, O> = Codec<Partial<I>, Partial<O>> & {
+	readonly kind: "partialObject"
+	readonly [partialObjectRecord]?: I
+}
+
+class PartialObjectInputError extends errore.createTaggedError({
+	name: "PartialObjectInputError",
+	message: "Invalid partial object: $detail",
+}) {}
 
 class CodecImpl<I, O> implements Codec<I, O> {
 	constructor(
@@ -92,32 +106,48 @@ export const date = new CodecImpl<Date, string>(
 	},
 )
 
-export function object<T extends Record<string, AnyCodec>>(
+export function partialObject<T extends Record<string, AnyCodec>>(
 	shape: T,
-): Codec<{ [K in keyof T]: Decoded<T[K]> }, { [K in keyof T]: Encoded<T[K]> }> {
-	return new CodecImpl<
-		{ [K in keyof T]: Decoded<T[K]> },
-		{ [K in keyof T]: Encoded<T[K]> }
-	>(
-		`object({\n  ${Object.entries(shape)
-			.map(([key, codec]) => `${key}: ${codec.name}`)
-			.join(",\n  ")}\n})`,
-		(input) => {
-			if (!isObject(input)) {
-				throw new Error(`Expected object but instead found ${typeof input}`)
+): PartialObjectCodec<
+	{ [K in keyof T]: Decoded<T[K]> },
+	{ [K in keyof T]: Encoded<T[K]> }
+> {
+	function transform(input: unknown, direction: "encode" | "decode") {
+		if (!isObject(input) || Array.isArray(input)) {
+			return new PartialObjectInputError({ detail: "expected an object" })
+		}
+
+		const entries: [string, unknown][] = []
+		for (const [key, value] of Object.entries(input)) {
+			if (!Object.hasOwn(shape, key)) {
+				return new PartialObjectInputError({ detail: `unknown field "${key}"` })
 			}
-			return mapValues(input, (value, key) => shape[key].encode(value)) as {
-				[K in keyof T]: Encoded<T[K]>
-			}
-		},
-		(input) => {
-			if (!isObject(input)) {
-				throw new Error(`Expected object but instead found ${typeof input}`)
-			}
-			return mapValues(input, (value, key) => shape[key].decode(value)) as {
-				[K in keyof T]: Decoded<T[K]>
-			}
-		},
+			entries.push([key, shape[key][direction](value)])
+		}
+		return Object.fromEntries(entries)
+	}
+
+	return Object.assign(
+		new CodecImpl(
+			`partialObject({\n  ${Object.entries(shape)
+				.map(([key, codec]) => `${key}: ${codec.name}`)
+				.join(",\n  ")}\n})`,
+			(input) => {
+				const output = transform(input, "encode")
+				if (output instanceof Error) throw output
+				return output as {
+					[K in keyof T]?: Encoded<T[K]>
+				}
+			},
+			(input) => {
+				const output = transform(input, "decode")
+				if (output instanceof Error) throw output
+				return output as {
+					[K in keyof T]?: Decoded<T[K]>
+				}
+			},
+		),
+		{ kind: "partialObject" as const },
 	)
 }
 

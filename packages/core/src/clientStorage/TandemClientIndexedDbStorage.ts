@@ -11,7 +11,7 @@ import type {
 	TandemClientTuple,
 } from "./TandemClientStorage.js"
 import type { MutationOp } from "../transaction/Transaction.js"
-import { codec, type Codec } from "../utils/Codec.js"
+import { codec, type Codec, type PartialObjectCodec } from "../utils/Codec.js"
 import { unreachable, type Json } from "../utils/typeUtils.js"
 
 const version = 1
@@ -36,7 +36,7 @@ export type TandemClientIndexedDbStorageArgs<
 	dbName: string
 	schema?: RuntimeSchemaDefinition<Schema>
 	codecs?: {
-		[K in keyof Schema]?: Codec<Schema[K], StorageSchema[K]>
+		[K in keyof Schema]?: PartialObjectCodec<Schema[K], StorageSchema[K]>
 	}
 }
 
@@ -47,7 +47,7 @@ function getSchemaCodecs<
 	schema?: RuntimeSchemaDefinition<Schema>,
 ):
 	| {
-			[K in keyof Schema]?: Codec<Schema[K], StorageSchema[K]>
+			[K in keyof Schema]?: PartialObjectCodec<Schema[K], StorageSchema[K]>
 	  }
 	| undefined {
 	if (!schema) return undefined
@@ -57,7 +57,7 @@ function getSchemaCodecs<
 			.filter(([, collection]) => collection.codec)
 			.map(([name, collection]) => [name, collection.codec]),
 	) as {
-		[K in keyof Schema]?: Codec<Schema[K], StorageSchema[K]>
+		[K in keyof Schema]?: PartialObjectCodec<Schema[K], StorageSchema[K]>
 	}
 }
 

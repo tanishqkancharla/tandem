@@ -1,4 +1,4 @@
-import type { Codec } from "../utils/Codec.js"
+import type { Decoded, PartialObjectCodec } from "../utils/Codec.js"
 
 export type CollectionIdPart = string | number
 export type CollectionId =
@@ -147,7 +147,7 @@ export type CollectionOptions<
 	Record extends AnyCollectionSchema,
 	StorageValue,
 > = {
-	codec?: Codec<Record, StorageValue>
+	codec?: PartialObjectCodec<Record, StorageValue>
 	fields?: readonly (keyof Record & string)[]
 }
 
@@ -186,8 +186,9 @@ export function collectionIdsEqual(left: CollectionId, right: CollectionId) {
 export type SchemaFromCollections<
 	Collections extends Record<string, AnyCollectionDefinition>,
 > = {
-	[Name in keyof Collections &
-		string]: Collections[Name] extends CollectionDefinition<infer Record, any>
+	[
+		Name in keyof Collections & string
+	]: Collections[Name] extends CollectionDefinition<infer Record, any>
 		? Record
 		: never
 }
@@ -195,8 +196,9 @@ export type SchemaFromCollections<
 export type NamedCollections<
 	Collections extends Record<string, AnyCollectionDefinition>,
 > = {
-	readonly [Name in keyof Collections &
-		string]: Collections[Name] extends CollectionDefinition<
+	readonly [
+		Name in keyof Collections & string
+	]: Collections[Name] extends CollectionDefinition<
 		infer Record,
 		infer CollectionCodec
 	>
@@ -236,21 +238,34 @@ export const t = {
 }
 
 export function collection<
+	CollectionCodec extends PartialObjectCodec<AnyCollectionSchema, unknown>,
+>(options: {
+	codec: CollectionCodec
+	fields?: readonly (keyof Decoded<CollectionCodec> & string)[]
+}): CollectionDefinition<
+	Decoded<CollectionCodec> & {
+		id: NonNullable<Decoded<CollectionCodec>["id"]>
+	},
+	CollectionCodec
+>
+export function collection<
 	const Shape extends CollectionShape,
 	StorageValue = unknown,
 >(
 	shape: Shape,
-	options?: { codec?: Codec<RecordFromShape<Shape>, StorageValue> },
+	options?: {
+		codec?: PartialObjectCodec<RecordFromShape<Shape>, StorageValue>
+	},
 ): CollectionDefinition<
 	RecordFromShape<Shape>,
-	Codec<RecordFromShape<Shape>, StorageValue>
+	PartialObjectCodec<RecordFromShape<Shape>, StorageValue>
 >
 export function collection<
 	Record extends AnyCollectionSchema,
 	StorageValue = unknown,
 >(
 	options?: CollectionOptions<Record, StorageValue>,
-): CollectionDefinition<Record, Codec<Record, StorageValue>>
+): CollectionDefinition<Record, PartialObjectCodec<Record, StorageValue>>
 export function collection<
 	Record extends AnyCollectionSchema,
 	StorageValue = unknown,
@@ -258,8 +273,8 @@ export function collection<
 	shapeOrOptions:
 		| CollectionShape
 		| CollectionOptions<Record, StorageValue> = {},
-	options: { codec?: Codec<Record, StorageValue> } = {},
-): CollectionDefinition<Record, Codec<Record, StorageValue>> {
+	options: { codec?: PartialObjectCodec<Record, StorageValue> } = {},
+): CollectionDefinition<Record, PartialObjectCodec<Record, StorageValue>> {
 	if (isCollectionShape(shapeOrOptions)) {
 		return {
 			kind: "collection",
@@ -381,10 +396,9 @@ export type Relations<
 	Input extends RelationsInput<Schema>,
 > = {
 	readonly [SourceCollection in keyof Input & CollectionName<Schema>]: {
-		readonly [RelationName in keyof NonNullable<Input[SourceCollection]> &
-			string]: NonNullable<
-			Input[SourceCollection]
-		>[RelationName] extends RelationInput
+		readonly [
+			RelationName in keyof NonNullable<Input[SourceCollection]> & string
+		]: NonNullable<Input[SourceCollection]>[RelationName] extends RelationInput
 			? NormalizeRelation<
 					Schema,
 					SourceCollection,

@@ -1,14 +1,205 @@
+import { Gatekeeper } from "@tanishqkancharla/gatekeeper"
 import { describe, expect } from "vitest"
 import {
 	type Assert,
+	codec,
 	collection,
+	date,
 	defineRelations,
 	defineSchema,
+	partialObject,
+	string,
 	t,
+	type Decoded,
+	type Encoded,
+	type RuntimeSchemaDefinition,
+	TandemClient,
 	type TestIsEqual,
 	type SchemaToTupleSchema,
 } from "@tanishqkancharla/tandem-core"
 import { test } from "./fixtures.js"
+
+describe("partial-object collection codecs", () => {
+	test("uses the same field codecs for records and partial payloads", () => {
+		const eventCodec = partialObject({
+			id: string,
+			title: string,
+			startAt: date,
+		})
+		const startAt = new Date("2026-10-23T12:34:56.000Z")
+
+		// A complete record and a one-field payload use identical field serialization.
+		const record = { id: "event-1", title: "Planning", startAt }
+		expect(eventCodec.encode(record)).toEqual({
+			id: "event-1",
+			title: "Planning",
+			startAt: "2026-10-23T12:34:56.000Z",
+		})
+		expect(eventCodec.decode(eventCodec.encode(record))).toEqual(record)
+		expect(eventCodec.encode({ startAt })).toEqual({
+			startAt: "2026-10-23T12:34:56.000Z",
+		})
+		expect(eventCodec.decode({ startAt: "2026-10-23T12:34:56.000Z" })).toEqual({
+			startAt,
+		})
+
+		// Empty input stays empty; partial decoding does not manufacture fields or identity.
+		expect(eventCodec.encode({})).toEqual({})
+		expect(eventCodec.decode({})).toEqual({})
+
+		type _Decoded = Assert<
+			TestIsEqual<
+				Decoded<typeof eventCodec>,
+				{ id?: string; title?: string; startAt?: Date }
+			>
+		>
+		type _Encoded = Assert<
+			TestIsEqual<
+				Encoded<typeof eventCodec>,
+				{ id?: string; title?: string; startAt?: string }
+			>
+		>
+	})
+
+	test("leaves nested validation and transformations to the declared field codec", () => {
+		const interval = codec<{ start: Date; end: Date }, string[]>(
+			"interval",
+			(input) => {
+				const value = input as { start: Date; end: Date }
+				return [date.encode(value.start), date.encode(value.end)]
+			},
+			(input) => {
+				const value = input as string[]
+				return { start: date.decode(value[0]), end: date.decode(value[1]) }
+			},
+		)
+		const eventCodec = partialObject({ id: string, interval })
+		const payload = {
+			interval: {
+				start: new Date("2026-10-23T09:00:00.000Z"),
+				end: new Date("2026-10-23T11:30:00.000Z"),
+			},
+		}
+
+		// The outer codec treats a custom nested value as one field, not a recursive patch.
+		expect(eventCodec.encode(payload)).toEqual({
+			interval: ["2026-10-23T09:00:00.000Z", "2026-10-23T11:30:00.000Z"],
+		})
+		expect(eventCodec.decode(eventCodec.encode(payload))).toEqual(payload)
+
+		// Partialness at the collection level does not relax a nested codec's requirements.
+		expect(() =>
+			eventCodec.encode({ interval: { start: payload.interval.start } }),
+		).toThrow()
+		expect(() =>
+			eventCodec.decode({ interval: ["2026-10-23T09:00:00.000Z"] }),
+		).toThrow()
+		type _Nested = Assert<
+			TestIsEqual<
+				[Decoded<typeof eventCodec>["interval"]],
+				[{ start: Date; end: Date } | undefined]
+			>
+		>
+	})
+
+	test.each(["encode", "decode"] as const)(
+		"%s validates supplied fields",
+		(direction) => {
+			const eventCodec = partialObject({ id: string, title: string })
+
+			// Partial means omitted keys, not arbitrary inputs or unknown fields.
+			for (const input of [
+				null,
+				undefined,
+				[],
+				"title",
+				{ missing: "value" },
+				{ toString: "value" },
+			]) {
+				expect(() => eventCodec[direction](input)).toThrow()
+			}
+
+			// A supplied value must pass its field codec; undefined is not silently omitted.
+			for (const title of [42, undefined]) {
+				expect(() => eventCodec[direction]({ title })).toThrow()
+			}
+		},
+	)
+
+	test("requires record identity separately from partial codec values", async ({
+		logger,
+	}) => {
+		const eventCodec = partialObject({
+			id: string,
+			title: string,
+			startAt: date,
+		})
+		const schema = defineSchema({ events: collection({ codec: eventCodec }) })
+		await using gatekeeper = new Gatekeeper()
+			.add("client", () => new TandemClient({ schema, logger }))
+			.build()
+		await gatekeeper.client.ready
+		const tx = gatekeeper.client.transact()
+
+		// A payload can omit identity, but writing that payload as a record is rejected.
+		expect(eventCodec.decode({ title: "Planning" })).toEqual({
+			title: "Planning",
+		})
+		expect(() => {
+			// @ts-expect-error Exercise the record identity requirement at runtime too.
+			tx.set("events", { title: "Planning" })
+		}).toThrow()
+
+		// Other fields really are optional when the collection is inferred from its codec.
+		tx.set("events", { id: "event-1" })
+		await (
+			await gatekeeper.client.commit(tx)
+		).result
+		expect(gatekeeper.client.query({ collection: "events" })).toEqual([
+			{ id: "event-1" },
+		])
+	})
+})
+
+// Compile-time consumer contracts: partial payloads do not weaken record identity.
+function checkPartialCollectionTypes() {
+	const eventCodec = partialObject({ id: string, title: string, startAt: date })
+	const schema = defineSchema({ events: collection({ codec: eventCodec }) })
+	type Schema =
+		typeof schema extends RuntimeSchemaDefinition<infer Value> ? Value : never
+	type _Id = Assert<TestIsEqual<Schema["events"]["id"], string>>
+	type _Title = Assert<
+		TestIsEqual<[Schema["events"]["title"]], [string | undefined]>
+	>
+	type _StartAt = Assert<
+		TestIsEqual<[Schema["events"]["startAt"]], [Date | undefined]>
+	>
+
+	function checkWrites(client: TandemClient<Schema>) {
+		const tx = client.transact()
+		tx.set("events", { id: "event-1" })
+		// @ts-expect-error A record still needs identity, unlike a codec payload.
+		tx.set("events", { startAt: new Date() })
+		// @ts-expect-error The identity type comes from the declared id field codec.
+		tx.set("events", { id: 12 })
+		// @ts-expect-error Decoded field types, not storage types, reach the client API.
+		tx.set("events", { id: "event-1", startAt: "2026-10-23" })
+	}
+
+	// @ts-expect-error A collection codec must declare an id field.
+	collection({ codec: partialObject({ title: string }) })
+	// @ts-expect-error A decoded Date cannot serve as a collection identity.
+	collection({ codec: partialObject({ id: date }) })
+	collection({
+		// @ts-expect-error An arbitrary whole-record codec is not a partial-object codec.
+		codec: codec(
+			"opaque",
+			() => ({ id: "1" }),
+			() => ({ id: "1" }),
+		),
+	})
+	return checkWrites
+}
 
 function makeSchema() {
 	return defineSchema({

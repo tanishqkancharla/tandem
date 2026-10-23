@@ -85,8 +85,21 @@ export type {
 	RelationalWithOptions,
 	ScanWindow,
 } from "./query/Query.js"
-export { codec, string, literal, date, object, oneOf } from "./utils/Codec.js"
-export type { Codec, AnyCodec, Encoded, Decoded } from "./utils/Codec.js"
+export {
+	codec,
+	string,
+	literal,
+	date,
+	partialObject,
+	oneOf,
+} from "./utils/Codec.js"
+export type {
+	Codec,
+	PartialObjectCodec,
+	AnyCodec,
+	Encoded,
+	Decoded,
+} from "./utils/Codec.js"
 export {
 	Logger,
 	ConsoleLoggerSink,

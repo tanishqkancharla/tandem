@@ -3,6 +3,8 @@ import {
 	codec,
 	collection,
 	defineSchema,
+	partialObject,
+	string,
 	type LoggerApi,
 	type RemoteApi,
 	tag,
@@ -44,23 +46,15 @@ type TestsEventSchema = {
 	events: TestsEvent
 }
 
-const eventCodec = codec<TestsEvent, TestsEventStorageValue>(
-	"event",
-	(input) => {
-		const event = input as TestsEvent
-		return {
-			...event,
-			startAt: event.startAt.iso,
-		}
-	},
-	(input) => {
-		const event = input as TestsEventStorageValue
-		return {
-			...event,
-			startAt: new EventStart(event.startAt),
-		}
-	},
-)
+const eventCodec = partialObject({
+	id: string,
+	title: string,
+	startAt: codec<EventStart, string>(
+		"EventStart",
+		(input) => (input as EventStart).iso,
+		(input) => new EventStart(input as string),
+	),
+})
 
 const testsEventRuntimeSchema = defineSchema({
 	events: collection<TestsEvent, TestsEventStorageValue>({
@@ -902,13 +896,17 @@ describe("TandemClient persistence", () => {
 		const storage = makeStorage<TestsEventSchema>({
 			dbName: rng.next("failed-outbox-codec"),
 			codecs: {
-				events: codec(
-					"reject",
-					() => {
-						throw new Error("Cannot encode event")
-					},
-					(value) => value as TestsEvent,
-				),
+				events: partialObject({
+					id: string,
+					title: string,
+					startAt: codec<EventStart, string>(
+						"reject",
+						() => {
+							throw new Error("Cannot encode event")
+						},
+						(value) => new EventStart(value as string),
+					),
+				}),
 			},
 		})
 		await expect(
