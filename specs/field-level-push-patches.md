@@ -39,7 +39,7 @@ Both server application and local replay merge an update into the record visible
 
 The operation carries a partial `payload`. The schema owns serialization through one partial object codec, defined directly from field codecs. Use that same collection codec for records, confirmed bases, set values, and update payloads. No separate complete-record codec, derived update codec, or exposed codec source is needed.
 
-Phase one is committed locally: `partialObject` replaces `object`, codec-inferred collections require identity while leaving other fields optional, and IndexedDB uses the partial-object collection codec contract. Phases two through four remain planned; transaction updates, push, and replay have not changed.
+Phases one and two are committed locally. `partialObject` is the collection codec contract; storage, server push application, and replay support update operations. JSON transports encode and decode push mutations at the wire boundary; `TandemServer` applies runtime values without repeating collection codec calls. Public transaction updates still accept callbacks and produce sets; phases three and four remain planned.
 
 Field-removal semantics still need alignment. Object-owned updater methods are a possible future API, not part of this implementation.
 
@@ -90,7 +90,7 @@ await client.commit(tx)
 Use the operation itself to express field intent. The payload contains only explicitly supplied assignments, never a diff computed from two records.
 
 ```tsx
-// Proposed operation, not a current exported type.
+// Implemented protocol shape; public transaction calls change in phase three.
 const update = {
 	type: "update",
 	collection: "todos",
@@ -112,7 +112,7 @@ The merge above illustrates assignment only. If field removal is included, it ne
 Define the collection codec directly with `partialObject(fields)`. Its ordinary `encode` and `decode` methods visit supplied properties, apply their field codecs, and leave omitted properties absent. A record containing every field and an update containing one field both use this same codec. Nested values use their declared field codec; partial-object encoding does not imply deep update merging.
 
 ```tsx
-// Implemented in phase one; transaction update operations remain planned.
+// Implemented in phase one; update payload persistence is implemented in phase two.
 const eventCodec = partialObject({ id: string, title: string, startAt: date })
 
 eventCodec.encode({ id: "event-1", title: "Meeting", startAt: nextDate })
@@ -131,7 +131,7 @@ Partialness is an explicit codec contract, not a second encoding mode. Supplied 
 
 Collection serialization must satisfy this partial-safe contract. Migrate whole-record custom transformations into field codecs rather than introspecting or bypassing opaque whole-object behavior. No automatic whole-object validation is promised by this codec.
 
-Keep the existing transport boundary: `RemoteApi` carries runtime values today. A JSON transport needs appropriate payload serialization, but the sync engine must not silently substitute storage-encoded values into every remote call.
+Keep the existing transport boundary: `RemoteApi` carries runtime values. A JSON transport uses `MutationApi.codec(schema)` to encode push mutations before serialization and decode them before `server.push`. The sync engine does not substitute storage-encoded values into remote calls. This codec covers push mutations, not pull responses, authentication, or authorization.
 
 ### Future methods can produce the same operations
 
@@ -255,40 +255,55 @@ const restoredPayload = eventCodec.decode(storedPayload)
 // A transaction set still requires a record id, even though encode({}) is valid.
 ```
 
-The existing persistence scenarios put custom `EventStart` conversion in its field codec at [[f6b65ee:packages/core/test/persistence.spec.ts#L48-L57]]. Records, confirmed bases, and outbox set values still round-trip through the same collection codec. No update outbox operation exists yet.
+The existing persistence scenarios put custom `EventStart` conversion in its field codec at [[f6b65ee:packages/core/test/persistence.spec.ts#L48-L57]]. Records, confirmed bases, and outbox set values round-trip through the same collection codec. Phase one does not add an update outbox operation.
 
 Verification passes: `pnpm type-check`, `pnpm test` (99 core tests and 75 tests across the other packages, including cached Gatekeeper coverage), and `pnpm lint`. [[f6b65ee:packages/core/test/schema-api.spec.ts#L23-L202]] covers partial output inference, omitted fields, round trips, nested validation, rejected input, and collection identity. Existing persistence and replay tests remain green; concurrent field preservation needs the later operation, replay, and transaction phases.
 
-### Phase 2: Carry field intent through storage, push, server application, and replay
+### ✅ Phase 2: Carry field intent through storage, push, server application, and replay
 
 Today
 
-`MutationOp` contains only `set` and `remove`, and the same operation type describes local outbox and wire values. The IndexedDB codec handles only complete set values. Replay and server push apply whole-record operations.
+Before this phase, `MutationOp` contains only `set` and `remove`, and the same operation type describes local outbox and wire values. The IndexedDB codec handles only complete set values. Replay and server push apply whole-record operations.
 
 Proposed
 
-Add an update operation carrying a partial payload, preserving set/remove behavior. Use the same schema-owned codec to persist and restore records and update payloads, then establish the protocol and replay foundation before exposing the new application API.
+Add an update operation carrying a partial payload, preserving set/remove behavior. Use the same schema-owned codec to persist update payloads and serialize push mutations at transport boundaries. Establish the protocol and replay foundation before exposing the new application API.
 
-The new operation stores captured assignments, not an updater callback or old record. This proposed type omits the unresolved removal representation:
+```changes
+d530fc3..5556788
+```
+
+The committed [[d530fc3..5556788:packages/core/src/transaction/Transaction.ts#L99-L122]] stores captured assignments, not an updater callback or old record. Its collection name determines both the identity and payload types:
 
 ```tsx
-type UpdateOp<Record extends { id: unknown }> = {
+type UpdateMutationOp<Schema extends AnySchema> = {
 	type: "update"
-	collection: string // The actual union ties this name to its record type.
-	id: Record["id"]
-	payload: Partial<Omit<Record, "id">> & { id?: never }
-}
+} & {
+	[Collection in CollectionName<Schema>]: {
+		collection: Collection
+		id: Schema[Collection]["id"]
+		payload: Partial<Omit<Schema[Collection], "id">> & { id?: never }
+	}
+}[CollectionName<Schema>]
 
-type PendingMutation<Record extends { id: unknown }> = {
-	id: number
-	ops: (SetOp<Record> | RemoveOp<Record> | UpdateOp<Record>)[]
+type Mutation<Schema extends AnySchema> = {
+	id: MutationId
+	ops: (
+		| SetMutationOp<Schema>
+		| RemoveMutationOp<Schema>
+		| UpdateMutationOp<Schema>
+	)[]
 }
 ```
+
+Collection codecs validate and transform supplied fields during storage encoding/decoding and transport serialization/deserialization. `TandemServer` does not repeat that validation when applying runtime operations. The update operation separately forbids identity changes.
+
+Collection codecs remain optional. Without one, values pass through the mutation codec; a JSON transport needs JSON-native values or its own validation. The server still rejects non-object update payloads and identity changes, but does not validate field types. Field removal remains unresolved: accepted runtime `undefined` is an assignment, not deletion, and JSON drops it; no `unset` representation is added here.
 
 Storage and push gain one operation branch while keeping the current durable-delivery barrier:
 
 ```callstack
- createTupleCodec [[f6b65ee:packages/core/src/clientStorage/TandemClientIndexedDbStorage.ts#L64-L134]]
+ createTupleCodec [[d530fc3..5556788:packages/core/src/clientStorage/TandemClientIndexedDbStorage.ts#L64-L147]]
  └── transform outbox operations in order
 -    └── run collection codecs only for set values
 +    └── run the same collection codec for set values and update payloads
@@ -304,6 +319,7 @@ At the storage boundary, operation type selects which value to transform, not wh
 ```tsx
 function transformOutboxOperation(operation, direction, schema) {
 	const valueCodec = schema.collections[operation.collection].codec
+	if (!valueCodec) return operation
 	switch (operation.type) {
 		case "set":
 			return { ...operation, value: valueCodec[direction](operation.value) }
@@ -346,16 +362,98 @@ async function pushPending() {
 }
 ```
 
+The JSON transport encodes mutations before serialization and decodes the entire push request before calling the server. A decoding failure returns HTTP 400 `invalid-request` without applying or acknowledging any request prefix. This changes the previous JSON cast into a schema-owned deserialization step:
+
+```callstack
+ request [[d530fc3..5556788:examples/todo/apps/web/src/TodoHttpRemote.ts#L22-L53]]
+-├── JSON.stringify # serialize runtime operations directly
++├── encode mutation fields with the collection codec [[d530fc3..5556788:packages/core/src/transaction/Transaction.ts#L131-L242]]
++└── JSON.stringify # serialize encoded push mutations
+ createTodoApp [[d530fc3..5556788:examples/todo/apps/server/src/app.ts#L125-L146]]
+ ├── parse the request JSON
+ ├── validateRequest [[d530fc3..5556788:examples/todo/apps/server/src/app.ts#L33-L49]]
+-│   └── cast the request after checking its outer envelope
++│   └── decode every mutation before any server writes [[d530fc3..5556788:packages/core/src/transaction/Transaction.ts#L131-L242]]
+ └── executeRequest # pass runtime mutations to server.push
+```
+
+The exported mutation codec uses the optional collection codec for set values, update payloads, and update/remove identities. It preserves mutation IDs and operation order, rejects malformed mutation envelopes and unknown collections or operation types, and requires a valid runtime record identity after decoding:
+
+```tsx
+const mutationCodec = MutationApi.codec(schema)
+// Codec<Mutation<Schema>, unknown>; collection field codecs own the wire shape.
+
+// Client transport, before sending JSON:
+const body = JSON.stringify({
+	clientId,
+	mutations: mutations.map((mutation) => mutationCodec.encode(mutation)),
+})
+
+// Server transport, after parsing JSON and checking the outer envelope:
+const decoded = errore.try(() =>
+	request.mutations.map((mutation) => mutationCodec.decode(mutation)),
+)
+if (decoded instanceof Error) return http400({ error: "invalid-request" })
+return server.push({ clientId: request.clientId, mutations: decoded })
+```
+
+For an update, the codec transforms both the separate identity and the partial payload. The following sketch shows that branch for a configured codec; set transforms its value, and remove transforms only its identity:
+
+```tsx
+function transformUpdate(operation, direction, valueCodec) {
+	const identity = valueCodec[direction]({ id: operation.id })
+	return {
+		...operation,
+		id: identity.id,
+		payload: valueCodec[direction](operation.payload),
+	}
+}
+
+// A date field is encoded once by the sending transport and decoded once
+// by the receiving transport. Server application receives Date, not a string.
+const encoded = mutationCodec.encode({
+	id: 1,
+	ops: [
+		{
+			type: "update",
+			collection: "events",
+			id: 42,
+			payload: { startAt: nextDate },
+		},
+	],
+})
+// Example custom field codecs produce id: "event-42" and an ISO startAt.
+const runtime = mutationCodec.decode(JSON.parse(JSON.stringify(encoded)))
+// runtime.ops[0] has id: 42 and payload: { startAt: Date(...) }.
+```
+
+Wire rejection happens before server application, whereas storage encoding remains part of local checkpoint persistence. Direct in-process remotes skip the wire conversion and keep runtime values throughout:
+
+```diagram
+┌──────────────────┐     ┌───────────────────┐     ┌────────────────────┐
+│ Runtime mutation │────▶│ Encode + JSON     │────▶│ Parse + decode all │
+└──────────────────┘     └───────────────────┘     └─────────┬──────────┘
+                                                           │
+                                      ┌────────────────────┤
+                                      │ valid              │ invalid
+                           ┌──────────▼─────────┐  ┌───────▼────────────┐
+                           │ server.push        │  │ HTTP 400           │
+                           │ merges runtime ops │  │ No writes or ack   │
+                           └────────────────────┘  └────────────────────┘
+```
+
+The todo schema now supplies field codecs at [[d530fc3..5556788:examples/todo/packages/shared/src/index.ts#L13-L43]]. Its HTTP transport exercises the public mutation codec; other custom remotes can use the same boundary pattern described in [[d530fc3..5556788:docs/custom-remote.md#L48-L68]]. Pull response serialization and access control remain transport responsibilities.
+
 Keep bases as confirmed full values or explicit absence. Extend record targeting and replay in `Database` for the new operation, without changing which bases are retained or when acknowledgements prune the outbox. Persist records, bases, local operations, and the mutation counter together as today.
 
 ```callstack
- Database.applyPull [[packages/core/src/Database.ts#Database.applyPull]]
+ Database.applyPull [[d530fc3..5556788:packages/core/src/Database.ts#L337-L375]]
  ├── apply full-record server patches to confirmed bases
  ├── prune acknowledged outbox entries
  ├── restore each tracked record from its base
 -├── replay pending set/remove operations in order
 +├── replay pending set/remove/update operations in order
-+│   └── assign or remove only explicitly named fields on an existing record
++│   └── applyOp # assign supplied fields only when the record exists [[d530fc3..5556788:packages/core/src/Database.ts#L67-L89]]
  └── commit rebuilt records, bases, outbox, and cookie together
 ```
 
@@ -390,31 +488,32 @@ function applyPull(response) {
 }
 ```
 
-The server must read and merge an update within the same transaction that stores its acknowledgement. Its current operation loop stages synchronous writes; introducing an asynchronous read requires awaiting every operation in sequence. Do not use a synchronous staging callback around unawaited update promises.
+The server reads and merges an update within the same transaction that stores its acknowledgement. Before this phase, its operation loop stages synchronous writes. The implemented loop awaits every operation in sequence so an update sees earlier staged operations.
 
 ```callstack
- TandemServer.applyPush [[packages/server/src/TandemServer.ts#TandemServer.applyPush]]
+ TandemServer.applyPush [[d530fc3..5556788:packages/server/src/TandemServer.ts#L359-L408]]
  ├── skip duplicate mutation IDs and reject gaps
  ├── open the mutation transaction
--├── applyMutationOperation # stage set/remove writes synchronously [[packages/server/src/TandemServer.ts#applyMutationOperation]]
-+├── await each operation in order
-+│   └── read and merge updates against transaction-visible records
+-├── applyMutationOperation # stage set/remove writes synchronously
++├── await applyMutationOperation # preserve operation order [[d530fc3..5556788:packages/server/src/TandemServer.ts#L108-L167]]
++│   ├── reject non-object update payloads and identity changes
++│   └── TandemServerTransaction.update # merge into the current record [[packages/server/src/TandemServerTransaction.ts#TandemServerTransaction.update]]
  ├── stage the mutation acknowledgement only after successful operations
  └── commit records and acknowledgement atomically
 ```
 
 Keep the existing per-mutation atomicity: an error cannot commit part of one mutation or advance its acknowledgement. Earlier mutations in a push batch can already have committed. Push success alone still does not prune the client's outbox; only a pull acknowledgement does.
 
-After the existing duplicate and gap checks, stage operations sequentially. Expected staging failures return an error value; cancellation discards earlier writes from that mutation. The acknowledgement shares the record transaction, rather than being saved before asynchronous reads finish.
+After the existing duplicate and gap checks, operations stage sequentially. Expected staging failures return an error value and invalid input returns a protocol error object; cancellation discards earlier writes from that mutation. The acknowledgement shares the record transaction, rather than being saved before asynchronous reads finish.
 
 ```tsx
 async function applyNextMutation(clientId, mutation) {
 	// Existing caller has checked: mutation.id === lastMutationId + 1.
-	const tx = server.beginMutationTransaction()
+	const tx = openRecordAndAcknowledgementTransaction()
 	for (const operation of mutation.ops) {
 		// Updates await the current record and stage only the merged result.
-		const result = await stageServerOperation(tx, operation)
-		if (result instanceof Error) {
+		const result = await applyMutationOperation(tx, operation)
+		if (result !== undefined) {
 			await tx.cancel()
 			return result
 		}
@@ -424,7 +523,42 @@ async function applyNextMutation(clientId, mutation) {
 }
 ```
 
-Validate this foundation through storage round trips, direct push requests, and pull/replay behavior before wiring application calls to it. The custom-value fixtures already use field codecs from phase one; extend them to persist and restore partial update payloads through that same codec.
+The update branch checks the operation's payload shape and immutable identity, then uses the existing asynchronous transaction updater. Collection field validation and runtime conversion have already happened at deserialization when the caller is a wire transport. There is no validation-only codec pass in server application, and missing records remain absent:
+
+```tsx
+async function stageUpdate(tx, operation) {
+	const { payload } = operation
+	if (
+		typeof payload !== "object" ||
+		payload === null ||
+		Array.isArray(payload)
+	) {
+		return {
+			error: "invalid-request",
+			message: "Update payload must be an object",
+		}
+	}
+	if (Object.hasOwn(payload, "id")) {
+		return { error: "invalid-request", message: "Identity is not editable" }
+	}
+
+	const result = await tx
+		.update(operation.collection, operation.id, (current) => ({
+			...current,
+			...operation.payload,
+		}))
+		.catch((cause) => new TandemServerError({ operation: "push", cause }))
+	if (result instanceof Error) return result
+}
+```
+
+[[d530fc3..5556788:packages/core/test/persistence.spec.ts#L959-L1080]] exercises a reopened IndexedDB checkpoint through a real client and server. Before delivery, the client pulls a newer title and replays only its pending custom date; after delivery, the server receives the decoded `EventStart`. A later correction survives another pull, demonstrating acknowledgement pruning. The checkpoint is seeded through the storage contract because public update calls change in phase three.
+
+[[d530fc3..5556788:packages/server/test/TandemServer.spec.ts#L667-L920]] verifies ordered mixed operations, compound identity, no resurrection, duplicate retries after a later write, rollback without acknowledgement when an update read fails, and custom identity/`Date` conversion through real JSON. [[d530fc3..5556788:packages/server/test/TandemServer.types.ts#L47-L82]] checks collection-specific identity, fields, value types, and rejection of payload identity changes. [[d530fc3..5556788:packages/core/test/persistence.spec.ts#L902-L957]] covers atomic storage rejection for both set-value and update-payload codec failures.
+
+[[d530fc3..5556788:examples/todo/apps/web/e2e/remote.spec.ts#L45-L135]] exercises valid set/update delivery through the HTTP transport and bypasses the client encoder to send wrong field types, unknown fields, a null payload, and a set without identity. Each rejected request contains an earlier valid assignment; the final pull confirms that neither that assignment nor the mutation acknowledgement applied.
+
+Verification passes: `pnpm test` passes all 10 tasks, including 101 core tests and 34 server tests. `pnpm build`, `pnpm type-check`, `pnpm lint`, and formatting checks pass. `pnpm --filter @tandem/example-todo-web test:e2e` passes all 8 tests. Public partial-update calls, field removal, and the full two-client concurrency matrix remain outside this phase.
 
 ### Phase 3: Expose explicit partial updates in client and server transactions
 
@@ -624,7 +758,7 @@ Existing checkpoint durability and codec-failure tests remain controls. Run targ
 - [[f6b65ee:packages/core/src/utils/Codec.ts#L16-L152]] and [[f6b65ee:packages/core/src/schema/Schema.ts#L240-L277]]: implemented partial-object codec and collection inference.
 - [[packages/core/src/Database.ts]]: atomic mutation bookkeeping, sparse bases, and pull replay.
 - [[packages/core/src/sync/SyncEngine.ts]]: durable push barrier, serialized sync, and reconnect ordering.
-- [[packages/core/src/clientStorage/TandemClientStorage.ts]] and [[f6b65ee:packages/core/src/clientStorage/TandemClientIndexedDbStorage.ts#L32-L134]]: durable tuple contract and partial-object collection codec boundary.
+- [[packages/core/src/clientStorage/TandemClientStorage.ts]] and [[packages/core/src/clientStorage/TandemClientIndexedDbStorage.ts]]: durable tuple contract and shared record/update codec boundary.
 - [[packages/server/src/TandemServer.ts]] and [[packages/server/src/TandemServerTransaction.ts]]: server mutation ordering, atomic acknowledgement, and transaction reads.
 - [Client storage tuples](client-storage-tuples.md): background on the current durable checkpoint design.
 
