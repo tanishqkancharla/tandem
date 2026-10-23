@@ -128,8 +128,18 @@ export class TandemClient<
 	private readonly tabSession?: TabSession<Schema, Relations>
 	/** Whether this tab wants the leader connected to the remote. */
 	private wantsRemote = false
+	/** Whether the first pull from the leader has restored the shared replica. */
+	private restoredFromLeader = false
 	private readonly logger: LoggerApi
 	private readonly rng: RngApi
+
+	/**
+	 * Whether `ready` has resolved. A tab session's replica lives in memory, so
+	 * the database reports itself ready before the leader has restored it.
+	 */
+	private get isReady() {
+		return this.tabSession ? this.restoredFromLeader : this.db.isReady
+	}
 
 	constructor({
 		schema,
@@ -223,6 +233,7 @@ export class TandemClient<
 			this.wantsRemote = autoConnect
 			// Ready once the first pull from the leader restores the shared replica.
 			this.ready = this.syncEngine.connect().then(() => {
+				this.restoredFromLeader = true
 				// Like a single tab's auto-connect, a failure is logged, not thrown.
 				void this.requestRemote().catch((error: unknown) => {
 					this.logger.error({ message: "error connecting to remote", error })
@@ -298,7 +309,7 @@ export class TandemClient<
 	}
 
 	transact(): Transaction<Schema> {
-		if (!this.db.isReady) {
+		if (!this.isReady) {
 			throw new Error("Await client.ready before creating a transaction")
 		}
 		return this.db.transact()
@@ -373,7 +384,7 @@ export class TandemClient<
 	 */
 	async clear() {
 		this.logger.info({ message: "clearing database" })
-		if (!this.db.isReady) await this.ready
+		if (!this.isReady) await this.ready
 
 		if (this.tabSession) {
 			const previous = this.clientId

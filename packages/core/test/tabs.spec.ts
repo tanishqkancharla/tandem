@@ -37,6 +37,8 @@ type OpenTabOptions<Schema extends AnySchema> = Pick<
 	afterStorageCommit?: (
 		writes: Parameters<TandemClientStorageApi<Schema>["commit"]>[0],
 	) => void
+	/** Returns the tab before its first pull from the leader has restored it. */
+	awaitReady?: boolean
 }
 
 const never = () => new Promise<never>(() => {})
@@ -81,7 +83,11 @@ function createTabs<Schema extends AnySchema>({
 
 	async function open(
 		label: string,
-		{ afterStorageCommit, ...options }: OpenTabOptions<Schema> = {},
+		{
+			afterStorageCommit,
+			awaitReady = true,
+			...options
+		}: OpenTabOptions<Schema> = {},
 	): Promise<Tab<Schema>> {
 		const tab = browser.openTab()
 		let alive = true
@@ -146,7 +152,7 @@ function createTabs<Schema extends AnySchema>({
 			...options,
 		})
 		opened.push({ client, tab })
-		await client.ready
+		if (awaitReady) await client.ready
 		return {
 			client,
 			crash() {
@@ -360,6 +366,31 @@ describe("TandemClient tabs", () => {
 			expect(
 				handoffPulls.every(({ scanWindow }) => scanWindow.length > 0),
 			).toBe(true)
+		},
+	)
+
+	tabsTest(
+		"a tab refuses to transact before its first pull restores the replica",
+		async ({ tabs }) => {
+			const first = await tabs.open("tab1", { autoConnect: false })
+			const tx = first.client.transact()
+			tx.set("todos", todo("restored"))
+			await first.client.commit(tx)
+
+			// The in-memory replica is ready immediately, but holds nothing until
+			// the leader answers, so ready stays the restore barrier here too.
+			const second = await tabs.open("tab2", {
+				autoConnect: false,
+				awaitReady: false,
+			})
+			expect(() => second.client.transact()).toThrow(
+				"Await client.ready before creating a transaction",
+			)
+			await second.client.ready
+			expect(second.client.query({ collection: "todos" })).toEqual([
+				todo("restored"),
+			])
+			expect(() => second.client.transact()).not.toThrow()
 		},
 	)
 
