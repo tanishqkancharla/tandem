@@ -33,6 +33,8 @@ type Message = {
 	role: "user" | "assistant"
 	parts: UIMessage["parts"]
 	status: "streaming" | "complete" | "stopped" | "error"
+	/** Orders the thread. A reply sorts right after its user message. */
+	createdAt: number
 	/** When the server last saved the message. A stale "streaming" reply failed. */
 	updatedAt: number
 }
@@ -44,7 +46,15 @@ type ChatSchema = { messages: Message; runs: Run }
 
 const schema = defineSchema({
 	messages: collection<Message>({
-		fields: ["id", "threadId", "role", "parts", "status", "updatedAt"],
+		fields: [
+			"id",
+			"threadId",
+			"role",
+			"parts",
+			"status",
+			"createdAt",
+			"updatedAt",
+		],
 	}),
 	runs: collection<Run>({ fields: ["id", "stopRequested"] }),
 })
@@ -179,6 +189,7 @@ class ChatServer {
 			role: "assistant",
 			parts: [],
 			status: "streaming",
+			createdAt: userMessage.createdAt + 1,
 			updatedAt: Date.now(),
 		}
 		claimTx.set("messages", reply)
@@ -198,6 +209,7 @@ class ChatServer {
 		const thread = await this.tandem.query({
 			collection: "messages",
 			where: { threadId: userMessage.threadId },
+			orderBy: { createdAt: "asc" },
 		})
 		const result = streamText({
 			model: this.model,
@@ -343,7 +355,11 @@ const test = baseTest.extend<{
 			})
 			const seen: Snapshot[] = []
 			const thread = client.subscribe(
-				{ collection: "messages", where: { threadId } },
+				{
+					collection: "messages",
+					where: { threadId },
+					orderBy: { createdAt: "asc" },
+				},
 				(messages) => {
 					const reply = messages.find(({ role }) => role === "assistant")
 					if (!reply) return
@@ -369,6 +385,7 @@ const userMessage = (text: string): Message => ({
 	role: "user",
 	parts: [{ type: "text", text }],
 	status: "complete",
+	createdAt: 1,
 	updatedAt: 0,
 })
 
@@ -502,6 +519,53 @@ test("a model failure ends the reply with an error status, and clients cannot wr
 			).toHaveLength(1),
 		{ timeout: 5_000 },
 	)
+	await chat.close()
+})
+
+test("a thread reads in send order, whatever its message IDs", async ({
+	filePath,
+	viewer,
+}) => {
+	const chat = await ChatServer.start({
+		filePath,
+		model: textModel(["Ok."]),
+		saveInterval: 10,
+	})
+	const sender = await viewer(chat, "thread-1")
+	// The second message's ID sorts first, as random IDs often do.
+	for (const [id, createdAt] of [
+		["message-b", 1_000],
+		["message-a", 2_000],
+	] as const) {
+		const tx = sender.client.transact()
+		tx.set("messages", { ...userMessage(id), id, createdAt })
+		await sender.client.commit(tx)
+		await vi.waitFor(
+			() =>
+				expect(
+					sender.client.query({
+						collection: "messages",
+						where: { id: replyId(id) },
+					})[0]?.status,
+				).toBe("complete"),
+			{ timeout: 5_000 },
+		)
+	}
+
+	expect(
+		sender.client
+			.query({
+				collection: "messages",
+				where: { threadId: "thread-1" },
+				orderBy: { createdAt: "asc" },
+			})
+			.map(({ id }) => id),
+	).toEqual([
+		"message-b",
+		replyId("message-b"),
+		"message-a",
+		replyId("message-a"),
+	])
 	await chat.close()
 })
 
