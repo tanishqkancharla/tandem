@@ -51,6 +51,8 @@ const test = baseTest.extend<{
 			schema,
 			relations: {},
 			storage: new TestTandemServerStorage<ChatSchema>(),
+			// Each commit's payload goes out on its own; batching has its own tests.
+			livePokeInterval: 0,
 		})
 		await use(server)
 		await server.close()
@@ -270,7 +272,12 @@ class SharedStorage {
 
 test("after another process writes storage, appends wait for a pull that read it", async () => {
 	const storage = new SharedStorage()
-	const local = new TandemServer({ schema, relations: {}, storage })
+	const local = new TandemServer({
+		schema,
+		relations: {},
+		storage,
+		livePokeInterval: 0,
+	})
 	const other = new TandemServer({ schema, relations: {}, storage })
 	const clientId = tag<ClientId>("viewer")
 	const pokes: (PokePayload<ChatSchema> | undefined)[] = []

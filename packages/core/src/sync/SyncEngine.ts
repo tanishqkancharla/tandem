@@ -105,8 +105,9 @@ class RemoteResponseError extends errore.createTaggedError({
 export type ClientApi<Schema extends AnySchema = AnySchema> = {
 	clientId: ClientId
 	/**
-	 * Asks the client to pull. A payload is shown immediately, before that pull.
-	 * Settles when the pull the poke started has finished. Never rejects.
+	 * Asks the client to pull. A payload is shown immediately, and its pull
+	 * waits until payloads stop arriving, up to a maximum delay. Settles when a
+	 * pull that confirms the poke has finished. Never rejects.
 	 */
 	poke: (payload?: PokePayload<Schema>) => Promise<void>
 }
@@ -304,7 +305,20 @@ export type SyncEngineArgs<Schema extends AnySchema> = {
 	autoConnect?: boolean
 	logger: SyncEngine<Schema>["logger"]
 	syncInterval: number | TimerApi
+	livePullDelay: number | TimerApi
+	livePullMaxDelay: number | TimerApi
 	rng?: RngApi
+}
+
+/** Live payloads whose confirming pull waits for the stream to go quiet. */
+type DeferredPull = {
+	confirmed: PromiseWithResolvers<void>
+	/** Whether a payload arrived since the last quiet check. */
+	busy: boolean
+}
+
+function toTimer(interval: number | TimerApi): TimerApi {
+	return typeof interval === "number" ? new Timer({ interval }) : interval
 }
 
 export class SyncEngine<Schema extends AnySchema> {
@@ -313,6 +327,9 @@ export class SyncEngine<Schema extends AnySchema> {
 	private readonly remote: RemoteApi<Schema>
 	private readonly logger: LoggerApi
 	private readonly rng: RngApi
+	private readonly livePullDelay: TimerApi
+	private readonly livePullMaxDelay: TimerApi
+	private deferredPull?: DeferredPull
 
 	private disconnectFromRemote?: AsyncUnsubscribe
 	// Advances on disconnect so a connect still in flight unregisters when it resolves.
@@ -328,10 +345,9 @@ export class SyncEngine<Schema extends AnySchema> {
 		this.remote = args.remote
 		this.db = args.db
 		this.rng = args.rng ?? { randomId }
-		const timer =
-			typeof args.syncInterval === "number"
-				? new Timer({ interval: args.syncInterval })
-				: args.syncInterval
+		const timer = toTimer(args.syncInterval)
+		this.livePullDelay = toTimer(args.livePullDelay)
+		this.livePullMaxDelay = toTimer(args.livePullMaxDelay)
 
 		this.syncQueue = new TaskQueue(
 			{
@@ -383,9 +399,14 @@ export class SyncEngine<Schema extends AnySchema> {
 					// Like pulls, live records only apply while connected.
 					const live = payload && this.disconnectFromRemote
 					if (live) this.db.applyPoke(payload)
-					const pulled = this.queuePull().catch((error) => {
-						this.logger.error({ message: "error pulling from remote", error })
-					})
+					const pulled = live
+						? this.deferPull()
+						: this.queuePull().catch((error) => {
+								this.logger.error({
+									message: "error pulling from remote",
+									error,
+								})
+							})
 					if (!live) return pulled
 					// The pull can fail before saving, so wait for the live checkpoint
 					// too. The storage subscriber already logs a failed save.
@@ -446,7 +467,50 @@ export class SyncEngine<Schema extends AnySchema> {
 		})
 	}
 
+	/**
+	 * Pulls once live payloads stop arriving for `livePullDelay`, or once
+	 * `livePullMaxDelay` has passed since the first of them. Any pull that
+	 * starts sooner confirms them instead.
+	 */
+	private deferPull(): Promise<void> {
+		if (this.deferredPull) {
+			this.deferredPull.busy = true
+			return this.deferredPull.confirmed.promise
+		}
+		const deferred: DeferredPull = {
+			confirmed: Promise.withResolvers(),
+			busy: false,
+		}
+		this.deferredPull = deferred
+		const pull = () => {
+			if (this.deferredPull !== deferred) return
+			// pull() settles the deferral whatever the outcome.
+			this.queuePull().catch((error) => {
+				this.logger.error({ message: "error pulling from remote", error })
+			})
+		}
+		const waitForQuiet = () => {
+			void this.livePullDelay.waitForNextTick().then(() => {
+				if (!deferred.busy) return pull()
+				deferred.busy = false
+				waitForQuiet()
+			})
+		}
+		waitForQuiet()
+		void this.livePullMaxDelay.waitForNextTick().then(pull)
+		return deferred.confirmed.promise
+	}
+
 	private async pull() {
+		// The request reads every commit whose payload already arrived.
+		const deferred = this.deferredPull
+		this.deferredPull = undefined
+		using settle = new errore.DisposableStack()
+		settle.defer(() => deferred?.confirmed.resolve())
+		return await this.pullFromRemote()
+	}
+
+	private async pullFromRemote() {
 		if (!this.disconnectFromRemote) {
 			return
 		}

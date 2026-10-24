@@ -44,6 +44,18 @@ export type TandemClientArgs<
 	 * @default 150
 	 */
 	syncInterval?: number | TimerApi
+	/**
+	 * Milliseconds without new live payloads before the client pulls to
+	 * confirm them, or a host-provided timer.
+	 * @default 200
+	 */
+	livePullDelay?: number | TimerApi
+	/**
+	 * Milliseconds after a live payload by which the client pulls even while
+	 * payloads keep arriving, or a host-provided timer.
+	 * @default 1000
+	 */
+	livePullMaxDelay?: number | TimerApi
 	autoConnect?: boolean
 }
 
@@ -83,6 +95,8 @@ export class TandemClient<
 		autoConnect = true,
 		rng,
 		syncInterval = 150,
+		livePullDelay = 200,
+		livePullMaxDelay = 1000,
 	}: TandemClientArgs<Schema, Relations>) {
 		this.rng = rng ?? { randomId }
 		this.initialClientId = this.rng.randomId() as ClientId
@@ -106,6 +120,8 @@ export class TandemClient<
 					logger: this.logger.scope("sync-engine"),
 					rng: this.rng,
 					syncInterval,
+					livePullDelay,
+					livePullMaxDelay,
 				})
 			: undefined
 

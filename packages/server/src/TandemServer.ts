@@ -1,7 +1,6 @@
 import type {
 	AnySchema,
 	ClientApi,
-	PokeAppendOp,
 	ClientId,
 	CollectionName,
 	Cookie,
@@ -22,6 +21,7 @@ import type {
 	RuntimeSchemaDefinition,
 	ScanWindow,
 	SchemaToTupleSchema,
+	TimerApi,
 } from "@tanishqkancharla/tandem-core"
 import { tag, unreachable } from "@tanishqkancharla/tandem-core"
 import {
@@ -46,6 +46,7 @@ import type {
 	ReadOnlyAsyncTupleDatabaseClientApi,
 	WriteOps,
 } from "tuple-database"
+import { LivePayloadBuffer } from "./LivePayloadBuffer.js"
 import { TandemServerError } from "./TandemServerError.js"
 import {
 	type AppliedAppend,
@@ -65,6 +66,12 @@ export type TandemServerArgs<
 	relations: Relations
 	storage: TandemServerStorageApi<NoInfer<Schema>>
 	rng?: RngApi
+	/**
+	 * Milliseconds, or a host-provided timer, during which a client's live
+	 * payloads merge after one is sent. `0` sends every commit's payload.
+	 * @default 50
+	 */
+	livePokeInterval?: number | TimerApi
 }
 
 export type TandemServerSubscription<Result> = {
@@ -96,6 +103,10 @@ type SyncClientState<Schema extends AnySchema> = {
 	scanWindow?: ScanWindow<Schema>
 	/** Record IDs sent in poke payloads since the latest pull. */
 	liveRecordIds: Set<string>
+	/** Changes for the client's next live payload. */
+	buffer: LivePayloadBuffer<Schema>
+	/** Whether a payload went out this interval, so changes wait for its end. */
+	throttled: boolean
 }
 
 /** How many recently written records keep their exact last write. */
@@ -195,6 +206,7 @@ export class TandemServer<
 	private readonly syncClients = new Map<ClientId, SyncClientState<Schema>>()
 	private readonly tupleDb: AsyncTupleDatabaseClient<TandemTuple<Schema>>
 	private readonly rng?: RngApi
+	private readonly livePokeTimer?: TimerApi
 	private readonly unsubscribeStorage?: () => void
 	// Revisions are per instance, like cookies; a restart starts a new sequence.
 	private readonly instanceId: string
@@ -214,6 +226,16 @@ export class TandemServer<
 	constructor(args: TandemServerArgs<Schema, Relations>) {
 		this.relations = args.relations
 		this.rng = args.rng
+		const livePokeInterval = args.livePokeInterval ?? 50
+		this.livePokeTimer =
+			typeof livePokeInterval !== "number"
+				? livePokeInterval
+				: livePokeInterval > 0
+					? {
+							waitForNextTick: () =>
+								new Promise((resolve) => setTimeout(resolve, livePokeInterval)),
+						}
+					: undefined
 		this.instanceId = args.rng?.randomId() ?? crypto.randomUUID()
 		const database = new AsyncTupleDatabase(
 			tandemStorageToTupleDatabaseStorage(args.storage),
@@ -376,6 +398,8 @@ export class TandemServer<
 		const created: SyncClientState<Schema> = {
 			pokes: new Set(),
 			liveRecordIds: new Set(),
+			buffer: new LivePayloadBuffer(),
+			throttled: false,
 		}
 		this.syncClients.set(clientId, created)
 		return created
@@ -494,6 +518,8 @@ export class TandemServer<
 			? (JSON.parse(serialized) as ScanWindow<Schema>)
 			: undefined
 		client.liveRecordIds = new Set()
+		// The pull returns every buffered change.
+		client.buffer.clear()
 
 		return {
 			cookie: nextCookie,
@@ -600,7 +626,10 @@ export class TandemServer<
 		}
 	}
 
-	/** Pokes each client with the changed records inside its view. */
+	/**
+	 * Buffers the changed records inside each client's view, and pokes clients
+	 * that must pull now.
+	 */
 	private async emitLivePokes(changes: CommitChanges<Schema>) {
 		for (const [clientId, client] of this.syncClients) {
 			if (!client.pokes.size) continue
@@ -609,35 +638,39 @@ export class TandemServer<
 				this.pokeClient(client)
 				continue
 			}
-			const payload = await this.readLivePayload(
+			const buffered = await this.bufferLiveChanges(
 				client,
 				client.scanWindow,
 				changes,
 			)
-			if (payload instanceof Error) {
+			if (buffered instanceof Error) {
 				// The client still pulls, so only the live update is lost.
-				console.error(payload)
+				console.error(buffered)
+				this.flushLivePayload(client)
 				this.pokeClient(client)
 				continue
 			}
-			if (payload) this.pokeClient(client, payload)
-			// An offset shifts which records are in view when one before it changes,
-			// even one the client never saw, so let the client pull.
-			else if (
+			// The pusher pulls its acknowledgement now, not when live payloads go
+			// quiet. An offset shifts which records are in view when one before it
+			// changes, even one the client never saw, so let the client pull.
+			if (
 				clientId === changes.pusher ||
 				this.touchesOffsetWindow(client.scanWindow, changes)
-			)
+			) {
+				this.flushLivePayload(client)
 				this.pokeClient(client)
+				continue
+			}
+			if (buffered) this.scheduleLivePayload(client)
 		}
 	}
 
-	private async readLivePayload(
+	/** Merges a commit's changes inside the client's view into its next payload. */
+	private async bufferLiveChanges(
 		client: SyncClientState<Schema>,
 		scanWindow: ScanWindow<Schema>,
 		changes: CommitChanges<Schema>,
-	): Promise<
-		TandemServerError | InvalidScanWindowError | PokePayload<Schema> | undefined
-	> {
+	): Promise<TandemServerError | InvalidScanWindowError | boolean> {
 		const inView = await selectScanWindowRecordsAsync<Schema, Relations>(
 			this.recordDb,
 			this.relations,
@@ -646,46 +679,74 @@ export class TandemServer<
 		).catch((cause) => new TandemServerError({ operation: "poke", cause }))
 		if (inView instanceof Error) return inView
 
-		// Only name records the client already has; others must stay invisible.
-		const known = (id: string) =>
+		// Only name records the client has, or will have from its next payload;
+		// others must stay invisible.
+		const sent = (id: string) =>
 			client.syncedRecords?.has(id) || client.liveRecordIds.has(id)
-		const set: PatchSetOp<Schema>[] = []
-		const append: PokeAppendOp<Schema>[] = []
+		const known = (id: string) => sent(id) || client.buffer.carries(id)
+		const inViewIds = new Set<string>()
 		for (const { collection, value } of inView) {
 			const id = recordId({ collection, id: value.id })
+			inViewIds.add(id)
+			const op = { collection, value } as PatchSetOp<Schema>
 			const appended = changes.append.get(id)
-			if (!appended || !known(id)) {
-				set.push({ collection, value } as PatchSetOp<Schema>)
-				continue
-			}
-			for (const field of appended.fields)
-				append.push({
-					collection: appended.collection,
-					id: appended.id,
-					...field,
-					after: appended.after,
-				} as PokeAppendOp<Schema>)
+			client.buffer.add(
+				changes.revision,
+				id,
+				appended && known(id)
+					? {
+							type: "append",
+							op,
+							fields: appended.fields,
+							after: appended.after,
+						}
+					: { type: "set", op },
+			)
 		}
-		const sentIds = new Set([
-			...set.map((op) => recordId(scanWindowRecordToKey(op))),
-			...append.map((op) => recordId(op)),
-		])
 		const leftView = changes.set
 			.map(scanWindowRecordToKey)
-			.filter((key) => !sentIds.has(recordId(key)))
+			.filter((key) => !inViewIds.has(recordId(key)))
 		const remove = [...changes.remove, ...leftView].filter((key) =>
 			known(recordId(key)),
 		)
-		if (!set.length && !remove.length && !append.length) return
+		for (const op of remove) {
+			const id = recordId(op)
+			// A record the client never received leaves without a trace.
+			if (sent(id))
+				client.buffer.add(changes.revision, id, { type: "remove", op })
+			else client.buffer.forget(id)
+		}
+		return inViewIds.size > 0 || remove.length > 0
+	}
 
-		for (const key of remove) client.liveRecordIds.delete(recordId(key))
-		for (const id of sentIds) client.liveRecordIds.add(id)
-		return {
-			revision: changes.revision,
-			...(set.length ? { set } : {}),
-			...(remove.length ? { remove } : {}),
-			...(append.length ? { append } : {}),
-		} as PokePayload<Schema>
+	/**
+	 * Sends a client's buffered changes at once if it has had no payload this
+	 * interval, and otherwise when the interval ends.
+	 */
+	private scheduleLivePayload(client: SyncClientState<Schema>) {
+		if (client.throttled) return
+		this.flushLivePayload(client)
+		if (!this.livePokeTimer) return
+		client.throttled = true
+		const timer = this.livePokeTimer
+		const endInterval = () => {
+			if (this.closed) return
+			if (client.buffer.isEmpty) {
+				client.throttled = false
+				return
+			}
+			this.flushLivePayload(client)
+			void timer.waitForNextTick().then(endInterval)
+		}
+		void timer.waitForNextTick().then(endInterval)
+	}
+
+	private flushLivePayload(client: SyncClientState<Schema>) {
+		const live = client.buffer.take()
+		if (!live) return
+		for (const id of live.removed) client.liveRecordIds.delete(id)
+		for (const id of live.carried) client.liveRecordIds.add(id)
+		this.pokeClient(client, live.payload)
 	}
 
 	private touchesOffsetWindow(
@@ -699,7 +760,10 @@ export class TandemServer<
 	}
 
 	private emitPokes() {
-		for (const client of this.syncClients.values()) this.pokeClient(client)
+		for (const client of this.syncClients.values()) {
+			this.flushLivePayload(client)
+			this.pokeClient(client)
+		}
 	}
 
 	private pokeClient(

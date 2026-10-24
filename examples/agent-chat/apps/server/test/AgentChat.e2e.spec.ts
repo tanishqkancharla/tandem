@@ -399,7 +399,7 @@ const tokens = [
 	"viewer.",
 ]
 
-test("every viewer shows every saved snapshot of a streamed reply, in order", async ({
+test("every viewer shows a streamed reply moving forward through its saved snapshots", async ({
 	filePath,
 	viewer,
 }) => {
@@ -416,15 +416,27 @@ test("every viewer shows every saved snapshot of a streamed reply, in order", as
 	await sender.client.commit(tx)
 
 	const final = { text: tokens.join(""), status: "complete" }
-	await vi.waitFor(() => expect(chat.saved.at(-1)).toEqual(final), {
-		timeout: 5_000,
-	})
+	await vi.waitFor(
+		() => {
+			expect(sender.seen.at(-1)).toEqual(final)
+			expect(friend.seen.at(-1)).toEqual(final)
+		},
+		{ timeout: 5_000 },
+	)
 	await chat.close()
 
-	// Pulls lag behind saves, yet neither viewer skips a save or moves back.
+	// Pulls lag behind saves, yet each viewer only moves forward through the
+	// server's saves, which the server may merge, and ends at the last one.
 	expect(chat.saved.length).toBeGreaterThan(3)
-	expect(sender.seen).toEqual(chat.saved)
-	expect(friend.seen).toEqual(chat.saved)
+	for (const { seen } of [sender, friend]) {
+		const indexes = seen.map((snapshot) =>
+			chat.saved.findIndex(
+				(saved) => JSON.stringify(saved) === JSON.stringify(snapshot),
+			),
+		)
+		expect(indexes).not.toContain(-1)
+		expect(indexes).toEqual([...indexes].sort((a, b) => a - b))
+	}
 })
 
 test("the stop button aborts the reply through a client-owned run record", async ({

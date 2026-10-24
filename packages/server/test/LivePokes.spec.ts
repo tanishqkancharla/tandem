@@ -60,6 +60,8 @@ const test = baseTest.extend<{
 			schema,
 			relations,
 			storage: new TestTandemServerStorage<ChatSchema>(),
+			// Each commit's payload goes out on its own; batching has its own tests.
+			livePokeInterval: 0,
 		})
 		await use(server)
 		await server.close()
