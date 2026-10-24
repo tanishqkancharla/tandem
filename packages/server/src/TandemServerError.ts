@@ -1,6 +1,7 @@
 import * as errore from "errore"
 
 export type TandemServerOperation =
+	| "after"
 	| "cancel"
 	| "close"
 	| "commit"

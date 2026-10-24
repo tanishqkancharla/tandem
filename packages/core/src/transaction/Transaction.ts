@@ -19,7 +19,8 @@ import { collectionIdToTuple } from "../schema/Schema.js"
 import type { EncodedQuery, ScanWindow } from "../query/Query.js"
 import type { Tagged } from "../utils/typeUtils.js"
 import { codec as createCodec, type Codec } from "../utils/Codec.js"
-import { isObject } from "../utils/objectUtils.js"
+import { isObject, isString } from "../utils/objectUtils.js"
+import type { MutatorCall } from "../mutator/Mutator.js"
 
 // Namespace-wide reconciliation handles records from any collection in Schema.
 // Public collection methods below retain collection-specific record and ID types.
@@ -36,6 +37,12 @@ export type TupleClientBase<Schema extends AnySchema> = {
 export type TupleClientOutbox<Schema extends AnySchema> = {
 	key: [MutationId]
 	value: MutationOp<Schema>[]
+}
+
+/** The mutator call behind a pending mutation, kept beside its recorded operations. */
+export type TupleClientMutator = {
+	key: [MutationId]
+	value: MutatorCall
 }
 
 type CollectionTupleKey<
@@ -119,6 +126,11 @@ export type MutationId = Tagged<"MutationId", number>
 export type Mutation<Schema extends AnySchema> = {
 	ops: MutationOp<Schema>[]
 	id: MutationId
+	/**
+	 * Set for a named mutation. The server runs the mutator with these
+	 * arguments and ignores `ops`, which the client sends empty.
+	 */
+	mutator?: MutatorCall
 }
 
 /** @internal */
@@ -158,6 +170,14 @@ export namespace MutationApi {
 			) {
 				return new MutationCodecInputError({
 					detail: "expected an id and operations",
+				})
+			}
+			if (
+				input.mutator !== undefined &&
+				(!isObject(input.mutator) || !isString(input.mutator.name))
+			) {
+				return new MutationCodecInputError({
+					detail: "expected a mutator name",
 				})
 			}
 			const ops: Record<string, unknown>[] = []
@@ -336,6 +356,13 @@ export class Transaction<Schema extends AnySchema> {
 		return this.tupleDbTx.subspace(["base"]) as unknown as TupleTransactionApi<
 			TupleClientBase<Schema>
 		>
+	}
+
+	/** @internal */
+	get mutators() {
+		return this.tupleDbTx.subspace([
+			"mutator",
+		]) as unknown as TupleTransactionApi<TupleClientMutator>
 	}
 
 	/** @internal */

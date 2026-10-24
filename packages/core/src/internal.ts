@@ -12,3 +12,4 @@ export {
 	UpdatePayloadError,
 	validateUpdatePayload,
 } from "./transaction/Transaction.js"
+export { MutatorArgsError, validateMutatorArgs } from "./mutator/Mutator.js"

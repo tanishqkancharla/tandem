@@ -95,6 +95,7 @@ function createTupleCodec<Schema extends AnySchema>(
 				}
 			}
 			case "replica":
+			case "mutator":
 				return tuple.value
 			case "outbox":
 				return (tuple.value as MutationOp<Schema>[]).map((op) => {

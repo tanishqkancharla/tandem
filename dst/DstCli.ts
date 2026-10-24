@@ -96,18 +96,22 @@ function todos(list: readonly DstTodo[]): string {
 }
 
 export function describeViolation(violation: DstViolation): string {
-	if (violation.kind === "movedBackwards") {
-		return [
-			`${violation.client} moved ${violation.id} backwards at step ${violation.step}`,
-			`  shown:    ${violation.shown?.text ?? "(absent)"}`,
-			`  previous: ${violation.previous?.text ?? "(absent)"}`,
-		].join("\n")
-	}
-	return [
-		`${violation.client} differs from the server after settlement`,
-		`  expected: ${todos(violation.expected)}`,
-		`  actual:   ${todos(violation.actual)}`,
-	].join("\n")
+	return matchBy(violation, "kind", {
+		movedBackwards: ({ client, id, step, shown, previous }) =>
+			[
+				`${client} moved ${id} backwards at step ${step}`,
+				`  shown:    ${shown?.text ?? "(absent)"}`,
+				`  previous: ${previous?.text ?? "(absent)"}`,
+			].join("\n"),
+		effectRepeated: ({ clientId, mutationId }) =>
+			`the after effect of ${clientId} mutation ${mutationId} ran twice`,
+		clientState: ({ client, expected, actual }) =>
+			[
+				`${client} differs from the server after settlement`,
+				`  expected: ${todos(expected)}`,
+				`  actual:   ${todos(actual)}`,
+			].join("\n"),
+	})
 }
 
 /** A Markdown summary of a sweep, for a CI job summary. */

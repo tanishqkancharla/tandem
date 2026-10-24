@@ -8,6 +8,7 @@ import {
 	type ClientApi,
 	type PokePayload,
 	collection,
+	defineMutators,
 	defineSchema,
 	Logger,
 	type RemoteApi,
@@ -21,6 +22,7 @@ import {
 	unreachable,
 } from "@tanishqkancharla/tandem-core"
 import {
+	type ServerMutators,
 	TandemServer,
 	type TandemServerStorageApi,
 	type TandemTuple,
@@ -56,6 +58,63 @@ export const dstSchemaDefinition = defineSchema({
 /** Records only the server writes, as an agent's reply would be. */
 export const serverOwnedIds = ["reply-1", "reply-2"]
 
+/**
+ * Raises a todo's priority by one. Replaying a recorded update would keep the
+ * client's value, so two concurrent bumps only both count if the server runs
+ * the mutator.
+ */
+export const dstMutators = defineMutators(dstSchemaDefinition, {
+	bumpPriority: {
+		args: (input: unknown) => input as { id: string },
+		run: async (tx, { id }) => {
+			const todo = await tx.get("todos", id)
+			if (!todo) throw new Error(`No todo ${id}`)
+			await tx.update("todos", id, { priority: todo.priority + 1 })
+		},
+	},
+})
+
+/** The server's `after` effects, keyed by client and mutation. */
+class DstEffects {
+	readonly counts = new Map<string, number>()
+	repeated: { clientId: string; mutationId: number } | undefined
+
+	record(clientId: string, mutationId: number) {
+		const key = JSON.stringify([clientId, mutationId])
+		const count = (this.counts.get(key) ?? 0) + 1
+		this.counts.set(key, count)
+		if (count > 1) this.repeated ??= { clientId, mutationId }
+	}
+}
+
+/**
+ * The server refuses bumps of its own records and of done todos, a rule the
+ * client does not know, so some bumps roll back.
+ */
+function dstServerMutators(
+	server: TandemServer<DstSchema, {}>,
+	effects: DstEffects,
+): ServerMutators<DstSchema, {}> {
+	return server.serverMutators(dstMutators, {
+		bumpPriority: async (tx, { id }, ctx) => {
+			if (serverOwnedIds.includes(id))
+				throw new Error(`Only the server writes ${id}`)
+			const todo = await tx.get("todos", id)
+			if (!todo) throw new Error(`No todo ${id}`)
+			if (todo.done) throw new Error(`Todo ${id} is done`)
+			await tx.update("todos", id, { priority: todo.priority + 1 })
+			ctx.after(() => effects.record(ctx.clientId, ctx.mutationId))
+		},
+	})
+}
+
+/** Exposes the mutator as a method, so Gatekeeper gates it like `commit`. */
+class DstClient extends TandemClient<DstSchema, {}, typeof dstMutators> {
+	bumpPriority(id: string): Promise<void> {
+		return this.mutate.bumpPriority({ id })
+	}
+}
+
 class InMemoryServerStorage implements TandemServerStorageApi<DstSchema> {
 	private readonly memory = new InMemoryTupleStorage()
 
@@ -89,7 +148,8 @@ class InMemoryServerStorage implements TandemServerStorageApi<DstSchema> {
  * event owned by that client, so the run can deliver, delay, or drop it.
  */
 function remoteWithPokeEvents(
-	server: RemoteApi<DstSchema>,
+	server: TandemServer<DstSchema, {}>,
+	mutators: ServerMutators<DstSchema, {}>,
 	events: GatekeeperEvents,
 ): RemoteApi<DstSchema> {
 	let poke: ClientApi<DstSchema>["poke"] = () => Promise.resolve()
@@ -109,7 +169,7 @@ function remoteWithPokeEvents(
 				},
 			})
 		},
-		push: (args) => server.push(args),
+		push: (args) => server.push(roundTrip(args), { mutators, allowOps: true }),
 		pull: (args) => server.pull(args),
 	}
 }
@@ -185,6 +245,13 @@ export type DstViolation =
 			expected: DstTodo[]
 			actual: DstTodo[]
 	  }
+	/** A server `after` effect ran twice for one mutation, as a retried push could cause. */
+	| {
+			kind: "effectRepeated"
+			step: number
+			clientId: string
+			mutationId: number
+	  }
 	/**
 	 * A client showed a server-owned record older than one it showed before,
 	 * or a value the server never had.
@@ -237,6 +304,13 @@ export type DstTraceRecord =
 			mutationId: number
 			id: string
 	  }
+	| {
+			type: "bump"
+			step: number
+			client: DstClientName
+			mutationId: number
+			id: string
+	  }
 	| ({ type: "advance"; step: number } & DstBoundary)
 	| ({ type: "drop"; step: number; fault: DstFaultKind } & DstBoundary)
 	| { type: "serverSet"; step: number; item: DstTodo }
@@ -269,6 +343,8 @@ export type DstIntent =
 			payload: Partial<Omit<DstTodo, "id">>
 	  }
 	| { type: "remove"; client: DstClientName; id: string }
+	/** The client calls the bumpPriority mutator. */
+	| { type: "bump"; client: DstClientName; id: string }
 	/** The server writes on its own, as an agent saving its reply would. */
 	| { type: "serverSet"; item: DstTodo }
 	| { type: "serverRemove"; id: string }
@@ -319,6 +395,7 @@ export class DstWorld implements AsyncDisposable {
 	private constructor(
 		private readonly server: TandemServer<DstSchema, {}>,
 		private readonly storage: InMemoryServerStorage,
+		private readonly effects: DstEffects,
 		private readonly harness: DstHarness,
 	) {}
 
@@ -330,14 +407,16 @@ export class DstWorld implements AsyncDisposable {
 			storage,
 			rng: SimPrng.idSource(seed, "server"),
 		})
+		const effects = new DstEffects()
 		let world: DstWorld | undefined
 		const harness = buildHarness({
 			server,
+			mutators: dstServerMutators(server, effects),
 			// A restart runs the factory again with the next generation's ids.
 			idSource: (label) =>
 				SimPrng.idSource(seed, `${label}.${world?.generations[label] ?? 0}`),
 		})
-		world = new DstWorld(server, storage, harness)
+		world = new DstWorld(server, storage, effects, harness)
 		for (const name of clientNames) await world.boot(name)
 		await harness.activateGates()
 		return world
@@ -375,6 +454,8 @@ export class DstWorld implements AsyncDisposable {
 			case "update":
 			case "remove":
 				return this.write(step, intent)
+			case "bump":
+				return this.bump(step, intent)
 			case "serverSet":
 			case "serverRemove":
 				return this.writeOnServer(step, intent)
@@ -489,8 +570,12 @@ export class DstWorld implements AsyncDisposable {
 		const client = clientNames.find(
 			(name) => JSON.stringify(states[name]) !== JSON.stringify(states.server),
 		)
+		const repeated = this.effects.repeated
 		const violation: DstViolation | undefined =
 			this.orderViolation ??
+			(repeated
+				? { kind: "effectRepeated", step: this.lastStep, ...repeated }
+				: undefined) ??
 			(client
 				? {
 						kind: "clientState",
@@ -547,6 +632,21 @@ export class DstWorld implements AsyncDisposable {
 		// wait on another held call. Its call shows up in pending() then.
 		this.inFlight.push(client.commit(tx))
 		return { ...intent, step, mutationId }
+	}
+
+	private bump(
+		step: number,
+		intent: Extract<DstIntent, { type: "bump" }>,
+	): DstTraceRecord {
+		const mutationId = (this.writeCounts.get(intent.client) ?? 0) + 1
+		this.writeCounts.set(intent.client, mutationId)
+		this.inFlight.push(this.harness[intent.client].bumpPriority(intent.id))
+		return { ...intent, step, mutationId }
+	}
+
+	/** How many `after` effects the server ran. */
+	get effectCount(): number {
+		return [...this.effects.counts.values()].reduce((sum, n) => sum + n, 0)
 	}
 
 	private writeOnServer(
@@ -613,9 +713,11 @@ function boundaryOf(call: DstPendingCall): DstBoundary {
 
 function buildHarness({
 	server,
+	mutators,
 	idSource,
 }: {
 	server: TandemServer<DstSchema, {}>
+	mutators: ServerMutators<DstSchema, {}>
 	idSource: (label: DstClientName) => RngApi
 }) {
 	const logger = new Logger({ sinks: [] })
@@ -625,7 +727,8 @@ function buildHarness({
 		timer: TimerApi,
 		storage: TandemClientStorageApi<DstSchema>,
 	) => {
-		const client = new TandemClient<DstSchema>({
+		const client = new DstClient({
+			mutators: dstMutators,
 			remote,
 			clientStorage: storage,
 			schema: dstSchemaDefinition,
@@ -650,7 +753,7 @@ function buildHarness({
 		.add("client1", ({ server, client1Timer, client1Storage }, { events }) =>
 			createClient(
 				"client1",
-				remoteWithPokeEvents(server, events),
+				remoteWithPokeEvents(server, mutators, events),
 				client1Timer,
 				client1Storage,
 			),
@@ -658,7 +761,7 @@ function buildHarness({
 		.add("client2", ({ server, client2Timer, client2Storage }, { events }) =>
 			createClient(
 				"client2",
-				remoteWithPokeEvents(server, events),
+				remoteWithPokeEvents(server, mutators, events),
 				client2Timer,
 				client2Storage,
 			),

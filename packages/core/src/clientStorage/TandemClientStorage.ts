@@ -7,6 +7,7 @@ import type {
 } from "../schema/Schema.js"
 import type { ClientId, Cookie } from "../sync/SyncEngine.js"
 import type { Mutation, MutationId } from "../transaction/Transaction.js"
+import type { MutatorCall } from "../mutator/Mutator.js"
 import { isEqual } from "../utils/objectUtils.js"
 
 export type TandemClientBase<Record> = {
@@ -38,6 +39,10 @@ export type TandemClientTuple<Schema extends AnySchema> =
 	| {
 			key: ["outbox", MutationId]
 			value: Mutation<Schema>["ops"]
+	  }
+	| {
+			key: ["mutator", MutationId]
+			value: MutatorCall
 	  }
 
 export interface TandemClientStorageApi<Schema extends AnySchema> {

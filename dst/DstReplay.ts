@@ -141,6 +141,7 @@ function cannotApply(
 		case "set":
 		case "update":
 		case "remove":
+		case "bump":
 			return world.writers.includes(record.client)
 				? undefined
 				: `${record.client} cannot take writes`
@@ -170,7 +171,8 @@ function intentOf(record: DstTraceRecord): DstIntent {
 				payload: record.payload,
 			}
 		case "remove":
-			return { type: "remove", client: record.client, id: record.id }
+		case "bump":
+			return { type: record.type, client: record.client, id: record.id }
 		case "serverSet":
 			return { type: "serverSet", item: record.item }
 		case "serverRemove":

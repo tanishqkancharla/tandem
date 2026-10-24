@@ -46,6 +46,8 @@ const maxCallsInFlight = 4
 const mutateRate = 0.35
 /** Share of new writes the server makes itself rather than a client. */
 const serverWriteRate = 0.4
+/** Share of a client's edits that call the bumpPriority mutator. */
+const bumpRate = 0.3
 /** Chance per step that a crashed client restarts. */
 const restartRate = 0.25
 const poolOfIds = ["item-1", "item-2", "item-3"]
@@ -136,6 +138,7 @@ export class DstSimulation {
 			if (todos.length > 0 && rng.boolean(0.5)) {
 				// Target the local view so updates carry intent, not mostly missing-record no-ops.
 				const todo = rng.pick(todos)
+				if (rng.boolean(bumpRate)) return { type: "bump", client, id: todo.id }
 				const text = `Updated ${todo.id} (rev ${step})`
 				const done = !todo.done
 				const priority = rng.int(1, 5)
