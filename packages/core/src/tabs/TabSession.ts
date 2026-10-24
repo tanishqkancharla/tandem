@@ -292,7 +292,8 @@ export class TabSession<
 			result: Promise.withResolvers<TabResult<Schema>>(),
 			saved: Promise.withResolvers<TabResult<Schema>>(),
 		}
-		if (this.closed || this.leadError) {
+		// A tab that failed to lead can still join a tab that leads after it.
+		if (this.closed || (this.leaderId === undefined && this.leadError)) {
 			const result = {
 				error: "unavailable",
 				message: this.closed ? "Tab session closed" : String(this.leadError),

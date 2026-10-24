@@ -89,6 +89,8 @@ function createTabs<Schema extends AnySchema>({
 		/** How many storage commits carrying `failingKey` fail before writing. */
 		failedWrites: 0,
 		failingKey: "tab-write" as "tab-write" | "session",
+		/** How many storage scans, which a new leader runs to load, fail. */
+		failedScans: 0,
 	}
 	const heldViews: (() => void)[] = []
 	const heldAnnouncements: { name: string; message: unknown }[] = []
@@ -113,7 +115,14 @@ function createTabs<Schema extends AnySchema>({
 			get codecs() {
 				return storage.codecs
 			},
-			scan: (args) => (alive ? storage.scan(args) : never()),
+			scan: (args) => {
+				if (!alive) return never()
+				if (storageFaults.failedScans > 0) {
+					storageFaults.failedScans -= 1
+					return Promise.reject(new Error("Storage is unavailable"))
+				}
+				return storage.scan(args)
+			},
 			commit: async (writes) => {
 				if (!alive) return never()
 				if (
@@ -734,6 +743,29 @@ describe("TandemClient tabs", () => {
 			await expect
 				.poll(() => tabs.remote.disconnected)
 				.toBeGreaterThan(disconnected)
+		},
+	)
+
+	tabsTest(
+		"a tab that failed to lead joins the tab that leads after it",
+		async ({ tabs, server }) => {
+			// The first tab cannot load storage, so it gives up leading.
+			tabs.storageFaults.failedScans = 1
+			const first = await tabs.open("tab1", { awaitReady: false })
+			await expect(first.client.ready).rejects.toThrow()
+
+			// Once another tab leads, the first tab joins it and syncs.
+			await tabs.open("tab2")
+			// Joining restores the replica, after which transactions are allowed.
+			await expect
+				.poll(() => errore.try(() => first.client.transact()))
+				.not.toBeInstanceOf(Error)
+			const tx = first.client.transact()
+			tx.set("todos", todo("after-failed-lead"))
+			await first.client.commit(tx)
+			expect(await server.query({ collection: "todos" })).toEqual([
+				todo("after-failed-lead"),
+			])
 		},
 	)
 
