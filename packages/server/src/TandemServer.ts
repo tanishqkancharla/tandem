@@ -1,6 +1,7 @@
 import type {
 	AnySchema,
 	ClientApi,
+	PokeAppendOp,
 	ClientId,
 	CollectionName,
 	Cookie,
@@ -46,7 +47,10 @@ import type {
 	WriteOps,
 } from "tuple-database"
 import { TandemServerError } from "./TandemServerError.js"
-import { TandemServerTransaction } from "./TandemServerTransaction.js"
+import {
+	type AppliedAppend,
+	TandemServerTransaction,
+} from "./TandemServerTransaction.js"
 import type {
 	TandemClientTuple,
 	TandemTuple,
@@ -90,8 +94,13 @@ type SyncClientState<Schema extends AnySchema> = {
 	syncedRecords?: Map<string, SyncedRecordKey<Schema>>
 	/** A copy of the latest pull's window. Live pokes only carry records inside it. */
 	scanWindow?: ScanWindow<Schema>
-	/** Record IDs sent in poke payloads since the latest pull. */
-	liveRecordIds: Set<string>
+	/** The revision the latest pull returned. */
+	pulledRevision?: Revision
+	/**
+	 * Records sent in poke payloads since the latest pull, by record ID, with
+	 * the revision of the last payload that carried each. An append extends it.
+	 */
+	sentRevisions: Map<string, Revision>
 }
 
 type CommitOptions =
@@ -101,8 +110,11 @@ type CommitOptions =
 /** Records one commit changed, read in the run queue right after it. */
 type CommitChanges<Schema extends AnySchema> = {
 	revision: Revision
+	/** Full records after the commit, including appended ones. */
 	set: PatchSetOp<Schema>[]
 	remove: PatchRemoveOp<Schema>[]
+	/** Records the commit changed only by appending, by record ID. */
+	append: Map<string, AppliedAppend<Schema>>
 	/** The client whose push made the commit. It pulls to acknowledge it. */
 	pusher?: ClientId
 }
@@ -356,7 +368,7 @@ export class TandemServer<
 
 		const created: SyncClientState<Schema> = {
 			pokes: new Set(),
-			liveRecordIds: new Set(),
+			sentRevisions: new Map(),
 		}
 		this.syncClients.set(clientId, created)
 		return created
@@ -474,14 +486,15 @@ export class TandemServer<
 		client.scanWindow = client.pokes.size
 			? (JSON.parse(serialized) as ScanWindow<Schema>)
 			: undefined
-		client.liveRecordIds = new Set()
+		// The run queue orders pulls after every earlier commit.
+		client.pulledRevision = this.revision
+		client.sentRevisions = new Map()
 
 		return {
 			cookie: nextCookie,
 			patch: { ...(shouldReset ? { reset: true } : {}), set: records, remove },
 			lastMutationId,
-			// The run queue orders pulls after every earlier commit.
-			revision: this.revision,
+			revision: client.pulledRevision,
 		}
 	}
 
@@ -493,6 +506,11 @@ export class TandemServer<
 		transaction: TandemServerTransaction<Schema, Relations>,
 		options: CommitOptions,
 	): Promise<TandemServerError | undefined> {
+		const appended = await transaction.applyAppends()
+		if (appended instanceof Error) {
+			await transaction.cancel()
+			return appended
+		}
 		const writes = transaction.recordWrites()
 		// Removals carry the client's identity form, which only the old record has.
 		const removed = await Promise.all(
@@ -527,6 +545,7 @@ export class TandemServer<
 					? []
 					: [{ collection: writes.remove[index]![1], id: record.id }],
 			) as PatchRemoveOp<Schema>[],
+			append: new Map(appended.map((append) => [recordId(append), append])),
 			pusher: options.operation === "push" ? options.clientId : undefined,
 		}
 		await this.emitLivePokes(changes)
@@ -578,24 +597,46 @@ export class TandemServer<
 		).catch((cause) => new TandemServerError({ operation: "poke", cause }))
 		if (inView instanceof Error) return inView
 
-		const set = inView.map(({ collection, value }) => ({ collection, value }))
-		const setIds = new Set(set.map((op) => recordId(scanWindowRecordToKey(op))))
+		// Only name records the client already has; others must stay invisible.
+		const known = (id: string) =>
+			client.syncedRecords?.has(id) || client.sentRevisions.has(id)
+		const set: PatchSetOp<Schema>[] = []
+		const append: PokeAppendOp<Schema>[] = []
+		for (const { collection, value } of inView) {
+			const id = recordId({ collection, id: value.id })
+			const appended = changes.append.get(id)
+			const after = client.sentRevisions.get(id) ?? client.pulledRevision
+			if (!appended || !known(id) || !after) {
+				set.push({ collection, value } as PatchSetOp<Schema>)
+				continue
+			}
+			for (const field of appended.fields)
+				append.push({
+					collection: appended.collection,
+					id: appended.id,
+					...field,
+					after,
+				} as PokeAppendOp<Schema>)
+		}
+		const sentIds = new Set([
+			...set.map((op) => recordId(scanWindowRecordToKey(op))),
+			...append.map((op) => recordId(op)),
+		])
 		const leftView = changes.set
 			.map(scanWindowRecordToKey)
-			.filter((key) => !setIds.has(recordId(key)))
-		// Only name records the client already has; others must stay invisible.
-		const known = (key: SyncedRecordKey<Schema>) =>
-			client.syncedRecords?.has(recordId(key)) ||
-			client.liveRecordIds.has(recordId(key))
-		const remove = [...changes.remove, ...leftView].filter(known)
-		if (!set.length && !remove.length) return
+			.filter((key) => !sentIds.has(recordId(key)))
+		const remove = [...changes.remove, ...leftView].filter((key) =>
+			known(recordId(key)),
+		)
+		if (!set.length && !remove.length && !append.length) return
 
-		for (const key of remove) client.liveRecordIds.delete(recordId(key))
-		for (const id of setIds) client.liveRecordIds.add(id)
+		for (const key of remove) client.sentRevisions.delete(recordId(key))
+		for (const id of sentIds) client.sentRevisions.set(id, changes.revision)
 		return {
 			revision: changes.revision,
 			...(set.length ? { set } : {}),
 			...(remove.length ? { remove } : {}),
+			...(append.length ? { append } : {}),
 		} as PokePayload<Schema>
 	}
 

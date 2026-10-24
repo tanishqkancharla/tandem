@@ -38,6 +38,7 @@ After every commit that writes data, the server pokes each connected client whos
 
 - `set` holds each changed record in the view, in full, even after a partial `update`.
 - `remove` holds records the client already has that the commit deleted or moved out of its view.
+- `append` holds the text an [`append`](#append-text) added to a record the client already has, instead of the whole record.
 
 Pokes never carry a record, or name a record ID, that a pull with the same window would not return. Relation includes, limits, and offsets are evaluated the way a pull evaluates them. A record that enters the view without changing, such as the next record under a `limit`, arrives with the pull that every poke still starts. A client that has not pulled yet gets a bare poke, and the client whose push made the commit always gets one, so it pulls the acknowledgement.
 
@@ -78,7 +79,7 @@ if (!existing) {
 await server.commit(tx)
 ```
 
-A transaction also has `list`, `scan`, `update`, `remove`, `query`, and `cancel`.
+A transaction also has `list`, `scan`, `update`, `append`, `remove`, `query`, and `cancel`.
 
 `update` accepts partial assignments and awaits the current record. Reads in the same transaction see those assignments; missing records and empty payloads are no-ops. Supplied nested objects and arrays replace their entire field. Use `set` for complete replacements; updates cannot change identity or delete fields.
 
@@ -87,6 +88,20 @@ const tx = server.transact()
 await tx.update("todos", "welcome", { complete: true })
 await server.commit(tx)
 ```
+
+### Append text
+
+`append` adds text to the end of string fields. It suits text that grows in many small steps, such as a streamed reply.
+
+```ts
+const tx = server.transact()
+tx.append("messages", replyId, { text: delta })
+await server.commit(tx)
+```
+
+The server reads the record when the transaction commits, in commit order, so appends from concurrent transactions all land. A missing record stays missing, and a missing field starts empty. Within a transaction, a later `set` or `remove` of the record replaces earlier appends, and a later `update` replaces the appends to the fields it assigns. Storage, queries, and pulls see the whole record.
+
+A client that already has the record receives only the appended text, with the field's previous length and the revision of the value it extends. The client applies it only on top of exactly that value; otherwise it waits for the pull the poke starts, so a lost poke never shows text the server did not have. Collection codecs see the appended text on its own, as a partial record. Only server transactions can append.
 
 ## Compound IDs
 
