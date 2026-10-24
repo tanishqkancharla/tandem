@@ -1,6 +1,7 @@
 import type { DstArtifactSink } from "./DstReplay.js"
 import {
 	type DstFinalStates,
+	type DstStats,
 	type DstIntent,
 	type DstPendingCall,
 	type DstTraceRecord,
@@ -38,6 +39,7 @@ export type DstRunResult = {
 	states: DstFinalStates
 	violation: DstViolation | undefined
 	maxPendingCalls: number
+	stats: DstStats
 }
 
 /** A new mutation starts only while fewer calls than this are in flight. */
@@ -81,6 +83,7 @@ export class DstSimulation {
 			trace,
 			...outcome,
 			maxPendingCalls: world.maxPendingCalls,
+			stats: world.stats,
 		}
 	}
 
@@ -115,7 +118,10 @@ export class DstSimulation {
 				// Mostly its own records, as an agent streaming replies would, but
 				// also ones clients share, so writers conflict.
 				const id = rng.pick(rng.boolean(0.7) ? serverOwnedIds : poolOfIds)
-				if (rng.boolean(0.2)) return { type: "serverRemove", id }
+				if (rng.boolean(0.1)) return { type: "serverRemove", id }
+				// Streams text into the record, as a reply would token by token.
+				if (rng.boolean(0.6))
+					return { type: "serverAppend", id, text: ` t${step}` }
 				return {
 					type: "serverSet",
 					item: {

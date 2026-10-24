@@ -91,11 +91,15 @@ class InMemoryServerStorage implements TandemServerStorageApi<DstSchema> {
 function remoteWithPokeEvents(
 	server: RemoteApi<DstSchema>,
 	events: GatekeeperEvents,
+	stats: DstStats,
 ): RemoteApi<DstSchema> {
 	let poke: ClientApi<DstSchema>["poke"] = () => Promise.resolve()
 	const pokeEvent = events.on<PokePayload<DstSchema> | undefined>(
 		"poke",
-		(payload) => poke(payload),
+		(payload) => {
+			if (payload?.append) stats.appendPayloadsDelivered += 1
+			return poke(payload)
+		},
 	)
 	return {
 		connect: (client) => {
@@ -240,6 +244,7 @@ export type DstTraceRecord =
 	| ({ type: "advance"; step: number } & DstBoundary)
 	| ({ type: "drop"; step: number; fault: DstFaultKind } & DstBoundary)
 	| { type: "serverSet"; step: number; item: DstTodo }
+	| { type: "serverAppend"; step: number; id: string; text: string }
 	| { type: "serverRemove"; step: number; id: string }
 	| { type: "crash"; step: number; client: DstClientName }
 	| { type: "restart"; step: number; client: DstClientName; clientId: string }
@@ -271,11 +276,18 @@ export type DstIntent =
 	| { type: "remove"; client: DstClientName; id: string }
 	/** The server writes on its own, as an agent saving its reply would. */
 	| { type: "serverSet"; item: DstTodo }
+	| { type: "serverAppend"; id: string; text: string }
 	| { type: "serverRemove"; id: string }
 	| { type: "advance"; call: string }
 	| { type: "drop"; call: string }
 	| { type: "crash"; client: DstClientName }
 	| { type: "restart"; client: DstClientName }
+
+/** Counts that show a run exercised a behavior, not just converged. */
+export type DstStats = {
+	/** Poke payloads with appended text that reached a client. */
+	appendPayloadsDelivered: number
+}
 
 /** A call held at a boundary, with its stable trace name. */
 export type DstPendingCall = PendingCall & { name: string }
@@ -315,12 +327,16 @@ export class DstWorld implements AsyncDisposable {
 	private lastStep = -1
 	private orderViolation: DstViolation | undefined
 	maxPendingCalls = 0
+	readonly stats: DstStats
 
 	private constructor(
 		private readonly server: TandemServer<DstSchema, {}>,
 		private readonly storage: InMemoryServerStorage,
 		private readonly harness: DstHarness,
-	) {}
+		stats: DstStats,
+	) {
+		this.stats = stats
+	}
 
 	static async start(seed: number): Promise<DstWorld> {
 		const storage = new InMemoryServerStorage()
@@ -331,13 +347,15 @@ export class DstWorld implements AsyncDisposable {
 			rng: SimPrng.idSource(seed, "server"),
 		})
 		let world: DstWorld | undefined
+		const stats: DstStats = { appendPayloadsDelivered: 0 }
 		const harness = buildHarness({
 			server,
+			stats,
 			// A restart runs the factory again with the next generation's ids.
 			idSource: (label) =>
 				SimPrng.idSource(seed, `${label}.${world?.generations[label] ?? 0}`),
 		})
-		world = new DstWorld(server, storage, harness)
+		world = new DstWorld(server, storage, harness, stats)
 		for (const name of clientNames) await world.boot(name)
 		await harness.activateGates()
 		return world
@@ -376,6 +394,7 @@ export class DstWorld implements AsyncDisposable {
 			case "remove":
 				return this.write(step, intent)
 			case "serverSet":
+			case "serverAppend":
 			case "serverRemove":
 				return this.writeOnServer(step, intent)
 			case "advance": {
@@ -551,11 +570,25 @@ export class DstWorld implements AsyncDisposable {
 
 	private writeOnServer(
 		step: number,
-		intent: Extract<DstIntent, { type: "serverSet" | "serverRemove" }>,
+		intent: Extract<
+			DstIntent,
+			{ type: "serverSet" | "serverAppend" | "serverRemove" }
+		>,
 	): DstTraceRecord {
 		const tx = this.harness.server.transact()
-		if (intent.type === "serverSet") tx.set("todos", intent.item)
-		else tx.remove("todos", intent.id)
+		switch (intent.type) {
+			case "serverSet":
+				tx.set("todos", intent.item)
+				break
+			case "serverAppend":
+				tx.append("todos", intent.id, { text: intent.text })
+				break
+			case "serverRemove":
+				tx.remove("todos", intent.id)
+				break
+			default:
+				return unreachable(intent)
+		}
 		// Its pokes, with the records each client views, are events the run can lose.
 		this.inFlight.push(this.harness.server.commit(tx))
 		return { ...intent, step }
@@ -613,9 +646,11 @@ function boundaryOf(call: DstPendingCall): DstBoundary {
 
 function buildHarness({
 	server,
+	stats,
 	idSource,
 }: {
 	server: TandemServer<DstSchema, {}>
+	stats: DstStats
 	idSource: (label: DstClientName) => RngApi
 }) {
 	const logger = new Logger({ sinks: [] })
@@ -650,7 +685,7 @@ function buildHarness({
 		.add("client1", ({ server, client1Timer, client1Storage }, { events }) =>
 			createClient(
 				"client1",
-				remoteWithPokeEvents(server, events),
+				remoteWithPokeEvents(server, events, stats),
 				client1Timer,
 				client1Storage,
 			),
@@ -658,7 +693,7 @@ function buildHarness({
 		.add("client2", ({ server, client2Timer, client2Storage }, { events }) =>
 			createClient(
 				"client2",
-				remoteWithPokeEvents(server, events),
+				remoteWithPokeEvents(server, events, stats),
 				client2Timer,
 				client2Storage,
 			),

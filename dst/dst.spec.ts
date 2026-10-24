@@ -134,13 +134,15 @@ describe("Deterministic simulation testing", () => {
 			crashRate: 0.02,
 		}).execute()
 
-		expect(
-			result.trace.filter(
-				(record) =>
-					record.type === "serverSet" &&
-					serverOwnedIds.includes(record.item.id),
-			).length,
-		).toBeGreaterThan(5)
+		const serverOwnedWrites = result.trace.filter(
+			(record) =>
+				(record.type === "serverSet" &&
+					serverOwnedIds.includes(record.item.id)) ||
+				(record.type === "serverAppend" && serverOwnedIds.includes(record.id)),
+		)
+		expect(serverOwnedWrites.length).toBeGreaterThan(5)
+		// Appended text reached clients live, not only through pulls.
+		expect(result.stats.appendPayloadsDelivered).toBeGreaterThan(0)
 		expect(
 			result.trace.some(
 				(record) => record.type === "drop" && record.fault === "pokeLost",
