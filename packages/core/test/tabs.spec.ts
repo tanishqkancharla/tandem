@@ -82,6 +82,7 @@ function createTabs<Schema extends AnySchema>({
 		connecting: 0,
 		disconnected: 0,
 		delayViews: false,
+		delayLeaderAnnouncements: false,
 	}
 	/** Storage faults shared by every tab. */
 	const storageFaults = {
@@ -90,6 +91,7 @@ function createTabs<Schema extends AnySchema>({
 		failingKey: "tab-write" as "tab-write" | "session",
 	}
 	const heldViews: (() => void)[] = []
+	const heldAnnouncements: { name: string; message: unknown }[] = []
 	const unavailable = {
 		error: "unavailable",
 		message: "Remote is down",
@@ -190,11 +192,10 @@ function createTabs<Schema extends AnySchema>({
 								const send = () => {
 									if (alive) channel.postMessage(message)
 								}
-								if (
-									remote.delayViews &&
-									(message as { type: string }).type === "view"
-								)
-									heldViews.push(send)
+								const { type } = message as { type: string }
+								if (remote.delayViews && type === "view") heldViews.push(send)
+								else if (remote.delayLeaderAnnouncements && type === "leader")
+									heldAnnouncements.push({ name, message })
 								else send()
 							},
 							addEventListener: (type, listener) =>
@@ -237,6 +238,15 @@ function createTabs<Schema extends AnySchema>({
 		remote,
 		storageFaults,
 		heldViews,
+		heldAnnouncements,
+		/** Delivers held announcements, even after their sender has closed. */
+		releaseAnnouncements() {
+			for (const { name, message } of heldAnnouncements.splice(0)) {
+				const relay = browser.openTab().openChannel(name)
+				relay.postMessage(message)
+				relay.close()
+			}
+		},
 		releaseViews(reverse = false) {
 			const pending = heldViews.splice(0)
 			for (const send of reverse ? pending.reverse() : pending) send()
@@ -650,6 +660,36 @@ describe("TandemClient tabs", () => {
 			expect(await server.query({ collection: "todos" })).toEqual([
 				todo("after-recovery"),
 				todo("during-failure"),
+			])
+		},
+	)
+
+	tabsTest(
+		"a late announcement from a closed leader does not strand the other tabs",
+		async ({ tabs, server }) => {
+			const first = await tabs.open("tab1")
+			const second = await tabs.open("tab2")
+
+			// A new tab makes the leader announce itself again; that message is delayed.
+			tabs.remote.delayLeaderAnnouncements = true
+			await tabs.open("tab3", { awaitReady: false })
+			await expect.poll(() => tabs.heldAnnouncements.length).toBeGreaterThan(0)
+			tabs.remote.delayLeaderAnnouncements = false
+
+			// The leader closes and tab 2 takes over before the old announcement arrives.
+			await first.client.close()
+			const tx = second.client.transact()
+			tx.set("todos", todo("before-announcement"))
+			await second.client.commit(tx)
+			tabs.releaseAnnouncements()
+
+			// Tab 2 still reaches a leader for later writes.
+			const laterTx = second.client.transact()
+			laterTx.set("todos", todo("after-announcement"))
+			await second.client.commit(laterTx)
+			expect(await server.query({ collection: "todos" })).toEqual([
+				todo("after-announcement"),
+				todo("before-announcement"),
 			])
 		},
 	)
