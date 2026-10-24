@@ -12,3 +12,10 @@ export {
 	UpdatePayloadError,
 	validateUpdatePayload,
 } from "./transaction/Transaction.js"
+// In-memory tabs, for tests and hosts outside a browser document.
+export { InMemoryTab, InMemoryTabs } from "./tabs/TabEnvironment.js"
+export type {
+	TabChannelApi,
+	TabEnvironmentApi,
+	TabMessageListener,
+} from "./tabs/TabEnvironment.js"

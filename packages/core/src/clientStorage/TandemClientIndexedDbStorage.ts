@@ -1,10 +1,14 @@
 /// <reference lib="dom" />
 
-import { deleteDB, openDB } from "idb"
+import { openDB } from "idb"
 import type { DBSchema, IDBPDatabase } from "idb"
 import type { ScanStorageArgs, WriteOps } from "tuple-database"
 import { decodeTuple, encodeTuple } from "tuple-database/helpers/codec.js"
 import type { AnySchema, RuntimeSchemaDefinition } from "../schema/Schema.js"
+import {
+	getSchemaCodecs,
+	type CollectionCodecs,
+} from "../schema/collectionCodecs.js"
 import type {
 	TandemClientBase,
 	TandemClientStorageApi,
@@ -36,27 +40,6 @@ export type TandemClientIndexedDbStorageArgs<
 	dbName: string
 	schema?: RuntimeSchemaDefinition<Schema>
 	codecs?: {
-		[K in keyof Schema]?: PartialObjectCodec<Schema[K], StorageSchema[K]>
-	}
-}
-
-function getSchemaCodecs<
-	Schema extends AnySchema,
-	StorageSchema extends AnyStorageSchema<Schema>,
->(
-	schema?: RuntimeSchemaDefinition<Schema>,
-):
-	| {
-			[K in keyof Schema]?: PartialObjectCodec<Schema[K], StorageSchema[K]>
-	  }
-	| undefined {
-	if (!schema) return undefined
-
-	return Object.fromEntries(
-		Object.entries(schema.collections)
-			.filter(([, collection]) => collection.codec)
-			.map(([name, collection]) => [name, collection.codec]),
-	) as {
 		[K in keyof Schema]?: PartialObjectCodec<Schema[K], StorageSchema[K]>
 	}
 }
@@ -95,6 +78,8 @@ function createTupleCodec<Schema extends AnySchema>(
 				}
 			}
 			case "replica":
+			case "session":
+			case "tab-write":
 				return tuple.value
 			case "outbox":
 				return (tuple.value as MutationOp<Schema>[]).map((op) => {
@@ -150,28 +135,39 @@ export class TandemClientIndexedDbStorage<
 		[K in keyof Schema]?: Json
 	} = Schema,
 > implements TandemClientStorageApi<Schema> {
-	private db: Promise<IDBPDatabase<TandemIndexedDbSchema>>
+	readonly codecs: CollectionCodecs<Schema>
+	private connection?: Promise<IDBPDatabase<TandemIndexedDbSchema>>
 	private readonly tupleCodec: Codec<
 		TandemClientTuple<Schema>,
 		{ key: string; value: unknown }
 	>
 	private dbName: string
 
+	get name() {
+		return this.dbName
+	}
+
 	constructor({
 		dbName,
 		schema,
 		codecs,
 	}: TandemClientIndexedDbStorageArgs<Schema, StorageSchema>) {
-		this.tupleCodec = createTupleCodec<Schema>({
+		this.codecs = {
 			...getSchemaCodecs(schema),
 			...codecs,
-		})
+		}
+		this.tupleCodec = createTupleCodec<Schema>(this.codecs)
 		this.dbName = dbName
-		this.db = openDB<TandemIndexedDbSchema>(dbName, version, {
+	}
+
+	// Opens on first use: a tab that never leads never holds a connection.
+	private get db() {
+		this.connection ??= openDB<TandemIndexedDbSchema>(this.dbName, version, {
 			upgrade(db) {
 				db.createObjectStore(storeName)
 			},
 		})
+		return this.connection
 	}
 
 	async scan(args?: ScanStorageArgs) {
@@ -236,22 +232,14 @@ export class TandemClientIndexedDbStorage<
 	}
 
 	async close() {
-		const db = await this.db
-		db.close()
+		const connection = this.connection
+		this.connection = undefined
+		;(await connection)?.close()
 	}
 
 	async clear() {
+		// Deleting the database would wait for every other tab to close its connection.
 		const db = await this.db
-		db.close()
-
-		// Delete the database using idb's deleteDB
-		await deleteDB(this.dbName)
-
-		// Recreate the database
-		this.db = openDB<TandemIndexedDbSchema>(this.dbName, version, {
-			upgrade(db) {
-				db.createObjectStore(storeName)
-			},
-		})
+		await db.clear(storeName)
 	}
 }
