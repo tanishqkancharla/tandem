@@ -171,7 +171,7 @@ Review found more takeover races, fixed here with tests. After `clear()`, a tab 
 `--tabs N` adds a group of tabs that share one client storage, beside the two clients, in the same world, generator, trace, and replay.
 
 ```changes
-6e9a4d5..02c03fa
+b6456f6..6b6fb6e
 ```
 
 Gatekeeper attributes a service call to the public operation that started it, and much of a leader's work starts from another tab's message after that operation returns. The tab group therefore holds its own steps for channel messages, the leader's storage commits and timers, and pokes to the leader. Its server calls still go through a `tabsRemote` Gatekeeper service, so the run delays and loses them like the clients' calls. Both kinds of step share one pending list.
