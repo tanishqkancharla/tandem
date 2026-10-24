@@ -427,6 +427,9 @@ export class TabHub<
 			: undefined
 		const flushed = await this.db.flushClientStorage()
 		if (flushed instanceof Error) return unavailable(flushed)
+		// A clear during the flush discards the write; the tab keeps and resends it.
+		if (receipt.clientId !== this.db.replica.clientId)
+			return unavailable("Forwarded write was cleared")
 		saved({ ok: true })
 		this.queueViews()
 		if (!attempt) return { ok: true }
@@ -575,10 +578,14 @@ export class TabHub<
 		sessionId: ClientId,
 		restore = false,
 	): Promise<TabResult<Schema>> {
+		const replica = this.db.replica.clientId
 		const view = this.captureView(sessionId, restore)
 		if (view instanceof Error) return unavailable(view)
 		const flushed = await this.db.flushClientStorage()
 		if (flushed instanceof Error) return unavailable(flushed)
+		// A clear during the flush discarded what the view acknowledges.
+		if (replica !== this.db.replica.clientId)
+			return this.snapshot(sessionId, restore)
 		if (view) this.rememberView(sessionId, view)
 		return { ok: true, view }
 	}
@@ -590,12 +597,18 @@ export class TabHub<
 
 	private async publishViews() {
 		if (this.stopped) return
+		const replica = this.db.replica.clientId
 		const views = [...this.sessions]
 			.filter(([, state]) => !state.inherited)
 			.map(([sessionId]) => ({ sessionId, view: this.captureView(sessionId) }))
 		const flushed = await this.db.flushClientStorage()
 		if (flushed instanceof Error) {
 			this.logger.error({ message: "error saving tab view", error: flushed })
+			return
+		}
+		// A clear during the flush discarded what these views acknowledge.
+		if (replica !== this.db.replica.clientId) {
+			this.queueViews()
 			return
 		}
 		const groups: { sessionIds: ClientId[]; view: TabView<Schema> }[] = []

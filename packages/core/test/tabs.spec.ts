@@ -91,6 +91,9 @@ function createTabs<Schema extends AnySchema>({
 		failingKey: "tab-write" as "tab-write" | "session",
 		/** How many storage scans, which a new leader runs to load, fail. */
 		failedScans: 0,
+		/** Holds storage commits carrying a forwarded write until it settles. */
+		writeBarrier: undefined as Promise<void> | undefined,
+		heldWrites: 0,
 	}
 	const heldViews: (() => void)[] = []
 	const heldAnnouncements: { name: string; message: unknown }[] = []
@@ -125,6 +128,13 @@ function createTabs<Schema extends AnySchema>({
 			},
 			commit: async (writes) => {
 				if (!alive) return never()
+				if (
+					storageFaults.writeBarrier &&
+					writes.set?.some(({ key }) => key[0] === "tab-write")
+				) {
+					storageFaults.heldWrites++
+					await storageFaults.writeBarrier
+				}
 				if (
 					storageFaults.failedWrites > 0 &&
 					writes.set?.some(({ key }) => key[0] === storageFaults.failingKey)
@@ -1177,6 +1187,38 @@ describe("TandemClient tabs", () => {
 			await expect
 				.poll(() => server.query({ collection: "todos" }))
 				.toEqual([todo("after-clear"), todo("before-clear")])
+		},
+	)
+
+	tabsTest(
+		"a write whose save a clear overtakes is kept and saved again",
+		async ({ tabs }) => {
+			const first = await tabs.open("tab1", { autoConnect: false })
+			const second = await tabs.open("tab2", { autoConnect: false })
+
+			// The leader is still saving tab 2's write when tab 1 clears the replica.
+			const save = Promise.withResolvers<void>()
+			tabs.storageFaults.writeBarrier = save.promise
+			const tx = second.client.transact()
+			tx.set("todos", todo("overtaken"))
+			const committed = second.client.commit(tx).then(
+				() => "completed",
+				() => "rejected",
+			)
+			await expect.poll(() => tabs.storageFaults.heldWrites).toBeGreaterThan(0)
+			const clearing = first.client.clear()
+			await new Promise((resolve) => setTimeout(resolve, 20))
+			tabs.storageFaults.writeBarrier = undefined
+			save.resolve()
+			await clearing
+
+			// The commit reports the cleared save, and tab 2 saves the write again.
+			expect(await committed).toBe("rejected")
+			await second.client.flushClientStorage()
+			const reopened = await tabs.open("tab3", { autoConnect: false })
+			expect(reopened.client.query({ collection: "todos" })).toEqual([
+				todo("overtaken"),
+			])
 		},
 	)
 
