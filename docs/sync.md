@@ -46,7 +46,7 @@ The sync engine batches queued pushes and pulls on an interval (`syncInterval`, 
 await remote.push({ clientId, mutations })
 ```
 
-If the push fails, the client drops that batch from its pending mutations and rebuilds their records from the base, and the `commit` promise rejects. While disconnected, the client skips pushes and sends pending mutations after `connect`.
+If the push fails, the `commit` promise rejects, but the mutation stays pending and goes out again with the next push or reconnect. While disconnected, the client skips pushes and sends pending mutations after `connect`.
 
 ### Pull
 

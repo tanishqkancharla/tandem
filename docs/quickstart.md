@@ -82,7 +82,7 @@ const { result, destroy } = db.subscribe({ collection: "todos" }, (todos) => {
 destroy()
 ```
 
-Writes go through transactions. `commit` applies the changes locally right away. The returned promise settles once the push to the remote finishes, and rejects if the push fails. When a push fails, the client rolls the changes back.
+Writes go through transactions. `commit` applies the changes locally right away. The returned promise settles once the push to the remote finishes, and rejects if the push fails. A failed write stays pending and is sent again with the next push.
 
 ```ts
 const tx = db.transact()

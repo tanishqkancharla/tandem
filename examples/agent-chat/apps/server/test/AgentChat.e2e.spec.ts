@@ -5,7 +5,7 @@ import {
 	collection,
 	defineSchema,
 	Logger,
-	type Mutation,
+	type MutationOp,
 	type RemoteApi,
 	TandemClient,
 } from "@tanishqkancharla/tandem-core"
@@ -58,13 +58,21 @@ class ReplyError extends errore.createTaggedError({
 
 const replyId = (userMessageId: string) => `${userMessageId}:reply`
 
-/** Clients write user messages and runs. Only the server writes assistant messages. */
-function isClientWrite(mutation: Mutation<ChatSchema>) {
-	return mutation.ops.every((op) =>
-		op.collection === "runs"
-			? op.type !== "remove"
-			: op.type === "set" && op.value.role === "user",
-	)
+const isReplyId = (id: string) => id.endsWith(":reply")
+
+/**
+ * Clients write runs and their own user messages. Only the server writes
+ * assistant messages, so check the stored record, not only the new value.
+ */
+async function isClientWrite(tandem: ChatTandem, op: MutationOp<ChatSchema>) {
+	if (op.collection === "runs") return op.type !== "remove"
+	if (op.type !== "set" || op.value.role !== "user" || isReplyId(op.value.id))
+		return false
+	const [stored] = await tandem.query({
+		collection: "messages",
+		where: { id: op.value.id },
+	})
+	return stored === undefined || stored.role === "user"
 }
 
 /** A crash leaves replies "streaming"; nothing will finish them now. */
@@ -122,15 +130,20 @@ class ChatServer {
 					poke: (payload) => client.poke(payload && overJson(payload)),
 				}),
 			push: async (args) => {
-				if (!args.mutations.every(isClientWrite)) {
-					return {
-						error: "invalid-request",
-						message: "Only the server writes assistant messages",
+				// Drop forbidden operations but keep each mutation, so the client's
+				// next pull acknowledges it and restores the server's value. An error
+				// response would leave the mutation pending and fail every later push.
+				const mutations = []
+				for (const mutation of overJson(args.mutations)) {
+					const ops = []
+					for (const op of mutation.ops) {
+						if (await isClientWrite(this.tandem, op)) ops.push(op)
 					}
+					mutations.push({ ...mutation, ops })
 				}
-				const response = await this.tandem.push(overJson(args))
+				const response = await this.tandem.push({ ...args, mutations })
 				if ("error" in response) return response
-				for (const { ops } of args.mutations) {
+				for (const { ops } of mutations) {
 					for (const op of ops) {
 						if (op.type === "set" && op.collection === "messages")
 							this.startReply(op.value)
@@ -185,13 +198,13 @@ class ChatServer {
 
 		// The stop button writes the client-owned run record.
 		const controller = new AbortController()
-		const stop = await this.tandem.subscribe(
+		const runs = await this.tandem.subscribe(
 			{ collection: "runs", where: { id } },
 			([run]) => {
 				if (run?.stopRequested) controller.abort()
 			},
 		)
-		if (stop.result[0]?.stopRequested) controller.abort()
+		if (runs.result[0]?.stopRequested) controller.abort()
 
 		const thread = await this.tandem.query({
 			collection: "messages",
@@ -224,7 +237,7 @@ class ChatServer {
 		// Save new text each interval, and at least every 5 seconds as a heartbeat.
 		const timer = setInterval(() => {
 			if (parts !== savedParts || Date.now() - savedAt >= 5_000)
-				void save("streaming")
+				save("streaming").catch(console.error)
 		}, this.saveInterval)
 		const stopTimer = () => clearInterval(timer)
 		this.stopTimers.add(stopTimer)
@@ -239,7 +252,7 @@ class ChatServer {
 
 		stopTimer()
 		this.stopTimers.delete(stopTimer)
-		stop.destroy()
+		runs.destroy()
 		if (streamed instanceof Error) {
 			await save("error")
 			return streamed
@@ -465,25 +478,42 @@ test("a model failure ends the reply with an error status, and clients cannot wr
 		timeout: 5_000,
 	})
 
-	// The push handler rejects a client's write to the server's reply.
-	const forgedTx = sender.client.transact()
-	forgedTx.set("messages", {
-		...userMessage("Forged"),
-		id: replyId("message-1"),
-		role: "assistant",
-	})
-	await expect(sender.client.commit(forgedTx)).rejects.toThrow()
+	// Writes to the server's reply are dropped, whatever role they claim, and the
+	// client shows the server's reply again once its pull acknowledges them.
+	for (const role of ["assistant", "user"] as const) {
+		const forgedTx = sender.client.transact()
+		forgedTx.set("messages", {
+			...userMessage("Forged"),
+			id: replyId("message-1"),
+			role,
+		})
+		await sender.client.commit(forgedTx)
+	}
+	await vi.waitFor(
+		() =>
+			expect(
+				sender.client
+					.query({ collection: "messages", where: { role: "assistant" } })
+					.map(snapshotOf),
+			).toEqual([{ text: "Tandem delivers ", status: "error" }]),
+		{ timeout: 5_000 },
+	)
+
+	// The dropped writes do not block the client's later messages.
+	const nextTx = sender.client.transact()
+	nextTx.set("messages", { ...userMessage("Try again"), id: "message-2" })
+	await sender.client.commit(nextTx)
+	await vi.waitFor(
+		() =>
+			expect(
+				sender.client.query({
+					collection: "messages",
+					where: { id: replyId("message-2") },
+				}),
+			).toHaveLength(1),
+		{ timeout: 5_000 },
+	)
 	await chat.close()
-	expect(
-		(
-			await chat.tandem.query({
-				collection: "messages",
-				where: { role: "assistant" },
-			})
-		)
-			.map(snapshotOf)
-			.at(-1)?.status,
-	).toBe("error")
 })
 
 test("startup marks replies a crash left streaming as failed", async ({

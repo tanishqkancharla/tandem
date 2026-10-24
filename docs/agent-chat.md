@@ -6,7 +6,7 @@ This works because [`TandemServer`](server.md#connect-clients) sends each commit
 
 ## Rules
 
-1. One writer per record. Clients write user messages. Only the server writes assistant messages, and the push handler rejects client writes to them.
+1. One writer per record. Clients write user messages. Only the server writes assistant messages, and the push handler drops client writes to them.
 2. The server saves the reply about every 100 ms while it generates, with `status: "streaming"`. When the model loop ends it saves a final status: `"complete"` on a normal end, `"stopped"` on abort, `"error"` on a throw.
 3. Anything the client says about a reply goes in a record the client owns. The stop button sets `stopRequested` on a `runs` record, and the server aborts the model.
 4. A crash can leave a reply `"streaming"` forever. The server marks those as `"error"` on startup, and clients treat a reply whose `updatedAt` stopped advancing as failed.
@@ -16,6 +16,7 @@ This works because [`TandemServer`](server.md#connect-clients) sends each commit
 Store each message as its own record. With the [Vercel AI SDK](https://ai-sdk.dev), keep the `UIMessage` parts on the record.
 
 ```ts
+import { collection, defineSchema } from "@tanishqkancharla/tandem-core"
 import type { UIMessage } from "ai"
 
 type Message = {
@@ -31,6 +32,8 @@ type Message = {
 /** Written by the client to control one reply. */
 type Run = { id: string; stopRequested: boolean }
 
+type ChatSchema = { messages: Message; runs: Run }
+
 const schema = defineSchema({
 	messages: collection<Message>({
 		fields: ["id", "threadId", "role", "parts", "status", "updatedAt"],
@@ -39,32 +42,51 @@ const schema = defineSchema({
 })
 ```
 
+`fields` lists the record's fields without per-field codecs, so `parts` holds any JSON value.
+
 ## Server
 
-Wrap `TandemServer` in the transport the client calls ([Custom remotes](custom-remote.md#wrapping-tandemserver)). Reject writes to assistant messages, then start a reply for each accepted user message:
+The server is an ordinary [`TandemServer`](server.md). `model` is any AI SDK language model; tests can use `MockLanguageModelV4` from `ai/test`.
 
 ```ts
+const server = new TandemServer({
+	schema,
+	relations: {},
+	storage: new TandemServerJsonFileStorage<ChatSchema>({ filePath: "./data/chat.json" }),
+})
+```
+
+Wrap it in the transport the client calls ([Custom remotes](custom-remote.md#wrapping-tandemserver)). Drop operations a client may not make instead of returning an error: the mutation is still acknowledged, and the client's next pull shows the server's record again. An error would leave the mutation pending, and every later push from that client would fail with it. Check the stored record, not only the new value, so a client cannot overwrite a reply by calling it a user message.
+
+```ts
+const isReplyId = (id: string) => id.endsWith(":reply")
+
+async function isClientWrite(op: MutationOp<ChatSchema>) {
+	if (op.collection === "runs") return op.type !== "remove"
+	if (op.type !== "set" || op.value.role !== "user" || isReplyId(op.value.id)) return false
+	const [stored] = await server.query({ collection: "messages", where: { id: op.value.id } })
+	return stored === undefined || stored.role === "user"
+}
+
 async push(args) {
-	const allowed = args.mutations.every((mutation) =>
-		mutation.ops.every((op) =>
-			op.collection === "runs"
-				? op.type !== "remove"
-				: op.type === "set" && op.value.role === "user",
-		),
-	)
-	if (!allowed) {
-		return { error: "invalid-request", message: "Only the server writes assistant messages" }
+	const mutations = []
+	for (const mutation of args.mutations) {
+		const ops = []
+		for (const op of mutation.ops) if (await isClientWrite(op)) ops.push(op)
+		mutations.push({ ...mutation, ops })
 	}
-	const response = await server.push(args)
+	const response = await server.push({ ...args, mutations })
 	if ("error" in response) return response
-	for (const { ops } of args.mutations) {
+	for (const { ops } of mutations) {
 		for (const op of ops) {
-			if (op.type === "set" && op.collection === "messages") void streamReply(op.value)
+			if (op.type === "set" && op.collection === "messages") replies.add(streamReply(op.value))
 		}
 	}
 	return response
 }
 ```
+
+`replies` is a set of promises to await on shutdown; remove each when it settles.
 
 The reply loop uses the AI SDK on the server only: `streamText`, then `toUIMessageStream`, then `readUIMessageStream`. Each snapshot replaces `parts`; a timer saves the newest one. Do not use `useChat` on the client; the client reads the record.
 
@@ -89,10 +111,10 @@ async function streamReply(userMessage: Message) {
 
 	// The stop button sets stopRequested on this reply's run.
 	const controller = new AbortController()
-	const stop = await server.subscribe({ collection: "runs", where: { id } }, ([run]) => {
+	const runs = await server.subscribe({ collection: "runs", where: { id } }, ([run]) => {
 		if (run?.stopRequested) controller.abort()
 	})
-	if (stop.result[0]?.stopRequested) controller.abort()
+	if (runs.result[0]?.stopRequested) controller.abort()
 
 	const thread = await server.query({
 		collection: "messages",
@@ -121,7 +143,8 @@ async function streamReply(userMessage: Message) {
 	}
 	// Save new text every 100 ms, and at least every 5 seconds as a heartbeat.
 	const timer = setInterval(() => {
-		if (parts !== savedParts || Date.now() - savedAt >= 5_000) void save("streaming")
+		if (parts !== savedParts || Date.now() - savedAt >= 5_000)
+			save("streaming").catch(console.error)
 	}, 100)
 
 	const streamed = await (async () => {
@@ -133,7 +156,7 @@ async function streamReply(userMessage: Message) {
 	})().catch((cause) => new Error(`Reply ${id} failed`, { cause }))
 
 	clearInterval(timer)
-	stop.destroy()
+	runs.destroy()
 	if (streamed instanceof Error) await save("error")
 	else await save(controller.signal.aborted ? "stopped" : "complete")
 }
