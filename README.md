@@ -12,6 +12,7 @@ Tandem gives each client a local, queryable database. Writes apply locally first
 - Optimistic local writes with rollback when the server rejects them
 - Typed object queries with `select`, `where`, `orderBy`, `limit`, `offset`, and relations through `with`
 - Live query subscriptions that re-run when matching data changes
+- Server changes reach subscribed clients in one hop, before the pull that confirms them
 - Optional IndexedDB persistence on the client
 - Scalar or compound tuple IDs, with typed prefix scans
 - A server database that implements the sync protocol
@@ -73,6 +74,7 @@ To sync between clients, pass a `remote`. See [Quickstart](docs/quickstart.md).
 - [Quickstart](docs/quickstart.md): build a synced todo app
 - [Queries](docs/queries.md): query options and relations
 - [Server](docs/server.md): run `TandemServer` and connect clients to it
+- [Agent chat](docs/agent-chat.md): stream an agent's reply to every viewer with plain subscriptions
 - [How sync works](docs/sync.md): mutations, push, pull, and rebase
 - [Custom remotes](docs/custom-remote.md): implement the `RemoteApi` contract yourself
 - [Roadmap](docs/roadmap.md)
