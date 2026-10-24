@@ -145,6 +145,7 @@ function cannotApply(
 				? undefined
 				: `${record.client} cannot take writes`
 		case "serverSet":
+		case "serverAppend":
 		case "serverRemove":
 			return undefined
 		case "crash":
@@ -173,6 +174,8 @@ function intentOf(record: DstTraceRecord): DstIntent {
 			return { type: "remove", client: record.client, id: record.id }
 		case "serverSet":
 			return { type: "serverSet", item: record.item }
+		case "serverAppend":
+			return { type: "serverAppend", id: record.id, text: record.text }
 		case "serverRemove":
 			return { type: "serverRemove", id: record.id }
 		case "advance":

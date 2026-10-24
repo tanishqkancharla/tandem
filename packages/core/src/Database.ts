@@ -40,6 +40,7 @@ import {
 } from "./transaction/Transaction.js"
 import type {
 	ClientId,
+	PokeAppendOp,
 	PokePayload,
 	PullResponse,
 	Revision,
@@ -118,6 +119,42 @@ function isCoveredBy(revision: Revision, than: Revision | undefined) {
 		revision.server === than.server &&
 		revision.commit <= than.commit
 	)
+}
+
+/** A record's server value as the client knows it, and the revision it is at. */
+type ServerValue<Schema extends AnySchema> = {
+	value: Schema[CollectionName<Schema>] | undefined
+	revision: Revision | undefined
+}
+
+/**
+ * Applies a poke's appends to one record's server value, or returns undefined
+ * if they do not extend exactly that value.
+ */
+function extendServerValue<Schema extends AnySchema>(
+	server: ServerValue<Schema>,
+	appends: readonly PokeAppendOp<Schema>[],
+): Schema[CollectionName<Schema>] | undefined {
+	if (server.value === undefined) return
+	let value: Record<string, unknown> = server.value
+	for (const { after, field, offset, text } of appends) {
+		// The record has not changed on the server since `after`, so any value
+		// the client has from then on is the one the append extends.
+		if (!isCoveredBy(after, server.revision)) return
+		const current = value[field] ?? ""
+		if (typeof current !== "string" || current.length !== offset) return
+		value = { ...value, [field]: current + text }
+	}
+	return value as Schema[CollectionName<Schema>]
+}
+
+function groupBy<Item>(items: readonly Item[], keyOf: (item: Item) => string) {
+	const groups = new Map<string, Item[]>()
+	for (const item of items) {
+		const key = keyOf(item)
+		groups.set(key, [...(groups.get(key) ?? []), item])
+	}
+	return groups
 }
 
 function writeServerValue<Schema extends AnySchema>(
@@ -457,20 +494,21 @@ export class Database<
 	 * Show records a poke carried before the pull that confirms them. A live
 	 * record replaces the record's confirmed value; pending writes replay on top.
 	 */
-	applyPoke({ revision, set = [], remove = [] }: PokePayload<Schema>): void {
+	applyPoke({
+		revision,
+		set = [],
+		remove = [],
+		append = [],
+	}: PokePayload<Schema>): void {
 		// The latest pull already reflects this commit.
 		if (isCoveredBy(revision, this.pulledRevision)) return
 		const transaction = this.transact()
 		const { records, bases, outbox } = transaction
 		const applied = new Map<string, LiveRecord<Schema>>()
-		const ops = [
-			...set.map((op) => ({ type: "set" as const, ...op })),
-			...remove.map((op) => ({ type: "remove" as const, ...op })),
-		]
-		for (const op of ops) {
-			const key = mutationOpToRecordKey(op)
-			const id = recordKeyId(key)
-			if (isCoveredBy(revision, this.live.get(id)?.revision)) continue
+		const show = (
+			key: TupleClientRecord<Schema>["key"],
+			value: Schema[CollectionName<Schema>] | undefined,
+		) => {
 			// The base keeps the confirmed value, so a pull can rebuild under it.
 			if (!bases.get(key)) {
 				const confirmed = records.get(key)
@@ -482,13 +520,34 @@ export class Database<
 					lastWrittenBy: tag<MutationId>(0),
 				})
 			}
-			const live: LiveRecord<Schema> = {
-				key,
-				value: op.type === "set" ? op.value : undefined,
-				revision,
-			}
-			applied.set(id, live)
+			const live: LiveRecord<Schema> = { key, value, revision }
+			applied.set(recordKeyId(key), live)
 			writeServerValue(transaction, key, liveServerValue(live))
+		}
+		const ops = [
+			...set.map((op) => ({ type: "set" as const, ...op })),
+			...remove.map((op) => ({ type: "remove" as const, ...op })),
+		]
+		for (const op of ops) {
+			const key = mutationOpToRecordKey(op)
+			if (isCoveredBy(revision, this.live.get(recordKeyId(key))?.revision))
+				continue
+			show(key, op.type === "set" ? op.value : undefined)
+		}
+		for (const [id, appends] of groupBy(append, (op) =>
+			recordKeyId(mutationOpToRecordKey({ type: "remove", ...op })),
+		)) {
+			const key = mutationOpToRecordKey({ type: "remove", ...appends[0]! })
+			const server = this.liveOrConfirmedValue(
+				transaction,
+				key,
+				applied.get(id),
+			)
+			// A value from this commit or later already contains the text.
+			if (isCoveredBy(revision, server.revision)) continue
+			const value = extendServerValue(server, appends)
+			// The pull this poke starts delivers what the client cannot extend.
+			if (value !== undefined) show(key, value)
 		}
 		if (!applied.size) return transaction.cancel()
 		for (const { value: pending } of outbox.scan()) {
@@ -499,6 +558,24 @@ export class Database<
 		}
 		transaction.tupleDbTx.commit()
 		for (const [id, live] of applied) this.live.set(id, live)
+	}
+
+	/** The server value a poke builds on, and the revision the client has it at. */
+	private liveOrConfirmedValue(
+		transaction: Transaction<Schema>,
+		key: TupleClientRecord<Schema>["key"],
+		live = this.live.get(recordKeyId(key)),
+	): ServerValue<Schema> {
+		if (live) return { value: live.value, revision: live.revision }
+		// Without a live value, the latest pull is the server value: the base
+		// under pending writes, or else the record itself.
+		const base = transaction.bases.get(key)
+		const value = base
+			? base.server.type === "set"
+				? base.server.value
+				: undefined
+			: transaction.records.get(key)
+		return { value, revision: this.pulledRevision }
 	}
 
 	/**
