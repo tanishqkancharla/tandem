@@ -468,6 +468,49 @@ describe("live pokes", () => {
 	)
 
 	liveTest(
+		"appends keep applying while a pull that read a later commit is in flight",
+		async ({ harness, pokes, commitOnServer }) => {
+			const { client1 } = harness
+			client1.subscribe({ collection: "messages" })
+			await (
+				await client1.pullFromRemote()
+			).result
+
+			// The server answers a pull after writing the reply and another record.
+			await harness.activateGates()
+			await commitOnServer((tx) => tx.set("messages", reply("Hel")))
+			const [replyPoke] = pokes.take()
+			await commitOnServer((tx) =>
+				tx.set("messages", { ...reply("Other"), id: "other" }),
+			)
+			pokes.drop()
+			const pull = await client1.pullFromRemote()
+			await pull.continueTo("server")
+
+			// Before its response arrives, the client shows the reply's poke and
+			// then an append to it.
+			void replyPoke!()
+			await commitOnServer((tx) =>
+				tx.append("messages", "reply", { text: "lo" }),
+			)
+			void pokes.deliver()
+			expect(client1.query({ collection: "messages" })).toEqual([
+				reply("Hello"),
+			])
+
+			await harness.deactivateGatesAndSettle()
+			await commitOnServer((tx) =>
+				tx.append("messages", "reply", { text: "!" }),
+			)
+			void pokes.deliver()
+			expect(client1.query({ collection: "messages" })).toEqual([
+				{ ...reply("Other"), id: "other" },
+				reply("Hello!"),
+			])
+		},
+	)
+
+	liveTest(
 		"an append that does not start at the end of the client's text waits for the pull",
 		async ({ harness, pokes, commitOnServer }) => {
 			const { client1 } = harness

@@ -127,14 +127,6 @@ type ServerValue<Schema extends AnySchema> = {
 	revision: Revision | undefined
 }
 
-function isSameRevision(revision: Revision, other: Revision | undefined) {
-	return (
-		other !== undefined &&
-		revision.server === other.server &&
-		revision.commit === other.commit
-	)
-}
-
 /**
  * Applies a poke's appends to one record's server value, or returns undefined
  * if they do not extend exactly that value.
@@ -146,7 +138,9 @@ function extendServerValue<Schema extends AnySchema>(
 	if (server.value === undefined) return
 	let value: Record<string, unknown> = server.value
 	for (const { after, field, offset, text } of appends) {
-		if (!isSameRevision(after, server.revision)) return
+		// The record has not changed on the server since `after`, so any value
+		// the client has from then on is the one the append extends.
+		if (!isCoveredBy(after, server.revision)) return
 		const current = value[field] ?? ""
 		if (typeof current !== "string" || current.length !== offset) return
 		value = { ...value, [field]: current + text }

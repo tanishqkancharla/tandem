@@ -90,8 +90,8 @@ export type PokeAppendOp<Schema extends AnySchema = AnySchema> = {
 		offset: number
 		text: string
 		/**
-		 * The revision of the value the append extends: the last payload that
-		 * carried the record to this client, or the client's latest pull.
+		 * The commit that last wrote the record before this append, or an
+		 * earlier one. The record held the value the append extends from then on.
 		 */
 		after: Revision
 	}

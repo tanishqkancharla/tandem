@@ -101,7 +101,7 @@ await server.commit(tx)
 
 The server reads the record when the transaction commits, in commit order, so appends from concurrent transactions all land. A missing record stays missing, and a missing field starts empty. Within a transaction, a later `set` or `remove` of the record replaces earlier appends, and a later `update` replaces the appends to the fields it assigns. Storage, queries, and pulls see the whole record.
 
-A client that already has the record receives only the appended text, with the field's previous length and the revision of the value it extends. The client applies it only on top of exactly that value; otherwise it waits for the pull the poke starts, so a lost poke never shows text the server did not have. Collection codecs see the appended text on its own, as a partial record. Only server transactions can append.
+A client that already has the record receives only the appended text, with the field's previous length and the commit that last wrote the record before it. The client applies it only to a value it has from that commit or later, which is the value the append extends; otherwise it waits for the pull the poke starts, so a lost poke never shows text the server did not have. The server remembers the last write of the 10,000 most recently written records; an append to an older one names a later commit, so clients that have not pulled since then wait for their pull. Collection codecs see the appended text on its own, as a partial record. Only server transactions can append.
 
 ## Compound IDs
 
