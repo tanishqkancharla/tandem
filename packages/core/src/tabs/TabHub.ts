@@ -303,6 +303,12 @@ export class TabHub<
 				const cleared = await this.syncEngine
 					.clear()
 					.catch((cause: unknown) => new TabConnectionError({ cause }))
+				// The clear reconnects, which can outlast this leader. A stopped leader
+				// releases that connection and leaves storage to the next leader.
+				if (this.stopped) {
+					await this.syncEngine.disconnect()
+					return unavailable("Leader stopped")
+				}
 				// A failed clear leaves the engine disconnected; reconnect if tabs want it.
 				if (cleared instanceof Error) {
 					this.connected = false

@@ -1208,6 +1208,36 @@ describe("TandemClient tabs", () => {
 	)
 
 	tabsTest(
+		"a leader that closes during a clear leaves storage to the next leader",
+		async ({ tabs }) => {
+			let closed = false
+			let writesAfterClose = 0
+			const first = await tabs.open("tab1", {
+				afterStorageCommit: () => {
+					if (closed) writesAfterClose++
+				},
+			})
+			await tabs.open("tab2")
+
+			// The clear reconnects the leader, and the server holds that connect.
+			const connect = Promise.withResolvers<void>()
+			tabs.remote.connectBarrier = connect.promise
+			const attempts = tabs.remote.connecting
+			const clearing = first.client.clear().catch(() => {})
+			await expect.poll(() => tabs.remote.connecting).toBeGreaterThan(attempts)
+
+			// The leader hands off before the server answers, then writes nothing more.
+			await first.client.close()
+			closed = true
+			tabs.remote.connectBarrier = undefined
+			connect.resolve()
+			await clearing
+			await new Promise((resolve) => setTimeout(resolve, 50))
+			expect(writesAfterClose).toBe(0)
+		},
+	)
+
+	tabsTest(
 		"a closed leader stops syncing even if its connection finishes later",
 		async ({ tabs }) => {
 			tabs.remote.connectDelayMs = 50
