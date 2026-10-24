@@ -75,7 +75,21 @@ function createTabs<Schema extends AnySchema>({
 		/** Pushes that reached the remote while it was stalled. */
 		stalledPushes: 0,
 		failedPushes: 0,
+		pushBarrier: undefined as Promise<void> | undefined,
+		connectBarrier: undefined as Promise<void> | undefined,
+		pullBarrier: undefined as Promise<void> | undefined,
+		responseBarrier: undefined as Promise<void> | undefined,
+		connecting: 0,
+		disconnected: 0,
+		delayViews: false,
 	}
+	/** Storage faults shared by every tab. */
+	const storageFaults = {
+		/** How many storage commits carrying `failingKey` fail before writing. */
+		failedWrites: 0,
+		failingKey: "tab-write" as "tab-write" | "session",
+	}
+	const heldViews: (() => void)[] = []
 	const unavailable = {
 		error: "unavailable",
 		message: "Remote is down",
@@ -100,6 +114,13 @@ function createTabs<Schema extends AnySchema>({
 			scan: (args) => (alive ? storage.scan(args) : never()),
 			commit: async (writes) => {
 				if (!alive) return never()
+				if (
+					storageFaults.failedWrites > 0 &&
+					writes.set?.some(({ key }) => key[0] === storageFaults.failingKey)
+				) {
+					storageFaults.failedWrites -= 1
+					throw new Error("Storage is full")
+				}
 				await storage.commit(writes)
 				afterStorageCommit?.(writes)
 			},
@@ -110,17 +131,25 @@ function createTabs<Schema extends AnySchema>({
 			connect: async (api: ClientApi) => {
 				if (!alive) return never()
 				if (remote.down) return unavailable
+				remote.connecting++
+				await remote.connectBarrier
 				if (remote.connectDelayMs)
 					await new Promise((resolve) =>
 						setTimeout(resolve, remote.connectDelayMs),
 					)
-				return server.connect({
+				const connected = await server.connect({
 					...api,
 					poke: () => (alive ? api.poke() : Promise.resolve()),
 				})
+				if (typeof connected !== "function") return connected
+				return async () => {
+					remote.disconnected++
+					await connected()
+				}
 			},
 			push: async (args) => {
 				if (!alive) return never()
+				await remote.pushBarrier
 				if (remote.pushHangs) {
 					remote.stalledPushes += 1
 					return never()
@@ -131,11 +160,14 @@ function createTabs<Schema extends AnySchema>({
 				}
 				for (const mutation of args.mutations)
 					pushed.push({ clientId: args.clientId, mutation })
-				return server.push(args)
+				const result = await server.push(args)
+				await remote.responseBarrier
+				return result
 			},
 			pull: async (args) => {
 				if (!alive) return never()
 				if (remote.down) return unavailable
+				await remote.pullBarrier
 				pulls.push({ tab: label, scanWindow: args.scanWindow })
 				return server.pull(args)
 			},
@@ -148,7 +180,32 @@ function createTabs<Schema extends AnySchema>({
 			syncInterval: 0,
 			logger,
 			rng: rng.create(label),
-			tabs: { environment: tab },
+			tabs: {
+				environment: {
+					locks: tab.locks,
+					openChannel(name) {
+						const channel = tab.openChannel(name)
+						return {
+							postMessage(message) {
+								const send = () => {
+									if (alive) channel.postMessage(message)
+								}
+								if (
+									remote.delayViews &&
+									(message as { type: string }).type === "view"
+								)
+									heldViews.push(send)
+								else send()
+							},
+							addEventListener: (type, listener) =>
+								channel.addEventListener(type, listener),
+							removeEventListener: (type, listener) =>
+								channel.removeEventListener(type, listener),
+							close: () => channel.close(),
+						}
+					},
+				},
+			},
 			...options,
 		})
 		opened.push({ client, tab })
@@ -172,7 +229,19 @@ function createTabs<Schema extends AnySchema>({
 		}
 	}
 
-	return { open, close, pushed, pulls, remote }
+	return {
+		open,
+		close,
+		pushed,
+		pulls,
+		remote,
+		storageFaults,
+		heldViews,
+		releaseViews(reverse = false) {
+			const pending = heldViews.splice(0)
+			for (const send of reverse ? pending.reverse() : pending) send()
+		},
+	}
 }
 
 const tabsTest = test.extend<{
@@ -192,6 +261,399 @@ const tabsTest = test.extend<{
 })
 
 describe("TandemClient tabs", () => {
+	tabsTest(
+		"takeover cannot complete a saved commit before the replacement connects and pushes",
+		async ({ tabs, server }) => {
+			const first = await tabs.open("tab1")
+			const second = await tabs.open("tab2")
+			await using gatekeeper = new Gatekeeper()
+				.add("client", () => second.client)
+				.build()
+			const { client } = gatekeeper
+			client.subscribe({ collection: "todos" })
+			await (
+				await client.connect()
+			).result
+			tabs.remote.pushHangs = true
+			const tx = client.transact()
+			tx.set("todos", todo("handoff-pending"))
+			const committed = client.commit(tx).then((call) => call.result)
+			let complete = false
+			void committed.then(() => {
+				complete = true
+			})
+			await (
+				await client.flushClientStorage()
+			).result
+			await expect.poll(() => tabs.remote.stalledPushes).toBeGreaterThan(0)
+
+			// The replacement can restore and save locally while its remote connection is held.
+			const connect = Promise.withResolvers<void>()
+			tabs.remote.connectBarrier = connect.promise
+			const attempts = tabs.remote.connecting
+			tabs.remote.pushHangs = false
+			first.crash()
+			await expect.poll(() => tabs.remote.connecting).toBeGreaterThan(attempts)
+			await (
+				await client.flushClientStorage()
+			).result
+			expect(complete).toBe(false)
+			expect(await server.query({ collection: "todos" })).toEqual([])
+
+			// The surviving caller completes only after the replacement actually delivers its mutation.
+			connect.resolve()
+			await committed
+			expect(await server.query({ collection: "todos" })).toEqual([
+				todo("handoff-pending"),
+			])
+		},
+	)
+
+	tabsTest(
+		"a lost server response across takeover does not overwrite a later server correction",
+		async ({ tabs, server }) => {
+			const first = await tabs.open("tab1")
+			const second = await tabs.open("tab2")
+			await using gatekeeper = new Gatekeeper()
+				.add("client", () => second.client)
+				.build()
+			const { client } = gatekeeper
+			client.subscribe({ collection: "todos" })
+			await (
+				await client.connect()
+			).result
+			tabs.remote.responseBarrier = never()
+			const tx = client.transact()
+			tx.set("todos", todo("accepted"))
+			const committed = client.commit(tx).then((call) => call.result)
+			await (
+				await client.flushClientStorage()
+			).result
+			await expect
+				.poll(() => server.query({ collection: "todos" }))
+				.toEqual([todo("accepted")])
+
+			// Reapplying the accepted set after takeover would erase this independent correction.
+			const correctionTx = server.transact()
+			await correctionTx.update("todos", "accepted", {
+				text: "server correction",
+			})
+			await server.commit(correctionTx)
+			tabs.remote.responseBarrier = undefined
+			first.crash()
+			await committed
+			const expected = [todo("accepted", { text: "server correction" })]
+			expect(await server.query({ collection: "todos" })).toEqual(expected)
+			await expect
+				.poll(() => client.query({ collection: "todos" }))
+				.toEqual(expected)
+		},
+	)
+
+	tabsTest(
+		"older leader views cannot erase a newer pending edit or replace a newer view",
+		async ({ tabs }) => {
+			const first = await tabs.open("tab1", { autoConnect: false })
+			const second = await tabs.open("tab2", { autoConnect: false })
+			await using gatekeeper = new Gatekeeper()
+				.add("client1", () => first.client)
+				.add("client2", () => second.client)
+				.build()
+			const { client1, client2 } = gatekeeper
+			client1.subscribe({ collection: "todos" })
+			client2.subscribe({ collection: "todos" })
+			const seedTx = client1.transact()
+			seedTx.set("todos", todo("edited"))
+			await (
+				await client1.commit(seedTx)
+			).result
+			await expect
+				.poll(() => client2.query({ collection: "todos" }))
+				.toEqual([todo("edited")])
+
+			// Hold an older view before making another edit in the receiving tab.
+			tabs.remote.delayViews = true
+			const otherTx = client1.transact()
+			otherTx.update("todos", "edited", { text: "older leader view" })
+			await (
+				await client1.commit(otherTx)
+			).result
+			await expect.poll(() => tabs.heldViews.length).toBeGreaterThan(0)
+			const localTx = client2.transact()
+			localTx.update("todos", "edited", { text: "my newer edit" })
+			const committed = client2.commit(localTx).then((call) => call.result)
+			tabs.releaseViews()
+			await committed
+			expect(client2.query({ collection: "todos" })).toEqual([
+				todo("edited", { text: "my newer edit" }),
+			])
+
+			// Deliver new and old snapshots in reverse order; both tabs retain the latest value.
+			await expect.poll(() => tabs.heldViews.length).toBeGreaterThan(0)
+			tabs.remote.delayViews = false
+			tabs.releaseViews(true)
+			await expect
+				.poll(() => client1.query({ collection: "todos" }))
+				.toEqual([todo("edited", { text: "my newer edit" })])
+			expect(client2.query({ collection: "todos" })).toEqual([
+				todo("edited", { text: "my newer edit" }),
+			])
+		},
+	)
+
+	tabsTest(
+		"crashing the last tab requesting the server releases the shared connection",
+		async ({ tabs }) => {
+			await tabs.open("tab1", { autoConnect: false })
+			const second = await tabs.open("tab2")
+			await using gatekeeper = new Gatekeeper()
+				.add("client", () => second.client)
+				.build()
+			await (
+				await gatekeeper.client.connect()
+			).result
+			const disconnected = tabs.remote.disconnected
+			second.crash()
+			await expect
+				.poll(() => tabs.remote.disconnected)
+				.toBeGreaterThan(disconnected)
+		},
+	)
+
+	tabsTest(
+		"connected commits wait for the server while local saving and other tabs continue",
+		async ({ tabs, server }) => {
+			const first = await tabs.open("tab1")
+			const second = await tabs.open("tab2")
+			await using gatekeeper = new Gatekeeper()
+				.add("client1", () => first.client)
+				.add("client2", () => second.client)
+				.build()
+			const { client1, client2 } = gatekeeper
+			client1.subscribe({ collection: "todos" })
+			client2.subscribe({ collection: "todos" })
+			await (
+				await client2.connect()
+			).result
+			const delivery = Promise.withResolvers<void>()
+			tabs.remote.pushBarrier = delivery.promise
+
+			// The originating tab sees its edit immediately, even while server delivery is blocked.
+			const tx = client2.transact()
+			tx.set("todos", todo("waiting"))
+			const committing = client2.commit(tx).then((call) => call.result)
+			let completed = false
+			void committing.then(() => {
+				completed = true
+			})
+			expect(client2.query({ collection: "todos" })).toEqual([todo("waiting")])
+
+			// Saving and sharing do not inherit the server's stalled completion.
+			await (
+				await client2.flushClientStorage()
+			).result
+			await expect
+				.poll(() => client1.query({ collection: "todos" }))
+				.toEqual([todo("waiting")])
+			expect(completed).toBe(false)
+			expect(await server.query({ collection: "todos" })).toEqual([])
+
+			// Only the actual server response completes commit.
+			delivery.resolve()
+			await committing
+			expect(await server.query({ collection: "todos" })).toEqual([
+				todo("waiting"),
+			])
+		},
+	)
+
+	tabsTest(
+		"a failed server commit rejects without losing the saved edit",
+		async ({ tabs, server }) => {
+			const first = await tabs.open("tab1")
+			await using gatekeeper = new Gatekeeper()
+				.add("client", () => first.client)
+				.build()
+			const { client } = gatekeeper
+			client.subscribe({ collection: "todos" })
+			await (
+				await client.connect()
+			).result
+			await (
+				await client.pullFromRemote()
+			).result
+
+			// The connected transport fails, so commit must report that failure to the caller.
+			tabs.remote.down = true
+			const tx = client.transact()
+			tx.set("todos", todo("retained"))
+			await expect((await client.commit(tx)).result).rejects.toThrow(
+				"Remote push failed",
+			)
+			expect(client.query({ collection: "todos" })).toEqual([todo("retained")])
+
+			// Reconnecting uses the existing retry policy and delivers the retained mutation.
+			tabs.remote.down = false
+			await (
+				await client.connect()
+			).result
+			await expect
+				.poll(() => server.query({ collection: "todos" }))
+				.toEqual([todo("retained")])
+		},
+	)
+
+	tabsTest(
+		"a commit made while the first connection is pending waits for the server",
+		async ({ tabs, server }) => {
+			const connect = Promise.withResolvers<void>()
+			tabs.remote.connectBarrier = connect.promise
+			const first = await tabs.open("tab1")
+			await using gatekeeper = new Gatekeeper()
+				.add("client", () => first.client)
+				.build()
+			const { client } = gatekeeper
+			await expect.poll(() => tabs.remote.connecting).toBeGreaterThan(0)
+
+			// The write saves locally, but the server has not received it yet.
+			const tx = client.transact()
+			tx.set("todos", todo("before-connect"))
+			const committed = client.commit(tx).then((call) => call.result)
+			let complete = false
+			void committed.then(() => {
+				complete = true
+			})
+			await (
+				await client.flushClientStorage()
+			).result
+			expect(complete).toBe(false)
+			expect(await server.query({ collection: "todos" })).toEqual([])
+
+			// Completing the connection pushes the write and completes the commit.
+			connect.resolve()
+			await committed
+			expect(await server.query({ collection: "todos" })).toEqual([
+				todo("before-connect"),
+			])
+		},
+	)
+
+	tabsTest(
+		"a commit completes on the push that carried it while later sync is stalled",
+		async ({ tabs, server }) => {
+			// The commit's own push runs after the delayed connection lands, before the
+			// connection's pull. Holding that pull must not hold the delivered commit.
+			tabs.remote.connectDelayMs = 50
+			tabs.remote.pullBarrier = never()
+			const first = await tabs.open("tab1", { syncInterval: 100 })
+			await using gatekeeper = new Gatekeeper()
+				.add("client", () => first.client)
+				.build()
+			const { client } = gatekeeper
+			const tx = client.transact()
+			tx.set("todos", todo("delivered"))
+			const committed = client.commit(tx).then((call) => call.result)
+			let complete = false
+			void committed.then(() => {
+				complete = true
+			})
+			await expect.poll(() => complete).toBe(true)
+			expect(await server.query({ collection: "todos" })).toEqual([
+				todo("delivered"),
+			])
+		},
+	)
+
+	tabsTest(
+		"a write whose leader save failed reaches the server through the next leader",
+		async ({ tabs, server }) => {
+			const first = await tabs.open("tab1")
+			const second = await tabs.open("tab2")
+			await using gatekeeper = new Gatekeeper()
+				.add("client", () => second.client)
+				.build()
+			const { client } = gatekeeper
+			client.subscribe({ collection: "todos" })
+			await (
+				await client.connect()
+			).result
+
+			// The leader cannot save the write, so commit rejects but the tab keeps the edit.
+			tabs.storageFaults.failedWrites = Infinity
+			const tx = client.transact()
+			tx.set("todos", todo("unsaved"))
+			await expect((await client.commit(tx)).result).rejects.toThrow(
+				"Client storage commit failed",
+			)
+			expect(client.query({ collection: "todos" })).toEqual([todo("unsaved")])
+
+			// The leader dies holding the write only in memory. The next leader receives
+			// it again from the tab, and later writes still follow it in order.
+			first.crash()
+			tabs.storageFaults.failedWrites = 0
+			const afterTx = client.transact()
+			afterTx.set("todos", todo("after-takeover"))
+			await (
+				await client.commit(afterTx)
+			).result
+			const expected = [todo("after-takeover"), todo("unsaved")]
+			await expect
+				.poll(() => server.query({ collection: "todos" }))
+				.toEqual(expected)
+			expect(client.query({ collection: "todos" })).toEqual(expected)
+
+			// Each write reached the server in one leader mutation.
+			for (const id of ["unsaved", "after-takeover"]) {
+				const carriers = new Set(
+					tabs.pushed
+						.filter(({ mutation }) =>
+							mutation.ops.some(
+								(op) => op.type === "set" && op.value.id === id,
+							),
+						)
+						.map(({ clientId, mutation }) => `${clientId}:${mutation.id}`),
+				)
+				expect(carriers.size).toBe(1)
+			}
+		},
+	)
+
+	tabsTest(
+		"a tab whose join to a new leader fails rejoins on its next request",
+		async ({ tabs, server }) => {
+			const first = await tabs.open("tab1")
+			const second = await tabs.open("tab2")
+			await using gatekeeper = new Gatekeeper()
+				.add("client", () => second.client)
+				.build()
+			const { client } = gatekeeper
+			client.subscribe({ collection: "todos" })
+
+			// The new leader cannot save the joining tab's session, so the join fails
+			// and the write waiting for it rejects.
+			tabs.storageFaults.failingKey = "session"
+			tabs.storageFaults.failedWrites = Infinity
+			first.crash()
+			const failedTx = client.transact()
+			failedTx.set("todos", todo("during-failure"))
+			await expect((await client.commit(failedTx)).result).rejects.toThrow(
+				"Client storage commit failed",
+			)
+
+			// Once storage recovers, the next write rejoins and delivers both writes.
+			tabs.storageFaults.failedWrites = 0
+			const tx = client.transact()
+			tx.set("todos", todo("after-recovery"))
+			await (
+				await client.commit(tx)
+			).result
+			expect(await server.query({ collection: "todos" })).toEqual([
+				todo("after-recovery"),
+				todo("during-failure"),
+			])
+		},
+	)
+
 	tabsTest(
 		"tabs sharing storage deliver every write under their own client IDs",
 		async ({ tabs, server }) => {
@@ -302,7 +764,8 @@ describe("TandemClient tabs", () => {
 				// Crash after the forwarded write and its session marker are saved,
 				// before the follower hears that the leader has it.
 				afterStorageCommit: (writes) => {
-					if (writes.set?.some(({ key }) => key[0] === "session")) crashLeader()
+					if (writes.set?.some(({ key }) => key[0] === "tab-write"))
+						crashLeader()
 				},
 			})
 			crashLeader = () => first.crash()
@@ -391,6 +854,28 @@ describe("TandemClient tabs", () => {
 				todo("restored"),
 			])
 			expect(() => second.client.transact()).not.toThrow()
+		},
+	)
+
+	tabsTest(
+		"records a tab restored at startup survive views of its subscriptions",
+		async ({ tabs }) => {
+			const first = await tabs.open("tab1", { autoConnect: false })
+			const tx = first.client.transact()
+			tx.set("todos", todo("restored"))
+			await first.client.commit(tx)
+			const second = await tabs.open("tab2", { autoConnect: false })
+
+			// A later view covers only tab 2's subscriptions, which exclude the record.
+			second.client.subscribe({ collection: "todos", where: { id: "other" } })
+			const otherTx = first.client.transact()
+			otherTx.set("todos", todo("other"))
+			await first.client.commit(otherTx)
+			await second.client.pullFromRemote()
+			expect(second.client.query({ collection: "todos" })).toEqual([
+				todo("other"),
+				todo("restored"),
+			])
 		},
 	)
 
@@ -492,9 +977,7 @@ describe("TandemClient tabs", () => {
 			tabs.remote.pushHangs = true
 			const tx = client1.transact()
 			tx.set("todos", todo("stalled-reconnect"))
-			await (
-				await client1.commit(tx)
-			).result
+			const committing = client1.commit(tx).then((call) => call.result)
 			await expect.poll(() => tabs.remote.stalledPushes).toBeGreaterThan(0)
 
 			// Reconnect schedules synchronization without blocking connection control.
@@ -510,11 +993,12 @@ describe("TandemClient tabs", () => {
 			await (
 				await client1.close()
 			).result
+			await expect(committing).rejects.toThrow("Tab session closed")
 		},
 	)
 
 	tabsTest(
-		"commits, flushes, and handoff do not wait for a stalled remote",
+		"saving and handoff do not wait for a stalled server commit",
 		async ({ tabs }) => {
 			const first = await tabs.open("tab1")
 			const second = await tabs.open("tab2")
@@ -522,12 +1006,13 @@ describe("TandemClient tabs", () => {
 
 			const tx = second.client.transact()
 			tx.set("todos", todo("saved"))
-			await second.client.commit(tx)
+			const committed = second.client.commit(tx)
 			await second.client.flushClientStorage()
 
 			// The leader saves and hands off; a reopened tab restores the write.
 			await first.client.close()
 			await second.client.close()
+			await expect(committed).rejects.toThrow("Tab session closed")
 			const reopened = await tabs.open("tab3", { autoConnect: false })
 			expect(reopened.client.query({ collection: "todos" })).toEqual([
 				todo("saved"),
@@ -581,6 +1066,33 @@ describe("TandemClient tabs", () => {
 	)
 
 	tabsTest(
+		"a write made while clear is in flight completes in the cleared replica",
+		async ({ tabs, server }) => {
+			await tabs.open("tab1")
+			const second = await tabs.open("tab2")
+			second.client.subscribe({ collection: "todos" })
+			const beforeTx = second.client.transact()
+			beforeTx.set("todos", todo("before-clear"))
+			await second.client.commit(beforeTx)
+
+			// The write follows the clear request, so the clear does not discard it.
+			const clearing = second.client.clear()
+			const tx = second.client.transact()
+			tx.set("todos", todo("during-clear"))
+			const committed = second.client.commit(tx)
+			await clearing
+			await committed
+			expect(await server.query({ collection: "todos" })).toEqual([
+				todo("before-clear"),
+				todo("during-clear"),
+			])
+			await expect
+				.poll(() => second.client.query({ collection: "todos" }))
+				.toEqual([todo("before-clear"), todo("during-clear")])
+		},
+	)
+
+	tabsTest(
 		"a closed leader stops syncing even if its connection finishes later",
 		async ({ tabs }) => {
 			tabs.remote.connectDelayMs = 50
@@ -617,8 +1129,14 @@ describe("TandemClient tabs", () => {
 		"tabs reach the leader without waiting for the sync interval",
 		async ({ tabs }) => {
 			// A minute between remote syncs; tabs must not wait on it to reach the leader.
-			const first = await tabs.open("tab1", { syncInterval: 60_000 })
-			const second = await tabs.open("tab2", { syncInterval: 60_000 })
+			const first = await tabs.open("tab1", {
+				syncInterval: 60_000,
+				autoConnect: false,
+			})
+			const second = await tabs.open("tab2", {
+				syncInterval: 60_000,
+				autoConnect: false,
+			})
 			first.client.subscribe({ collection: "todos" })
 
 			const tx = second.client.transact()

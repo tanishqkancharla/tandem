@@ -14,6 +14,7 @@ import { getSchemaCodecs } from "./schema/collectionCodecs.js"
 import { SyncEngine, type ClientId, type RemoteApi } from "./sync/SyncEngine.js"
 import {
 	browserTabEnvironment,
+	tabLifetimeLock,
 	type TabEnvironmentApi,
 } from "./tabs/TabEnvironment.js"
 import { TabHub } from "./tabs/TabHub.js"
@@ -21,11 +22,7 @@ import { TabSession } from "./tabs/TabSession.js"
 import { Transaction } from "./transaction/Transaction.js"
 import { ConsoleLoggerSink, Logger, type LoggerApi } from "./utils/Logger.js"
 import { randomId, type RngApi } from "./utils/randomId.js"
-import {
-	TaskTimer,
-	VisibilityAwareTimer,
-	type TimerApi,
-} from "./utils/Timer.js"
+import { VisibilityAwareTimer, type TimerApi } from "./utils/Timer.js"
 import { tag, type AsyncUnsubscribe } from "./utils/typeUtils.js"
 
 export type TandemTabsOptions = {
@@ -119,17 +116,13 @@ export class TandemClient<
 
 	get clientId(): ClientId {
 		// Await ready before using the saved identity; hydration may replace this fallback.
-		return this.db.isReady && this.syncEngine
+		return this.db.isReady && (this.syncEngine || this.tabSession)
 			? this.db.replica.clientId
 			: this.initialClientId
 	}
 
 	private readonly syncEngine?: SyncEngine<Schema>
 	private readonly tabSession?: TabSession<Schema, Relations>
-	/** Whether this tab wants the leader connected to the remote. */
-	private wantsRemote = false
-	/** Whether the first pull from the leader has restored the shared replica. */
-	private restoredFromLeader = false
 	private readonly logger: LoggerApi
 	private readonly rng: RngApi
 
@@ -138,7 +131,7 @@ export class TandemClient<
 	 * the database reports itself ready before the leader has restored it.
 	 */
 	private get isReady() {
-		return this.tabSession ? this.restoredFromLeader : this.db.isReady
+		return this.tabSession ? this.tabSession.isReady : this.db.isReady
 	}
 
 	constructor({
@@ -173,6 +166,8 @@ export class TandemClient<
 			this.tabSession = new TabSession<Schema, Relations>({
 				...sharedTabs,
 				codecs,
+				db: this.db,
+				autoConnect,
 				logger: this.logger.scope("tab-session"),
 				rng: this.rng,
 				lead: async (channel) => {
@@ -185,60 +180,27 @@ export class TandemClient<
 						clientStorageWriteInterval: leaderTimer(clientStorageWriteInterval),
 						rng: this.rng,
 					})
-					// The hub connects once a tab asks, after restoring the queries tabs sync.
-					const leaderSyncEngine = new SyncEngine({
-						remote,
-						db: leaderDb,
-						autoConnect: false,
-						logger: this.logger.scope("leader-sync-engine"),
-						rng: this.rng,
-						syncInterval: leaderTimer(syncInterval),
-					})
 					await leaderDb.ready
+					// The hub connects once a tab asks, after restoring the queries tabs sync.
 					const hub = new TabHub({
 						channel,
 						db: leaderDb,
-						syncEngine: leaderSyncEngine,
+						remote,
+						syncInterval: leaderTimer(syncInterval),
 						codecs,
 						logger: this.logger.scope("tab-hub"),
 						rng: this.rng,
+						watchTab: (tabId, closed) =>
+							sharedTabs.environment.locks.request(
+								tabLifetimeLock(sharedTabs.name, tabId),
+								closed,
+							),
 					})
 					hub.start()
 					return hub
 				},
-				onLeaderChange: () => {
-					// Pull from the new leader, then resend anything it has not acknowledged.
-					const syncEngine = this.syncEngine!
-					void syncEngine
-						.disconnect()
-						.then(() => syncEngine.connect())
-						.then(() => this.requestRemote())
-						.catch((error: unknown) => {
-							this.logger.error({
-								message: "error following new leader",
-								error,
-							})
-						})
-				},
 			})
-			this.syncEngine = new SyncEngine({
-				remote: this.tabSession,
-				db: this.db,
-				autoConnect: false,
-				logger: this.logger.scope("sync-engine"),
-				rng: this.rng,
-				// The leader is in this browser, so a tab sends to it without waiting to batch.
-				syncInterval: new TaskTimer(),
-			})
-			this.wantsRemote = autoConnect
-			// Ready once the first pull from the leader restores the shared replica.
-			this.ready = this.syncEngine.connect().then(() => {
-				this.restoredFromLeader = true
-				// Like a single tab's auto-connect, a failure is logged, not thrown.
-				void this.requestRemote().catch((error: unknown) => {
-					this.logger.error({ message: "error connecting to remote", error })
-				})
-			})
+			this.ready = this.tabSession.ready
 			return
 		}
 
@@ -266,17 +228,13 @@ export class TandemClient<
 		this.ready = this.db.ready
 	}
 
-	pullFromRemote(): Promise<void> {
-		if (!this.syncEngine) {
-			return Promise.resolve()
+	async pullFromRemote(): Promise<void> {
+		if (this.tabSession) {
+			const result = await this.tabSession.control("pullFromRemote")
+			if (result instanceof Error) throw result
+			return
 		}
-
-		this.logger.info({ message: "pulling from remote" })
-		if (this.tabSession)
-			return this.tabSession
-				.control(this.clientId, "pullFromRemote")
-				.then(() => this.syncEngine!.queuePull())
-		return this.syncEngine.queuePull()
+		await this.syncEngine?.queuePull()
 	}
 
 	query<Query extends RelationalQuery<Schema, Relations>>(
@@ -295,9 +253,14 @@ export class TandemClient<
 		destroy: () => void
 	} {
 		const { result, destroy } = this.db.subscribe(query, callback ?? (() => {}))
-		const unsubscribe = this.syncEngine?.subscribe(
-			_encodeRelationalQuery(query.collection, query, this.db.relations),
+		const encoded = _encodeRelationalQuery(
+			query.collection,
+			query,
+			this.db.relations,
 		)
+		const unsubscribe = this.tabSession
+			? this.tabSession.subscribe(encoded)
+			: this.syncEngine?.subscribe(encoded)
 
 		return {
 			result,
@@ -324,11 +287,15 @@ export class TandemClient<
 		}
 
 		this.logger.info({ message: "committing transaction" })
-		if (!this.syncEngine) {
+		if (!this.syncEngine && !this.tabSession) {
 			this.db.commit(transaction)
 			return Promise.resolve()
 		}
-		const commitPromise = this.syncEngine.commit(transaction)
+		const commitPromise = this.tabSession
+			? this.tabSession.commit(transaction).then((result) => {
+					if (result instanceof Error) throw result
+				})
+			: this.syncEngine!.commit(transaction)
 
 		// Ignored commit promises should not surface unhandled rejections.
 		commitPromise.catch((error) => {
@@ -339,30 +306,23 @@ export class TandemClient<
 	}
 
 	async connect(): Promise<AsyncUnsubscribe> {
-		if (!this.syncEngine) {
-			throw new Error("Attempted to connect without a remote server configured")
-		}
 		if (this.tabSession) {
-			// Tabs stay connected to the leader. It stays connected to the remote while any tab asks.
-			this.wantsRemote = true
-			await this.requestRemote()
+			const result = await this.tabSession.connect()
+			if (result instanceof Error) throw result
 			return () => this.disconnect()
 		}
-		return await this.syncEngine.connect()
+		if (!this.syncEngine)
+			throw new Error("Attempted to connect without a remote server configured")
+		return this.syncEngine.connect()
 	}
 
 	async disconnect() {
-		if (!this.syncEngine) {
-			this.logger.warn({
-				message: "attempted to disconnect without a remote server configured",
-			})
+		if (this.tabSession) {
+			const result = await this.tabSession.disconnect()
+			if (result instanceof Error) throw result
 			return
 		}
-		if (this.tabSession) {
-			this.wantsRemote = false
-			return await this.tabSession.control(this.clientId, "disconnect")
-		}
-		return await this.syncEngine.disconnect()
+		return this.syncEngine?.disconnect()
 	}
 
 	/**
@@ -370,9 +330,9 @@ export class TandemClient<
 	 */
 	async flushClientStorage(): Promise<void> {
 		if (this.tabSession) {
-			// The leader answers a push once its storage holds the writes.
-			await this.syncEngine!.queuePush()
-			return await this.tabSession.control(this.clientId, "flush")
+			const result = await this.tabSession.flush()
+			if (result instanceof Error) throw result
+			return
 		}
 		const result = await this.db.flushClientStorage()
 		if (result instanceof Error) throw result
@@ -387,21 +347,13 @@ export class TandemClient<
 		if (!this.isReady) await this.ready
 
 		if (this.tabSession) {
-			const previous = this.clientId
-			await this.tabSession.control(previous, "clear")
-			await this.syncEngine!.clear()
-			await this.requestRemote()
-			await this.tabSession.control(previous, "leave")
-			return await this.syncEngine!.queuePull()
+			const result = await this.tabSession.clear()
+			if (result instanceof Error) throw result
+			return
 		}
 		if (this.syncEngine) return this.syncEngine.clear()
 		const result = await this.db.clear()
 		if (result instanceof Error) throw result
-	}
-
-	private async requestRemote() {
-		if (this.wantsRemote)
-			await this.tabSession!.control(this.clientId, "connect")
 	}
 
 	/**
@@ -413,7 +365,6 @@ export class TandemClient<
 		await this.flushClientStorage().catch((error: unknown) => {
 			this.logger.error({ message: "error flushing before close", error })
 		})
-		await this.syncEngine!.disconnect()
-		await this.tabSession.close(this.clientId)
+		await this.tabSession.close()
 	}
 }

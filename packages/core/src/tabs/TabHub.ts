@@ -1,63 +1,82 @@
+import * as errore from "errore"
 import type { Database } from "../Database.js"
 import type { ScanWindow } from "../query/Query.js"
 import type { AnyRelations, AnySchema } from "../schema/Schema.js"
 import type { CollectionCodecs } from "../schema/collectionCodecs.js"
-import { collectionIdToTuple } from "../schema/Schema.js"
-import type {
-	ClientId,
-	Cookie,
-	PatchRemoveOp,
-	PullResponse,
-	PushResponse,
-	RemoteRequestError,
+import {
 	SyncEngine,
+	type ClientId,
+	type PushResponse,
+	type RemoteApi,
 } from "../sync/SyncEngine.js"
 import type { Mutation, MutationId } from "../transaction/Transaction.js"
 import type { LoggerApi } from "../utils/Logger.js"
 import type { RngApi } from "../utils/randomId.js"
+import { isEqual } from "../utils/objectUtils.js"
+import { ThrottleQueue } from "../utils/ThrottleQueue.js"
+import type { TimerApi } from "../utils/Timer.js"
 import { tag, unreachable, type Unsubscribe } from "../utils/typeUtils.js"
 import type { TabChannelApi, TabMessageListener } from "./TabEnvironment.js"
-import { TabCodec, type TabMessage, type TabRequest } from "./TabProtocol.js"
+import {
+	TabCodec,
+	type TabMessage,
+	type TabRequest,
+	type TabResult,
+	type TabView,
+} from "./TabProtocol.js"
 
-/** How long a previous leader's sessions keep their queries without pulling again. */
 const INHERITED_QUERY_GRACE_MS = 60_000
-
+class TabViewError extends errore.createTaggedError({
+	name: "TabViewError",
+	message: "Unable to encode tab view",
+}) {}
+class TabConnectionError extends errore.createTaggedError({
+	name: "TabConnectionError",
+	message: "Leader connection did not complete",
+}) {}
+class TabServerError extends errore.createTaggedError({
+	name: "TabServerError",
+	message: "$detail",
+}) {}
+/** The latest remote push that carried a leader mutation a tab is waiting on. */
+type PushAttempt = { response?: Promise<PushResponse> }
 type SessionState<Schema extends AnySchema> = {
-	cookie?: Cookie
-	scanWindowKey?: string
-	revision?: number
-	/** Every record this session holds from the leader, by collection and ID. */
-	sentRecords: Map<string, PatchRemoveOp<Schema>>
-	/** The session's queries, added to the leader's own scan window. */
+	scanWindow: ScanWindow<Schema>
 	subscriptions: Map<string, Unsubscribe>
-	/** Restored from storage; this leader has not heard from the session yet. */
 	inherited: boolean
+	lastView?: TabView<Schema>
+	watching: boolean
+	/** Records the join restored outside the scan window, which views keep sending. */
+	restored: Set<string>
 }
-
 export type TabHubArgs<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema>,
 > = {
 	channel: TabChannelApi
 	db: Database<Schema, Relations>
-	syncEngine: SyncEngine<Schema>
+	remote: RemoteApi<Schema>
+	syncInterval: TimerApi
 	codecs: CollectionCodecs<Schema>
 	logger: LoggerApi
 	rng: RngApi
+	watchTab: (tabId: string, closed: () => Promise<void>) => Promise<void>
 }
+const recordKey = ({
+	collection,
+	value,
+}: {
+	collection: string
+	value: { id: unknown }
+}) => JSON.stringify([collection, value.id])
+const errorMessage = (error: unknown) =>
+	error instanceof Error ? error.message : String(error)
+const unavailable = (error: unknown) => ({
+	error: "unavailable" as const,
+	message: errorMessage(error),
+})
 
-function recordKey(collection: string, id: unknown) {
-	return JSON.stringify([collection, collectionIdToTuple(id as never)])
-}
-
-function errorMessage(error: unknown) {
-	return error instanceof Error ? error.message : String(error)
-}
-
-/**
- * Runs in the leader tab. It owns the persisted replica and its connection to
- * the remote, and serves every tab session the way a server serves clients.
- */
+/** Owns persisted data and server synchronization; tabs use direct commands and views. */
 export class TabHub<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
@@ -68,13 +87,13 @@ export class TabHub<
 	private readonly syncEngine: SyncEngine<Schema>
 	private readonly codecs: CollectionCodecs<Schema>
 	private readonly logger: LoggerApi
-	private readonly rng: RngApi
+	private readonly watchTab: TabHubArgs<Schema, Relations>["watchTab"]
 	private readonly sessions = new Map<ClientId, SessionState<Schema>>()
-	/** Sessions that want the replica connected to the remote. */
+	private readonly pushAttempts = new Map<MutationId, PushAttempt>()
 	private readonly connectedSessions = new Set<ClientId>()
+	private readonly views: ThrottleQueue<void>
 	private connection: Promise<void> = Promise.resolve()
 	private revision = 0
-	private pokeQueued = false
 	private stopped = false
 	private inheritedQueryTimer?: ReturnType<typeof setTimeout>
 	private unsubscribeFromRecords?: Unsubscribe
@@ -82,44 +101,60 @@ export class TabHub<
 	constructor(args: TabHubArgs<Schema, Relations>) {
 		this.channel = args.channel
 		this.db = args.db
-		this.syncEngine = args.syncEngine
+		const { remote } = args
+		this.syncEngine = new SyncEngine({
+			// Observe pushes so a tab's commit awaits the server response that carried it.
+			remote: {
+				connect: (api) => remote.connect(api),
+				pull: (request) => remote.pull(request),
+				push: (request) => {
+					const response = remote.push(request)
+					if (request.clientId === this.db.replica.clientId)
+						for (const { id } of request.mutations) {
+							const attempt = this.pushAttempts.get(id)
+							if (attempt) attempt.response = response
+						}
+					return response
+				},
+			},
+			db: args.db,
+			autoConnect: false,
+			logger: args.logger.scope("sync-engine"),
+			rng: args.rng,
+			syncInterval: args.syncInterval,
+		})
 		this.codecs = args.codecs
 		this.logger = args.logger
-		this.rng = args.rng
+		this.watchTab = args.watchTab
 		this.leaderId = args.rng.randomId()
+		this.views = new ThrottleQueue(() => this.publishViews(), {
+			waitForNextTick: () => Promise.resolve(),
+		})
 	}
 
-	/** Call after the replica loads and before it connects to the remote. */
 	start() {
-		// Keep pulling what the previous leader's sessions synced. A first pull
-		// without their queries would remove those records from storage.
 		for (const { clientId, scanWindow } of this.db.sessionScanWindows()) {
 			const state = this.getSession(clientId)
 			state.inherited = true
-			state.scanWindowKey = JSON.stringify(scanWindow)
-			this.subscribe(state, scanWindow)
+			this.subscribe(clientId, state, scanWindow)
 		}
-		this.inheritedQueryTimer = setTimeout(
-			() => this.dropInheritedQueries(),
-			INHERITED_QUERY_GRACE_MS,
-		)
+		this.inheritedQueryTimer = setTimeout(() => {
+			for (const [sessionId, state] of this.sessions)
+				if (state.inherited) this.forget(sessionId)
+		}, INHERITED_QUERY_GRACE_MS)
 		this.channel.addEventListener("message", this.onMessage)
-		this.unsubscribeFromRecords = this.db.subscribeToRecords(() => {
-			this.revision += 1
-			this.queuePoke()
-		})
+		this.unsubscribeFromRecords = this.db.subscribeToRecords(() =>
+			this.queueViews(),
+		)
 		this.post({ type: "leader", leaderId: this.leaderId })
-		this.logger.info({ message: "leading tabs", leaderId: this.leaderId })
 	}
 
-	/** Stops serving sessions and leaves every write in storage for the next leader. */
 	async stop() {
 		this.stopped = true
 		clearTimeout(this.inheritedQueryTimer)
 		this.channel.removeEventListener("message", this.onMessage)
 		this.channel.close()
 		this.unsubscribeFromRecords?.()
-		// Disconnecting first drops any pull still in flight, so nothing reaches storage after the flush.
 		await this.syncEngine.disconnect()
 		const flushed = await this.db.flushClientStorage()
 		if (flushed instanceof Error)
@@ -130,36 +165,46 @@ export class TabHub<
 	}
 
 	private readonly onMessage: TabMessageListener = ({ data }) => {
-		const message = data as TabMessage
+		const message = data as TabMessage<Schema>
 		switch (message.type) {
 			case "hello":
 				this.post({ type: "leader", leaderId: this.leaderId })
 				return
 			case "request": {
-				if (message.leaderId !== this.leaderId) return
-				const { sessionId, requestId } = message
-				const respond = (result: unknown) =>
+				// A late announcement from an earlier leader can redirect a tab to it.
+				// Correct a tab that joins anyone else, since only one leader runs.
+				if (message.leaderId !== this.leaderId) {
+					if (message.request.method === "join")
+						this.post({ type: "leader", leaderId: this.leaderId })
+					return
+				}
+				const respond = (
+					result: TabResult<Schema>,
+					stage: "saved" | "complete" = "complete",
+				) =>
 					this.post({
 						type: "response",
 						leaderId: this.leaderId,
-						sessionId,
-						requestId,
+						sessionId: message.sessionId,
+						requestId: message.requestId,
+						stage,
 						result,
 					})
-				void this.handle(sessionId, message.request as TabRequest<Schema>).then(
-					respond,
+				void this.handle(
+					message.sessionId,
+					message.request as TabRequest<Schema>,
+					(result) => respond(result, "saved"),
+				).then(
+					(result) => respond(result),
 					(error: unknown) => {
 						this.logger.error({ message: "error serving tab request", error })
-						respond({
-							error: "unavailable",
-							message: errorMessage(error),
-						} satisfies RemoteRequestError)
+						respond(unavailable(error))
 					},
 				)
 				return
 			}
 			case "leader":
-			case "poke":
+			case "view":
 			case "response":
 				return
 			default:
@@ -170,15 +215,59 @@ export class TabHub<
 	private async handle(
 		sessionId: ClientId,
 		request: TabRequest<Schema>,
-	): Promise<unknown> {
+		saved: (result: TabResult<Schema>) => void,
+	): Promise<TabResult<Schema>> {
 		switch (request.method) {
-			case "push":
-				return this.push(
-					sessionId,
-					TabCodec.decodeMutations(this.codecs, request.mutations),
+			case "join": {
+				const state = this.getSession(sessionId)
+				state.inherited = false
+				if (!state.watching) {
+					state.watching = true
+					void this.watchTab(request.tabId, async () => {
+						if (this.stopped || this.sessions.get(sessionId) !== state) return
+						this.forget(sessionId)
+						await this.updateConnection()
+					}).catch((error: unknown) =>
+						this.logger.error({
+							message: "error watching tab lifetime",
+							error,
+						}),
+					)
+				}
+				this.subscribe(sessionId, state, request.scanWindow)
+				if (request.connected) this.connectedSessions.add(sessionId)
+				else this.connectedSessions.delete(sessionId)
+				// Connection work is separate from local restore and saving. Replayed writes
+				// capture this barrier before waiting for their server result.
+				void this.updateConnection({ sync: request.connected }).catch(
+					(error: unknown) => {
+						this.logger.error({
+							message: "error connecting tab replica",
+							error,
+						})
+					},
 				)
-			case "pull":
-				return this.pull(sessionId, request.cookie, request.scanWindow)
+				return this.snapshot(sessionId, true)
+			}
+			case "subscribe":
+				this.subscribe(
+					sessionId,
+					this.getSession(sessionId),
+					request.scanWindow,
+				)
+				return this.snapshot(sessionId)
+			case "commit": {
+				const [mutation] = TabCodec.decodeMutations(this.codecs, [
+					request.mutation,
+				])
+				return this.commit(sessionId, mutation!, request.waitForServer, saved)
+			}
+			case "finishWrite": {
+				const receipt = this.db.tabWrite(sessionId, request.mutationId)
+				if (receipt) this.pushAttempts.delete(receipt.mutationId)
+				this.db.forgetTabWrite(sessionId, request.mutationId)
+				return { ok: true }
+			}
 			case "connect":
 				this.connectedSessions.add(sessionId)
 				await this.updateConnection({ sync: true })
@@ -189,26 +278,18 @@ export class TabHub<
 				return { ok: true }
 			case "pullFromRemote":
 				await this.syncEngine.queuePull()
-				return { ok: true }
+				return this.snapshot(sessionId)
 			case "flush": {
-				const flushed = await this.db.flushClientStorage()
-				if (flushed instanceof Error) throw flushed
-				return { ok: true }
+				const result = await this.db.flushClientStorage()
+				return result instanceof Error ? unavailable(result) : { ok: true }
 			}
 			case "clear":
+				this.pushAttempts.clear()
 				await this.syncEngine.clear()
-				// Every session restarts from the cleared replica.
-				for (const [clientId, state] of this.sessions) {
-					state.cookie = undefined
-					if (state.scanWindowKey)
-						this.db.setSessionScanWindow(
-							clientId,
-							JSON.parse(state.scanWindowKey),
-						)
-				}
-				this.revision += 1
-				this.queuePoke()
-				return { ok: true }
+				for (const [clientId, state] of this.sessions)
+					this.db.setSessionScanWindow(clientId, state.scanWindow)
+				this.queueViews()
+				return this.snapshot(sessionId)
 			case "leave":
 				this.forget(sessionId)
 				await this.updateConnection()
@@ -218,147 +299,150 @@ export class TabHub<
 		}
 	}
 
-	/** Connects the replica while any session wants it connected. */
 	private updateConnection({ sync = false } = {}) {
 		this.connection = this.connection
 			.catch(() => {})
 			.then(async () => {
 				const wanted = !this.stopped && this.connectedSessions.size > 0
-				// Explicit connect requests retry pending sync on an existing connection too.
-				// Syncing runs in the background, so a stalled remote push never blocks this chain.
 				if (wanted && (sync || !this.syncEngine.isConnected))
 					await this.syncEngine.connect({ waitForSync: false })
-				// A connect that finished after stop() must not sync beside the next leader.
-				const keep = !this.stopped && this.connectedSessions.size > 0
-				if (!keep && this.syncEngine.isConnected)
+				if (
+					(this.stopped || !this.connectedSessions.size) &&
+					this.syncEngine.isConnected
+				)
 					await this.syncEngine.disconnect()
 			})
 		return this.connection
 	}
 
-	private async push(
+	private async commit(
 		sessionId: ClientId,
-		mutations: Mutation<Schema>[],
-	): Promise<PushResponse> {
-		for (const mutation of mutations) {
-			const lastMutationId = this.db.sessionLastMutationId(sessionId)
-			// Resent after a leader change; storage already holds this mutation.
-			if (lastMutationId !== undefined && mutation.id <= lastMutationId)
-				continue
-			// A session this replica has no marker for starts at whatever it sends first.
+		mutation: Mutation<Schema>,
+		waitForServer: boolean,
+		saved: (result: TabResult<Schema>) => void,
+	): Promise<TabResult<Schema>> {
+		const lastMutationId = this.db.sessionLastMutationId(sessionId)
+		let committed: Promise<void> | undefined
+		if (lastMutationId === undefined || mutation.id > lastMutationId) {
 			if (lastMutationId !== undefined && mutation.id !== lastMutationId + 1)
-				return {
-					error: "mutation-gap",
-					expectedMutationId: lastMutationId + 1,
-					receivedMutationId: mutation.id,
-				}
-
-			const transaction = this.db.transact()
+				return unavailable(
+					`Expected tab mutation ${lastMutationId + 1}, received ${mutation.id}`,
+				)
+			const tx = this.db.transact()
 			for (const op of mutation.ops) {
 				switch (op.type) {
 					case "set":
-						transaction.set(op.collection, op.value)
+						tx.set(op.collection, op.value)
 						break
 					case "update":
-						transaction.update(op.collection, op.id, op.payload)
+						tx.update(op.collection, op.id, op.payload)
 						break
 					case "remove":
-						transaction.remove(op.collection, op.id)
+						tx.remove(op.collection, op.id)
 						break
 					default:
 						unreachable(op)
 				}
 			}
-			// The replica's outbox retries a failed remote push, as it would for a single tab.
-			this.syncEngine
-				.commit(transaction, { clientId: sessionId, mutationId: mutation.id })
-				.catch((error: unknown) => {
-					this.logger.error({
-						message: "error pushing forwarded mutation",
-						error,
-					})
-				})
+			committed = this.syncEngine.commit(tx, {
+				clientId: sessionId,
+				mutationId: mutation.id,
+			})
+			committed.catch((error: unknown) =>
+				this.logger.error({
+					message: "error pushing forwarded mutation",
+					error,
+				}),
+			)
 		}
-		// The session's write is safe once storage holds it; do not wait for the network.
+		// A repeated request finds the receipt that the first one committed atomically.
+		const receipt = this.db.tabWrite(sessionId, mutation.id)
+		if (!receipt || receipt.clientId !== this.db.replica.clientId)
+			return unavailable("Forwarded write was cleared")
+		// Track pushes before the sync queue can run one.
+		const attempt = waitForServer
+			? this.pushAttempt(receipt.mutationId)
+			: undefined
 		const flushed = await this.db.flushClientStorage()
-		if (flushed instanceof Error)
-			return { error: "unavailable", message: flushed.message }
+		if (flushed instanceof Error) return unavailable(flushed)
+		saved({ ok: true })
+		this.queueViews()
+		if (!attempt) return { ok: true }
+		const result = await committed?.catch(
+			(cause: unknown) =>
+				new TabServerError({ detail: errorMessage(cause), cause }),
+		)
+		if (result instanceof Error) return unavailable(result)
+		const pushed = await this.awaitServer(receipt.mutationId, attempt)
+		if (pushed instanceof Error) return unavailable(pushed)
+		if (receipt.clientId !== this.db.replica.clientId)
+			return unavailable("Forwarded write was cleared")
 		return { ok: true }
 	}
 
-	private async pull(
-		sessionId: ClientId,
-		cookie: Cookie | undefined,
-		scanWindow: ScanWindow<Schema>,
-	): Promise<PullResponse<Schema> | RemoteRequestError> {
-		const state = this.getSession(sessionId)
-		state.inherited = false
-		const scanWindowKey = JSON.stringify(scanWindow)
-		if (scanWindowKey !== state.scanWindowKey) {
-			this.subscribe(state, scanWindow)
-			this.db.setSessionScanWindow(sessionId, scanWindow)
-		}
-		const lastMutationId =
-			this.db.sessionLastMutationId(sessionId) ?? tag<MutationId>(0)
-		const reset = cookie === undefined || cookie !== state.cookie
-		let response: PullResponse<Schema>
-		if (
-			!reset &&
-			state.scanWindowKey === scanWindowKey &&
-			state.revision === this.revision
-		) {
-			response = { cookie, patch: {}, lastMutationId }
-		} else {
-			const records = this.db.scanWindow(scanWindow)
-			if (records instanceof Error)
-				return { error: "invalid-request", message: records.message }
-			// A new session gets every record, as a single tab restores its whole
-			// checkpoint. Later pulls narrow it to the scan window.
-			const set = reset ? this.db.scanRecords() : records
-			const sentRecords = new Map(
-				set.map(({ collection, value }) => [
-					recordKey(collection, value.id),
-					{ collection, id: value.id } as PatchRemoveOp<Schema>,
-				]),
-			)
-			const remove = reset
-				? []
-				: [...state.sentRecords]
-						.filter(([key]) => !sentRecords.has(key))
-						.map(([, op]) => op)
-			state.cookie = tag<Cookie>(this.rng.randomId())
-			state.scanWindowKey = scanWindowKey
-			state.revision = this.revision
-			state.sentRecords = sentRecords
-			response = {
-				cookie: state.cookie,
-				patch: { ...(reset ? { reset: true } : {}), set, remove },
-				lastMutationId,
-			}
-		}
-		// Acknowledge only what storage holds, so a session never drops a write the leader could lose.
-		const flushed = await this.db.flushClientStorage()
-		if (flushed instanceof Error)
-			return { error: "unavailable", message: flushed.message }
-		return TabCodec.encodePull(this.codecs, response)
+	private pushAttempt(mutationId: MutationId) {
+		const existing = this.pushAttempts.get(mutationId)
+		if (existing) return existing
+		const attempt: PushAttempt = {}
+		this.pushAttempts.set(mutationId, attempt)
+		return attempt
 	}
 
-	private getSession(sessionId: ClientId): SessionState<Schema> {
+	/**
+	 * Awaits the push that carried a leader mutation. The original commit skips
+	 * its push while disconnected, and a replacement leader inherits the
+	 * mutation without its commit, so either pushes once the connection settles.
+	 */
+	private async awaitServer(mutationId: MutationId, attempt: PushAttempt) {
+		if (!attempt.response) {
+			const connection = await this.connection.catch(
+				(cause: unknown) => new TabConnectionError({ cause }),
+			)
+			// Like standalone commits after a failed auto-connect, keep the write offline.
+			// The connection path already reports the failure to the logger.
+			if (connection instanceof Error || this.stopped) return
+			if (!attempt.response && this.db.outbox.get([mutationId])) {
+				const pushed = await this.syncEngine
+					.queuePush()
+					.catch(
+						(cause: unknown) =>
+							new TabServerError({ detail: errorMessage(cause), cause }),
+					)
+				if (pushed instanceof Error) return pushed
+			}
+		}
+		const response = await attempt.response?.catch(
+			(cause: unknown) =>
+				new TabServerError({ detail: errorMessage(cause), cause }),
+		)
+		if (response instanceof Error) return response
+		if (response && "error" in response)
+			return new TabServerError({
+				detail: "Remote push failed",
+				cause: response,
+			})
+	}
+
+	private getSession(sessionId: ClientId) {
 		const existing = this.sessions.get(sessionId)
 		if (existing) return existing
-		const created: SessionState<Schema> = {
-			sentRecords: new Map(),
+		const state: SessionState<Schema> = {
+			scanWindow: [],
 			subscriptions: new Map(),
 			inherited: false,
+			watching: false,
+			restored: new Set(),
 		}
-		this.sessions.set(sessionId, created)
-		return created
+		this.sessions.set(sessionId, state)
+		return state
 	}
 
 	private subscribe(
+		sessionId: ClientId,
 		state: SessionState<Schema>,
 		scanWindow: ScanWindow<Schema>,
 	) {
+		state.scanWindow = scanWindow
 		const queries = new Map(
 			scanWindow.map((query) => [JSON.stringify(query), query]),
 		)
@@ -367,10 +451,10 @@ export class TabHub<
 			unsubscribe()
 			state.subscriptions.delete(key)
 		}
-		for (const [key, query] of queries) {
+		for (const [key, query] of queries)
 			if (!state.subscriptions.has(key))
 				state.subscriptions.set(key, this.syncEngine.subscribe(query))
-		}
+		this.db.setSessionScanWindow(sessionId, scanWindow)
 	}
 
 	private forget(sessionId: ClientId) {
@@ -380,29 +464,110 @@ export class TabHub<
 			unsubscribe()
 		this.sessions.delete(sessionId)
 		this.connectedSessions.delete(sessionId)
+		for (const receipt of this.db.forgetTabWrites(sessionId))
+			this.pushAttempts.delete(receipt.mutationId)
 		this.db.setSessionScanWindow(sessionId, undefined)
 	}
 
-	/** Sessions that never reached this leader belonged to closed tabs. */
-	private dropInheritedQueries() {
-		for (const [sessionId, state] of this.sessions) {
-			if (state.inherited) this.forget(sessionId)
+	private captureView(sessionId: ClientId, restore = false) {
+		const state = this.getSession(sessionId)
+		const records = restore
+			? this.db.scanRecords()
+			: this.db.scanWindow(state.scanWindow)
+		if (records instanceof Error) return records
+		// A tab restores every record when it joins. Keep sending the ones outside its
+		// scan window, so a view does not remove them, until they enter the window or
+		// are deleted.
+		if (restore) state.restored = new Set(records.map(recordKey))
+		else if (state.restored.size > 0) {
+			for (const record of records) state.restored.delete(recordKey(record))
+			const kept = this.db
+				.scanRecords()
+				.filter((record) => state.restored.has(recordKey(record)))
+			state.restored = new Set(kept.map(recordKey))
+			records.push(...kept)
+		}
+		const lastMutationId =
+			this.db.sessionLastMutationId(sessionId) ?? tag<MutationId>(0)
+		const encoded = errore.try({
+			try: () =>
+				TabCodec.encodeView(this.codecs, {
+					revision: ++this.revision,
+					records,
+					lastMutationId,
+				}),
+			catch: (cause) => new TabViewError({ cause }),
+		})
+		if (encoded instanceof Error) return encoded
+		const previous = state.lastView
+		if (
+			!restore &&
+			previous?.lastMutationId === lastMutationId &&
+			isEqual(previous.records, encoded.records)
+		)
+			return
+		return encoded
+	}
+
+	private async snapshot(
+		sessionId: ClientId,
+		restore = false,
+	): Promise<TabResult<Schema>> {
+		const view = this.captureView(sessionId, restore)
+		if (view instanceof Error) return unavailable(view)
+		const flushed = await this.db.flushClientStorage()
+		if (flushed instanceof Error) return unavailable(flushed)
+		if (view) this.rememberView(sessionId, view)
+		return { ok: true, view }
+	}
+
+	private queueViews() {
+		if (this.stopped) return
+		void this.views.enqueue()
+	}
+
+	private async publishViews() {
+		if (this.stopped) return
+		const views = [...this.sessions]
+			.filter(([, state]) => !state.inherited)
+			.map(([sessionId]) => ({ sessionId, view: this.captureView(sessionId) }))
+		const flushed = await this.db.flushClientStorage()
+		if (flushed instanceof Error) {
+			this.logger.error({ message: "error saving tab view", error: flushed })
+			return
+		}
+		const groups: { sessionIds: ClientId[]; view: TabView<Schema> }[] = []
+		for (const { sessionId, view } of views) {
+			if (view instanceof Error) {
+				this.logger.error({ message: "error publishing tab view", error: view })
+				continue
+			}
+			if (!view) continue
+			const group = groups.find(
+				(entry) =>
+					entry.view.lastMutationId === view.lastMutationId &&
+					isEqual(entry.view.records, view.records),
+			)
+			if (group) {
+				group.sessionIds.push(sessionId)
+				group.view = view
+			} else groups.push({ sessionIds: [sessionId], view })
+		}
+		// BroadcastChannel delivers every message to every tab. Share identical
+		// views in one broadcast instead of cloning the same rows once per tab.
+		for (const { sessionIds, view } of groups) {
+			for (const sessionId of sessionIds) this.rememberView(sessionId, view)
+			this.post({ type: "view", leaderId: this.leaderId, sessionIds, view })
 		}
 	}
 
-	private queuePoke() {
-		if (this.pokeQueued) return
-		this.pokeQueued = true
-		queueMicrotask(() => {
-			this.pokeQueued = false
-			this.post({ type: "poke", leaderId: this.leaderId })
-		})
+	private rememberView(sessionId: ClientId, view: TabView<Schema>) {
+		const state = this.sessions.get(sessionId)
+		if (state && (!state.lastView || state.lastView.revision < view.revision))
+			state.lastView = view
 	}
 
-	private post(message: TabMessage) {
-		// A request still being served, or a queued poke, can reach here after
-		// stop() closed the channel. BroadcastChannel throws once closed.
-		if (this.stopped) return
-		this.channel.postMessage(message)
+	private post(message: TabMessage<Schema>) {
+		if (!this.stopped) this.channel.postMessage(message)
 	}
 }

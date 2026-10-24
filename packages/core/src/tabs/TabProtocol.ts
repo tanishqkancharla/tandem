@@ -1,19 +1,26 @@
 import type { ScanWindow } from "../query/Query.js"
 import type { AnySchema, CollectionName } from "../schema/Schema.js"
 import type { CollectionCodecs } from "../schema/collectionCodecs.js"
-import type {
-	ClientId,
-	Cookie,
-	PatchSetOp,
-	PullResponse,
-} from "../sync/SyncEngine.js"
+import type { ClientId, PatchSetOp } from "../sync/SyncEngine.js"
 import type { Mutation, MutationOp } from "../transaction/Transaction.js"
 import { unreachable } from "../utils/typeUtils.js"
 
-/** Calls a tab session makes on the leader tab. */
+export type TabView<Schema extends AnySchema> = {
+	revision: number
+	lastMutationId: Mutation<Schema>["id"]
+	records: PatchSetOp<Schema>[]
+}
+
 export type TabRequest<Schema extends AnySchema> =
-	| { method: "push"; mutations: Mutation<Schema>[] }
-	| { method: "pull"; cookie?: Cookie; scanWindow: ScanWindow<Schema> }
+	| {
+			method: "join"
+			tabId: string
+			scanWindow: ScanWindow<Schema>
+			connected: boolean
+	  }
+	| { method: "subscribe"; scanWindow: ScanWindow<Schema> }
+	| { method: "commit"; mutation: Mutation<Schema>; waitForServer: boolean }
+	| { method: "finishWrite"; mutationId: Mutation<Schema>["id"] }
 	| {
 			method:
 				| "connect"
@@ -24,25 +31,33 @@ export type TabRequest<Schema extends AnySchema> =
 				| "leave"
 	  }
 
-export type TabMessage =
-	/** A session asks the current leader to announce itself. */
+export type TabResult<Schema extends AnySchema = AnySchema> =
+	| { ok: true; view?: TabView<Schema> }
+	| { error: "unavailable"; message: string }
+
+export type TabMessage<Schema extends AnySchema = AnySchema> =
 	| { type: "hello" }
 	| { type: "leader"; leaderId: string }
-	/** The leader's records changed; sessions should pull. */
-	| { type: "poke"; leaderId: string }
+	| {
+			type: "view"
+			leaderId: string
+			sessionIds: ClientId[]
+			view: TabView<Schema>
+	  }
 	| {
 			type: "request"
 			leaderId: string
 			sessionId: ClientId
 			requestId: string
-			request: TabRequest<AnySchema>
+			request: TabRequest<Schema>
 	  }
 	| {
 			type: "response"
 			leaderId: string
 			sessionId: ClientId
 			requestId: string
-			result: unknown
+			stage: "saved" | "complete"
+			result: TabResult<Schema>
 	  }
 
 // Records cross tabs by structured clone, which drops class instances. Collection
@@ -91,23 +106,20 @@ function transformMutations<Schema extends AnySchema>(
 	}))
 }
 
-function transformPull<Schema extends AnySchema>(
+function transformView<Schema extends AnySchema>(
 	codecs: CollectionCodecs<Schema>,
-	response: PullResponse<Schema>,
+	view: TabView<Schema>,
 	direction: "encode" | "decode",
-): PullResponse<Schema> {
+): TabView<Schema> {
 	return {
-		...response,
-		patch: {
-			...response.patch,
-			set: response.patch.set?.map(
-				(op) =>
-					({
-						collection: op.collection,
-						value: transformValue(codecs, op.collection, op.value, direction),
-					}) as PatchSetOp<Schema>,
-			),
-		},
+		...view,
+		records: view.records.map(
+			(op) =>
+				({
+					collection: op.collection,
+					value: transformValue(codecs, op.collection, op.value, direction),
+				}) as PatchSetOp<Schema>,
+		),
 	}
 }
 
@@ -122,13 +134,12 @@ export namespace TabCodec {
 		mutations: Mutation<Schema>[],
 	) => transformMutations(codecs, mutations, "decode")
 
-	export const encodePull = <Schema extends AnySchema>(
+	export const encodeView = <Schema extends AnySchema>(
 		codecs: CollectionCodecs<Schema>,
-		response: PullResponse<Schema>,
-	) => transformPull(codecs, response, "encode")
-
-	export const decodePull = <Schema extends AnySchema>(
+		view: TabView<Schema>,
+	) => transformView(codecs, view, "encode")
+	export const decodeView = <Schema extends AnySchema>(
 		codecs: CollectionCodecs<Schema>,
-		response: PullResponse<Schema>,
-	) => transformPull(codecs, response, "decode")
+		view: TabView<Schema>,
+	) => transformView(codecs, view, "decode")
 }
