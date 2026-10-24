@@ -31,6 +31,13 @@ import {
 	type WriteOps,
 } from "tuple-database"
 import * as errore from "errore"
+import {
+	DstTabGroup,
+	type DstTabCoverage,
+	type DstTabViolation,
+} from "./DstTabs.js"
+
+export type { DstTabCoverage } from "./DstTabs.js"
 import { SimPrng } from "./SimPrng.js"
 
 export interface DstTodo {
@@ -116,7 +123,7 @@ function remoteWithPokeEvents(
 
 type DstClientTuple = TandemClientTuple<DstSchema>
 
-function roundTrip<Value>(value: Value): Value {
+export function roundTrip<Value>(value: Value): Value {
 	return JSON.parse(JSON.stringify(value)) as Value
 }
 
@@ -171,17 +178,29 @@ export function isNetworkHandoff({ sentBy, waitingFor }: PendingCall): boolean {
 
 export const clientNames = ["client1", "client2"] as const
 export type DstClientName = (typeof clientNames)[number]
+/** A tab in the run's shared-storage tab group. */
+export type DstTabName = `tab${number}`
+/** A client or a tab, either of which can write. */
+export type DstWriterName = DstClientName | DstTabName
 
-/** Each participant's todos when the run ended; null for a client that was down. */
+const isTab = (name: DstWriterName): name is DstTabName =>
+	name.startsWith("tab")
+
+/**
+ * Each participant's todos when the run ended; null for a client that was
+ * down. `tabs` holds the open tabs of a run with a tab group.
+ */
 export type DstFinalStates = Record<"server", DstTodo[]> &
-	Record<DstClientName, DstTodo[] | null>
+	Record<DstClientName, DstTodo[] | null> & {
+		tabs?: Record<DstTabName, DstTodo[]>
+	}
 
 export type DstViolation =
 	/** A settled client's subscribed view differs from the authoritative server. */
 	| {
 			kind: "clientState"
 			step: "quiescence"
-			client: DstClientName
+			client: DstWriterName
 			expected: DstTodo[]
 			actual: DstTodo[]
 	  }
@@ -197,6 +216,7 @@ export type DstViolation =
 			shown: DstTodo | null
 			previous: DstTodo | null
 	  }
+	| DstTabViolation
 
 /** Where a dropped handoff was lost, which decides what its sender can know. */
 export type DstFaultKind =
@@ -206,6 +226,8 @@ export type DstFaultKind =
 	| "responseLost"
 	/** A server poke never reached its client. */
 	| "pokeLost"
+	/** A tab leader's storage commit failed. */
+	| "saveFailed"
 
 export class DstFaultError extends errore.createTaggedError({
 	name: "DstFaultError",
@@ -218,14 +240,14 @@ export type DstTraceRecord =
 	| {
 			type: "set"
 			step: number
-			client: DstClientName
+			client: DstWriterName
 			mutationId: number
 			item: DstTodo
 	  }
 	| {
 			type: "update"
 			step: number
-			client: DstClientName
+			client: DstWriterName
 			mutationId: number
 			id: string
 			payload: Partial<Omit<DstTodo, "id">>
@@ -233,7 +255,7 @@ export type DstTraceRecord =
 	| {
 			type: "remove"
 			step: number
-			client: DstClientName
+			client: DstWriterName
 			mutationId: number
 			id: string
 	  }
@@ -241,11 +263,13 @@ export type DstTraceRecord =
 	| ({ type: "drop"; step: number; fault: DstFaultKind } & DstBoundary)
 	| { type: "serverSet"; step: number; item: DstTodo }
 	| { type: "serverRemove"; step: number; id: string }
-	| { type: "crash"; step: number; client: DstClientName }
+	| { type: "crash"; step: number; client: DstWriterName }
 	| { type: "restart"; step: number; client: DstClientName; clientId: string }
+	| { type: "openTab"; step: number; tab: DstTabName }
+	| { type: "toggleTab"; step: number; tab: DstTabName; wantsServer: boolean }
 
 function faultKind(
-	{ label, waitingFor }: PendingCall,
+	{ label, waitingFor }: Pick<PendingCall, "label" | "waitingFor">,
 	eventDelivered: boolean,
 ): DstFaultKind {
 	// A poke call first stops at the poke itself; after delivery its boundaries
@@ -261,29 +285,46 @@ function settle(): Promise<void> {
 
 /** A change the run applies in one step; its trace record adds what it observed. */
 export type DstIntent =
-	| { type: "set"; client: DstClientName; item: DstTodo }
+	| { type: "set"; client: DstWriterName; item: DstTodo }
 	| {
 			type: "update"
-			client: DstClientName
+			client: DstWriterName
 			id: string
 			payload: Partial<Omit<DstTodo, "id">>
 	  }
-	| { type: "remove"; client: DstClientName; id: string }
+	| { type: "remove"; client: DstWriterName; id: string }
 	/** The server writes on its own, as an agent saving its reply would. */
 	| { type: "serverSet"; item: DstTodo }
 	| { type: "serverRemove"; id: string }
 	| { type: "advance"; call: string }
 	| { type: "drop"; call: string }
-	| { type: "crash"; client: DstClientName }
+	| { type: "crash"; client: DstWriterName }
 	| { type: "restart"; client: DstClientName }
+	| { type: "openTab" }
+	| { type: "toggleTab"; tab: DstTabName }
 
-/** A call held at a boundary, with its stable trace name. */
-export type DstPendingCall = PendingCall & { name: string }
+/**
+ * A call held at a boundary, or a held tab step, with its stable trace name.
+ * `droppable` work may be lost or failed by a fault.
+ */
+export type DstPendingCall = {
+	name: string
+	sentBy: string
+	waitingFor: string
+	droppable: boolean
+}
 
 export type DstOutcome = {
 	violation: DstViolation | undefined
 	states: DstFinalStates
 	clientIds: readonly (string | null)[]
+	/** Present when the run had a tab group. */
+	tabCoverage?: DstTabCoverage
+}
+
+export type DstWorldOptions = {
+	/** Tabs sharing one client storage, besides the two clients; 0 for none. */
+	tabs?: number
 }
 
 /**
@@ -301,20 +342,25 @@ export class DstWorld implements AsyncDisposable {
 	// The generation whose storage has loaded, so it can take writes.
 	private readonly loaded = new Map<DstClientName, number>()
 	// Trace IDs only; correctness does not depend on tracking every mutation.
-	private readonly writeCounts = new Map<DstClientName, number>()
+	private readonly writeCounts = new Map<DstWriterName, number>()
 	private readonly callNames = new Map<CallHandle<unknown>, string>()
 	private readonly labelCounts = new Map<string, number>()
 	private readonly deliveredEvents = new Set<CallHandle<unknown>>()
 	// Controls resolve when their call reaches its next boundary, which can
 	// depend on other held calls, so a step starts them without waiting.
 	private readonly inFlight: Promise<unknown>[] = []
-	private held: readonly DstPendingCall[] = []
+	private held: readonly (DstPendingCall & {
+		handle?: CallHandle<unknown>
+		label?: string
+	})[] = []
 	// The server history index of the last value each client showed per
 	// server-owned record. A restart may show older synced values, so it resets.
 	private readonly shown = new Map<string, number>()
 	private lastStep = -1
 	private orderViolation: DstViolation | undefined
 	maxPendingCalls = 0
+	/** Browser tabs sharing one client storage, when the run has them. */
+	tabs?: DstTabGroup
 
 	private constructor(
 		private readonly server: TandemServer<DstSchema, {}>,
@@ -322,7 +368,10 @@ export class DstWorld implements AsyncDisposable {
 		private readonly harness: DstHarness,
 	) {}
 
-	static async start(seed: number): Promise<DstWorld> {
+	static async start(
+		seed: number,
+		{ tabs = 0 }: DstWorldOptions = {},
+	): Promise<DstWorld> {
 		const storage = new InMemoryServerStorage()
 		const server = new TandemServer<DstSchema, {}>({
 			schema: dstSchemaDefinition,
@@ -336,9 +385,23 @@ export class DstWorld implements AsyncDisposable {
 			// A restart runs the factory again with the next generation's ids.
 			idSource: (label) =>
 				SimPrng.idSource(seed, `${label}.${world?.generations[label] ?? 0}`),
+			tabs: () => world?.tabs,
 		})
 		world = new DstWorld(server, storage, harness)
 		for (const name of clientNames) await world.boot(name)
+		if (tabs > 0) {
+			// Each server call a tab makes is a Gatekeeper call, ordered and lost
+			// like the clients' calls.
+			const group = new DstTabGroup(seed, (tab) => ({
+				connect: async (api) =>
+					(await harness.tabsRemote.connect(tab, api)).result,
+				push: async (args) => (await harness.tabsRemote.push(args)).result,
+				pull: async (args) => (await harness.tabsRemote.pull(args)).result,
+			}))
+			world.tabs = group
+			for (let index = 0; index < tabs; index++) group.open()
+			await group.heal(() => Promise.resolve(), settle)
+		}
 		await harness.activateGates()
 		return world
 	}
@@ -351,18 +414,45 @@ export class DstWorld implements AsyncDisposable {
 		return clientNames.filter((name) => this.crashed.has(name))
 	}
 
-	/** Running clients whose storage has loaded, so they can take writes. */
-	get writers(): readonly DstClientName[] {
-		return this.running.filter(
-			(name) => this.loaded.get(name) === this.generations[name],
-		)
+	/** Running clients whose storage has loaded, and restored tabs, so they can take writes. */
+	get writers(): readonly DstWriterName[] {
+		return [
+			...this.running.filter(
+				(name) => this.loaded.get(name) === this.generations[name],
+			),
+			...(this.tabs?.writers ?? []),
+		]
 	}
 
-	/** Calls held at a boundary, named in creation order so names never depend on choices. */
+	/** Running clients and open tabs, any of which can crash. */
+	get crashable(): readonly DstWriterName[] {
+		return [...this.running, ...(this.tabs?.alive ?? [])]
+	}
+
+	/**
+	 * Calls held at a boundary, then held tab steps, named in creation order so
+	 * names never depend on choices.
+	 */
 	pending(): readonly DstPendingCall[] {
-		this.held = this.harness
-			.pendingCalls()
-			.map((call) => ({ ...call, name: this.nameCall(call) }))
+		this.held = [
+			...this.harness.pendingCalls().map((call) => ({
+				name: this.nameCall(call),
+				sentBy: call.sentBy,
+				waitingFor: call.waitingFor,
+				// Tab leaders' connects are never lost, which keeps their commit checks strict.
+				droppable:
+					isNetworkHandoff(call) &&
+					!call.label.startsWith("tabsRemote.connect"),
+				handle: call.handle,
+				label: call.label,
+			})),
+			...(this.tabs?.pending() ?? []).map(({ name, kind, droppable }) => ({
+				name,
+				sentBy: "tabs",
+				waitingFor: kind,
+				droppable,
+			})),
+		]
 		this.maxPendingCalls = Math.max(this.maxPendingCalls, this.held.length)
 		return this.held
 	}
@@ -380,19 +470,46 @@ export class DstWorld implements AsyncDisposable {
 				return this.writeOnServer(step, intent)
 			case "advance": {
 				const target = this.find(intent.call)
-				this.deliveredEvents.add(target.handle)
-				this.inFlight.push(target.handle.continueTo(target.waitingFor))
+				if (!target.handle) this.tabs!.advance(target.name)
+				else {
+					this.deliveredEvents.add(target.handle)
+					this.inFlight.push(target.handle.continueTo(target.waitingFor))
+				}
 				return { type: "advance", step, ...boundaryOf(target) }
 			}
 			case "drop": {
 				const target = this.find(intent.call)
-				const kind = faultKind(target, this.deliveredEvents.has(target.handle))
+				if (!target.handle) {
+					const lost = this.tabs!.drop(target.name)
+					const fault = lost === "poke" ? "pokeLost" : "saveFailed"
+					return { type: "drop", step, fault, ...boundaryOf(target) }
+				}
+				const kind = faultKind(
+					{ label: target.label!, waitingFor: target.waitingFor },
+					this.deliveredEvents.has(target.handle),
+				)
+				if (kind === "responseLost" && target.label === "tabsRemote.push")
+					this.tabs!.coverage.acceptedPushRepliesLost += 1
 				this.inFlight.push(
 					target.handle.fail(new DstFaultError({ call: target.name, kind })),
 				)
 				return { type: "drop", step, fault: kind, ...boundaryOf(target) }
 			}
+			case "openTab":
+				return { type: "openTab", step, tab: this.tabs!.open() }
+			case "toggleTab":
+				return {
+					type: "toggleTab",
+					step,
+					tab: intent.tab,
+					wantsServer: this.tabs!.toggle(intent.tab),
+				}
 			case "crash":
+				if (isTab(intent.client)) {
+					this.tabs!.crash(intent.client)
+					this.writeCounts.delete(intent.client)
+					return { type: "crash", step, client: intent.client }
+				}
 				this.crashed.add(intent.client)
 				this.loaded.delete(intent.client)
 				this.writeCounts.delete(intent.client)
@@ -465,6 +582,20 @@ export class DstWorld implements AsyncDisposable {
 			await this.harness.restart(name)
 			await this.boot(name)
 		}
+		// Tabs resend what they retained and reconnect their leader, so the
+		// clients' final pulls see their writes.
+		await this.tabs?.heal(async (client) => {
+			// A save that failed before healing can still reject one flush.
+			for (let attempt = 0; attempt < 3; attempt++)
+				if (
+					await client.flushClientStorage().then(
+						() => true,
+						() => false,
+					)
+				)
+					break
+			await client.connect()
+		}, settle)
 		for (const name of clientNames) {
 			await (
 				await this.harness[name].disconnect()
@@ -480,26 +611,37 @@ export class DstWorld implements AsyncDisposable {
 			).result
 		}
 		await this.drain()
+		await this.tabs?.heal((client) => client.pullFromRemote(), settle)
 
+		const server = await this.serverTodos()
 		const states: DstFinalStates = {
-			server: await this.serverTodos(),
+			server,
 			client1: this.crashed.has("client1") ? null : this.todosOf("client1"),
 			client2: this.crashed.has("client2") ? null : this.todosOf("client2"),
+			...(this.tabs && {
+				tabs: Object.fromEntries(
+					this.tabs.alive.map((tab) => [tab, this.todosOf(tab as DstTabName)]),
+				),
+			}),
 		}
-		const client = clientNames.find(
-			(name) => JSON.stringify(states[name]) !== JSON.stringify(states.server),
+		const diverged = [
+			...clientNames.filter((name) => states[name] !== null),
+			...((this.tabs?.alive ?? []) as DstTabName[]),
+		].find(
+			(name) => JSON.stringify(this.todosOf(name)) !== JSON.stringify(server),
 		)
+		this.tabs?.checkDelivered()
 		const violation: DstViolation | undefined =
 			this.orderViolation ??
-			(client
+			(diverged
 				? {
 						kind: "clientState",
 						step: "quiescence",
-						client,
-						expected: states.server,
-						actual: this.todosOf(client),
+						client: diverged,
+						expected: server,
+						actual: this.todosOf(diverged),
 					}
-				: undefined)
+				: this.tabs?.violation)
 		const clientIds = clientNames.map((name) =>
 			this.crashed.has(name) ? null : this.harness[name].clientId,
 		)
@@ -508,7 +650,12 @@ export class DstWorld implements AsyncDisposable {
 				await this.harness[name].disconnect()
 			).result
 		}
-		return { violation, states, clientIds }
+		return {
+			violation,
+			states,
+			clientIds,
+			...(this.tabs && { tabCoverage: this.tabs.coverage }),
+		}
 	}
 
 	/** Releases every gate and lets all work in flight finish. */
@@ -518,6 +665,7 @@ export class DstWorld implements AsyncDisposable {
 	}
 
 	async [Symbol.asyncDispose](): Promise<void> {
+		this.tabs?.close()
 		await this.harness[Symbol.asyncDispose]()
 		await this.server.close()
 	}
@@ -526,23 +674,32 @@ export class DstWorld implements AsyncDisposable {
 		step: number,
 		intent: Extract<DstIntent, { type: "set" | "update" | "remove" }>,
 	): DstTraceRecord {
-		const client = this.harness[intent.client]
-		const tx = client.transact()
-		switch (intent.type) {
-			case "set":
-				tx.set("todos", intent.item)
-				break
-			case "update":
-				tx.update("todos", intent.id, intent.payload)
-				break
-			case "remove":
-				tx.remove("todos", intent.id)
-				break
-			default:
-				return unreachable(intent)
+		const change = (tx: ReturnType<TandemClient<DstSchema>["transact"]>) => {
+			switch (intent.type) {
+				case "set":
+					tx.set("todos", intent.item)
+					return
+				case "update":
+					tx.update("todos", intent.id, intent.payload)
+					return
+				case "remove":
+					tx.remove("todos", intent.id)
+					return
+				default:
+					return unreachable(intent)
+			}
 		}
 		const mutationId = (this.writeCounts.get(intent.client) ?? 0) + 1
 		this.writeCounts.set(intent.client, mutationId)
+		if (isTab(intent.client)) {
+			// A tab's commit can wait on its crashed leader forever, so the run
+			// tracks it in the tab group rather than in work to drain.
+			this.tabs!.commit(intent.client, change, textOf(intent))
+			return { ...intent, step, mutationId }
+		}
+		const client = this.harness[intent.client]
+		const tx = client.transact()
+		change(tx)
 		// The handle arrives only once the commit reaches a boundary, which may
 		// wait on another held call. Its call shows up in pending() then.
 		this.inFlight.push(client.commit(tx))
@@ -588,14 +745,17 @@ export class DstWorld implements AsyncDisposable {
 		return name
 	}
 
-	private find(call: string): DstPendingCall {
+	private find(call: string) {
 		const target = this.held.find(({ name }) => name === call)
 		if (!target) throw new Error(`${call} is not held at a boundary`)
 		return target
 	}
 
-	todosOf(name: DstClientName): DstTodo[] {
-		return [...this.harness[name].query({ collection: "todos" })].sort(byId)
+	todosOf(name: DstWriterName): DstTodo[] {
+		const todos = isTab(name)
+			? this.tabs!.todosOf(name)
+			: this.harness[name].query({ collection: "todos" })
+		return [...todos].sort(byId)
 	}
 
 	private async serverTodos(): Promise<DstTodo[]> {
@@ -607,16 +767,80 @@ function byId(a: DstTodo, b: DstTodo): number {
 	return a.id.localeCompare(b.id)
 }
 
+/**
+ * The text a set writes, which is unique to the step that wrote it. Updates
+ * are not tracked: one whose record is gone commits no operation.
+ */
+function textOf(
+	intent: Extract<DstIntent, { type: "set" | "update" | "remove" }>,
+) {
+	return intent.type === "set" ? intent.item.text : undefined
+}
+
 function boundaryOf(call: DstPendingCall): DstBoundary {
 	return { call: call.name, sentBy: call.sentBy, waitingFor: call.waitingFor }
+}
+
+/**
+ * The server as a tab group's leader reaches it. Each call is a Gatekeeper
+ * call, so the run orders and loses it like a client's. Pokes become held tab
+ * steps.
+ */
+function tabsRemote(
+	server: RemoteApi<DstSchema>,
+	tabs: () => DstTabGroup | undefined,
+) {
+	return {
+		connect: async (tab: DstTabName, api: ClientApi<DstSchema>) => {
+			const connected = await server.connect({
+				...api,
+				poke: (payload) => {
+					// Records cross the network as data, as they do for the clients.
+					const sent = payload && roundTrip(payload)
+					tabs()?.poke(tab, () => api.poke(sent))
+					return Promise.resolve()
+				},
+			})
+			if (typeof connected === "function") tabs()?.connected()
+			return connected
+		},
+		push: (args: Parameters<RemoteApi<DstSchema>["push"]>[0]) =>
+			server.push(args),
+		pull: (args: Parameters<RemoteApi<DstSchema>["pull"]>[0]) =>
+			server.pull(args),
+	}
+}
+
+/**
+ * The server service. It records what a push delivered for the tab group
+ * before the reply leaves, so a lost reply still counts as accepted.
+ */
+function observedServer(
+	server: TandemServer<DstSchema, {}>,
+	tabs: () => DstTabGroup | undefined,
+): RemoteApi<DstSchema> &
+	Pick<TandemServer<DstSchema, {}>, "transact" | "commit"> {
+	return {
+		transact: () => server.transact(),
+		commit: (tx) => server.commit(tx),
+		connect: (api) => server.connect(api),
+		pull: (args) => server.pull(args),
+		push: async (args) => {
+			const response = await server.push(args)
+			if (!("error" in response)) tabs()?.accepted(args)
+			return response
+		},
+	}
 }
 
 function buildHarness({
 	server,
 	idSource,
+	tabs,
 }: {
 	server: TandemServer<DstSchema, {}>
 	idSource: (label: DstClientName) => RngApi
+	tabs: () => DstTabGroup | undefined
 }) {
 	const logger = new Logger({ sinks: [] })
 	const createClient = (
@@ -642,7 +866,7 @@ function buildHarness({
 	}
 
 	return new Gatekeeper()
-		.add("server", () => server)
+		.add("server", () => observedServer(server, tabs))
 		.add("client1Timer", () => new DstTimer(), timerGates)
 		.add("client2Timer", () => new DstTimer(), timerGates)
 		.add("client1Storage", () => new DstClientStorage())
@@ -663,6 +887,7 @@ function buildHarness({
 				client2Storage,
 			),
 		)
+		.add("tabsRemote", ({ server }) => tabsRemote(server, tabs))
 		.build()
 }
 

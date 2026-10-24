@@ -14,13 +14,22 @@ import { DstSimulation } from "./DstSimulation.js"
 import { DstWorld, serverOwnedIds } from "./DstWorld.js"
 
 describe("Deterministic simulation testing", () => {
-	it("converges to the server with interleaved calls and no faults", async () => {
-		const result = await new DstSimulation({ seed: 3, steps: 300 }).execute()
+	it.each([0, 2])(
+		"converges to the server with interleaved calls, no faults, and %i tabs",
+		async (tabs) => {
+			const result = await new DstSimulation({
+				seed: 3,
+				steps: 300,
+				tabs,
+			}).execute()
 
-		expect(result.violation).toBeUndefined()
-		expect(result.states.client1).toEqual(result.states.server)
-		expect(result.states.client2).toEqual(result.states.server)
-	})
+			expect(result.violation).toBeUndefined()
+			expect(result.states.client1).toEqual(result.states.server)
+			expect(result.states.client2).toEqual(result.states.server)
+			for (const todos of Object.values(result.states.tabs ?? {}))
+				expect(todos).toEqual(result.states.server)
+		},
+	)
 
 	it.each(["client1", "client2"] as const)(
 		"preserves disjoint offline field updates when %s edits completion",
@@ -94,16 +103,22 @@ describe("Deterministic simulation testing", () => {
 		expect(result.states.client2).toEqual(result.states.server)
 	})
 
-	it("restarts crashed clients from their storage and converges", async () => {
-		const result = await new DstSimulation({
-			seed: 3,
-			steps: 300,
-			crashRate: 0.02,
-		}).execute()
+	it.each([0, 2])(
+		"restarts crashed clients and tabs from their storage and converges with %i tabs",
+		async (tabs) => {
+			const result = await new DstSimulation({
+				seed: 3,
+				steps: 300,
+				crashRate: 0.02,
+				tabs,
+			}).execute()
 
-		expect(result.trace.filter(({ type }) => type === "crash")).not.toEqual([])
-		expect(result.violation).toBeUndefined()
-	})
+			expect(result.trace.filter(({ type }) => type === "crash")).not.toEqual(
+				[],
+			)
+			expect(result.violation).toBeUndefined()
+		},
+	)
 
 	it("keeps several calls in flight at once", async () => {
 		const result = await new DstSimulation({ seed: 3, steps: 300 }).execute()
@@ -273,5 +288,209 @@ describe("Deterministic simulation testing", () => {
 		expect(result.violation).toBeUndefined()
 		expect(result.states.client1).toEqual(result.states.server)
 		expect(result.states.client2).toEqual(result.states.server)
+	})
+})
+
+/** Advances the oldest pending step that is not held until `done` holds. */
+async function advanceUntil(
+	world: DstWorld,
+	done: () => boolean,
+	held: (call: string) => boolean = () => false,
+) {
+	let step = 1000
+	while (!done()) {
+		const next = world.pending().find(({ name }) => !held(name))
+		if (!next) throw new Error("nothing left to advance")
+		await world.apply(step++, { type: "advance", call: next.name })
+		await world.settle()
+		if (step > 3000) throw new Error("condition never held")
+	}
+}
+
+const tabTodo = (id: string) => ({
+	id,
+	text: `Tab ${id}`,
+	done: false,
+	priority: 1,
+})
+
+describe("Deterministic simulation with shared tabs", () => {
+	it("keeps tab commits honest through lost messages, failed saves, and crashes", async () => {
+		const coverage = {
+			takeoversWithPendingCommits: 0,
+			acceptedPushRepliesLost: 0,
+			failedSaves: 0,
+			serverCompletions: 0,
+		}
+		for (let seed = 1; seed <= 20; seed++) {
+			const result = await new DstSimulation({
+				seed,
+				steps: 300,
+				faultRate: 0.1,
+				crashRate: 0.02,
+				tabs: 3,
+			}).execute()
+			expect(result.violation, `seed ${seed}`).toBeUndefined()
+			for (const key of Object.keys(coverage) as (keyof typeof coverage)[])
+				coverage[key] += result.tabCoverage![key]
+		}
+
+		// Passing seeds only count if they reached the situations under test.
+		expect(coverage.takeoversWithPendingCommits).toBeGreaterThan(0)
+		expect(coverage.acceptedPushRepliesLost).toBeGreaterThan(0)
+		expect(coverage.failedSaves).toBeGreaterThan(0)
+		expect(coverage.serverCompletions).toBeGreaterThan(0)
+	})
+
+	it("replays a run with tabs to the same outcome", async () => {
+		const sink = memorySink()
+		const run = await new DstSimulation({
+			seed: 4,
+			steps: 300,
+			faultRate: 0.1,
+			crashRate: 0.02,
+			tabs: 3,
+		}).execute(sink)
+
+		const replayed = await replay(parseArtifact(formatArtifact(sink.lines)))
+
+		expect(run.trace.some(({ type }) => type === "openTab")).toBe(true)
+		expect(replayed).toEqual({
+			stepsCompleted: run.stepsCompleted,
+			violation: run.violation,
+			divergence: undefined,
+		})
+	})
+
+	it("completes a tab commit once after the server accepts it and the reply is lost in a takeover", async () => {
+		await using world = await DstWorld.start(1, { tabs: 2 })
+		const tabs = world.tabs!
+		await world.apply(0, {
+			type: "set",
+			client: "tab2",
+			item: tabTodo("lost-reply"),
+		})
+		await world.settle()
+
+		// The leader's push reaches the server, but its reply is lost, then the leader crashes.
+		const push = (waitingFor: string) =>
+			world
+				.pending()
+				.find(
+					({ name, waitingFor: next }) =>
+						name.startsWith("tabsRemote.push") && next === waitingFor,
+				)
+		await advanceUntil(world, () => push("server") !== undefined)
+		await world.apply(1, { type: "advance", call: push("server")!.name })
+		await world.settle()
+		await advanceUntil(world, () => push("tabsRemote") !== undefined)
+		await world.apply(2, { type: "drop", call: push("tabsRemote")!.name })
+		await world.apply(3, { type: "crash", client: "tab1" })
+		await world.settle()
+
+		const outcome = await world.finish()
+		expect(outcome.violation).toBeUndefined()
+		expect(outcome.tabCoverage?.acceptedPushRepliesLost).toBe(1)
+		expect(tabs.commitOf("Tab lost-reply")).toBe("completed")
+		expect(outcome.states.server).toEqual([tabTodo("lost-reply")])
+	})
+
+	it("completes a tab commit through the next leader when the leader crashes after saving it", async () => {
+		await using world = await DstWorld.start(1, { tabs: 2 })
+		const tabs = world.tabs!
+		await world.apply(0, {
+			type: "set",
+			client: "tab2",
+			item: tabTodo("saved"),
+		})
+		await world.settle()
+
+		// The forwarded write is durable, but the leader dies before tab2 hears back.
+		await advanceUntil(world, () => tabs.saved("saved"))
+		await world.apply(1, { type: "crash", client: "tab1" })
+		await world.settle()
+		expect(tabs.commitOf("Tab saved")).toBe("pending")
+
+		const outcome = await world.finish()
+		expect(outcome.violation).toBeUndefined()
+		expect(tabs.commitOf("Tab saved")).toBe("completed")
+		expect(outcome.states.server).toEqual([tabTodo("saved")])
+	})
+
+	it("resends a write whose leader save failed, ahead of newer writes, to the next leader", async () => {
+		await using world = await DstWorld.start(1, { tabs: 2 })
+		const tabs = world.tabs!
+		await world.apply(0, {
+			type: "set",
+			client: "tab2",
+			item: tabTodo("unsaved"),
+		})
+		await world.apply(1, {
+			type: "set",
+			client: "tab2",
+			item: tabTodo("newer"),
+		})
+		await world.settle()
+
+		// The leader fails to save the first write, and tab2 hears about it while the
+		// newer write is still pending.
+		const failable = () =>
+			world
+				.pending()
+				.find(
+					({ name, droppable }) => droppable && name.startsWith("tab1.save"),
+				)
+		await advanceUntil(world, () => failable() !== undefined)
+		await world.apply(2, { type: "drop", call: failable()!.name })
+		await world.settle()
+		const saving = (call: string) => call.startsWith("tab1.save")
+		await advanceUntil(
+			world,
+			() => tabs.commitOf("Tab unsaved") === "rejected",
+			saving,
+		)
+		expect(tabs.saved("unsaved")).toBe(false)
+		expect(tabs.commitOf("Tab newer")).toBe("pending")
+
+		// The leader crashes holding the first write only in memory. The next leader
+		// has no marker for tab2, so it accepts whichever write arrives first.
+		await world.apply(3, { type: "crash", client: "tab1" })
+		await world.settle()
+
+		const outcome = await world.finish()
+		expect(outcome.violation).toBeUndefined()
+		expect(outcome.states.server).toEqual([
+			tabTodo("newer"),
+			tabTodo("unsaved"),
+		])
+		expect(tabs.commitOf("Tab newer")).toBe("completed")
+	})
+
+	it("holds a saved tab commit until a replacement leader's delayed connection delivers it", async () => {
+		await using world = await DstWorld.start(1, { tabs: 2 })
+		const tabs = world.tabs!
+		await world.apply(0, { type: "crash", client: "tab1" })
+		await world.settle()
+		const connecting = (call: string) => call.startsWith("tabsRemote.connect")
+		await advanceUntil(world, () => tabs.writers.includes("tab2"), connecting)
+		await world.apply(1, {
+			type: "set",
+			client: "tab2",
+			item: tabTodo("waiting"),
+		})
+		await world.settle()
+
+		// Everything but the connection runs, so the write is saved but not complete.
+		await advanceUntil(
+			world,
+			() => world.pending().every(({ name }) => connecting(name)),
+			connecting,
+		)
+		expect(tabs.saved("waiting")).toBe(true)
+		expect(tabs.commitOf("Tab waiting")).toBe("pending")
+
+		const outcome = await world.finish()
+		expect(outcome.violation).toBeUndefined()
+		expect(tabs.commitOf("Tab waiting")).toBe("completed")
 	})
 })
