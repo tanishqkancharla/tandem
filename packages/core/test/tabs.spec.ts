@@ -833,7 +833,7 @@ describe("TandemClient tabs", () => {
 	)
 
 	tabsTest(
-		"a tab refuses to transact before its first pull restores the replica",
+		"a tab refuses to transact before joining the leader restores the replica",
 		async ({ tabs }) => {
 			const first = await tabs.open("tab1", { autoConnect: false })
 			const tx = first.client.transact()

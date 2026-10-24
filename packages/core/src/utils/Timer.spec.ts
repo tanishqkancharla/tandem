@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { TaskTimer, VisibilityAwareTimer } from "./Timer.js"
+import { VisibilityAwareTimer } from "./Timer.js"
 
 type Listener = () => void
 
@@ -21,26 +21,26 @@ function stubDocument(visibilityState: "visible" | "hidden") {
 	return document
 }
 
+/** Posts a message, which fake timers do not hold. */
+function nextTask() {
+	return new Promise<void>((resolve) => {
+		const { port1, port2 } = new MessageChannel()
+		port1.onmessage = () => {
+			port1.close()
+			resolve()
+		}
+		port2.postMessage(undefined)
+	})
+}
+
 async function settled(promise: Promise<void>) {
 	let done = false
 	void promise.then(() => (done = true))
 	// Let posted messages and microtasks run without advancing fake timers.
-	await new TaskTimer().waitForNextTick()
-	await new TaskTimer().waitForNextTick()
+	await nextTask()
+	await nextTask()
 	return done
 }
-
-describe("TaskTimer", () => {
-	afterEach(() => {
-		vi.useRealTimers()
-	})
-
-	it("resolves on the next task without timers", async () => {
-		// Fake timers never fire here, like a throttled hidden tab's timers.
-		vi.useFakeTimers()
-		await expect(settled(new TaskTimer().waitForNextTick())).resolves.toBe(true)
-	})
-})
 
 describe("VisibilityAwareTimer", () => {
 	afterEach(() => {

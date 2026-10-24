@@ -18,18 +18,16 @@ export class Timer implements TimerApi {
  * Waits for the next task by posting a message. Browsers delay timers in
  * hidden tabs by a second or more, but deliver messages promptly.
  */
-export class TaskTimer implements TimerApi {
-	waitForNextTick(): Promise<void> {
-		return new Promise((resolve) => {
-			const { port1, port2 } = new MessageChannel()
-			port1.addEventListener("message", () => {
-				port1.close()
-				resolve()
-			})
-			port1.start()
-			port2.postMessage(undefined)
+function nextTask(): Promise<void> {
+	return new Promise((resolve) => {
+		const { port1, port2 } = new MessageChannel()
+		port1.addEventListener("message", () => {
+			port1.close()
+			resolve()
 		})
-	}
+		port1.start()
+		port2.postMessage(undefined)
+	})
 }
 
 type VisibilityDocument = {
@@ -44,7 +42,6 @@ type VisibilityDocument = {
  */
 export class VisibilityAwareTimer implements TimerApi {
 	private readonly interval: number
-	private readonly task = new TaskTimer()
 
 	constructor({ interval }: { interval: number }) {
 		this.interval = interval
@@ -52,8 +49,7 @@ export class VisibilityAwareTimer implements TimerApi {
 
 	waitForNextTick(): Promise<void> {
 		const document = (globalThis as { document?: VisibilityDocument }).document
-		if (document?.visibilityState === "hidden")
-			return this.task.waitForNextTick()
+		if (document?.visibilityState === "hidden") return nextTask()
 		return new Promise((resolve) => {
 			const done = () => {
 				clearTimeout(timeout)
@@ -61,8 +57,7 @@ export class VisibilityAwareTimer implements TimerApi {
 				resolve()
 			}
 			const onVisibilityChange = () => {
-				if (document?.visibilityState === "hidden")
-					void this.task.waitForNextTick().then(done)
+				if (document?.visibilityState === "hidden") void nextTask().then(done)
 			}
 			const timeout = setTimeout(done, this.interval)
 			document?.addEventListener("visibilitychange", onVisibilityChange)

@@ -43,7 +43,7 @@ type PendingRequest<Schema extends AnySchema> = {
 	saved: ReturnType<typeof Promise.withResolvers<TabResult<Schema>>>
 }
 
-export type TabSessionArgs<
+type TabSessionArgs<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema>,
 > = {

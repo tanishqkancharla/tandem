@@ -131,10 +131,6 @@ export class SyncEngine<Schema extends AnySchema> {
 		return this.db.replica.clientId
 	}
 
-	get isConnected(): boolean {
-		return this.disconnectFromRemote !== undefined
-	}
-
 	constructor(args: SyncEngineArgs<Schema>) {
 		this.logger = args.logger
 		this.remote = args.remote
@@ -167,25 +163,13 @@ export class SyncEngine<Schema extends AnySchema> {
 		}
 	}
 
-	/**
-	 * Connects, then pulls and pushes pending mutations. With `waitForSync:
-	 * false`, resolves once connected and syncs in the background.
-	 */
-	async connect({ waitForSync = true } = {}): Promise<AsyncUnsubscribe> {
-		if (!this.isConnected) {
-			const connected = await this.connectToRemote()
-			if (connected instanceof Error) throw connected
+	async connect(): Promise<AsyncUnsubscribe> {
+		const connected = await this.connectToRemote()
+		if (connected instanceof Error) throw connected
+		await this.queuePull()
+		if (this.db.outbox.scan({ limit: 1 }).length) {
+			await this.syncQueue.enqueue("push")
 		}
-		const synced = this.queuePull().then(async () => {
-			if (this.db.outbox.scan({ limit: 1 }).length) {
-				await this.syncQueue.enqueue("push")
-			}
-		})
-		if (waitForSync) await synced
-		else
-			synced.catch((error: unknown) => {
-				this.logger.error({ message: "error syncing after connect", error })
-			})
 		return () => this.disconnect()
 	}
 

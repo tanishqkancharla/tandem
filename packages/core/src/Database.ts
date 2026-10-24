@@ -417,7 +417,7 @@ export class Database<
 			)
 	}
 
-	/** Every record, for a tab session that starts without a checkpoint. */
+	/** Every record, which restores a tab when it joins the leader. */
 	scanRecords(): ScanWindowRecord<Schema>[] {
 		return this.records
 			.scan()

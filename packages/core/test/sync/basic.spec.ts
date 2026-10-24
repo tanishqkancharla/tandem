@@ -466,3 +466,41 @@ test("overlapping connect and disconnect calls leave one remote registration", a
 	await client.disconnect()
 	expect(registrations.size).toBe(0)
 })
+
+test("a pull response that arrives after disconnect is not applied", async ({
+	server,
+}) => {
+	const held = Promise.withResolvers<void>()
+	let hold = false
+	let pulls = 0
+	const remote: RemoteApi<TestsSchema> = {
+		push: (args) => server.push(args),
+		pull: async (args) => {
+			pulls++
+			if (hold) await held.promise
+			return server.pull(args)
+		},
+		connect: (api) => server.connect(api),
+	}
+	const client = new TandemClient<TestsSchema>({
+		remote,
+		schema: testsRuntimeSchema,
+		autoConnect: false,
+		syncInterval: 0,
+	})
+	client.subscribe({ collection: "todos" })
+	await client.connect()
+
+	// The server answers a pull that was in flight when the client disconnected.
+	const tx = server.transact()
+	tx.set("todos", todo("late"))
+	await server.commit(tx)
+	hold = true
+	const started = pulls
+	const pulling = client.pullFromRemote()
+	await vi.waitFor(() => expect(pulls).toBeGreaterThan(started))
+	await client.disconnect()
+	held.resolve()
+	await pulling
+	expect(client.query({ collection: "todos" })).toEqual([])
+})

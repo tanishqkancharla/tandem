@@ -49,7 +49,7 @@ type SessionState<Schema extends AnySchema> = {
 	/** Records the join restored outside the scan window, which views keep sending. */
 	restored: Set<string>
 }
-export type TabHubArgs<
+type TabHubArgs<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema>,
 > = {
@@ -93,6 +93,10 @@ export class TabHub<
 	private readonly connectedSessions = new Set<ClientId>()
 	private readonly views: ThrottleQueue<void>
 	private connection: Promise<void> = Promise.resolve()
+	/** Whether the leader holds a server connection; `connection` orders changes. */
+	private connected = false
+	/** Settles when the remote answers the connect in progress. */
+	private registration?: PromiseWithResolvers<void>
 	private revision = 0
 	private stopped = false
 	private inheritedQueryTimer?: ReturnType<typeof setTimeout>
@@ -105,7 +109,13 @@ export class TabHub<
 		this.syncEngine = new SyncEngine({
 			// Observe pushes so a tab's commit awaits the server response that carried it.
 			remote: {
-				connect: (api) => remote.connect(api),
+				connect: async (api) => {
+					const result = await remote.connect(api)
+					if (typeof result === "function") this.registration?.resolve()
+					else
+						this.registration?.reject(new TabConnectionError({ cause: result }))
+					return result
+				},
 				pull: (request) => remote.pull(request),
 				push: (request) => {
 					const response = remote.push(request)
@@ -155,6 +165,7 @@ export class TabHub<
 		this.channel.removeEventListener("message", this.onMessage)
 		this.channel.close()
 		this.unsubscribeFromRecords?.()
+		this.connected = false
 		await this.syncEngine.disconnect()
 		const flushed = await this.db.flushClientStorage()
 		if (flushed instanceof Error)
@@ -304,13 +315,36 @@ export class TabHub<
 			.catch(() => {})
 			.then(async () => {
 				const wanted = !this.stopped && this.connectedSessions.size > 0
-				if (wanted && (sync || !this.syncEngine.isConnected))
-					await this.syncEngine.connect({ waitForSync: false })
-				if (
-					(this.stopped || !this.connectedSessions.size) &&
-					this.syncEngine.isConnected
-				)
+				if (wanted && !this.connected) {
+					// SyncEngine.connect also pulls and pushes. Connection control waits
+					// only for the remote to accept, so a stalled sync cannot block it.
+					const registration = Promise.withResolvers<void>()
+					this.registration = registration
+					void this.syncEngine.connect().catch((cause: unknown) => {
+						registration.reject(new TabConnectionError({ cause }))
+						this.logger.error({
+							message: "error syncing after connect",
+							error: cause,
+						})
+					})
+					await registration.promise
+					this.connected = true
+				} else if (wanted && sync) {
+					// Like connect, pull and then push what is still pending.
+					void this.syncEngine
+						.queuePull()
+						.then(() => this.syncEngine.queuePush())
+						.catch((error: unknown) =>
+							this.logger.error({
+								message: "error syncing after connect",
+								error,
+							}),
+						)
+				}
+				if ((this.stopped || !this.connectedSessions.size) && this.connected) {
+					this.connected = false
 					await this.syncEngine.disconnect()
+				}
 			})
 		return this.connection
 	}
