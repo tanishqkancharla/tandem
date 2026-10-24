@@ -156,7 +156,9 @@ Against `main`, `SyncEngine.ts` gains only three things:
 
 The hub tracks its own connection. It learns the remote's answer through its wrapper, so `SyncEngine` gets no connection options or state getters. A disconnect settles a connect the server has not answered and disconnects at once, and a clear whose reconnect fails marks the hub disconnected and reconnects if tabs want it. The `TaskTimer` export and unused internal exports are removed.
 
-Review found two more takeover races, fixed here with tests. After `clear()`, a tab now leaves its previous session only after that session's requests settle, so a resent write still finds its receipt. A late leader announcement from a closed leader is covered by a test that delays it across the handoff.
+Server pokes from `main` can carry the records a commit changed. They reach the leader's `SyncEngine`, which shows them as live values in the leader database, so the next view carries them to the tabs before the leader's pull confirms them. Tab databases never receive pokes; a view passes neither a cookie nor a revision to the shared reconciliation.
+
+Review found more takeover races, fixed here with tests. After `clear()`, a tab now leaves its previous session only after that session's requests settle, so a resent write still finds its receipt. A late leader announcement from a closed leader is covered by a test that delays it across the handoff. A tab that failed to lead joins the next leader. A leader that closes while a clear reconnects no longer writes shared storage after the next leader loaded it.
 
 ### ⏳ Phase 4: Simulate tabs in the deterministic simulation
 
