@@ -6,6 +6,7 @@ import {
 	writeFileSync,
 } from "node:fs"
 import { join } from "node:path"
+import { matchBy } from "@tanishqkancharla/tandem-core"
 import * as errore from "errore"
 import { SimPrng } from "./SimPrng.js"
 import {
@@ -381,15 +382,16 @@ export function tabSweepSummary(
 			.join(", ")}.`,
 		"",
 		...results.flatMap((result) =>
-			result.outcome === "ok"
-				? []
-				: [
-						`- seed ${result.seed} (${result.outcome}): ${
-							result.outcome === "violation"
-								? `${result.violation.kind}: ${result.violation.detail}`
-								: result.detail
-						}`,
-					],
+			matchBy(result, "outcome", {
+				ok: () => [],
+				violation: ({ seed, violation }) => [
+					`- seed ${seed} (violation): ${violation.kind}: ${violation.detail}`,
+				],
+				nondeterministic: ({ seed, detail }) => [
+					`- seed ${seed} (nondeterministic): ${detail}`,
+				],
+				error: ({ seed, detail }) => [`- seed ${seed} (error): ${detail}`],
+			}),
 		),
 		"",
 	].join("\n")
