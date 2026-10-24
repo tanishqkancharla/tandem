@@ -76,6 +76,10 @@ The leader publishes complete views. A view holds a revision, the session's scan
 ded3fdc
 ```
 
+```changes
+57071bc
+```
+
 `Database.applyPull` and the new `Database.applyTabView` share one reconciliation body. Only the server path writes a cookie.
 
 ```callstack
@@ -93,6 +97,8 @@ publishViews():
 	for each group of identical views:
 		post({ type: "view", sessionIds, view })
 ```
+
+The join view restores the whole replica. Later views keep carrying restored records outside the tab's scan window, with current values, until the window covers them or they are deleted, so a narrower view does not remove them ([[57071bc:packages/core/src/tabs/TabHub.ts]]).
 
 A tab ignores views with an older revision, so a delayed view cannot replace a newer one or erase a pending edit. It applies views from its current leader before the join reply arrives, because the leader does not resend a view it already published.
 
