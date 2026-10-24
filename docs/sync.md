@@ -66,7 +66,15 @@ const { cookie, patch, lastMutationId } = await remote.pull({
 
 ### Poke
 
-`connect` gives the remote a `poke` function. Calling it makes the client pull. The remote decides when to poke, for example over a WebSocket, SSE, or a polling timer. A poke is only a hint: it carries no data, and missing one delays a pull rather than losing changes. `connectTandemEventSource` pulls on every stream (re)connection, and fallback pulls check for missed updates every 60 seconds by default.
+`connect` gives the remote a `poke` function. Calling it makes the client pull. The remote decides when to poke, for example over a WebSocket, SSE, or a polling timer. Missing a poke delays a pull rather than losing changes. `connectTandemEventSource` pulls on every stream (re)connection, and fallback pulls check for missed updates every 60 seconds by default.
+
+### Live records
+
+A poke can carry the records a server commit changed in the client's view, tagged with the commit's revision. [`TandemServer`](server.md#connect-clients) sends them after every commit. The client shows them at once, in the same tick, and still pulls. Queries and subscriptions need nothing special: a server that saves a record repeatedly, such as a streaming agent reply, shows each save on every subscribed client. Like a pull, a live record can make an open transaction that read the record fail to commit.
+
+A live record stands in for the server value under any pending local writes, which replay on top of it. It is never pushed. Each pull reports the revision its read reflects and replaces every live record at or below it, so a pull that read the server before a newer commit keeps the newer live record. The client ignores a poke record that is no newer than the latest pull or the record's current live value.
+
+Live records are not saved as server state. After a restart the client shows its last pulled records with pending writes until it pulls again. Revisions number one server instance's commits. A pull from another instance replaces every live record, so a client whose pokes and pulls reach different processes gets live updates only until its next pull.
 
 ### Rebase
 
@@ -88,7 +96,7 @@ sequenceDiagram
 	R->>R: Apply mutation
 	R-->>C: poke
 	C->>R: pull(cookie, scanWindow)
-	R->>C: patch, cookie, lastMutationId
+	R->>C: patch, cookie, lastMutationId, revision
 	C->>C: Apply patch, reset to base, replay pending
 ```
 

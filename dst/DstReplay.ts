@@ -144,6 +144,9 @@ function cannotApply(
 			return world.writers.includes(record.client)
 				? undefined
 				: `${record.client} cannot take writes`
+		case "serverSet":
+		case "serverRemove":
+			return undefined
 		case "crash":
 			return world.running.includes(record.client)
 				? undefined
@@ -168,6 +171,10 @@ function intentOf(record: DstTraceRecord): DstIntent {
 			}
 		case "remove":
 			return { type: "remove", client: record.client, id: record.id }
+		case "serverSet":
+			return { type: "serverSet", item: record.item }
+		case "serverRemove":
+			return { type: "serverRemove", id: record.id }
 		case "advance":
 		case "drop":
 			return { type: record.type, call: record.call }

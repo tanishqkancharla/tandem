@@ -96,6 +96,13 @@ function todos(list: readonly DstTodo[]): string {
 }
 
 export function describeViolation(violation: DstViolation): string {
+	if (violation.kind === "movedBackwards") {
+		return [
+			`${violation.client} moved ${violation.id} backwards at step ${violation.step}`,
+			`  shown:    ${violation.shown?.text ?? "(absent)"}`,
+			`  previous: ${violation.previous?.text ?? "(absent)"}`,
+		].join("\n")
+	}
 	return [
 		`${violation.client} differs from the server after settlement`,
 		`  expected: ${todos(violation.expected)}`,

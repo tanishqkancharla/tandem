@@ -1,0 +1,451 @@
+import {
+	type ClientApi,
+	collection,
+	defineRelations,
+	defineSchema,
+	type PokePayload,
+	type RemoteApi,
+	t,
+	TandemClient,
+	type TandemClientStorageApi,
+} from "@tanishqkancharla/tandem-core"
+import type { TandemServer } from "@tanishqkancharla/tandem-server"
+import * as errore from "errore"
+import { describe, expect } from "vitest"
+import { buildGatekeeperHarness, type DemoRng, test } from "../fixtures.js"
+import type { Logger } from "@tanishqkancharla/tandem-core"
+
+type Thread = { id: string; title: string }
+type Message = { id: string; threadId: string; text: string }
+type ChatSchema = { threads: Thread; messages: Message }
+
+const chatSchema = defineSchema({
+	threads: collection({ id: t.id(), title: t.string() }),
+	messages: collection({ id: t.id(), threadId: t.string(), text: t.string() }),
+})
+
+const chatRelations = defineRelations(chatSchema, ({ many }) => ({
+	threads: { messages: many("messages", { from: "id", to: "threadId" }) },
+}))
+
+type ChatServer = TandemServer<ChatSchema, typeof chatRelations>
+type ChatClient = TandemClient<ChatSchema, typeof chatRelations>
+
+const reply = (text: string): Message => ({
+	id: "reply",
+	threadId: "thread-1",
+	text,
+})
+
+/**
+ * Holds every poke the server sends, so a test decides when, and whether, each
+ * one reaches its client. Pulls and pushes go straight to the server.
+ */
+class HeldPokes {
+	private held: (() => Promise<void>)[] = []
+	readonly connections: ClientApi<ChatSchema>[] = []
+
+	constructor(private readonly server: ChatServer) {}
+
+	readonly remote: RemoteApi<ChatSchema> = {
+		connect: (client) => {
+			this.connections.push(client)
+			return this.server.connect({
+				...client,
+				poke: (payload) => {
+					this.held.push(() => client.poke(payload))
+					return Promise.resolve()
+				},
+			})
+		},
+		pull: (args) => this.server.pull(args),
+		push: (args) => this.server.push(args),
+	}
+
+	/** Removes held pokes. Each applies at once when called and settles after its pull. */
+	take(): (() => Promise<void>)[] {
+		return this.held.splice(0)
+	}
+
+	/** Delivers held pokes in order. */
+	deliver(): Promise<void[]> {
+		return Promise.all(this.take().map((poke) => poke()))
+	}
+
+	drop() {
+		this.held = []
+	}
+}
+
+function createClient({
+	remote,
+	logger,
+	rng,
+	clientStorage,
+}: {
+	remote: RemoteApi<ChatSchema>
+	logger: Logger
+	rng: DemoRng
+	clientStorage?: TandemClientStorageApi<ChatSchema>
+}): ChatClient {
+	return new TandemClient({
+		schema: chatSchema,
+		relations: chatRelations,
+		remote,
+		logger,
+		rng: rng.create("client"),
+		clientStorage,
+		autoConnect: false,
+		syncInterval: 0,
+	})
+}
+
+const liveTest = test.extend<{
+	chat: ChatServer
+	pokes: HeldPokes
+	harness: ReturnType<typeof buildGatekeeperHarness<ChatSchema, ChatClient>>
+	commitOnServer: (
+		write: (tx: ReturnType<ChatServer["transact"]>) => void,
+	) => Promise<void>
+}>({
+	chat: async ({ makeRemote }, use) => {
+		await use(makeRemote({ schema: chatSchema, relations: chatRelations }))
+	},
+	pokes: async ({ chat }, use) => {
+		await use(new HeldPokes(chat))
+	},
+	harness: async ({ pokes, logger, rng }, use) => {
+		const clients: ChatClient[] = []
+		await using cleanup = new errore.AsyncDisposableStack()
+		await using harness = buildGatekeeperHarness({
+			server: pokes.remote,
+			createClient: (remote) => {
+				const client = createClient({ remote, logger, rng })
+				clients.push(client)
+				cleanup.defer(() => client.disconnect())
+				return client
+			},
+		})
+		for (const client of clients) {
+			await client.ready
+			await client.connect()
+		}
+		await use(harness)
+		await harness.deactivateGatesAndSettle()
+	},
+	commitOnServer: async ({ chat }, use) => {
+		await use(async (write) => {
+			const tx = chat.transact()
+			write(tx)
+			await chat.commit(tx)
+		})
+	},
+})
+
+describe("live pokes", () => {
+	liveTest(
+		"a poke shows the server's records before the pull that confirms them",
+		async ({ harness, pokes, commitOnServer }) => {
+			const { client1 } = harness
+			const seen: Message[][] = []
+			client1.subscribe({ collection: "messages" }, (messages) =>
+				seen.push(messages),
+			)
+			await (
+				await client1.pullFromRemote()
+			).result
+
+			await commitOnServer((tx) => tx.set("messages", reply("Hel")))
+			const pulled = pokes.deliver()
+
+			// Queries and subscriptions see the record in the same tick.
+			expect(client1.query({ collection: "messages" })).toEqual([reply("Hel")])
+			expect(seen.at(-1)).toEqual([reply("Hel")])
+			await pulled
+			expect(client1.query({ collection: "messages" })).toEqual([reply("Hel")])
+		},
+	)
+
+	liveTest(
+		"a pull that read the server before a newer commit keeps the newer live record",
+		async ({ harness, pokes, commitOnServer }) => {
+			const { client1 } = harness
+			client1.subscribe({ collection: "messages" })
+			await commitOnServer((tx) => tx.set("messages", reply("Hel")))
+			await (
+				await client1.pullFromRemote()
+			).result
+			pokes.drop()
+
+			await harness.activateGates()
+			const stalePull = await client1.pullFromRemote()
+			await stalePull.continueTo("server")
+			// The server saves more after it answered the pull.
+			await commitOnServer((tx) => tx.set("messages", reply("Hello")))
+			void pokes.deliver()
+			expect(client1.query({ collection: "messages" })).toEqual([
+				reply("Hello"),
+			])
+			await stalePull.continueToCompletion()
+
+			expect(client1.query({ collection: "messages" })).toEqual([
+				reply("Hello"),
+			])
+		},
+	)
+
+	liveTest(
+		"a pull at or after a live record's revision replaces it",
+		async ({ harness, pokes, commitOnServer }) => {
+			const { client1 } = harness
+			client1.subscribe({ collection: "messages" })
+			await (
+				await client1.pullFromRemote()
+			).result
+
+			// A pull waits to read the server while a poke shows a live record.
+			await harness.activateGates()
+			const pull = await client1.pullFromRemote()
+			await commitOnServer((tx) => tx.set("messages", reply("Hel")))
+			void pokes.deliver()
+			expect(client1.query({ collection: "messages" })).toEqual([reply("Hel")])
+
+			// The next commit's poke is lost; the waiting pull then reads it.
+			await commitOnServer((tx) => tx.set("messages", reply("Hello")))
+			pokes.drop()
+			await pull.continueToCompletion()
+
+			expect(client1.query({ collection: "messages" })).toEqual([
+				reply("Hello"),
+			])
+		},
+	)
+
+	liveTest(
+		"pokes older than the latest pull or the visible live record are ignored",
+		async ({ harness, pokes, commitOnServer }) => {
+			const { client1 } = harness
+			client1.subscribe({ collection: "messages" })
+			await commitOnServer((tx) => tx.set("messages", reply("H")))
+			await (
+				await client1.pullFromRemote()
+			).result
+			await commitOnServer((tx) => tx.set("messages", reply("He")))
+			const [beforePull] = pokes.take()
+			await commitOnServer((tx) => tx.set("messages", reply("Hel")))
+			await (
+				await client1.pullFromRemote()
+			).result
+			await commitOnServer((tx) => tx.set("messages", reply("Hell")))
+			await commitOnServer((tx) => tx.set("messages", reply("Hello")))
+			const [older, newest] = pokes.take().slice(-2)
+
+			// A poke the latest pull already reflects does not move the record back.
+			void beforePull!()
+			expect(client1.query({ collection: "messages" })).toEqual([reply("Hel")])
+
+			// Nor does one older than the live record shown.
+			void newest!()
+			void older!()
+			expect(client1.query({ collection: "messages" })).toEqual([
+				reply("Hello"),
+			])
+		},
+	)
+
+	liveTest(
+		"a poke delivers a delete before the pull",
+		async ({ harness, pokes, commitOnServer }) => {
+			const { client1 } = harness
+			client1.subscribe({ collection: "messages" })
+			await commitOnServer((tx) => tx.set("messages", reply("Hel")))
+			await (
+				await client1.pullFromRemote()
+			).result
+			pokes.drop()
+
+			await commitOnServer((tx) => tx.remove("messages", "reply"))
+			void pokes.deliver()
+
+			expect(client1.query({ collection: "messages" })).toEqual([])
+		},
+	)
+
+	liveTest(
+		"a reset snapshot read before a commit keeps that commit's live record",
+		async ({ harness, pokes, commitOnServer }) => {
+			const { client1 } = harness
+			client1.subscribe({ collection: "messages" })
+			await (
+				await client1.pullFromRemote()
+			).result
+
+			// Losing a pull response makes the next pull a reset snapshot.
+			await harness.activateGates()
+			const lostPull = await client1.pullFromRemote()
+			await lostPull.continueTo("server")
+			await lostPull.fail(new Error("Lost response"))
+			await expect(lostPull.result).rejects.toThrow()
+			const resetPull = await client1.pullFromRemote()
+			await resetPull.continueTo("server")
+			await commitOnServer((tx) => tx.set("messages", reply("Hel")))
+			void pokes.deliver()
+			await resetPull.continueToCompletion()
+
+			expect(client1.query({ collection: "messages" })).toEqual([reply("Hel")])
+		},
+	)
+
+	liveTest(
+		"records included through a relation arrive live",
+		async ({ harness, pokes, commitOnServer }) => {
+			const { client1 } = harness
+			const thread = {
+				collection: "threads",
+				where: { id: "thread-1" },
+				with: { messages: true },
+			} as const
+			client1.subscribe(thread)
+			await commitOnServer((tx) =>
+				tx.set("threads", { id: "thread-1", title: "Chat" }),
+			)
+			await (
+				await client1.pullFromRemote()
+			).result
+			pokes.drop()
+
+			await commitOnServer((tx) => tx.set("messages", reply("Hel")))
+			void pokes.deliver()
+
+			expect(client1.query(thread)).toEqual([
+				{ id: "thread-1", title: "Chat", messages: [reply("Hel")] },
+			])
+		},
+	)
+
+	liveTest(
+		"pending local writes stay visible over live records, including after a stale pull",
+		async ({ harness, pokes, commitOnServer }) => {
+			const { client1 } = harness
+			client1.subscribe({ collection: "messages" })
+			await commitOnServer((tx) => tx.set("messages", reply("Hel")))
+			await (
+				await client1.pullFromRemote()
+			).result
+			pokes.drop()
+
+			// A stale pull, a local update, and a newer live record all overlap.
+			await harness.activateGates()
+			const stalePull = await client1.pullFromRemote()
+			await stalePull.continueTo("server")
+			const localTx = client1.transact()
+			localTx.update("messages", "reply", { threadId: "thread-2" })
+			// The push waits behind the held pull, so do not wait for its handle.
+			const commit = client1.commit(localTx)
+			await commitOnServer((tx) => tx.set("messages", reply("Hello")))
+			void pokes.deliver()
+
+			// The live text shows under the pending update.
+			expect(client1.query({ collection: "messages" })).toEqual([
+				{ ...reply("Hello"), threadId: "thread-2" },
+			])
+			await stalePull.continueToCompletion()
+			expect(client1.query({ collection: "messages" })).toEqual([
+				{ ...reply("Hello"), threadId: "thread-2" },
+			])
+
+			// A local set replaces the live value outright until the server answers.
+			const setTx = client1.transact()
+			setTx.set("messages", reply("Mine"))
+			const setCommit = client1.commit(setTx)
+			expect(client1.query({ collection: "messages" })).toEqual([reply("Mine")])
+			await harness.deactivateGatesAndSettle()
+			await (
+				await commit
+			).result
+			await (
+				await setCommit
+			).result
+			await (
+				await client1.pullFromRemote()
+			).result
+			expect(client1.query({ collection: "messages" })).toEqual([reply("Mine")])
+		},
+	)
+
+	test("a restarted client shows its last synced records, not live ones", async ({
+		makeRemote,
+		makeStorage,
+		logger,
+		rng,
+	}) => {
+		const chat = makeRemote({ schema: chatSchema, relations: chatRelations })
+		const pokes = new HeldPokes(chat)
+		const storage = makeStorage<ChatSchema>({ schema: chatSchema })
+		const commitOnServer = async (message: Message) => {
+			const tx = chat.transact()
+			tx.set("messages", message)
+			await chat.commit(tx)
+		}
+		await commitOnServer(reply("Hel"))
+		await commitOnServer({ ...reply("Other"), id: "other" })
+
+		const first = createClient({
+			remote: pokes.remote,
+			logger,
+			rng,
+			clientStorage: storage,
+		})
+		await first.ready
+		await first.connect()
+		first.subscribe({ collection: "messages" })
+		await first.pullFromRemote()
+		// One live record has a pending local write under it, one does not.
+		const tx = first.transact()
+		tx.update("messages", "other", { threadId: "thread-2" })
+		void first.commit(tx).catch(() => {})
+		pokes.drop()
+		await commitOnServer(reply("Hello"))
+		await commitOnServer({ ...reply("Other live"), id: "other" })
+		void pokes.deliver()
+		expect(first.query({ collection: "messages" })).toEqual([
+			{ ...reply("Other live"), id: "other", threadId: "thread-2" },
+			reply("Hello"),
+		])
+		// Disconnecting at once keeps the pokes' pulls from running.
+		const disconnected = first.disconnect()
+		await first.flushClientStorage()
+		await disconnected
+
+		const restarted = createClient({
+			remote: pokes.remote,
+			logger,
+			rng,
+			clientStorage: storage,
+		})
+		await restarted.ready
+		expect(restarted.query({ collection: "messages" })).toEqual([
+			{ ...reply("Other"), id: "other", threadId: "thread-2" },
+			reply("Hel"),
+		])
+	})
+
+	liveTest(
+		"pokes for a cleared client identity are ignored",
+		async ({ harness, pokes }) => {
+			const { client1 } = harness
+			client1.subscribe({ collection: "messages" })
+			const [previous] = pokes.connections
+			await (
+				await client1.clear()
+			).result
+
+			void previous!.poke({
+				revision: { server: "server", commit: 1 },
+				set: [{ collection: "messages", value: reply("Hel") }],
+			})
+
+			expect(client1.query({ collection: "messages" })).toEqual([])
+		},
+	)
+})
