@@ -42,6 +42,11 @@ export type TandemClientTuple<Schema extends AnySchema> =
 			value: Mutation<Schema>["ops"]
 	  }
 	| {
+			/** A forwarded write's server identity, retained until its tab receives completion. */
+			key: ["tab-write", ClientId, MutationId]
+			value: { clientId: ClientId; mutationId: MutationId }
+	  }
+	| {
 			/** A tab session's last forwarded mutation and the queries it syncs. */
 			key: ["session", ClientId]
 			value: {

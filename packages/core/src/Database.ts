@@ -43,7 +43,12 @@ import {
 	type TupleClientRecord,
 	Transaction,
 } from "./transaction/Transaction.js"
-import type { ClientId, PullResponse } from "./sync/SyncEngine.js"
+import type {
+	ClientId,
+	Cookie,
+	Patch,
+	PullResponse,
+} from "./sync/SyncEngine.js"
 import type { LoggerApi } from "./utils/Logger.js"
 import type { RngApi } from "./utils/randomId.js"
 import { ThrottleQueue } from "./utils/ThrottleQueue.js"
@@ -353,17 +358,37 @@ export class Database<
 		}
 		transaction.outbox.set([id], [...transaction.ops])
 		tx.set(["replica"], { ...replica, lastIssuedMutationId: id })
-		if (forwarded)
+		if (forwarded) {
+			tx.set(["tab-write", forwarded.clientId, forwarded.mutationId], {
+				clientId: replica.clientId,
+				mutationId: id,
+			})
 			tx.set(["session", forwarded.clientId], {
 				...this.sessions.get([forwarded.clientId]),
 				lastMutationId: forwarded.mutationId,
 			})
+		}
 		tx.commit()
 	}
 
 	/** The last mutation this replica committed for a forwarding tab session. */
 	sessionLastMutationId(clientId: ClientId): MutationId | undefined {
 		return this.sessions.get([clientId])?.lastMutationId
+	}
+
+	tabWrite(clientId: ClientId, mutationId: MutationId) {
+		return this.tupleDb.get(["tab-write", clientId, mutationId])
+	}
+
+	forgetTabWrite(clientId: ClientId, mutationId: MutationId) {
+		this.tupleDb.commit({ remove: [["tab-write", clientId, mutationId]] })
+	}
+
+	/** Removes a tab session's receipts and returns them. */
+	forgetTabWrites(clientId: ClientId) {
+		const receipts = this.tupleDb.scan({ prefix: ["tab-write", clientId] })
+		this.tupleDb.commit({ remove: receipts.map(({ key }) => key) })
+		return receipts.map(({ value }) => value)
 	}
 
 	/** Saves a tab session's queries, so a later leader keeps syncing them. */
@@ -418,7 +443,28 @@ export class Database<
 		return this.tupleDb.subscribe({ prefix: ["record"] }, callback)
 	}
 
-	applyPull({ patch, lastMutationId, cookie }: PullResponse<Schema>): void {
+	applyPull(response: PullResponse<Schema>): void {
+		this.reconcile(response, response.cookie)
+	}
+
+	/** Replace a tab's leader view while preserving edits the leader has not included. */
+	applyTabView({
+		records,
+		lastMutationId,
+	}: {
+		records: Patch<Schema>["set"]
+		lastMutationId: MutationId
+	}): void {
+		this.reconcile({ patch: { reset: true, set: records }, lastMutationId })
+	}
+
+	private reconcile(
+		{
+			patch,
+			lastMutationId,
+		}: Pick<PullResponse<Schema>, "patch" | "lastMutationId">,
+		cookie?: Cookie,
+	): void {
 		const transaction = this.transact()
 		const tx = transaction.tupleDbTx
 		const { records, bases, outbox } = transaction
@@ -455,7 +501,7 @@ export class Database<
 		for (const { key, value } of trackedBases) {
 			if (value.lastWrittenBy <= lastMutationId) bases.remove(key)
 		}
-		tx.set(["replica"], { ...this.replica, cookie })
+		if (cookie !== undefined) tx.set(["replica"], { ...this.replica, cookie })
 		tx.commit()
 	}
 

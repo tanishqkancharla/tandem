@@ -22,6 +22,11 @@ export type TabEnvironmentApi = {
 	openChannel(name: string): TabChannelApi
 }
 
+/** A tab holds this lock for its lifetime so the leader can retire abandoned requests. */
+export function tabLifetimeLock(name: string, tabId: string): string {
+	return `tandem:${name}:tab:${tabId}`
+}
+
 type BrowserGlobals = {
 	document?: unknown
 	navigator?: { locks?: TabLocksApi }

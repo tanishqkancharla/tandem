@@ -79,6 +79,7 @@ function createTupleCodec<Schema extends AnySchema>(
 			}
 			case "replica":
 			case "session":
+			case "tab-write":
 				return tuple.value
 			case "outbox":
 				return (tuple.value as MutationOp<Schema>[]).map((op) => {

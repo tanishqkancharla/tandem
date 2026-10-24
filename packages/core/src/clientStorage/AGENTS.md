@@ -21,7 +21,7 @@ const db = new TandemClient({ schema, clientStorage: storage })
 ## How it works
 
 - **IndexedDB**: Browser persistent storage
-- **Tuple Model**: `TandemClientTuple<Schema>` includes `["record", collection, ...id]` records, `["base", collection, ...id]` sparse server values and `lastWrittenBy`, `["replica"]` metadata (`clientId`, `lastIssuedMutationId`, optional `cookie`), `["outbox", mutationId]` ordered mutation operations, and `["session", clientId]` markers recording the last mutation a tab session forwarded to the leader. All use the same `scan` and `commit` methods.
+- **Tuple Model**: `TandemClientTuple<Schema>` includes `["record", collection, ...id]` records, `["base", collection, ...id]` sparse server values and `lastWrittenBy`, `["replica"]` metadata (`clientId`, `lastIssuedMutationId`, optional `cookie`), `["outbox", mutationId]` ordered mutation operations, `["session", clientId]` markers recording the last mutation a tab session forwarded to the leader, and `["tab-write", clientId, mutationId]` receipts mapping a forwarded tab mutation to the leader mutation that carries it until the tab hears it was saved. All use the same `scan` and `commit` methods.
 - **Caching**: In-memory cache with write-through
 - **Batching**: Groups writes for better performance
 
