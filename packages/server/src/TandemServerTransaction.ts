@@ -211,6 +211,18 @@ export class TandemServerTransaction<
 
 	/**
 	 * @internal
+	 * Staged record writes. Set values are full records, including merged updates.
+	 */
+	recordWrites() {
+		const { set, remove } = this.tupleDbTx.writes
+		return {
+			set: set.filter(({ key }) => key[0] === "record"),
+			remove: remove.filter((key) => key[0] === "record"),
+		}
+	}
+
+	/**
+	 * @internal
 	 */
 	async commit(): Promise<boolean> {
 		const hasWrites =

@@ -8,14 +8,18 @@ import type {
 	MutationId,
 	MutationOp,
 	PatchRemoveOp,
+	PatchSetOp,
+	PokePayload,
 	RelationalQuery,
 	RelationalQueryResult,
 	RemoteApi,
 	RemoteInvalidRequestError,
 	RemoteMutationGapError,
+	Revision,
 	RngApi,
 	AnyRelations,
 	RuntimeSchemaDefinition,
+	ScanWindow,
 	SchemaToTupleSchema,
 } from "@tanishqkancharla/tandem-core"
 import { tag, unreachable } from "@tanishqkancharla/tandem-core"
@@ -24,6 +28,7 @@ import {
 	executeQueryAsync,
 	executeScanWindowAsync,
 	InvalidScanWindowError,
+	selectScanWindowRecordsAsync,
 	UpdatePayloadError,
 } from "@tanishqkancharla/tandem-core/internal"
 import type { ScanWindowRecord } from "@tanishqkancharla/tandem-core/internal"
@@ -78,13 +83,26 @@ type SyncedRecordKey<
 
 type SyncClientState<Schema extends AnySchema> = {
 	// Reconnects and tabs sharing a client identity can overlap connections.
-	pokes: Set<ClientApi["poke"]>
+	pokes: Set<ClientApi<Schema>["poke"]>
 	cookie?: Cookie
 	syncedRecordKeys?: SyncedRecordKey<Schema>[]
+	/** The window of the latest pull. Live pokes only carry records inside it. */
+	scanWindow?: ScanWindow<Schema>
+	/** Records sent in poke payloads since the latest pull. */
+	liveRecordKeys: SyncedRecordKey<Schema>[]
 }
 
-type CommitOptions = {
-	operation: "commit" | "push"
+type CommitOptions =
+	| { operation: "commit" }
+	| { operation: "push"; clientId: ClientId }
+
+/** Records one commit changed, read in the run queue right after it. */
+type CommitChanges<Schema extends AnySchema> = {
+	revision: Revision
+	set: PatchSetOp<Schema>[]
+	remove: PatchRemoveOp<Schema>[]
+	/** The client whose push made the commit. It pulls to acknowledge it. */
+	pusher?: ClientId
 }
 
 function scanWindowRecordToKey<
@@ -173,6 +191,9 @@ export class TandemServer<
 	private readonly tupleDb: AsyncTupleDatabaseClient<TandemTuple<Schema>>
 	private readonly rng?: RngApi
 	private readonly unsubscribeStorage?: () => void
+	// Revisions are per instance, like cookies; a restart starts a new sequence.
+	private readonly instanceId: string
+	private commitCount = 0
 	private closed = false
 	// Tuple transactions batch writes but do not snapshot reads or serialize
 	// asynchronous storage commits. Order sync reads and commits here.
@@ -181,6 +202,7 @@ export class TandemServer<
 	constructor(args: TandemServerArgs<Schema, Relations>) {
 		this.relations = args.relations
 		this.rng = args.rng
+		this.instanceId = args.rng?.randomId() ?? crypto.randomUUID()
 		const database = new AsyncTupleDatabase(
 			tandemStorageToTupleDatabaseStorage(args.storage),
 			{ rng: args.rng },
@@ -215,9 +237,9 @@ export class TandemServer<
 		)
 	}
 
-	connect = ({ clientId, poke }: ClientApi) => {
+	connect = ({ clientId, poke }: ClientApi<Schema>) => {
 		// Wrap so each connection unregisters only itself, even if callers reuse a callback.
-		const connection = () => poke()
+		const connection: ClientApi<Schema>["poke"] = (payload) => poke(payload)
 		this.getSyncClient(clientId).pokes.add(connection)
 
 		return Promise.resolve(() => {
@@ -333,7 +355,10 @@ export class TandemServer<
 		const current = this.syncClients.get(clientId)
 		if (current) return current
 
-		const created: SyncClientState<Schema> = { pokes: new Set() }
+		const created: SyncClientState<Schema> = {
+			pokes: new Set(),
+			liveRecordKeys: [],
+		}
 		this.syncClients.set(clientId, created)
 		return created
 	}
@@ -383,6 +408,7 @@ export class TandemServer<
 
 			const committed = await this.commitTransaction(transaction, {
 				operation: "push",
+				clientId,
 			})
 			if (committed instanceof Error) return committed
 		}
@@ -440,18 +466,39 @@ export class TandemServer<
 		const nextCookie = tag<Cookie>(this.rng?.randomId() ?? crypto.randomUUID())
 		client.syncedRecordKeys = currentRecordKeys
 		client.cookie = nextCookie
+		client.scanWindow = scanWindow
+		client.liveRecordKeys = []
 
 		return {
 			cookie: nextCookie,
 			patch: { ...(shouldReset ? { reset: true } : {}), set: records, remove },
 			lastMutationId,
+			// The run queue orders pulls after every earlier commit.
+			revision: this.revision,
 		}
+	}
+
+	private get revision(): Revision {
+		return { server: this.instanceId, commit: this.commitCount }
 	}
 
 	private async commitTransaction(
 		transaction: TandemServerTransaction<Schema, Relations>,
 		options: CommitOptions,
 	): Promise<TandemServerError | undefined> {
+		const writes = transaction.recordWrites()
+		// Removals carry the client's identity form, which only the old record has.
+		const removed = await Promise.all(
+			writes.remove.map(
+				(key) =>
+					this.recordDb.get(
+						key as SchemaToTupleSchema<Schema>["key"],
+					) as Promise<Schema[CollectionName<Schema>] | undefined>,
+			),
+		).catch(
+			(cause) => new TandemServerError({ operation: options.operation, cause }),
+		)
+		if (removed instanceof Error) return removed
 		const hasWrites = await transaction
 			.commit()
 			.catch(
@@ -461,18 +508,103 @@ export class TandemServer<
 		if (hasWrites instanceof Error) return hasWrites
 		if (!hasWrites) return
 
-		this.emitPokes()
+		this.commitCount += 1
+		const changes: CommitChanges<Schema> = {
+			revision: this.revision,
+			set: writes.set.map(({ key, value }) => ({
+				collection: key[1],
+				value,
+			})) as PatchSetOp<Schema>[],
+			remove: removed.flatMap((record, index) =>
+				record === undefined
+					? []
+					: [{ collection: writes.remove[index]![1], id: record.id }],
+			) as PatchRemoveOp<Schema>[],
+			pusher: options.operation === "push" ? options.clientId : undefined,
+		}
+		await this.emitLivePokes(changes)
+	}
+
+	/** Pokes each client with the changed records inside its view. */
+	private async emitLivePokes(changes: CommitChanges<Schema>) {
+		for (const [clientId, client] of this.syncClients) {
+			if (!client.pokes.size) continue
+			// Before its first pull the server does not know the client's view.
+			if (!client.scanWindow) {
+				this.pokeClient(client)
+				continue
+			}
+			const payload = await this.readLivePayload(
+				client,
+				client.scanWindow,
+				changes,
+			)
+			if (payload instanceof Error) {
+				// The client still pulls, so only the live update is lost.
+				console.error(payload)
+				this.pokeClient(client)
+				continue
+			}
+			if (payload) this.pokeClient(client, payload)
+			else if (clientId === changes.pusher) this.pokeClient(client)
+		}
+	}
+
+	private async readLivePayload(
+		client: SyncClientState<Schema>,
+		scanWindow: ScanWindow<Schema>,
+		changes: CommitChanges<Schema>,
+	): Promise<
+		TandemServerError | InvalidScanWindowError | PokePayload<Schema> | undefined
+	> {
+		const inView = await selectScanWindowRecordsAsync<Schema, Relations>(
+			this.recordDb,
+			this.relations,
+			scanWindow,
+			changes.set,
+		).catch((cause) => new TandemServerError({ operation: "poke", cause }))
+		if (inView instanceof Error) return inView
+
+		const set = inView.map(({ collection, value }) => ({ collection, value }))
+		const setKeys = set.map(scanWindowRecordToKey)
+		const leftView = changes.set
+			.map(scanWindowRecordToKey)
+			.filter((key) => !containsRecordKey(setKeys, key))
+		// Only name records the client already has; others must stay invisible.
+		const remove = [...changes.remove, ...leftView].filter(
+			(key) =>
+				containsRecordKey(client.syncedRecordKeys ?? [], key) ||
+				containsRecordKey(client.liveRecordKeys, key),
+		)
+		if (!set.length && !remove.length) return
+
+		client.liveRecordKeys = [
+			...client.liveRecordKeys.filter((key) => !containsRecordKey(remove, key)),
+			...setKeys.filter(
+				(key) => !containsRecordKey(client.liveRecordKeys, key),
+			),
+		]
+		return {
+			revision: changes.revision,
+			...(set.length ? { set } : {}),
+			...(remove.length ? { remove } : {}),
+		} as PokePayload<Schema>
 	}
 
 	private emitPokes() {
-		for (const client of this.syncClients.values()) {
-			for (const poke of client.pokes) {
-				const result = errore.try(poke)
-				if (result instanceof Error) {
-					console.error(
-						new TandemServerError({ operation: "poke", cause: result }),
-					)
-				}
+		for (const client of this.syncClients.values()) this.pokeClient(client)
+	}
+
+	private pokeClient(
+		client: SyncClientState<Schema>,
+		payload?: PokePayload<Schema>,
+	) {
+		for (const poke of client.pokes) {
+			const result = errore.try(() => poke(payload))
+			if (result instanceof Error) {
+				console.error(
+					new TandemServerError({ operation: "poke", cause: result }),
+				)
 			}
 		}
 	}

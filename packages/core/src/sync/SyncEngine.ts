@@ -1,13 +1,19 @@
 import * as errore from "errore"
 import type { Database } from "../Database.js"
 import type { EncodedQuery, ScanWindow } from "../query/Query.js"
-import type { AnySchema, CollectionName } from "../schema/Schema.js"
+import type {
+	AnySchema,
+	CollectionName,
+	RuntimeSchemaDefinition,
+} from "../schema/Schema.js"
 import type {
 	Mutation,
 	MutationId,
 	Transaction,
 } from "../transaction/Transaction.js"
+import { codec as createCodec, type Codec } from "../utils/Codec.js"
 import type { LoggerApi } from "../utils/Logger.js"
+import { isObject } from "../utils/objectUtils.js"
 import { randomId, type RngApi } from "../utils/randomId.js"
 import { TaskQueue } from "../utils/TaskQueue.js"
 import { Timer, type TimerApi } from "../utils/Timer.js"
@@ -44,6 +50,27 @@ export type PullResponse<Schema extends AnySchema> = {
 	patch: Patch<Schema>
 	/** The last processed mutation, or 0 before any were applied. */
 	lastMutationId: MutationId
+	/** The latest commit the pull's read reflects. Omit if pokes never carry records. */
+	revision?: Revision
+}
+
+/**
+ * Orders one server instance's commits. Revisions from different instances are
+ * not comparable, like cookies.
+ */
+export type Revision = {
+	/** Identifies the server instance that numbered the commit. */
+	server: string
+	commit: number
+}
+
+/** Records a commit changed inside the client's view, sent with a poke. */
+export type PokePayload<Schema extends AnySchema = AnySchema> = {
+	revision: Revision
+	/** Full records after the commit. */
+	set?: PatchSetOp<Schema>[]
+	/** Records the client knew that the commit deleted or moved out of its view. */
+	remove?: PatchRemoveOp<Schema>[]
 }
 
 class RemoteResponseError extends errore.createTaggedError({
@@ -51,14 +78,19 @@ class RemoteResponseError extends errore.createTaggedError({
 	message: "Remote $operation failed",
 }) {}
 
-export type ClientApi = {
+export type ClientApi<Schema extends AnySchema = AnySchema> = {
 	clientId: ClientId
-	/** Settles when the pull the poke started has finished. Never rejects. */
-	poke: () => Promise<void>
+	/**
+	 * Asks the client to pull. A payload is shown immediately, before that pull.
+	 * Settles when the pull the poke started has finished. Never rejects.
+	 */
+	poke: (payload?: PokePayload<Schema>) => Promise<void>
 }
 
 export type RemoteApi<Schema extends AnySchema> = {
-	connect(api: ClientApi): Promise<AsyncUnsubscribe | RemoteRequestError>
+	connect(
+		api: ClientApi<Schema>,
+	): Promise<AsyncUnsubscribe | RemoteRequestError>
 	push(args: {
 		mutations: Mutation<Schema>[]
 		clientId: ClientId
@@ -103,6 +135,95 @@ export namespace PatchApi {
 				)
 				.join("\n") ?? ""
 		}\n${patch.remove?.map((op) => `  remove ${op.collection}.${op.id}`).join("\n") ?? ""}}`
+	}
+}
+
+class PokeCodecInputError extends errore.createTaggedError({
+	name: "PokeCodecInputError",
+	message: "Invalid poke payload: $detail",
+}) {}
+
+export namespace PokeApi {
+	/**
+	 * Serialize poke payloads at transport boundaries, as `MutationApi.codec`
+	 * does for pushes. Applies each collection's codec to records and identities.
+	 */
+	export function codec<Schema extends AnySchema>(
+		schema: RuntimeSchemaDefinition<Schema>,
+	): Codec<PokePayload<Schema>, unknown> {
+		function transformOps(
+			ops: unknown,
+			field: "value" | "id",
+			direction: "encode" | "decode",
+		) {
+			if (ops === undefined) return undefined
+			if (!Array.isArray(ops))
+				return new PokeCodecInputError({ detail: "expected an array" })
+			const transformed: Record<string, unknown>[] = []
+			for (const op of ops) {
+				if (
+					!isObject(op) ||
+					typeof op.collection !== "string" ||
+					!Object.hasOwn(schema.collections, op.collection)
+				) {
+					return new PokeCodecInputError({ detail: "unknown collection" })
+				}
+				const valueCodec = schema.collections[op.collection].codec
+				// Field codecs are consumer code and can throw on invalid wire values.
+				const value = errore.try({
+					try: () => {
+						if (!valueCodec) return op[field]
+						if (field === "value") return valueCodec[direction](op.value)
+						const identity = valueCodec[direction]({ id: op.id }) as {
+							id: unknown
+						}
+						return identity.id
+					},
+					catch: (cause) =>
+						new PokeCodecInputError({
+							detail: "collection codec rejected input",
+							cause,
+						}),
+				})
+				if (value instanceof Error) return value
+				transformed.push({ ...op, [field]: value })
+			}
+			return transformed
+		}
+
+		function transform(input: unknown, direction: "encode" | "decode") {
+			if (
+				!isObject(input) ||
+				!isObject(input.revision) ||
+				typeof input.revision.server !== "string" ||
+				!Number.isSafeInteger(input.revision.commit)
+			) {
+				return new PokeCodecInputError({ detail: "expected a revision" })
+			}
+			const set = transformOps(input.set, "value", direction)
+			if (set instanceof Error) return set
+			const remove = transformOps(input.remove, "id", direction)
+			if (remove instanceof Error) return remove
+			return {
+				revision: input.revision,
+				...(set ? { set } : {}),
+				...(remove ? { remove } : {}),
+			}
+		}
+
+		return createCodec(
+			"PokePayload",
+			(input) => {
+				const output = transform(input, "encode")
+				if (output instanceof Error) throw output
+				return output
+			},
+			(input) => {
+				const output = transform(input, "decode")
+				if (output instanceof Error) throw output
+				return output as PokePayload<Schema>
+			},
+		)
 	}
 }
 

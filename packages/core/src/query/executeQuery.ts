@@ -519,6 +519,28 @@ export async function executeQueryAsync<
 	)
 }
 
+function normalizeScanWindow<Schema extends AnySchema>(
+	scanWindow: ScanWindow<Schema>,
+	relations: AnyRelations<Schema>,
+) {
+	const queries: QueryNode<Schema>[] = []
+	for (const query of scanWindow) {
+		const normalized = normalizeEncodedQuery(query, relations)
+		if (normalized instanceof Error) return normalized
+		queries.push(normalized)
+	}
+	return queries
+}
+
+function scanWindowRecordId<Schema extends AnySchema>(
+	record: ScanWindowRecord<Schema>,
+) {
+	return JSON.stringify([
+		record.collection,
+		...collectionIdToTuple(record.value.id),
+	])
+}
+
 export async function executeScanWindowAsync<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema>,
@@ -527,12 +549,8 @@ export async function executeScanWindowAsync<
 	relations: Relations,
 	scanWindow: ScanWindow<Schema>,
 ): Promise<ScanWindowRecord<Schema>[] | InvalidScanWindowError> {
-	const queries: QueryNode<Schema>[] = []
-	for (const query of scanWindow) {
-		const normalized = normalizeEncodedQuery(query, relations)
-		if (normalized instanceof Error) return normalized
-		queries.push(normalized)
-	}
+	const queries = normalizeScanWindow(scanWindow, relations)
+	if (queries instanceof Error) return queries
 	const collections = getQueryCollections(queries)
 	const recordsByCollection = await loadRecordsAsync(db, collections)
 	const result: ScanWindowRecord<Schema>[] = []
@@ -558,4 +576,46 @@ export async function executeScanWindowAsync<
 	}
 
 	return result
+}
+
+/**
+ * The candidates, read from `db`, that `executeScanWindowAsync` would return.
+ * Windows of plain filters match the candidates directly. Includes, limits, and
+ * offsets depend on other records, so those windows run in full.
+ */
+export async function selectScanWindowRecordsAsync<
+	Schema extends AnySchema,
+	Relations extends AnyRelations<Schema>,
+>(
+	db: ReadOnlyAsyncTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
+	relations: Relations,
+	scanWindow: ScanWindow<Schema>,
+	candidates: readonly ScanWindowRecord<Schema>[],
+): Promise<ScanWindowRecord<Schema>[] | InvalidScanWindowError> {
+	const queries = normalizeScanWindow(scanWindow, relations)
+	if (queries instanceof Error) return queries
+	const collections = getQueryCollections(queries)
+	const relevant = candidates.filter(({ collection }) =>
+		collections.has(collection),
+	)
+	if (!relevant.length) return []
+
+	const direct = queries.every(
+		(query) =>
+			!query.with && query.limit === undefined && query.offset === undefined,
+	)
+	if (direct) {
+		return relevant.filter(({ collection, value }) =>
+			queries.some(
+				(query) =>
+					query.collection === collection &&
+					(query.where ?? []).every((clause) => matchesWhere(value, clause)),
+			),
+		)
+	}
+
+	const records = await executeScanWindowAsync(db, relations, scanWindow)
+	if (records instanceof Error) return records
+	const inWindow = new Set(records.map(scanWindowRecordId))
+	return relevant.filter((record) => inWindow.has(scanWindowRecordId(record)))
 }

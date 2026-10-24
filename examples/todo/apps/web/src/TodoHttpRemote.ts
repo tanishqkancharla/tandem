@@ -6,6 +6,7 @@ import {
 	type TodoSchema,
 } from "@tandem/example-todo-shared"
 import {
+	type ClientApi,
 	connectTandemEventSource,
 	MutationApi,
 	type RemoteApi,
@@ -73,13 +74,14 @@ async function request<Result>({
 }
 
 export class TodoHttpRemote implements RemoteApi<TodoSchema> {
-	private poke: (() => Promise<void>) | undefined
+	private poke: ClientApi<TodoSchema>["poke"] | undefined
 
 	connect: RemoteApi<TodoSchema>["connect"] = ({ clientId, poke }) => {
 		this.poke = poke
 		const disconnect = connectTandemEventSource({
 			url: `/api/tandem/events?clientId=${encodeURIComponent(clientId)}`,
 			poke,
+			schema,
 		})
 
 		return Promise.resolve(() => {

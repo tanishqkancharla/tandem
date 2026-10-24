@@ -6,6 +6,7 @@ import {
 } from "@tanishqkancharla/gatekeeper"
 import {
 	type ClientApi,
+	type PokePayload,
 	collection,
 	defineSchema,
 	Logger,
@@ -78,15 +79,19 @@ function remoteWithPokeEvents(
 	server: RemoteApi<DstSchema>,
 	events: GatekeeperEvents,
 ): RemoteApi<DstSchema> {
-	let poke: ClientApi["poke"] = () => Promise.resolve()
-	const pokeEvent = events.on("poke", () => poke())
+	let poke: ClientApi<DstSchema>["poke"] = () => Promise.resolve()
+	const pokeEvent = events.on<PokePayload<DstSchema> | undefined>(
+		"poke",
+		(payload) => poke(payload),
+	)
 	return {
 		connect: (client) => {
 			poke = client.poke
 			return server.connect({
 				...client,
-				poke: () => {
-					pokeEvent.emit()
+				poke: (payload) => {
+					// Payloads cross the network as JSON.
+					pokeEvent.emit(payload && roundTrip(payload))
 					return Promise.resolve()
 				},
 			})

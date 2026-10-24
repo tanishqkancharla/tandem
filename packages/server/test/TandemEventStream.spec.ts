@@ -1,4 +1,13 @@
-import { collection, defineSchema, tag } from "@tanishqkancharla/tandem-core"
+import {
+	codec,
+	collection,
+	date,
+	defineSchema,
+	partialObject,
+	PokeApi,
+	string,
+	tag,
+} from "@tanishqkancharla/tandem-core"
 import type { ClientId, MutationId } from "@tanishqkancharla/tandem-core"
 import { expect, onTestFinished, test, vi } from "vitest"
 import { createTandemEventStreamResponse, TandemServer } from "../src/index.js"
@@ -79,6 +88,67 @@ test("streams a ready event and then pokes for server and client writes", async 
 		],
 	})
 	expect(await events.next()).toBe("event: poke\ndata:")
+
+	await events.reader.cancel()
+	await server.close()
+})
+
+test("a poke event carries the client's changed records, encoded with collection codecs", async () => {
+	type Event = { id: number; title: string; startAt: Date }
+	const eventSchema = defineSchema({
+		events: collection<Event>({
+			codec: partialObject({
+				id: codec<number, string>(
+					"eventId",
+					(id) => `event-${id}`,
+					(id) => Number((id as string).slice(6)),
+				),
+				title: string,
+				startAt: date,
+			}),
+		}),
+	})
+	const server = new TandemServer({
+		schema: eventSchema,
+		relations: {},
+		storage: new TestTandemServerStorage<{ events: Event }>(),
+	})
+	const clientId = tag<ClientId>("viewer")
+	const events = readEvents(
+		await createTandemEventStreamResponse({
+			remote: server,
+			clientId,
+			schema: eventSchema,
+		}),
+	)
+	expect(await events.next()).toBe("event: ready\ndata:")
+	await server.pull({ clientId, scanWindow: [{ collection: "events" }] })
+
+	const event = {
+		id: 42,
+		title: "Launch",
+		startAt: new Date("2026-03-04T18:30:00.000Z"),
+	}
+	const tx = server.transact()
+	tx.set("events", event)
+	await server.commit(tx)
+	const removeTx = server.transact()
+	removeTx.remove("events", 42)
+	await server.commit(removeTx)
+
+	// Each frame decodes back to the runtime records the commit wrote.
+	const decode = (frame: string | undefined) =>
+		PokeApi.codec(eventSchema).decode(
+			JSON.parse(frame!.replace("event: poke\ndata: ", "")),
+		)
+	expect(decode(await events.next())).toEqual({
+		revision: expect.any(Object),
+		set: [{ collection: "events", value: event }],
+	})
+	expect(decode(await events.next())).toEqual({
+		revision: expect.any(Object),
+		remove: [{ collection: "events", id: 42 }],
+	})
 
 	await events.reader.cancel()
 	await server.close()
