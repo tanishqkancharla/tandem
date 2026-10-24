@@ -238,7 +238,11 @@ export class TandemServer<
 		this.getSyncClient(clientId).pokes.add(connection)
 
 		return Promise.resolve(() => {
-			this.syncClients.get(clientId)?.pokes.delete(connection)
+			const client = this.syncClients.get(clientId)
+			client?.pokes.delete(connection)
+			// Forget the view with the last connection. Pokes carry no records
+			// again until a pull, which the transport authorizes, records a view.
+			if (client?.pokes.size === 0) this.syncClients.delete(clientId)
 			return Promise.resolve()
 		})
 	}
@@ -464,8 +468,12 @@ export class TandemServer<
 		const nextCookie = tag<Cookie>(this.rng?.randomId() ?? crypto.randomUUID())
 		client.syncedRecords = currentRecords
 		client.cookie = nextCookie
-		// In-process callers can keep mutating the array they passed.
-		client.scanWindow = JSON.parse(serialized) as ScanWindow<Schema>
+		// Only a connected client has a view. A pull that runs after the last
+		// connection closed must not record one for a later reconnect.
+		// In-process callers can keep mutating the array they passed, so copy it.
+		client.scanWindow = client.pokes.size
+			? (JSON.parse(serialized) as ScanWindow<Schema>)
+			: undefined
 		client.liveRecordIds = new Set()
 
 		return {

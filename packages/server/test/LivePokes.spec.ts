@@ -348,3 +348,50 @@ test("the server keeps the window a pull read, even if the caller changes its ar
 
 	expect(pokes).toEqual([])
 })
+
+test("closing a client's last connection forgets its view, so a reconnect gets bare pokes until it pulls", async ({
+	server,
+	commit,
+}) => {
+	const clientId = tag<ClientId>("revoked")
+	const pokes: (PokePayload<ChatSchema> | undefined)[] = []
+	const poke = (payload?: PokePayload<ChatSchema>) => {
+		pokes.push(payload)
+		return Promise.resolve()
+	}
+	const disconnect = await server.connect({ clientId, poke })
+	await server.pull({ clientId, scanWindow: [{ collection: "messages" }] })
+	await disconnect()
+
+	await server.connect({ clientId, poke })
+	await commit((tx) => tx.set("messages", message("after-close")))
+
+	expect(pokes).toEqual([undefined])
+})
+
+test("a pull that runs after the last connection closed records no view", async ({
+	server,
+	commit,
+}) => {
+	const clientId = tag<ClientId>("revoked")
+	const scanWindow: ScanWindow<ChatSchema> = [{ collection: "messages" }]
+	const pokes: (PokePayload<ChatSchema> | undefined)[] = []
+	const poke = (payload?: PokePayload<ChatSchema>) => {
+		pokes.push(payload)
+		return Promise.resolve()
+	}
+	const disconnect = await server.connect({ clientId, poke })
+	await server.pull({ clientId, scanWindow })
+
+	// A pull queued behind a commit runs after the connection closes.
+	const busyTx = server.transact()
+	busyTx.set("messages", message("other", { threadId: "thread-2" }))
+	const committing = server.commit(busyTx)
+	const queuedPull = server.pull({ clientId, scanWindow })
+	await disconnect()
+	await Promise.all([committing, queuedPull])
+
+	await server.connect({ clientId, poke })
+	await commit((tx) => tx.set("messages", message("after-close")))
+	expect(pokes).toEqual([undefined])
+})
