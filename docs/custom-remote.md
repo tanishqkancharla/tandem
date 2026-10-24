@@ -48,6 +48,8 @@ Store `poke` for the client and call it whenever that client may have new data. 
 
 Any signal works: a WebSocket message, an SSE event, or a polling timer. A bare `poke()` only asks the client to pull.
 
+Authorize `connect` like `pull`, for the session that owns `clientId`, because payloads carry records.
+
 A poke can also carry a payload: full records a commit wrote, and records it removed, tagged with the commit's revision. The client shows them at once, then still pulls. Only send records a pull with the client's current scan window would return; the payload bypasses the pull's filtering. A revision orders one source's commits: `server` names the source, and `commit` increases with every commit. The client ignores a payload record no newer than the record's last payload or the last pull from the same `server`. For SSE, return `connectTandemEventSource` from `connect` on the client, and serve the stream with `createTandemEventStreamResponse` (see [Server](server.md#connect-clients)). It accepts any object with `connect`, including the wrapper below.
 
 ## `push`

@@ -619,3 +619,16 @@ export async function selectScanWindowRecordsAsync<
 	const inWindow = new Set(records.map(scanWindowRecordId))
 	return relevant.filter((record) => inWindow.has(scanWindowRecordId(record)))
 }
+
+/** Collections a window reads under an `offset`, at any depth. */
+export function scanWindowOffsetCollections<Schema extends AnySchema>(
+	scanWindow: ScanWindow<Schema>,
+): Set<CollectionName<Schema>> {
+	const collections = new Set<CollectionName<Schema>>()
+	const visit = (query: EncodedQuery<Schema>) => {
+		if (query.offset) collections.add(query.collection)
+		for (const nested of Object.values(query.with ?? {})) visit(nested)
+	}
+	for (const query of scanWindow) visit(query)
+	return collections
+}

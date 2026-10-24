@@ -3,6 +3,7 @@ export {
 	executeQuerySync,
 	executeScanWindowAsync,
 	InvalidScanWindowError,
+	scanWindowOffsetCollections,
 	selectScanWindowRecordsAsync,
 } from "./query/executeQuery.js"
 export type { ScanWindowRecord } from "./query/executeQuery.js"

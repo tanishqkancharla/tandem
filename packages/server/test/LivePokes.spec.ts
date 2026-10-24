@@ -291,3 +291,60 @@ test("a new server instance numbers revisions under a new identity", async () =>
 	expect(revisions[1]!.commit).toBe(0)
 	expect(revisions[0]!.server).not.toBe(revisions[1]!.server)
 })
+
+test("a commit that shifts an offset window pokes the viewer, without naming unseen records", async ({
+	viewer,
+	commit,
+}) => {
+	await commit((tx) => {
+		tx.set("messages", message("m1", { createdAt: 1 }))
+		tx.set("messages", message("m2", { createdAt: 2 }))
+		tx.set("messages", message("m3", { createdAt: 3 }))
+	})
+	const pokes = await viewer("paged", [
+		{
+			collection: "messages",
+			order: [["createdAt", "asc"]],
+			offset: 1,
+			limit: 1,
+		},
+	])
+
+	// Removing a record before the page moves m3 into view.
+	await commit((tx) => tx.remove("messages", "m1"))
+	expect(pokes).toEqual([undefined])
+
+	// So does inserting one before it.
+	await commit((tx) => tx.set("messages", message("m0", { createdAt: 0 })))
+	expect(pokes).toEqual([undefined, undefined])
+})
+
+test("the server keeps the window a pull read, even if the caller changes its array later", async ({
+	server,
+	commit,
+}) => {
+	const clientId = tag<ClientId>("in-process")
+	const pokes: (PokePayload<ChatSchema> | undefined)[] = []
+	await server.connect({
+		clientId,
+		poke: (payload) => {
+			pokes.push(payload)
+			return Promise.resolve()
+		},
+	})
+	const scanWindow: ScanWindow<ChatSchema> = [
+		{ collection: "messages", where: [["threadId", "=", "thread-1"]] },
+	]
+	await server.pull({ clientId, scanWindow })
+
+	// A transport refused the pull for thread-2, so the server never read it.
+	scanWindow.push({
+		collection: "messages",
+		where: [["threadId", "=", "thread-2"]],
+	})
+	await commit((tx) =>
+		tx.set("messages", message("secret", { threadId: "thread-2" })),
+	)
+
+	expect(pokes).toEqual([])
+})

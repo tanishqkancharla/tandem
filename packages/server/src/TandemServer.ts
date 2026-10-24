@@ -24,10 +24,11 @@ import type {
 } from "@tanishqkancharla/tandem-core"
 import { tag, unreachable } from "@tanishqkancharla/tandem-core"
 import {
-	collectionIdsEqual,
+	collectionIdToTuple,
 	executeQueryAsync,
 	executeScanWindowAsync,
 	InvalidScanWindowError,
+	scanWindowOffsetCollections,
 	selectScanWindowRecordsAsync,
 	UpdatePayloadError,
 } from "@tanishqkancharla/tandem-core/internal"
@@ -85,11 +86,12 @@ type SyncClientState<Schema extends AnySchema> = {
 	// Reconnects and tabs sharing a client identity can overlap connections.
 	pokes: Set<ClientApi<Schema>["poke"]>
 	cookie?: Cookie
-	syncedRecordKeys?: SyncedRecordKey<Schema>[]
-	/** The window of the latest pull. Live pokes only carry records inside it. */
+	/** Records the latest pull returned, by record ID. */
+	syncedRecords?: Map<string, SyncedRecordKey<Schema>>
+	/** A copy of the latest pull's window. Live pokes only carry records inside it. */
 	scanWindow?: ScanWindow<Schema>
-	/** Records sent in poke payloads since the latest pull. */
-	liveRecordKeys: SyncedRecordKey<Schema>[]
+	/** Record IDs sent in poke payloads since the latest pull. */
+	liveRecordIds: Set<string>
 }
 
 type CommitOptions =
@@ -114,15 +116,8 @@ function scanWindowRecordToKey<
 	return { collection: record.collection, id: record.value.id }
 }
 
-function containsRecordKey<Schema extends AnySchema>(
-	records: readonly SyncedRecordKey<Schema>[],
-	target: SyncedRecordKey<Schema>,
-) {
-	return records.some(
-		(record) =>
-			record.collection === target.collection &&
-			collectionIdsEqual(record.id, target.id),
-	)
+function recordId<Schema extends AnySchema>(key: SyncedRecordKey<Schema>) {
+	return JSON.stringify([key.collection, ...collectionIdToTuple(key.id)])
 }
 
 async function applyMutationOperation<
@@ -357,7 +352,7 @@ export class TandemServer<
 
 		const created: SyncClientState<Schema> = {
 			pokes: new Set(),
-			liveRecordKeys: [],
+			liveRecordIds: new Set(),
 		}
 		this.syncClients.set(clientId, created)
 		return created
@@ -455,19 +450,23 @@ export class TandemServer<
 		}
 		if (records instanceof Error) return records
 
-		const currentRecordKeys = records.map((record) =>
-			scanWindowRecordToKey(record),
+		const currentRecords = new Map(
+			records.map((record) => {
+				const key = scanWindowRecordToKey(record)
+				return [recordId(key), key]
+			}),
 		)
 		const remove: PatchRemoveOp<Schema>[] = shouldReset
 			? []
-			: (client.syncedRecordKeys ?? []).filter(
-					(previous) => !containsRecordKey(currentRecordKeys, previous),
-				)
+			: [...(client.syncedRecords ?? [])]
+					.filter(([id]) => !currentRecords.has(id))
+					.map(([, key]) => key)
 		const nextCookie = tag<Cookie>(this.rng?.randomId() ?? crypto.randomUUID())
-		client.syncedRecordKeys = currentRecordKeys
+		client.syncedRecords = currentRecords
 		client.cookie = nextCookie
-		client.scanWindow = scanWindow
-		client.liveRecordKeys = []
+		// In-process callers can keep mutating the array they passed.
+		client.scanWindow = JSON.parse(serialized) as ScanWindow<Schema>
+		client.liveRecordIds = new Set()
 
 		return {
 			cookie: nextCookie,
@@ -546,7 +545,13 @@ export class TandemServer<
 				continue
 			}
 			if (payload) this.pokeClient(client, payload)
-			else if (clientId === changes.pusher) this.pokeClient(client)
+			// An offset shifts which records are in view when one before it changes,
+			// even one the client never saw, so let the client pull.
+			else if (
+				clientId === changes.pusher ||
+				this.touchesOffsetWindow(client.scanWindow, changes)
+			)
+				this.pokeClient(client)
 		}
 	}
 
@@ -566,29 +571,34 @@ export class TandemServer<
 		if (inView instanceof Error) return inView
 
 		const set = inView.map(({ collection, value }) => ({ collection, value }))
-		const setKeys = set.map(scanWindowRecordToKey)
+		const setIds = new Set(set.map((op) => recordId(scanWindowRecordToKey(op))))
 		const leftView = changes.set
 			.map(scanWindowRecordToKey)
-			.filter((key) => !containsRecordKey(setKeys, key))
+			.filter((key) => !setIds.has(recordId(key)))
 		// Only name records the client already has; others must stay invisible.
-		const remove = [...changes.remove, ...leftView].filter(
-			(key) =>
-				containsRecordKey(client.syncedRecordKeys ?? [], key) ||
-				containsRecordKey(client.liveRecordKeys, key),
-		)
+		const known = (key: SyncedRecordKey<Schema>) =>
+			client.syncedRecords?.has(recordId(key)) ||
+			client.liveRecordIds.has(recordId(key))
+		const remove = [...changes.remove, ...leftView].filter(known)
 		if (!set.length && !remove.length) return
 
-		client.liveRecordKeys = [
-			...client.liveRecordKeys.filter((key) => !containsRecordKey(remove, key)),
-			...setKeys.filter(
-				(key) => !containsRecordKey(client.liveRecordKeys, key),
-			),
-		]
+		for (const key of remove) client.liveRecordIds.delete(recordId(key))
+		for (const id of setIds) client.liveRecordIds.add(id)
 		return {
 			revision: changes.revision,
 			...(set.length ? { set } : {}),
 			...(remove.length ? { remove } : {}),
 		} as PokePayload<Schema>
+	}
+
+	private touchesOffsetWindow(
+		scanWindow: ScanWindow<Schema>,
+		changes: CommitChanges<Schema>,
+	) {
+		const collections = scanWindowOffsetCollections(scanWindow)
+		return [...changes.set, ...changes.remove].some(({ collection }) =>
+			collections.has(collection),
+		)
 	}
 
 	private emitPokes() {

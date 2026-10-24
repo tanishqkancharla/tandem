@@ -376,7 +376,8 @@ export class SyncEngine<Schema extends AnySchema> {
 		const response = await this.remote.pull({
 			clientId,
 			cookie: this.db.replica.cookie,
-			scanWindow: this.scanWindow,
+			// Subscriptions change this array in place; send what this pull reads.
+			scanWindow: [...this.scanWindow],
 		})
 		// A response from before clear() must not acknowledge the new session.
 		if (clientId !== this.clientId) return
