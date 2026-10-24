@@ -6,7 +6,7 @@ This works because [`TandemServer`](server.md#connect-clients) sends each commit
 
 ## Rules
 
-1. One writer per record. Clients write user messages. Only the server writes assistant messages, and the push handler drops client writes to them.
+1. One writer per record. Clients write user messages. Only the server writes assistant messages, under reply IDs the push handler keeps clients from writing.
 2. The server saves the reply about every 100 ms while it generates, with `status: "streaming"`. When the model loop ends it saves a final status: `"complete"` on a normal end, `"stopped"` on abort, `"error"` on a throw.
 3. Anything the client says about a reply goes in a record the client owns. The stop button sets `stopRequested` on a `runs` record, and the server aborts the model.
 4. A crash can leave a reply `"streaming"` forever. The server marks those as `"error"` on startup, and clients treat a reply whose `updatedAt` stopped advancing as failed.
@@ -49,6 +49,9 @@ const schema = defineSchema({
 The server is an ordinary [`TandemServer`](server.md). `model` is any AI SDK language model; tests can use `MockLanguageModelV4` from `ai/test`.
 
 ```ts
+import type { MutationOp } from "@tanishqkancharla/tandem-core"
+import { TandemServer, TandemServerJsonFileStorage } from "@tanishqkancharla/tandem-server"
+
 const server = new TandemServer({
 	schema,
 	relations: {},
@@ -56,37 +59,40 @@ const server = new TandemServer({
 })
 ```
 
-Wrap it in the transport the client calls ([Custom remotes](custom-remote.md#wrapping-tandemserver)). Drop operations a client may not make instead of returning an error: the mutation is still acknowledged, and the client's next pull shows the server's record again. An error would leave the mutation pending, and every later push from that client would fail with it. Check the stored record, not only the new value, so a client cannot overwrite a reply by calling it a user message.
+Wrap it in the transport the client calls ([Custom remotes](custom-remote.md#wrapping-tandemserver)). Drop operations a client may not make instead of returning an error: the mutation is still acknowledged, and the client's next pull shows the server's record again. An error would leave the mutation pending, and every later push from that client would fail with it. The commit still resolves and the dropped write shows locally until that pull, so validate in the UI too.
+
+Reply IDs are reserved for the server, so the check needs no lookup: a client cannot overwrite a reply by calling it a user message. This only protects replies; who may write which thread is up to your authorization.
 
 ```ts
+const replyId = (messageId: string) => `${messageId}:reply`
 const isReplyId = (id: string) => id.endsWith(":reply")
 
-async function isClientWrite(op: MutationOp<ChatSchema>) {
+function isClientWrite(op: MutationOp<ChatSchema>) {
 	if (op.collection === "runs") return op.type !== "remove"
-	if (op.type !== "set" || op.value.role !== "user" || isReplyId(op.value.id)) return false
-	const [stored] = await server.query({ collection: "messages", where: { id: op.value.id } })
-	return stored === undefined || stored.role === "user"
+	return op.type === "set" && op.value.role === "user" && !isReplyId(op.value.id)
 }
 
+const replies = new Set<Promise<void>>()
+
 async push(args) {
-	const mutations = []
-	for (const mutation of args.mutations) {
-		const ops = []
-		for (const op of mutation.ops) if (await isClientWrite(op)) ops.push(op)
-		mutations.push({ ...mutation, ops })
-	}
+	const mutations = args.mutations.map((mutation) => ({
+		...mutation,
+		ops: mutation.ops.filter(isClientWrite),
+	}))
 	const response = await server.push({ ...args, mutations })
 	if ("error" in response) return response
 	for (const { ops } of mutations) {
 		for (const op of ops) {
-			if (op.type === "set" && op.collection === "messages") replies.add(streamReply(op.value))
+			if (op.type !== "set" || op.collection !== "messages") continue
+			// Await these on shutdown.
+			const reply = streamReply(op.value)
+			replies.add(reply)
+			void reply.finally(() => replies.delete(reply))
 		}
 	}
 	return response
 }
 ```
-
-`replies` is a set of promises to await on shutdown; remove each when it settles.
 
 The reply loop uses the AI SDK on the server only: `streamText`, then `toUIMessageStream`, then `readUIMessageStream`. Each snapshot replaces `parts`; a timer saves the newest one. Do not use `useChat` on the client; the client reads the record.
 
@@ -94,7 +100,7 @@ The reply loop uses the AI SDK on the server only: `streamText`, then `toUIMessa
 import { convertToModelMessages, readUIMessageStream, streamText, toUIMessageStream } from "ai"
 
 async function streamReply(userMessage: Message) {
-	const id = `${userMessage.id}:reply`
+	const id = replyId(userMessage.id)
 	const claimTx = server.transact()
 	// A retried push must not start a second reply.
 	if (await claimTx.get("messages", id)) return claimTx.cancel()
@@ -220,7 +226,7 @@ The stop button writes the run record the server watches:
 
 ```ts
 const tx = client.transact()
-tx.set("runs", { id: `${messageId}:reply`, stopRequested: true })
+tx.set("runs", { id: replyId(messageId), stopRequested: true })
 await client.commit(tx)
 ```
 

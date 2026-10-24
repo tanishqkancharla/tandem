@@ -60,19 +60,12 @@ const replyId = (userMessageId: string) => `${userMessageId}:reply`
 
 const isReplyId = (id: string) => id.endsWith(":reply")
 
-/**
- * Clients write runs and their own user messages. Only the server writes
- * assistant messages, so check the stored record, not only the new value.
- */
-async function isClientWrite(tandem: ChatTandem, op: MutationOp<ChatSchema>) {
+/** Clients write runs and user messages. Reply IDs are reserved for the server. */
+function isClientWrite(op: MutationOp<ChatSchema>) {
 	if (op.collection === "runs") return op.type !== "remove"
-	if (op.type !== "set" || op.value.role !== "user" || isReplyId(op.value.id))
-		return false
-	const [stored] = await tandem.query({
-		collection: "messages",
-		where: { id: op.value.id },
-	})
-	return stored === undefined || stored.role === "user"
+	return (
+		op.type === "set" && op.value.role === "user" && !isReplyId(op.value.id)
+	)
 }
 
 /** A crash leaves replies "streaming"; nothing will finish them now. */
@@ -133,14 +126,10 @@ class ChatServer {
 				// Drop forbidden operations but keep each mutation, so the client's
 				// next pull acknowledges it and restores the server's value. An error
 				// response would leave the mutation pending and fail every later push.
-				const mutations = []
-				for (const mutation of overJson(args.mutations)) {
-					const ops = []
-					for (const op of mutation.ops) {
-						if (await isClientWrite(this.tandem, op)) ops.push(op)
-					}
-					mutations.push({ ...mutation, ops })
-				}
+				const mutations = overJson(args.mutations).map((mutation) => ({
+					...mutation,
+					ops: mutation.ops.filter(isClientWrite),
+				}))
 				const response = await this.tandem.push({ ...args, mutations })
 				if ("error" in response) return response
 				for (const { ops } of mutations) {

@@ -193,8 +193,8 @@ const server = new TandemServer({
 })
 
 // In your HTTP framework:
-// POST /api/tandem { action: "push", args } -> await server.push(args)
-// POST /api/tandem { action: "pull", args } -> await server.pull(args)
+// POST /api/tandem { action: "push", args } -> respond with await server.push(args)
+// POST /api/tandem { action: "pull", args } -> respond with await server.pull(args)
 // GET /api/tandem/events?clientId=... -> return the response below
 ```
 
@@ -242,9 +242,7 @@ export const todoRemote: RemoteApi<TodoSchema> = {
 			poke,
 		})
 	},
-	async push(args) {
-		await call("push", args)
-	},
+	push: (args) => call("push", args),
 	pull: (args) => call("pull", args),
 }
 ```
