@@ -121,7 +121,7 @@ const mutators = tandem.serverMutators(chatMutators, {
 		ctx.after(() => controllers.get(reply.id)?.abort())
 	},
 })
-push: (args) => tandem.push(args, { mutators, allowOps: false })
+push: (args) => tandem.push(args, { mutators }) // refuses raw set/update/remove by default
 
 // Client
 await client.mutate.sendMessage({ messageId, threadId, text })
@@ -130,7 +130,7 @@ await client.mutate.stopReply({ messageId })
 
 What disappears: the operation filter and the reply-ID suffix rule, the scan for new messages, the claim check, the drop-don't-reject guidance, the `runs` collection and the server's subscription to it. The reply record now commits in the same transaction as the user message, and the per-client mutation ID makes the `after` effect run once.
 
-What remains: the reply loop, its save timer, startup recovery of replies a crash left `"streaming"`, the `replyId` naming convention, and an in-memory map from reply ID to `AbortController`. The full example is [[c412c04:examples/agent-chat/apps/server/test/AgentChatMutators.e2e.spec.ts#L1-L452]].
+What remains: the reply loop, its save timer, startup recovery of replies a crash left `"streaming"` (unchanged, so the new example omits it), the `replyId` naming convention, an existence check on both the message and reply IDs, and an in-memory map from reply ID to `AbortController`. Line counts barely change: the developer-experience review's rewrite was about 258 lines of app code before and 276 after. The code that goes away is the subtle part. The full example is [[c412c04:examples/agent-chat/apps/server/test/AgentChatMutators.e2e.spec.ts#L1-L452]].
 
 ## Research
 
@@ -181,25 +181,37 @@ Alternatives:
 - Separate client and server functions per mutator, with no shared body. Rejected as the default, since most mutators should share their optimistic write. Overrides cover the rest.
 - Synchronous mutators. They would make rebase re-execution easy (question 3), but the server reads storage asynchronously, so shared code would need two calling conventions.
 
-A parse function needs its parameter annotated (`(input: unknown) =>`), or TypeScript cannot infer the arguments. Standard Schema objects infer without help.
+A parse function needs its parameter annotated (`(input: unknown) =>`), or TypeScript cannot infer the arguments. Standard Schema objects infer without help. `client.mutate` takes the validator's output type; with zod `.default()` or `.transform()` the call-site type is stricter or wrong, since the raw input is what is sent.
+
+The client receives the shared mutators at construction and must be ready before a call:
+
+```ts
+const client = new TandemClient({ schema, remote, mutators: chatMutators })
+await client.ready
+await client.mutate.sendMessage({ messageId, threadId, text })
+```
+
+An explicit type needs all three generics: `TandemClient<ChatSchema, {}, typeof chatMutators>`.
 
 ### 2. Generic operations
 
-Recommendation: keep `transact` and `commit`. Both kinds share one outbox and one mutation ID sequence, so their order is preserved. A server that has moved to mutators passes `allowOps: false`, which rejects generic mutations the same way a failed mutator is rejected: acknowledged, reported, rolled back. Generic writes stay useful for data the client owns outright (drafts, preferences) and for server-side code, which keeps `tandem.transact()`.
+Recommendation: keep `transact` and `commit`. Both kinds share one outbox and one mutation ID sequence, so their order is preserved. A push that carries `mutators` rejects generic mutations by default, the same way a failed mutator is rejected: acknowledged, reported, rolled back. `allowOps: true` opts back in. Defaulting the other way would leave every record writable to an app that moved its checks into mutators and forgot the flag. Generic writes stay useful for data the client owns outright (drafts, preferences) and for server-side code, which keeps `tandem.transact()`.
 
-Alternatives: make everything named, with `set`/`update`/`remove` as built-in mutators the server authorizes like any other. That unifies the wire format and the server path, and is worth doing before release (phase 6). Or remove generic writes from clients entirely, which is simpler but forces a mutator for every trivial write.
+Alternatives: make everything named, with `set`/`update`/`remove` as built-in mutators the server authorizes like any other. That unifies the wire format and the server path, and is worth doing before release (phase 7). Or remove generic writes from clients entirely, which is simpler but forces a mutator for every trivial write.
 
-Migration: none is needed before release. Apps that keep generic writes change nothing. Apps that adopt mutators delete their push filter and pass `{ mutators, allowOps: false }`.
+Migration: none is needed before release. Apps that keep generic writes change nothing. Apps that adopt mutators delete their push filter and pass `{ mutators }`.
 
 ### 3. Client replay
 
 Recommendation for now: replay recorded operations. `client.mutate` runs the mutator once, against a draft transaction, and commits the operations it recorded exactly as `commit` does today. The outbox keeps those operations at `["outbox", id]`, unchanged, and adds `["mutator", id] = { name, args }`. A pull rebuilds tracked records from their bases and replays the recorded operations, as today. A restart restores both tuples, so a pending named mutation is pushed by name after reconnect. Functions are never stored.
 
+The call copies its arguments through JSON first, so later changes to the caller's object cannot change what is pushed, and non-JSON arguments fail at the call. If a pull or another call writes a record the mutator read while it awaited, the commit conflicts; nothing has been pushed yet, so the client reruns the mutator on the new state, up to three times.
+
 Determinism: not required for convergence, because the server's result replaces the optimistic one when the pull acknowledges it. It matters for UX: if the client and server disagree, the UI jumps once. IDs, and anything else the server must reproduce, should come from arguments.
 
 The cost is intent while pending. If client A bumps a counter from 3 to 4 and a pull brings B's bump (server value 4), A replays "set 4" instead of re-running "add 1", and shows 4 until its own mutation is acknowledged and the server's 5 arrives. Field-level `update` already limits this to the fields a mutator writes.
 
-Alternative, later: re-run mutator code on rebase (Replicache, Zero). That needs mutators the client can run synchronously inside `applyPull`, or an asynchronous rebase that holds off local commits. Phase 7 sketches the synchronous option. Supporting both means storing the recorded operations anyway, as a fallback for a client whose code no longer has the mutator.
+Alternative, later: re-run mutator code on rebase (Replicache, Zero). That needs mutators the client can run synchronously inside `applyPull`, or an asynchronous rebase that holds off local commits. Phase 8 sketches the synchronous option. Supporting both means storing the recorded operations anyway, as a fallback for a client whose code no longer has the mutator.
 
 ### 4. Server execution
 
@@ -214,11 +226,16 @@ export type ServerMutatorContext = MutatorContext & {
 }
 ```
 
-Auth lives in the closure: `chatMutators(session)` captures who is calling, so the context needs no app-specific generic. This is Zero's `createServerMutators(authData)` pattern.
+Auth lives in the closure: a `mutators(session)` function that calls `tandem.serverMutators` captures who is calling, so the context needs no app-specific generic. This is Zero's `createServerMutators(authData)` pattern.
 
 Alternatives: constructor `mutators` plus a typed `context` value per push, which adds a `Context` generic to `TandemServer`; or `tx.location` branches inside the shared module, which ships server-only imports (the AI SDK, secrets) to the browser.
 
 Cost: an in-process remote that calls `tandem.push(args)` without mutators rejects every named mutation as unknown.
+
+Server mutators run inside the server's serial run queue, which orders every push, pull, and commit. Two rules follow, both documented rather than enforced in the prototype:
+
+- A server mutator must not await `tandem.commit`, `push`, or `pull`. They queue behind the push that is waiting on them, and the server deadlocks.
+- A server mutator should not await external I/O such as a fetch or a model call. Every client's sync waits for it. Put that work in `ctx.after`.
 
 ### 5. Side effects after commit
 
@@ -233,7 +250,7 @@ for (const mutation of mutations) {
 }
 ```
 
-Durability: at most once. A crash between commit and effect loses the effect. Work that must finish should be a record the mutator writes in its transaction, finished by startup recovery. The chat already does this: the reply record commits with the message, and startup marks stale `"streaming"` replies as failed. A durable job queue (phase 8) would make this generic.
+Durability: at most once. A crash between commit and effect loses the effect, and so does a storage commit that reports failure after it actually became durable (an ambiguous timeout): the server drops the effects and the retry is skipped. Work that must finish should be a record the mutator writes in its transaction, finished by startup recovery. The chat already does this: the reply record commits with the message, and startup marks stale `"streaming"` replies as failed. A durable job queue (phase 9) would make this generic.
 
 Alternatives: run effects before responding and await them (slow pushes, and a long reply would hold the client's push); or a durable outbox from the start (more machinery than the prototype needs).
 
@@ -243,7 +260,7 @@ Multiple processes: the dedupe read happens before the transaction, outside it. 
 
 Recommendation: acknowledge with no effect. If a server mutator throws, or the name is unknown, or the arguments fail validation, the server cancels the mutator's writes, commits only `lastMutationId`, pokes the pusher, and adds `{ id, message }` to `PushResponse.rejected`. The client's `mutate` (or `commit`) promise rejects with `MutationRejectedError`, and the next pull rolls back its optimistic writes, exactly as dropped operations roll back today.
 
-A storage failure is not a refusal. If the error, or anything in its cause chain, is a `TandemServerError`, the push returns `unavailable` and the mutation stays pending, so a later push retries it.
+A storage failure is not a refusal. The server marks every error its storage adapter throws; if the mutator's error has one in its cause chain, the push returns `unavailable` and the mutation stays pending, so a later push retries it. Every other error is a refusal, including a malformed query inside the mutator. The first prototype treated any `TandemServerError` as storage, and the design review showed a bad query then blocked the client forever. A mutator that catches a storage error and rethrows a new error without `cause` turns a temporary failure into a refusal.
 
 ```mermaid
 flowchart TD
@@ -251,12 +268,20 @@ flowchart TD
 	K -- no --> R[commit lastMutationId only, report rejected]
 	K -- yes --> X[run server mutator]
 	X -- returns --> C[commit writes + lastMutationId, then run after effects]
-	X -- throws TandemServerError --> U[push returns unavailable, mutation stays pending]
+	X -- throws a storage adapter error --> U[push returns unavailable, mutation stays pending]
 	X -- throws anything else --> R
 	R --> P[pull rolls back the optimistic writes]
 ```
 
-The report is best effort: a lost response loses the message, though never the rollback, and the promise then rejects with the transport error. Phase 5 persists the rejection with the acknowledgement so a pull delivers it.
+What the `mutate` promise means today, which the design review flagged as the weakest part of the prototype:
+
+| Outcome | Meaning |
+| --- | --- |
+| Resolves | The push carrying it got a response without a rejection for it, or no push was attempted (disconnected, or `clear()` ran). Offline, it resolves without a server verdict. |
+| Rejects with `MutationRejectedError` | The server refused it. It is acknowledged and the next pull rolls it back. |
+| Rejects with any other error | The push failed in transit. The server may have applied it; the mutation stays pending and a later push resends it, which the server skips if it was applied. Do not retry the call with new arguments. |
+
+The report is best effort: a lost response loses the message, though never the rollback. Phase 6 persists the rejection with the acknowledgement so a pull delivers it, and lets the promise settle on acknowledgement rather than on the push response.
 
 A client mutator that throws writes nothing and pushes nothing; `mutate` rejects with that error.
 
@@ -266,7 +291,7 @@ Alternatives: return an error and keep the mutation pending (today's behavior fo
 
 Recommendation for the prototype: `Mutation` gains an optional `mutator: { name, args }`. A named mutation travels as `{ id, ops: [], mutator }`; the server ignores `ops` when `mutator` is set. `PushResponse`'s success case gains `rejected?: { id, message }[]`. `MutationApi.codec` checks that a mutator has a string name and passes JSON arguments through, so transports need no mutator definitions.
 
-Before release, make `Mutation` a discriminated union (`{ id, ops } | { id, name, args }`) and update push wrappers (phase 6). The optional field only exists so the existing agent chat test compiles unchanged.
+An older server, or a push wrapper that rebuilds mutations as `{ id, ops }`, silently acknowledges a named mutation with no effect: the call resolves and the next pull undoes the write. Before release, make `Mutation` a discriminated union (`{ id, ops } | { id, name, args }`) and update push wrappers (phase 7). The optional field only exists so the existing agent chat test compiles unchanged.
 
 Field-level updates are unaffected: the client records whatever operations the mutator made, including `update` payloads, and replays them. Live pokes are unaffected: they carry the records each commit changed, whatever made the commit, including the reply records an `after` effect saves.
 
@@ -279,7 +304,7 @@ Recommendation: mutator names are the contract.
 - Arguments change compatibly (new optional fields) or get a new name (`sendMessage2`). Old names stay on the server while old clients may hold them in their outbox, which for offline clients can be days.
 - Deploy servers before clients. A client newer than the server gets "Unknown mutator" rejections: acknowledged, rolled back, and reported, so it never wedges.
 - An older client whose outbox names a mutator the new server dropped also gets a rejection. That loses the user's write, so removal should wait out the offline window.
-- Phase 9 adds an optional mutators version on push, so a server can answer "update needed" instead of rejecting one by one (Replicache's `VersionNotSupported`, Zero's `onUpdateNeeded`).
+- Phase 10 adds an optional mutators version on push, so a server can answer "update needed" instead of rejecting one by one (Replicache's `VersionNotSupported`, Zero's `onUpdateNeeded`).
 
 ### 9. Deterministic simulation and tests
 
@@ -288,6 +313,9 @@ Recommendation: drive named mutators through `dst/` with an intent-sensitive mut
 - Two clients bump the same todo offline; the server ends at +2. Replaying recorded updates would give +1.
 - A refused bump rolls back and the client's later writes still apply.
 - No `after` effect runs twice under lost requests, lost responses, and client crashes (`effectRepeated` violation). Breaking the server's retry dedupe for named mutations makes seed 5 fail this check.
+- Pinned runs cover a crash with a bump pending in client storage, and a lost response to the push carrying a bump.
+
+Random runs bump about 6 to 8 times per 300 steps, so the sweeps alone rarely line a crash or lost response up with a pending bump; the pinned runs cover those. Random runs also cannot yet tell a server that acknowledged a bump with no effect from one that applied it. A ledger check (effects equal applied bumps, priority equals the start plus accepted bumps) would close that gap.
 
 Tests drive public APIs only: `client.mutate`, `client.commit`, `tandem.push` options, and client storage restarts. No test reads internal tuples.
 
@@ -301,8 +329,8 @@ Tests drive public APIs only: `client.mutate`, `client.commit`, `tandem.push` op
 
 ## Non-goals
 
-- Re-running mutator code on client rebase (phase 7 is a sketch).
-- Durable effects and job queues (phase 8).
+- Re-running mutator code on client rebase (phase 8 is a sketch).
+- Durable effects and job queues (phase 9).
 - Mutator return values sent back to the client.
 - Multi-process exactly-once (open question 5).
 
@@ -469,7 +497,37 @@ Add a `bumpPriority` mutator with a server-only refusal rule and an effect ledge
 
 The targeted tests are [[9dc95e5:dst/dst.spec.ts#L60-L115]]. Sweeps of 50 seeds at 300 steps with 10% network faults, and 50 more adding 2% crashes, found no violations.
 
-### Phase 5: Durable rejection results
+### ✅ Phase 5: Review fixes
+
+**Today**
+
+The first prototype treated any `TandemServerError` from a mutator as a storage failure, accepted generic operations unless told otherwise, failed a client call on a read-write conflict, and stored the caller's argument object by reference.
+
+**Proposed**
+
+Fix what the design and developer-experience reviews reproduced, so a bug cannot block a queue and the secure configuration is the default.
+
+```changes
+9e7d405
+```
+
+```callstack
+ tandemStorageToTupleDatabaseStorage [[9e7d405:packages/server/src/TandemServer.ts#L235-L266]]
++└── mark each error the adapter throws # storageFailures, so causes stay unchanged
+ TandemServer.applyMutator
+-├── findCause(TandemServerError) → keep pending
++├── isStorageFailure(error) → keep pending [[9e7d405:packages/server/src/TandemServer.ts#L602]]
++└── anything else → reject
+ TandemServer.applyPush
++└── allowOps defaults to mutators === undefined [[9e7d405:packages/server/src/TandemServer.ts#L484]]
+ TandemClient.runMutator [[9e7d405:packages/core/src/TandemClient.ts#L156-L208]]
++├── copy args through JSON [[9e7d405:packages/core/src/TandemClient.ts#L165]]
++└── rerun on ReadWriteConflictError, up to maxMutatorAttempts [[9e7d405:packages/core/src/TandemClient.ts#L169-L206]]
+```
+
+The example also refuses a message whose reply ID already exists and keeps earlier replies in the model's context. New tests: a malformed query in a server mutator is refused and the next call applies [[9e7d405:packages/server/test/Mutators.spec.ts#L313-L327]]; two concurrent toggles both apply [[9e7d405:packages/server/test/Mutators.spec.ts#L329-L344]] (with the retry disabled, the second fails with `ReadWriteConflictError`); a changed argument object does not change the push [[9e7d405:packages/server/test/Mutators.spec.ts#L346-L358]]; and DST pins a crash with a pending bump and a lost push response [[9e7d405:dst/dst.spec.ts#L97-L147]]. Two more 50-seed sweeps, with faults and with faults plus crashes, found no violations.
+
+### Phase 6: Durable rejection results
 
 **Today**
 
@@ -489,7 +547,7 @@ Store each rejection with the acknowledgement that skipped it, as Zero does, and
 +└── surface rejections for acknowledged ids
 ```
 
-### Phase 6: One wire shape
+### Phase 7: One wire shape
 
 **Today**
 
@@ -505,7 +563,7 @@ type Mutation<Schema> =
 	| { id: MutationId; name: string; args: Json }
 ```
 
-### Phase 7: Re-run mutators on rebase (optional)
+### Phase 8: Re-run mutators on rebase (optional)
 
 **Today**
 
@@ -522,7 +580,7 @@ Let a mutator declare a synchronous client body. `applyPull` re-runs it against 
 +└── for each pending mutation: run its client mutator synchronously if defined, else replay recorded ops
 ```
 
-### Phase 8: Durable effects
+### Phase 9: Durable effects
 
 **Today**
 
@@ -532,7 +590,7 @@ Let a mutator declare a synchronous client body. `applyPull` re-runs it against 
 
 Add a durable job record written in the mutator's transaction, claimed and retried by a worker, with idempotency keyed by client and mutation ID. This is the transactional outbox Zero recommends and the scheduler Convex ships.
 
-### Phase 9: Mutator versions
+### Phase 10: Mutator versions
 
 **Today**
 
@@ -542,16 +600,27 @@ A client newer than the server gets one "Unknown mutator" rejection per call.
 
 Send an optional mutators version on push. A server that cannot serve it answers with a version error that the client surfaces as "update needed" without rejecting or retrying the outbox.
 
+## Known limitations
+
+- The `mutate` promise does not report a definite outcome (design question 6). This is the main gap before anyone builds UI on it.
+- Server mutators run in the serial run queue: awaiting `tandem.commit` deadlocks, and external I/O stalls every client.
+- Rejection messages pass through whatever the mutator threw, including messages from bugs such as `id.map is not a function`.
+- Older servers and op-rebuilding push wrappers silently acknowledge named mutations.
+- `tx.set` overwrites, so an "insert" mutator must check for an existing record itself.
+- Effects are at most once and single-process.
+
 ## Open questions
 
 1. Adopt named mutators as Tandem's main write path, or keep them an advanced option beside `commit`?
 2. Should a server with mutators refuse generic operations by default?
-3. Is replaying recorded operations good enough while a mutation is pending, or is rebase re-execution (phase 7) needed for the apps you have in mind?
+3. Is replaying recorded operations good enough while a mutation is pending, or is rebase re-execution (phase 8) needed for the apps you have in mind?
 4. Per-push mutators (closures over the session) or constructor mutators with a typed context?
 5. Is single-process exactly-once enough for now? Multi-process needs the `lastMutationId` read inside the transaction and storage that detects the conflict.
 6. Should rejection messages pass through as thrown, or should only errors the app marks as public reach clients, with a generic message otherwise? Today any thrown message is sent.
 7. Should `after` effects block `close()`, or stay the app's to track, as in the example?
-8. Should `client.mutate` return the server's result (Zero's `.server` promise), which needs phase 5's durable results?
+8. Should overrides be structured (`{ authorize, after }` around the shared run) instead of replacing `run`? Today forgetting to call the shared `run` silently writes nothing.
+9. Add `tx.insert`, which refuses an existing record, so mutators that create records are safe by default?
+10. Should `client.mutate` return the server's result (Zero's `.server` promise), which needs phase 6's durable results?
 
 ## Research notes
 
