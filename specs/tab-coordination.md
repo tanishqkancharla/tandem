@@ -183,19 +183,19 @@ The leader also watches each tab's lifetime lock, so a crashed tab's subscriptio
 A separate seeded tab world runs real `TandemClient`s and a `TandemServer` over one shared client storage. Every channel delivery, network request, reply, poke, leader storage commit, and timer tick waits as a named step until the run chooses it.
 
 ```changes
-0e2f7f9
+4ec5a73
 ```
 
 ```callstack
 +TabSimulation.execute # choose one possible event per step
-+├── TabSimulation.choose # open, close, crash, write, flush, toggle, advance, fault [[0e2f7f9:dst/TabSimulation.ts#L103-L152]]
++├── TabSimulation.choose # open, close, crash, write, flush, toggle, advance, fault [[4ec5a73:dst/TabSimulation.ts#L103-L152]]
 +├── TabWorld.apply
-+│   ├── TabWorld.write # checks completion against the server and storage [[0e2f7f9:dst/TabWorld.ts#L538-L593]]
-+│   ├── TabWorld.crash # drops the tab's steps and undelivered messages [[0e2f7f9:dst/TabWorld.ts#L496-L510]]
-+│   ├── TabWorld.broadcast # per sender and receiver queues [[0e2f7f9:dst/TabWorld.ts#L399-L410]]
-+│   └── TabWorld.remoteFor # held requests, replies, pokes, and loss [[0e2f7f9:dst/TabWorld.ts#L707-L794]]
-+└── TabWorld.finish # heal, then check what must have survived [[0e2f7f9:dst/TabWorld.ts#L330-L387]]
-+replayTabs # apply a recorded trace with no random choices [[0e2f7f9:dst/TabSimulation.ts#L169-L194]]
++│   ├── TabWorld.write # checks completion against the server and storage [[4ec5a73:dst/TabWorld.ts#L538-L593]]
++│   ├── TabWorld.crash # drops the tab's steps and undelivered messages [[4ec5a73:dst/TabWorld.ts#L496-L510]]
++│   ├── TabWorld.broadcast # per sender and receiver queues [[4ec5a73:dst/TabWorld.ts#L399-L410]]
++│   └── TabWorld.remoteFor # held requests, replies, pokes, and loss [[4ec5a73:dst/TabWorld.ts#L707-L794]]
++└── TabWorld.finish # heal, then check what must have survived [[4ec5a73:dst/TabWorld.ts#L330-L387]]
++replayTabs # apply a recorded trace with no random choices [[4ec5a73:dst/TabSimulation.ts#L169-L194]]
 ```
 
 Each write creates a unique record, so the oracles can name what went wrong:
@@ -298,7 +298,7 @@ pnpm --filter tandem-dst exec tsx ../packages/core/benchmarks/tabs.ts 100 3 30 5
 | messages (whole run) | 700 | 330 | | |
 | encodedBytes (whole run) | 69,535,206 | 39,101,688 | | |
 
-`commit` is not comparable between the columns: the follower engine resolved after the leader's save, and the coordinator resolves after the server response while connected, which matches a standalone client. The `server` row measures the actual push response in both. The coordinator shows the edit in the other tab 23 to 43 percent sooner at the median. Server delivery is faster or level, from 25 percent sooner at 100 rows to level in the large churn workload. It sends 30 to 61 percent fewer messages and 21 to 63 percent fewer channel bytes; resubscribing costs more, because each subscription change returns a complete view. The synchronous commit costs slightly more (about 0.04 ms at 100 rows), from resend bookkeeping and encoding the mutation in the tab. Tail latencies in the large churn workload varied between repeated sweeps: the coordinator's `saved` p95 was 615 ms in one sweep and 895 ms in the other. These numbers compare two implementations in one process. They do not predict browser IndexedDB, real BroadcastChannel, or network latency.
+`commit` is not comparable between the columns: the follower engine resolved after the leader's save, and the coordinator resolves after the server response while connected, which matches a standalone client. The `server` row measures the actual push response in both. The coordinator shows the edit in the other tab 23 to 43 percent sooner at the median. Server delivery is faster or level, from 25 percent sooner at 100 rows to level in the large churn workload. It sends 30 to 61 percent fewer messages and 21 to 63 percent fewer channel bytes; resubscribing costs more, because each subscription change returns a complete view. The synchronous commit costs slightly more (about 0.04 ms at 100 rows), from resend bookkeeping and encoding the mutation in the tab. Tail latencies in the large churn workload varied between repeated sweeps: the coordinator's `saved` p95 was 615 ms in one sweep and 895 ms in the other. The benchmark ran before 57071bc, which keeps restored records in views. Its tabs subscribe to every record, so the change only adds a check of an empty set. These numbers compare two implementations in one process. They do not predict browser IndexedDB, real BroadcastChannel, or network latency.
 
 ## References
 
