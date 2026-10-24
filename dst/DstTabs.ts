@@ -222,7 +222,7 @@ export class DstTabGroup {
 		const name: DstTabName = `tab${++this.opened}`
 		const env = this.browser.openTab()
 		const client = new TandemClient<DstSchema>({
-			remote: this.remote(name),
+			remote: this.remoteFor(name),
 			clientStorage: this.storageFor(name),
 			logger: this.logger,
 			rng: SimPrng.idSource(this.seed, name),
@@ -527,6 +527,27 @@ export class DstTabGroup {
 		const count = (this.labelCounts.get(label) ?? 0) + 1
 		this.labelCounts.set(label, count)
 		this.steps.push({ drop: () => {}, ...step, name: `${label}#${count}` })
+	}
+
+	/**
+	 * A crashed tab's server calls follow a crashed client's: a request it already
+	 * sent still reaches the server, but the reply is lost and anything it calls
+	 * afterwards never leaves.
+	 */
+	private remoteFor(tab: DstTabName): RemoteApi<DstSchema> {
+		const remote = this.remote(tab)
+		const never = new Promise<never>(() => {})
+		const live = <Result>(call: () => Promise<Result>) => {
+			if (!this.tabs.get(tab)!.alive) return never
+			return call().then((result) =>
+				this.tabs.get(tab)!.alive ? result : never,
+			)
+		}
+		return {
+			connect: (api) => live(() => remote.connect(api)),
+			push: (args) => live(() => remote.push(args)),
+			pull: (args) => live(() => remote.pull(args)),
+		}
 	}
 
 	private storageFor(tab: DstTabName): TandemClientStorageApi<DstSchema> {

@@ -35,7 +35,7 @@ The server retains the latest generated view and its opaque cookie per client. M
 
 ## Shared tabs
 
-`--tabs N` adds a group of browser tabs that share one client storage through an elected leader, beside the two clients (`dst/DstTabs.ts`). Tabs take the same writes as the clients. Their leader's server calls are Gatekeeper calls, so they are delayed and lost like the clients' calls. Channel messages, the leader's storage commits and timers, and pokes to the leader are held tab steps. Crashes end tabs, and lost undelivered messages go with them. Faults also fail leader saves of forwarded writes.
+`--tabs N` adds a group of browser tabs that share one client storage through an elected leader, beside the two clients (`dst/DstTabs.ts`). Tabs take the same writes as the clients. Their leader's server calls are Gatekeeper calls, so they are delayed and lost like the clients' calls. Channel messages, the leader's storage commits and timers, and pokes to the leader are held tab steps. Crashes end tabs, and their undelivered messages are lost with them. As with a crashed client, a server request a crashed tab already sent still arrives, but its reply is lost and the tab sends nothing more. Faults also fail leader saves of forwarded writes.
 
 Besides convergence, tab runs check that:
 
