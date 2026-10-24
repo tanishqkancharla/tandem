@@ -543,6 +543,8 @@ export class Database<
 				key,
 				applied.get(id),
 			)
+			// A value from this commit or later already contains the text.
+			if (isCoveredBy(revision, server.revision)) continue
 			const value = extendServerValue(server, appends)
 			// The pull this poke starts delivers what the client cannot extend.
 			if (value !== undefined) show(key, value)

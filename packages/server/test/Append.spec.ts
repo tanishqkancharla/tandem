@@ -4,8 +4,10 @@ import type {
 	PokePayload,
 	ScanWindow,
 } from "@tanishqkancharla/tandem-core"
+import { InMemoryTupleStorage } from "tuple-database"
+import type { ScanStorageArgs, WriteOps } from "tuple-database"
 import { assert, expect, test as baseTest } from "vitest"
-import { TandemServer } from "../src/index.js"
+import { TandemServer, type TandemTuple } from "../src/index.js"
 import { TestTandemServerStorage } from "./TandemServerStorage.fixture.js"
 
 type Message = {
@@ -239,4 +241,78 @@ test("an append never names a record the viewer cannot see or has not seen", asy
 		remove: [{ collection: "messages", id: "draft" }],
 	})
 	expect(threadPokes.map((poke) => poke?.append?.[0]?.text)).toEqual(["o", "!"])
+})
+
+/** Storage two server processes share, which tells each about every commit. */
+class SharedStorage {
+	private readonly memory = new InMemoryTupleStorage()
+	private readonly listeners = new Set<() => void>()
+
+	scan(args?: ScanStorageArgs) {
+		return Promise.resolve(this.memory.scan(args) as TandemTuple<ChatSchema>[])
+	}
+
+	commit(writes: WriteOps<TandemTuple<ChatSchema>>) {
+		this.memory.commit(writes)
+		for (const listener of this.listeners) listener()
+		return Promise.resolve()
+	}
+
+	subscribe(onChange: () => void) {
+		this.listeners.add(onChange)
+		return () => this.listeners.delete(onChange)
+	}
+
+	close() {
+		return Promise.resolve()
+	}
+}
+
+test("after another process writes storage, appends wait for a pull that read it", async () => {
+	const storage = new SharedStorage()
+	const local = new TandemServer({ schema, relations: {}, storage })
+	const other = new TandemServer({ schema, relations: {}, storage })
+	const clientId = tag<ClientId>("viewer")
+	const pokes: (PokePayload<ChatSchema> | undefined)[] = []
+	await local.connect({
+		clientId,
+		poke: (payload) => {
+			pokes.push(payload)
+			return Promise.resolve()
+		},
+	})
+	const setTx = local.transact()
+	setTx.set("messages", message("reply", { text: "ab" }))
+	await local.commit(setTx)
+	const pulled = await local.pull({
+		clientId,
+		scanWindow: [{ collection: "messages" }],
+	})
+	assert(!("error" in pulled))
+	pokes.length = 0
+
+	// The server's own commit sends only its payload, not an extra bare poke.
+	await local.commit(
+		local.transact().append("messages", "reply", { text: "c" }),
+	)
+	expect(pokes).toEqual([
+		expect.objectContaining({
+			append: [expect.objectContaining({ after: pulled.revision })],
+		}),
+	])
+
+	// Another process rewrites the text, so the next append extends a value
+	// no earlier pull or payload carried.
+	const rewriteTx = other.transact()
+	rewriteTx.set("messages", message("reply", { text: "xy" }))
+	await other.commit(rewriteTx)
+	await local.commit(
+		local.transact().append("messages", "reply", { text: "!" }),
+	)
+	const [bare, appended] = pokes.slice(1)
+	expect(bare).toBeUndefined()
+	const [op] = appended!.append!
+	expect(op).toMatchObject({ offset: 2, text: "!" })
+	expect(op!.after.commit).toBeGreaterThan(pokes[0]!.revision.commit)
+	await Promise.all([local.close(), other.close()])
 })

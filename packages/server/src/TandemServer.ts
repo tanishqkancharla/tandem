@@ -204,6 +204,8 @@ export class TandemServer<
 	private readonly lastWrites = new Map<string, number>()
 	// Records missing from lastWrites last changed at or before this commit.
 	private forgottenWritesThrough = 0
+	// Set while this instance commits, to tell its own writes from others'.
+	private committing = false
 	private closed = false
 	// Tuple transactions batch writes but do not snapshot reads or serialize
 	// asynchronous storage commits. Order sync reads and commits here.
@@ -219,7 +221,9 @@ export class TandemServer<
 		)
 		this.tupleDb = new AsyncTupleDatabaseClient<TandemTuple<Schema>>(database)
 		this.unsubscribeStorage = args.storage.subscribe?.(() => {
-			if (this.closed) return
+			// This instance's own commits poke clients themselves.
+			if (this.closed || this.committing) return
+			this.forgetLastWrites()
 			this.emitPokes()
 		})
 	}
@@ -526,8 +530,12 @@ export class TandemServer<
 			(cause) => new TandemServerError({ operation: options.operation, cause }),
 		)
 		if (removed instanceof Error) return removed
+		this.committing = true
 		const hasWrites = await transaction
 			.commit()
+			.finally(() => {
+				this.committing = false
+			})
 			.catch(
 				(cause) =>
 					new TandemServerError({ operation: options.operation, cause }),
@@ -566,6 +574,16 @@ export class TandemServer<
 			...writes.remove,
 		])
 		await this.emitLivePokes(changes)
+	}
+
+	/**
+	 * Another process wrote storage, so any record may have changed since its
+	 * last write here. Appends then wait for a pull read after this point.
+	 */
+	private forgetLastWrites() {
+		this.commitCount += 1
+		this.lastWrites.clear()
+		this.forgottenWritesThrough = this.commitCount
 	}
 
 	/** Remembers this commit as the last write of each record it wrote. */

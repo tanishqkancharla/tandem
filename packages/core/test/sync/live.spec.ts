@@ -511,6 +511,31 @@ describe("live pokes", () => {
 	)
 
 	liveTest(
+		"an append that arrives after a newer payload for its record is ignored",
+		async ({ harness, pokes, commitOnServer }) => {
+			const { client1 } = harness
+			client1.subscribe({ collection: "messages" })
+			await commitOnServer((tx) => tx.set("messages", reply("ab")))
+			await (
+				await client1.pullFromRemote()
+			).result
+			pokes.drop()
+
+			// A reconnecting client can get the same pokes over two connections,
+			// so an older payload can arrive after a newer one.
+			await commitOnServer((tx) =>
+				tx.append("messages", "reply", { text: "c" }),
+			)
+			await commitOnServer((tx) => tx.set("messages", reply("zz")))
+			const [older, newer] = pokes.take()
+			void newer!()
+			void older!()
+
+			expect(client1.query({ collection: "messages" })).toEqual([reply("zz")])
+		},
+	)
+
+	liveTest(
 		"an append that does not start at the end of the client's text waits for the pull",
 		async ({ harness, pokes, commitOnServer }) => {
 			const { client1 } = harness
