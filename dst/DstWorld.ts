@@ -53,8 +53,14 @@ export const dstSchemaDefinition = defineSchema({
 	}),
 }) satisfies RuntimeSchemaDefinition<DstSchema>
 
+/** Records only the server writes, as an agent's reply would be. */
+export const serverOwnedIds = ["reply-1", "reply-2"]
+
 class InMemoryServerStorage implements TandemServerStorageApi<DstSchema> {
 	private readonly memory = new InMemoryTupleStorage()
+
+	/** Every value each server-owned record has had, in commit order; null when absent. */
+	readonly history = new Map(serverOwnedIds.map((id) => [id, ["null"]]))
 
 	scan(args?: ScanStorageArgs): Promise<TandemTuple<DstSchema>[]> {
 		return Promise.resolve(this.memory.scan(args) as TandemTuple<DstSchema>[])
@@ -62,6 +68,13 @@ class InMemoryServerStorage implements TandemServerStorageApi<DstSchema> {
 
 	commit(writes: WriteOps<TandemTuple<DstSchema>>): Promise<void> {
 		this.memory.commit(writes)
+		for (const { key, value } of writes.set ?? []) {
+			if (key[0] === "record")
+				this.history.get(key[2])?.push(JSON.stringify(value))
+		}
+		for (const key of writes.remove ?? []) {
+			if (key[0] === "record") this.history.get(key[2])?.push("null")
+		}
 		return Promise.resolve()
 	}
 
@@ -163,14 +176,27 @@ export type DstClientName = (typeof clientNames)[number]
 export type DstFinalStates = Record<"server", DstTodo[]> &
 	Record<DstClientName, DstTodo[] | null>
 
-/** A settled client's subscribed view differs from the authoritative server. */
-export type DstViolation = {
-	kind: "clientState"
-	step: "quiescence"
-	client: DstClientName
-	expected: DstTodo[]
-	actual: DstTodo[]
-}
+export type DstViolation =
+	/** A settled client's subscribed view differs from the authoritative server. */
+	| {
+			kind: "clientState"
+			step: "quiescence"
+			client: DstClientName
+			expected: DstTodo[]
+			actual: DstTodo[]
+	  }
+	/**
+	 * A client showed a server-owned record older than one it showed before,
+	 * or a value the server never had.
+	 */
+	| {
+			kind: "movedBackwards"
+			step: number
+			client: DstClientName
+			id: string
+			shown: DstTodo | null
+			previous: DstTodo | null
+	  }
 
 /** Where a dropped handoff was lost, which decides what its sender can know. */
 export type DstFaultKind =
@@ -213,6 +239,8 @@ export type DstTraceRecord =
 	  }
 	| ({ type: "advance"; step: number } & DstBoundary)
 	| ({ type: "drop"; step: number; fault: DstFaultKind } & DstBoundary)
+	| { type: "serverSet"; step: number; item: DstTodo }
+	| { type: "serverRemove"; step: number; id: string }
 	| { type: "crash"; step: number; client: DstClientName }
 	| { type: "restart"; step: number; client: DstClientName; clientId: string }
 
@@ -241,6 +269,9 @@ export type DstIntent =
 			payload: Partial<Omit<DstTodo, "id">>
 	  }
 	| { type: "remove"; client: DstClientName; id: string }
+	/** The server writes on its own, as an agent saving its reply would. */
+	| { type: "serverSet"; item: DstTodo }
+	| { type: "serverRemove"; id: string }
 	| { type: "advance"; call: string }
 	| { type: "drop"; call: string }
 	| { type: "crash"; client: DstClientName }
@@ -278,18 +309,25 @@ export class DstWorld implements AsyncDisposable {
 	// depend on other held calls, so a step starts them without waiting.
 	private readonly inFlight: Promise<unknown>[] = []
 	private held: readonly DstPendingCall[] = []
+	// The server history index of the last value each client showed per
+	// server-owned record. A restart may show older synced values, so it resets.
+	private readonly shown = new Map<string, number>()
+	private lastStep = -1
+	private orderViolation: DstViolation | undefined
 	maxPendingCalls = 0
 
 	private constructor(
 		private readonly server: TandemServer<DstSchema, {}>,
+		private readonly storage: InMemoryServerStorage,
 		private readonly harness: DstHarness,
 	) {}
 
 	static async start(seed: number): Promise<DstWorld> {
+		const storage = new InMemoryServerStorage()
 		const server = new TandemServer<DstSchema, {}>({
 			schema: dstSchemaDefinition,
 			relations: {},
-			storage: new InMemoryServerStorage(),
+			storage,
 			rng: SimPrng.idSource(seed, "server"),
 		})
 		let world: DstWorld | undefined
@@ -299,7 +337,7 @@ export class DstWorld implements AsyncDisposable {
 			idSource: (label) =>
 				SimPrng.idSource(seed, `${label}.${world?.generations[label] ?? 0}`),
 		})
-		world = new DstWorld(server, harness)
+		world = new DstWorld(server, storage, harness)
 		for (const name of clientNames) await world.boot(name)
 		await harness.activateGates()
 		return world
@@ -331,11 +369,15 @@ export class DstWorld implements AsyncDisposable {
 
 	/** Applies one event and returns its trace record. */
 	async apply(step: number, intent: DstIntent): Promise<DstTraceRecord> {
+		this.lastStep = step
 		switch (intent.type) {
 			case "set":
 			case "update":
 			case "remove":
 				return this.write(step, intent)
+			case "serverSet":
+			case "serverRemove":
+				return this.writeOnServer(step, intent)
 			case "advance": {
 				const target = this.find(intent.call)
 				this.deliveredEvents.add(target.handle)
@@ -378,6 +420,36 @@ export class DstWorld implements AsyncDisposable {
 	/** Let continuations reach their next boundary before choosing another event. */
 	async settle(): Promise<void> {
 		await settle()
+		this.observeOrder()
+	}
+
+	/** Each client's server-owned records only move forward through server history. */
+	private observeOrder() {
+		for (const name of clientNames) {
+			if (this.loaded.get(name) !== this.generations[name]) {
+				for (const id of serverOwnedIds) this.shown.delete(`${name}:${id}`)
+				continue
+			}
+			const todos = this.todosOf(name)
+			for (const id of serverOwnedIds) {
+				const history = this.storage.history.get(id)!
+				const previous = this.shown.get(`${name}:${id}`) ?? 0
+				const todo = todos.find((candidate) => candidate.id === id)
+				const index = history.indexOf(JSON.stringify(todo ?? null), previous)
+				if (index !== -1) {
+					this.shown.set(`${name}:${id}`, index)
+					continue
+				}
+				this.orderViolation ??= {
+					kind: "movedBackwards",
+					step: this.lastStep,
+					client: name,
+					id,
+					shown: todo ?? null,
+					previous: JSON.parse(history[previous]!) as DstTodo | null,
+				}
+			}
+		}
 	}
 
 	/**
@@ -417,15 +489,17 @@ export class DstWorld implements AsyncDisposable {
 		const client = clientNames.find(
 			(name) => JSON.stringify(states[name]) !== JSON.stringify(states.server),
 		)
-		const violation: DstViolation | undefined = client
-			? {
-					kind: "clientState",
-					step: "quiescence",
-					client,
-					expected: states.server,
-					actual: this.todosOf(client),
-				}
-			: undefined
+		const violation: DstViolation | undefined =
+			this.orderViolation ??
+			(client
+				? {
+						kind: "clientState",
+						step: "quiescence",
+						client,
+						expected: states.server,
+						actual: this.todosOf(client),
+					}
+				: undefined)
 		const clientIds = clientNames.map((name) =>
 			this.crashed.has(name) ? null : this.harness[name].clientId,
 		)
@@ -473,6 +547,18 @@ export class DstWorld implements AsyncDisposable {
 		// wait on another held call. Its call shows up in pending() then.
 		this.inFlight.push(client.commit(tx))
 		return { ...intent, step, mutationId }
+	}
+
+	private writeOnServer(
+		step: number,
+		intent: Extract<DstIntent, { type: "serverSet" | "serverRemove" }>,
+	): DstTraceRecord {
+		const tx = this.harness.server.transact()
+		if (intent.type === "serverSet") tx.set("todos", intent.item)
+		else tx.remove("todos", intent.id)
+		// Its pokes, with the records each client views, are events the run can lose.
+		this.inFlight.push(this.harness.server.commit(tx))
+		return { ...intent, step }
 	}
 
 	private async boot(name: DstClientName): Promise<void> {

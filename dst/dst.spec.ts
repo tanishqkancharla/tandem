@@ -11,7 +11,7 @@ import {
 	replay,
 } from "./DstReplay.js"
 import { DstSimulation } from "./DstSimulation.js"
-import { DstWorld } from "./DstWorld.js"
+import { DstWorld, serverOwnedIds } from "./DstWorld.js"
 
 describe("Deterministic simulation testing", () => {
 	it("converges to the server with interleaved calls and no faults", async () => {
@@ -124,6 +124,29 @@ describe("Deterministic simulation testing", () => {
 		expect(second).toEqual(first)
 		expect(otherSeed.trace).not.toEqual(first.trace)
 		expect(otherSeed.clientIds).not.toEqual(first.clientIds)
+	})
+
+	it("streams server writes under lost pokes without moving server-owned records backwards", async () => {
+		const result = await new DstSimulation({
+			seed: 7,
+			steps: 300,
+			faultRate: 0.1,
+			crashRate: 0.02,
+		}).execute()
+
+		expect(
+			result.trace.filter(
+				(record) =>
+					record.type === "serverSet" &&
+					serverOwnedIds.includes(record.item.id),
+			).length,
+		).toBeGreaterThan(5)
+		expect(
+			result.trace.some(
+				(record) => record.type === "drop" && record.fault === "pokeLost",
+			),
+		).toBe(true)
+		expect(result.violation).toBeUndefined()
 	})
 
 	it("replays a fault-and-crash run to the same final outcome", async () => {

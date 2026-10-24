@@ -1018,7 +1018,8 @@ describe("TandemClient persistence", () => {
 		}
 		const mutationId = tag<MutationId>(8)
 		const tuples: TandemClientTuple<TestsEventSchema>[] = [
-			{ key: ["record", "events", event.id], value: event },
+			// The saved record is the base with the pending operations applied.
+			{ key: ["record", "events", event.id], value: edited },
 			{
 				key: ["base", "events", event.id],
 				value: {
@@ -1049,7 +1050,6 @@ describe("TandemClient persistence", () => {
 						id: event.id,
 						payload: { startAt: edited.startAt },
 					},
-					{ type: "remove", collection: "events", id: event.id },
 				],
 			},
 		]
@@ -1089,7 +1089,7 @@ describe("TandemClient persistence", () => {
 			}),
 		)
 		await harness.client.ready
-		expect(harness.client.query({ collection: "events" })).toEqual([event])
+		expect(harness.client.query({ collection: "events" })).toEqual([edited])
 
 		// Removing an outbox entry leaves records, bases, and metadata untouched.
 		await reopened.commit({ remove: [["outbox", mutationId]] })
@@ -1517,6 +1517,10 @@ describe("TandemClient persistence", () => {
 			await expectQuery(harness.client1, {
 				collection: "todos",
 			}).toResolveTo([cachedTodo])
+			// The poke shows the record before a pull confirms it; save it confirmed.
+			await (
+				await harness.client1.pullFromRemote()
+			).result
 			await (
 				await harness.client1.flushClientStorage()
 			).result

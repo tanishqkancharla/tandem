@@ -306,12 +306,21 @@ export class SyncEngine<Schema extends AnySchema> {
 			if (clientId !== this.clientId) continue
 			const unsubscribe = await this.remote.connect({
 				clientId,
-				poke: () => {
+				poke: (payload) => {
 					if (clientId !== this.clientId) return Promise.resolve()
 					this.logger.info({ message: "received poke from remote" })
-					return this.queuePull().catch((error) => {
+					// Like pulls, live records only apply while connected.
+					const live = payload && this.disconnectFromRemote
+					if (live) this.db.applyPoke(payload)
+					const pulled = this.queuePull().catch((error) => {
 						this.logger.error({ message: "error pulling from remote", error })
 					})
+					if (!live) return pulled
+					// The pull can fail before saving, so wait for the live checkpoint
+					// too. The storage subscriber already logs a failed save.
+					return Promise.all([pulled, this.db.persistClientStorage()]).then(
+						() => undefined,
+					)
 				},
 			})
 			if (typeof unsubscribe !== "function") {
