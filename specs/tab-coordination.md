@@ -124,7 +124,7 @@ Takeover rules:
 - A tab sends pending writes in mutation order when it joins a leader, after queuing writes whose save failed. A leader without the tab's marker accepts the first write it receives.
 - A hub that sees a join addressed to another leader announces itself again, so a late announcement from a crashed leader cannot strand a tab.
 - A tab applies views from its current leader before the join reply arrives.
-- A failed join fails the requests waiting on it, and the next request joins again.
+- A failed join fails the requests waiting on it, and the next request joins again. A tab that failed to lead joins whichever tab leads after it.
 - A pending `clear` fails when the leader changes, so it never runs twice.
 
 ```callstack
