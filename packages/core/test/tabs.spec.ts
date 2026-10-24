@@ -858,6 +858,28 @@ describe("TandemClient tabs", () => {
 	)
 
 	tabsTest(
+		"records a tab restored at startup survive views of its subscriptions",
+		async ({ tabs }) => {
+			const first = await tabs.open("tab1", { autoConnect: false })
+			const tx = first.client.transact()
+			tx.set("todos", todo("restored"))
+			await first.client.commit(tx)
+			const second = await tabs.open("tab2", { autoConnect: false })
+
+			// A later view covers only tab 2's subscriptions, which exclude the record.
+			second.client.subscribe({ collection: "todos", where: { id: "other" } })
+			const otherTx = first.client.transact()
+			otherTx.set("todos", todo("other"))
+			await first.client.commit(otherTx)
+			await second.client.pullFromRemote()
+			expect(second.client.query({ collection: "todos" })).toEqual([
+				todo("other"),
+				todo("restored"),
+			])
+		},
+	)
+
+	tabsTest(
 		"records a tab restored at startup are removed once deleted",
 		async ({ tabs }) => {
 			const first = await tabs.open("tab1", { autoConnect: false })

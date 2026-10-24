@@ -46,6 +46,8 @@ type SessionState<Schema extends AnySchema> = {
 	inherited: boolean
 	lastView?: TabView<Schema>
 	watching: boolean
+	/** Records the join restored outside the scan window, which views keep sending. */
+	restored: Set<string>
 }
 export type TabHubArgs<
 	Schema extends AnySchema,
@@ -60,6 +62,13 @@ export type TabHubArgs<
 	rng: RngApi
 	watchTab: (tabId: string, closed: () => Promise<void>) => Promise<void>
 }
+const recordKey = ({
+	collection,
+	value,
+}: {
+	collection: string
+	value: { id: unknown }
+}) => JSON.stringify([collection, value.id])
 const errorMessage = (error: unknown) =>
 	error instanceof Error ? error.message : String(error)
 const unavailable = (error: unknown) => ({
@@ -422,6 +431,7 @@ export class TabHub<
 			subscriptions: new Map(),
 			inherited: false,
 			watching: false,
+			restored: new Set(),
 		}
 		this.sessions.set(sessionId, state)
 		return state
@@ -460,10 +470,23 @@ export class TabHub<
 	}
 
 	private captureView(sessionId: ClientId, restore = false) {
+		const state = this.getSession(sessionId)
 		const records = restore
 			? this.db.scanRecords()
-			: this.db.scanWindow(this.getSession(sessionId).scanWindow)
+			: this.db.scanWindow(state.scanWindow)
 		if (records instanceof Error) return records
+		// A tab restores every record when it joins. Keep sending the ones outside its
+		// scan window, so a view does not remove them, until they enter the window or
+		// are deleted.
+		if (restore) state.restored = new Set(records.map(recordKey))
+		else if (state.restored.size > 0) {
+			for (const record of records) state.restored.delete(recordKey(record))
+			const kept = this.db
+				.scanRecords()
+				.filter((record) => state.restored.has(recordKey(record)))
+			state.restored = new Set(kept.map(recordKey))
+			records.push(...kept)
+		}
 		const lastMutationId =
 			this.db.sessionLastMutationId(sessionId) ?? tag<MutationId>(0)
 		const encoded = errore.try({
@@ -476,7 +499,7 @@ export class TabHub<
 			catch: (cause) => new TabViewError({ cause }),
 		})
 		if (encoded instanceof Error) return encoded
-		const previous = this.getSession(sessionId).lastView
+		const previous = state.lastView
 		if (
 			!restore &&
 			previous?.lastMutationId === lastMutationId &&
