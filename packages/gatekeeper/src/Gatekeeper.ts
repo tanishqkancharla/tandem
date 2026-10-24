@@ -56,14 +56,17 @@ export class CallHandle<Result> {
 	}
 }
 
-export type GatekeeperListener = {
+export type GatekeeperListener<Payload = void> = {
 	/** Start a call delivering this event to its listener. Returns immediately. */
-	emit(): void
+	emit(payload: Payload): void
 }
 
 export type GatekeeperEvents = {
 	/** Register a listener owned by the service being built or currently running. */
-	on(name: string, listener: () => Promise<void>): GatekeeperListener
+	on<Payload = void>(
+		name: string,
+		listener: (payload: Payload) => Promise<void>,
+	): GatekeeperListener<Payload>
 }
 
 export type ServiceFactoryContext = {
@@ -309,10 +312,10 @@ class Runtime {
 		})
 	}
 
-	private listen(
+	private listen<Payload>(
 		name: string,
-		listener: () => Promise<void>,
-	): GatekeeperListener {
+		listener: (payload: Payload) => Promise<void>,
+	): GatekeeperListener<Payload> {
 		this.assertUsable()
 		const owner = this.building ?? context.getStore()?.service
 		if (!owner) {
@@ -320,7 +323,9 @@ class Runtime {
 				detail: `events.on("${name}") must be called by a service`,
 			})
 		}
-		return { emit: () => this.emit(owner, name, listener) }
+		return {
+			emit: (payload) => this.emit(owner, name, () => listener(payload)),
+		}
 	}
 
 	private emit(

@@ -141,6 +141,7 @@ export async function createTodoApp({ filePath }: { filePath: string }) {
 		return await createTandemEventStreamResponse({
 			remote: server,
 			clientId: tag<ClientId>(clientId),
+			schema,
 			signal: AbortSignal.any([context.req.raw.signal, eventStreams.signal]),
 		})
 	})
