@@ -174,6 +174,10 @@ export class DstTabGroup {
 		private readonly remote: DstTabsRemote,
 	) {}
 
+	isAlive(tab: DstTabName): boolean {
+		return this.tabs.get(tab)?.alive ?? false
+	}
+
 	/** Tabs that have not crashed. */
 	get alive(): DstTabName[] {
 		return [...this.tabs.values()]
@@ -538,9 +542,11 @@ export class DstTabGroup {
 		const remote = this.remote(tab)
 		const never = new Promise<never>(() => {})
 		const live = <Result>(call: () => Promise<Result>) => {
-			if (!this.tabs.get(tab)!.alive) return never
-			return call().then((result) =>
-				this.tabs.get(tab)!.alive ? result : never,
+			if (!this.isAlive(tab)) return never
+			// A crashed tab hears neither the reply nor its failure.
+			return call().then(
+				(result) => (this.isAlive(tab) ? result : never),
+				(error: unknown) => (this.isAlive(tab) ? Promise.reject(error) : never),
 			)
 		}
 		return {

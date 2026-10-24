@@ -801,7 +801,13 @@ function tabsRemote(
 					return Promise.resolve()
 				},
 			})
-			if (typeof connected === "function") tabs()?.connected()
+			if (typeof connected !== "function") return connected
+			// A tab that crashed while connecting never uses the connection.
+			if (!tabs()?.isAlive(tab)) {
+				await connected()
+				return connected
+			}
+			tabs()?.connected()
 			return connected
 		},
 		push: (args: Parameters<RemoteApi<DstSchema>["push"]>[0]) =>
