@@ -426,6 +426,28 @@ Paths resolve against the directory the command was run from, not the package di
 - [x] Review the fixed-seed cases in `dst/dst.spec.ts`: each covers a distinct behavior, so all stay.
 - [x] Run `pnpm test`, `pnpm type-check`, and `pnpm lint`.
 
+### Phase 10: Server writes and live pokes
+
+Pokes can carry the records a server commit changed in each client's view, and the client shows them before it pulls (see [How sync works](../docs/sync.md#live-records)). Client writes alone rarely exercise that path, and convergence at quiescence cannot see a record that moves backwards mid-run and recovers by the end.
+
+The generator now makes a share of new writes on the server itself, mostly to server-owned records that clients never write, as an agent saving a reply would. Poke events carry their payload, round-tripped through JSON, so a run can deliver, delay, reorder, or drop it like any other poke.
+
+```callstack
+ DstSimulation.choose
++├── pick serverSet or serverRemove, mostly on reply-1 and reply-2
+ DstWorld.apply
++└── writeOnServer → harness.server.commit(tx)   # its pokes are events the run can lose
+ remoteWithPokeEvents
+-└── events.on("poke", () => poke())
++└── events.on<PokePayload>("poke", (payload) => poke(payload))
+ DstWorld.settle
++└── observeOrder   # each client's server-owned records only move forward in server history
+```
+
+Server storage records every value each server-owned record takes, in commit order. After every step, each hydrated client's value must appear in that history at or after the last value it showed. A restart resets the check, because a restarted client shows its last pulled value. The first such violation is reported as `movedBackwards`.
+
+Removing revision retirement, or reapplying live records after a pull's rebuild, or either rule that ignores an older poke, each fails seeds in a 30-seed sweep with faults and crashes. Restart cleanup is covered by `packages/core/test/sync/live.spec.ts` instead, since the check resets on restart.
+
 ## Known sync bugs
 
 The DST records sync engine bugs it finds rather than fixing them inline, so building the simulation is not blocked on sync engine changes. Each bug has a recording in [`dst/known-failures/`](../dst/known-failures/), where the README walks through its trace, and a test marked `.fails` that starts failing once the bug is fixed. The four are independent: fixing A leaves B, C, and D failing.

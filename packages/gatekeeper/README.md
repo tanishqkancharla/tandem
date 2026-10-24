@@ -147,7 +147,9 @@ const harness = new Gatekeeper()
 A listener belongs to the service whose factory registers it, or to the running
 service when registered during a call. `emit()` returns immediately and starts a
 new call labeled `<owner>.<name>`, held at the owner's enter gate. The emitting
-service is its sender and never waits for or observes the outcome.
+service is its sender and never waits for or observes the outcome. A listener
+declared as `events.on<Payload>(name, (payload) => ...)` receives the value
+passed to `emit(payload)`.
 
 ```ts
 const save = await harness.client1.save(10)

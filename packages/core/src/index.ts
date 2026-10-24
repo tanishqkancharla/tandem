@@ -13,11 +13,13 @@ export type {
 	RemoteInvalidRequestError,
 	RemoteMutationGapError,
 	RemoteRequestError,
+	PokePayload,
 	PushResponse,
 	PullResponse,
+	Revision,
 	SyncEngineArgs,
 } from "./sync/SyncEngine.js"
-export { PatchApi } from "./sync/SyncEngine.js"
+export { PatchApi, PokeApi } from "./sync/SyncEngine.js"
 export { connectTandemEventSource } from "./sync/TandemEventSource.js"
 export type { TandemEventSourceArgs } from "./sync/TandemEventSource.js"
 export { Transaction } from "./transaction/Transaction.js"

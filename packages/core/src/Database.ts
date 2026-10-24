@@ -47,10 +47,13 @@ import type {
 	ClientId,
 	Cookie,
 	Patch,
+	PokePayload,
 	PullResponse,
+	Revision,
 } from "./sync/SyncEngine.js"
 import type { LoggerApi } from "./utils/Logger.js"
 import type { RngApi } from "./utils/randomId.js"
+import { isEqual } from "./utils/objectUtils.js"
 import { ThrottleQueue } from "./utils/ThrottleQueue.js"
 import { Timer, type TimerApi } from "./utils/Timer.js"
 import { tag, unreachable, type Unsubscribe } from "./utils/typeUtils.js"
@@ -98,6 +101,57 @@ function applyOp<Schema extends AnySchema>(
 	}
 }
 
+function recordKeyId(key: readonly unknown[]): string {
+	return JSON.stringify(key)
+}
+
+/** A server value from a poke, shown until a pull reflects its revision. */
+type LiveRecord<Schema extends AnySchema> = {
+	key: TupleClientRecord<Schema>["key"]
+	/** Undefined when the poke removed the record. */
+	value: Schema[CollectionName<Schema>] | undefined
+	revision: Revision
+}
+
+/** Whether `revision` is a later commit of the server that numbered `than`. */
+function isLaterCommit(revision: Revision, than: Revision) {
+	return revision.server === than.server && revision.commit > than.commit
+}
+
+/** Whether `than` is the same server at or after `revision`. */
+function isCoveredBy(revision: Revision, than: Revision | undefined) {
+	return (
+		than !== undefined &&
+		revision.server === than.server &&
+		revision.commit <= than.commit
+	)
+}
+
+function writeServerValue<Schema extends AnySchema>(
+	transaction: Transaction<Schema>,
+	key: TupleClientRecord<Schema>["key"],
+	server: TandemClientBase<Schema[CollectionName<Schema>]>["server"],
+) {
+	switch (server.type) {
+		case "set":
+			transaction.records.set(key, server.value)
+			return
+		case "remove":
+			transaction.records.remove(key)
+			return
+		default:
+			unreachable(server)
+	}
+}
+
+function liveServerValue<Schema extends AnySchema>(
+	live: LiveRecord<Schema>,
+): TandemClientBase<Schema[CollectionName<Schema>]>["server"] {
+	return live.value === undefined
+		? { type: "remove" }
+		: { type: "set", value: live.value }
+}
+
 export type DatabaseArgs<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema>,
@@ -126,6 +180,10 @@ export class Database<
 	private readonly clientStorageWriteQueue?: ThrottleQueue<void | ClientStorageError>
 	private storageWrites: WriteOps<TandemClientTuple<AnySchema>> = {}
 	private storageClearQueued = false
+	// Live records are transient: they never enter the outbox, and hydration
+	// rebuilds saved records from their bases, so restarts drop them.
+	private readonly live = new Map<string, LiveRecord<Schema>>()
+	private pulledRevision?: Revision
 	private initialized = false
 	readonly ready: Promise<void>
 
@@ -236,6 +294,7 @@ export class Database<
 				})
 			if (initialClientId && !this.tupleDb.get(["replica"]))
 				this.initializeReplica(initialClientId)
+			if (this.clientStorage) this.rebuildRestoredRecords()
 			this.initialized = true
 		}
 		if (this.clientStorage) {
@@ -253,6 +312,8 @@ export class Database<
 		// Supersede queued old-session writes; an active batch finishes before the clear batch.
 		this.storageWrites = {}
 		this.storageClearQueued = true
+		this.live.clear()
+		this.pulledRevision = undefined
 		const tx = this.tupleDb.transact(this.rng.randomId())
 		for (const { key } of tx.scan({})) tx.remove(key)
 		if (clientId)
@@ -458,11 +519,13 @@ export class Database<
 		this.reconcile({ patch: { reset: true, set: records }, lastMutationId })
 	}
 
+	/** Pulls pass a cookie; tab views pass neither a cookie nor a revision. */
 	private reconcile(
 		{
 			patch,
 			lastMutationId,
-		}: Pick<PullResponse<Schema>, "patch" | "lastMutationId">,
+			revision,
+		}: Pick<PullResponse<Schema>, "patch" | "lastMutationId" | "revision">,
 		cookie?: Cookie,
 	): void {
 		const transaction = this.transact()
@@ -480,29 +543,123 @@ export class Database<
 			this.applyServerOp(transaction, { type: "remove", ...op })
 		for (const { key } of outbox.scan({ lte: [lastMutationId] }))
 			outbox.remove(key)
+		// The pull reflects the server at its revision, so it replaces every live
+		// record from that commit or earlier: updates, deletes, and records that
+		// left the view alike. A newer live record stays over the rebuilt base.
+		const remaining = new Map(
+			[...this.live].filter(
+				([, live]) =>
+					revision !== undefined && isLaterCommit(live.revision, revision),
+			),
+		)
 		const trackedBases = bases.scan()
-		for (const { key, value } of trackedBases) {
-			switch (value.server.type) {
-				case "set":
-					records.set(key, value.server.value)
-					break
-				case "remove":
-					records.remove(key)
-					break
-				default:
-					unreachable(value.server)
-			}
-		}
+		for (const { key, value } of trackedBases)
+			writeServerValue(transaction, key, value.server)
+		for (const live of remaining.values())
+			writeServerValue(transaction, live.key, liveServerValue(live))
 		// Preserve mutation and operation order; write() reorders removes before sets.
 		for (const { value: ops } of outbox.scan()) {
 			for (const op of ops) applyOp(transaction, op)
 		}
-		// Restoration still needs acknowledged bases, especially for records outside the scan window.
+		// Restoration still needs acknowledged bases, especially for records outside
+		// the scan window. A live record keeps its base to rebuild under it.
 		for (const { key, value } of trackedBases) {
-			if (value.lastWrittenBy <= lastMutationId) bases.remove(key)
+			if (
+				value.lastWrittenBy <= lastMutationId &&
+				!remaining.has(recordKeyId(key))
+			)
+				bases.remove(key)
 		}
 		if (cookie !== undefined) tx.set(["replica"], { ...this.replica, cookie })
 		tx.commit()
+		this.live.clear()
+		for (const [id, live] of remaining) this.live.set(id, live)
+		this.pulledRevision = revision
+	}
+
+	/**
+	 * Show records a poke carried before the pull that confirms them. A live
+	 * record replaces the record's confirmed value; pending writes replay on top.
+	 */
+	applyPoke({ revision, set = [], remove = [] }: PokePayload<Schema>): void {
+		// The latest pull already reflects this commit.
+		if (isCoveredBy(revision, this.pulledRevision)) return
+		const transaction = this.transact()
+		const { records, bases, outbox } = transaction
+		const applied = new Map<string, LiveRecord<Schema>>()
+		const ops = [
+			...set.map((op) => ({ type: "set" as const, ...op })),
+			...remove.map((op) => ({ type: "remove" as const, ...op })),
+		]
+		for (const op of ops) {
+			const key = mutationOpToRecordKey(op)
+			const id = recordKeyId(key)
+			if (isCoveredBy(revision, this.live.get(id)?.revision)) continue
+			// The base keeps the confirmed value, so a pull can rebuild under it.
+			if (!bases.get(key)) {
+				const confirmed = records.get(key)
+				bases.set(key, {
+					server:
+						confirmed === undefined
+							? { type: "remove" }
+							: { type: "set", value: confirmed },
+					lastWrittenBy: tag<MutationId>(0),
+				})
+			}
+			const live: LiveRecord<Schema> = {
+				key,
+				value: op.type === "set" ? op.value : undefined,
+				revision,
+			}
+			applied.set(id, live)
+			writeServerValue(transaction, key, liveServerValue(live))
+		}
+		if (!applied.size) return transaction.cancel()
+		for (const { value: pending } of outbox.scan()) {
+			for (const op of pending) {
+				if (applied.has(recordKeyId(mutationOpToRecordKey(op))))
+					applyOp(transaction, op)
+			}
+		}
+		transaction.tupleDbTx.commit()
+		for (const [id, live] of applied) this.live.set(id, live)
+	}
+
+	/**
+	 * Saved records can include live values, which are not server state. Rebuild
+	 * every tracked record from its base and pending writes, and drop bases that
+	 * no pending write needs. A checkpoint without live values is unchanged.
+	 */
+	private rebuildRestoredRecords() {
+		const rebuild = this.transact()
+		const { bases, outbox } = rebuild
+		const trackedBases = bases.scan()
+		for (const { key, value } of trackedBases)
+			writeServerValue(rebuild, key, value.server)
+		for (const { value: ops } of outbox.scan()) {
+			for (const op of ops) applyOp(rebuild, op)
+		}
+		const rebuilt = trackedBases.map(({ key, value }) => ({
+			key,
+			value: rebuild.records.get(key),
+			unneeded: !outbox.get([value.lastWrittenBy]),
+		}))
+		rebuild.cancel()
+
+		const transaction = this.transact()
+		let changed = false
+		for (const { key, value, unneeded } of rebuilt) {
+			if (unneeded) {
+				transaction.bases.remove(key)
+				changed = true
+			}
+			if (isEqual(value, this.records.get(key))) continue
+			changed = true
+			if (value === undefined) transaction.records.remove(key)
+			else transaction.records.set(key, value)
+		}
+		if (!changed) return transaction.cancel()
+		transaction.tupleDbTx.commit()
 	}
 
 	private applyServerOp(

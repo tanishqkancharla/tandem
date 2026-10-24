@@ -7,6 +7,7 @@ import {
 	type DstViolation,
 	DstWorld,
 	isNetworkHandoff,
+	serverOwnedIds,
 } from "./DstWorld.js"
 import { SimPrng } from "./SimPrng.js"
 
@@ -43,6 +44,8 @@ export type DstRunResult = {
 const maxCallsInFlight = 4
 /** How often a step starts a mutation rather than advancing a pending call. */
 const mutateRate = 0.35
+/** Share of new writes the server makes itself rather than a client. */
+const serverWriteRate = 0.4
 /** Chance per step that a crashed client restarts. */
 const restartRate = 0.25
 const poolOfIds = ["item-1", "item-2", "item-3"]
@@ -108,10 +111,28 @@ export class DstSimulation {
 			(pending.length === 0 ||
 				(pending.length < maxCallsInFlight && rng.boolean(mutateRate)))
 		) {
+			if (rng.boolean(serverWriteRate)) {
+				// Mostly its own records, as an agent streaming replies would, but
+				// also ones clients share, so writers conflict.
+				const id = rng.pick(rng.boolean(0.7) ? serverOwnedIds : poolOfIds)
+				if (rng.boolean(0.2)) return { type: "serverRemove", id }
+				return {
+					type: "serverSet",
+					item: {
+						id,
+						text: `Server ${id} (rev ${step})`,
+						done: rng.boolean(0.3),
+						priority: rng.int(1, 5),
+					},
+				}
+			}
 			const client = rng.pick(writers)
 			const id = rng.pick(poolOfIds)
 			if (rng.boolean(0.2)) return { type: "remove", client, id }
-			const todos = world.todosOf(client)
+			// Only the server writes its own records.
+			const todos = world
+				.todosOf(client)
+				.filter(({ id }) => !serverOwnedIds.includes(id))
 			if (todos.length > 0 && rng.boolean(0.5)) {
 				// Target the local view so updates carry intent, not mostly missing-record no-ops.
 				const todo = rng.pick(todos)

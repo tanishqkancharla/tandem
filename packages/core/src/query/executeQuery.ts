@@ -64,7 +64,9 @@ type QueryNode<
 }
 
 type RecordsByCollection<Schema extends AnySchema> = {
-	readonly [Collection in CollectionName<Schema>]?: readonly Schema[Collection][]
+	readonly [
+		Collection in CollectionName<Schema>
+	]?: readonly Schema[Collection][]
 }
 
 type MutableRecordsByCollection<Schema extends AnySchema> = {
@@ -532,6 +534,15 @@ function normalizeScanWindow<Schema extends AnySchema>(
 	return queries
 }
 
+function scanWindowRecordId<Schema extends AnySchema>(
+	record: ScanWindowRecord<Schema>,
+) {
+	return JSON.stringify([
+		record.collection,
+		...collectionIdToTuple(record.value.id),
+	])
+}
+
 function collectScanWindow<Schema extends AnySchema>(
 	queries: readonly QueryNode<Schema>[],
 	relations: AnyRelations<Schema>,
@@ -591,4 +602,59 @@ export function executeScanWindowSync<
 	if (queries instanceof Error) return queries
 	const recordsByCollection = loadRecordsSync(db, getQueryCollections(queries))
 	return collectScanWindow(queries, relations, recordsByCollection)
+}
+
+/**
+ * The candidates, read from `db`, that `executeScanWindowAsync` would return.
+ * Windows of plain filters match the candidates directly. Includes, limits, and
+ * offsets depend on other records, so those windows run in full.
+ */
+export async function selectScanWindowRecordsAsync<
+	Schema extends AnySchema,
+	Relations extends AnyRelations<Schema>,
+>(
+	db: ReadOnlyAsyncTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
+	relations: Relations,
+	scanWindow: ScanWindow<Schema>,
+	candidates: readonly ScanWindowRecord<Schema>[],
+): Promise<ScanWindowRecord<Schema>[] | InvalidScanWindowError> {
+	const queries = normalizeScanWindow(scanWindow, relations)
+	if (queries instanceof Error) return queries
+	const collections = getQueryCollections(queries)
+	const relevant = candidates.filter(({ collection }) =>
+		collections.has(collection),
+	)
+	if (!relevant.length) return []
+
+	const direct = queries.every(
+		(query) =>
+			!query.with && query.limit === undefined && query.offset === undefined,
+	)
+	if (direct) {
+		return relevant.filter(({ collection, value }) =>
+			queries.some(
+				(query) =>
+					query.collection === collection &&
+					(query.where ?? []).every((clause) => matchesWhere(value, clause)),
+			),
+		)
+	}
+
+	const records = await executeScanWindowAsync(db, relations, scanWindow)
+	if (records instanceof Error) return records
+	const inWindow = new Set(records.map(scanWindowRecordId))
+	return relevant.filter((record) => inWindow.has(scanWindowRecordId(record)))
+}
+
+/** Collections a window reads under an `offset`, at any depth. */
+export function scanWindowOffsetCollections<Schema extends AnySchema>(
+	scanWindow: ScanWindow<Schema>,
+): Set<CollectionName<Schema>> {
+	const collections = new Set<CollectionName<Schema>>()
+	const visit = (query: EncodedQuery<Schema>) => {
+		if (query.offset) collections.add(query.collection)
+		for (const nested of Object.values(query.with ?? {})) visit(nested)
+	}
+	for (const query of scanWindow) visit(query)
+	return collections
 }

@@ -733,7 +733,9 @@ describe("TandemClient sync conflicts", () => {
 			let shouldFail = false
 			let failedPulls = 0
 			const unreliableRemote: RemoteApi<TestsSchema> = {
-				connect: (client) => server.connect(client),
+				// Bare pokes, so only the pull can deliver the write.
+				connect: (client) =>
+					server.connect({ ...client, poke: () => client.poke() }),
 				push: (args) => server.push(args),
 				pull: (args) => {
 					if (shouldFail && args.clientId === failingClientId) {

@@ -480,7 +480,8 @@ test("a pull response that arrives after disconnect is not applied", async ({
 			if (hold) await held.promise
 			return server.pull(args)
 		},
-		connect: (api) => server.connect(api),
+		// Pokes without records, so only the pull could deliver the server's change.
+		connect: (api) => server.connect({ ...api, poke: () => api.poke() }),
 	}
 	const client = new TandemClient<TestsSchema>({
 		remote,

@@ -1423,7 +1423,7 @@ test("application commits poke connected clients until they disconnect or close"
 	expect(firstPoke).not.toHaveBeenCalled()
 	expect(secondPoke).not.toHaveBeenCalled()
 
-	// A successful application commit conservatively pokes every connection.
+	// A commit pokes every connection that has not pulled a view yet.
 	const firstTx = server.transact()
 	firstTx.set("users", { id: "user-1", name: "Ada" })
 	await server.commit(firstTx)

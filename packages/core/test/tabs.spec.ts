@@ -139,7 +139,7 @@ function createTabs<Schema extends AnySchema>({
 			close: () => storage.close(),
 		}
 		const network: RemoteApi<Schema> = {
-			connect: async (api: ClientApi) => {
+			connect: async (api: ClientApi<Schema>) => {
 				if (!alive) return never()
 				if (remote.down) return unavailable
 				remote.connecting++
@@ -150,7 +150,7 @@ function createTabs<Schema extends AnySchema>({
 					)
 				const connected = await server.connect({
 					...api,
-					poke: () => (alive ? api.poke() : Promise.resolve()),
+					poke: (payload) => (alive ? api.poke(payload) : Promise.resolve()),
 				})
 				if (typeof connected !== "function") return connected
 				return async () => {
