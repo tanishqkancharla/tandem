@@ -32,3 +32,15 @@ The failure was not that the write was lost. The failure was that final pulls le
 ## Fixed: a lost pull response loses removals
 
 The server retains the latest generated view and its opaque cookie per client. Missing or mismatched cookies receive an authoritative reset, so retrying after a lost removal response cannot silently omit the deletion. Subscription changes receive a new cookie even without a database revision change. `dst.spec.ts` checks fault seed 10 and crash/fault seed 7 at 300 steps against the server after settlement.
+
+## Shared tabs
+
+`--tabs N` adds a group of browser tabs that share one client storage through an elected leader, beside the two clients (`dst/DstTabs.ts`). Tabs take the same writes as the clients. Their leader's server calls are Gatekeeper calls, so they are delayed and lost like the clients' calls. Channel messages, the leader's storage commits and timers, and pokes to the leader are held tab steps. Crashes end tabs, and their undelivered messages are lost with them. As with a crashed client, a server request a crashed tab already sent still arrives, but its reply is lost and the tab sends nothing more. Faults also fail leader saves of forwarded writes.
+
+Besides convergence, tab runs check that:
+
+- a completed tab write reached the server, unless the leader lost its connection to a failed save or every tab crashed;
+- no tab write reached the server in two leader mutations;
+- completed writes and writes of open tabs are on the server after settlement.
+
+`dst.spec.ts` asserts a sweep reaches leader takeovers with pending commits, lost replies to accepted pushes, and failed saves, and drives those situations directly in targeted tests.

@@ -87,7 +87,9 @@ export type DstReplayResult = {
  * on and the ids it generated; otherwise the replay stops with a divergence.
  */
 export async function replay(artifact: DstArtifact): Promise<DstReplayResult> {
-	await using world = await DstWorld.start(artifact.options.seed)
+	await using world = await DstWorld.start(artifact.options.seed, {
+		tabs: artifact.options.tabs,
+	})
 	const events = new Map(artifact.trace.map((record) => [record.step, record]))
 	const steps =
 		artifact.outcome?.stepsCompleted ?? (artifact.trace.at(-1)?.step ?? -1) + 1
@@ -148,13 +150,19 @@ function cannotApply(
 		case "serverRemove":
 			return undefined
 		case "crash":
-			return world.running.includes(record.client)
+			return world.crashable.includes(record.client)
 				? undefined
 				: `${record.client} is not running`
 		case "restart":
 			return world.down.includes(record.client)
 				? undefined
 				: `${record.client} is not down`
+		case "openTab":
+			return world.tabs ? undefined : "the run has no tab group"
+		case "toggleTab":
+			return world.writers.includes(record.tab)
+				? undefined
+				: `${record.tab} cannot take writes`
 	}
 }
 
@@ -179,7 +187,12 @@ function intentOf(record: DstTraceRecord): DstIntent {
 		case "drop":
 			return { type: record.type, call: record.call }
 		case "crash":
+			return { type: "crash", client: record.client }
 		case "restart":
-			return { type: record.type, client: record.client }
+			return { type: "restart", client: record.client }
+		case "openTab":
+			return { type: "openTab" }
+		case "toggleTab":
+			return { type: "toggleTab", tab: record.tab }
 	}
 }

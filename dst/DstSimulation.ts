@@ -1,12 +1,13 @@
 import type { DstArtifactSink } from "./DstReplay.js"
 import {
 	type DstFinalStates,
+	type DstTabCoverage,
 	type DstIntent,
 	type DstPendingCall,
+	type DstTabName,
 	type DstTraceRecord,
 	type DstViolation,
 	DstWorld,
-	isNetworkHandoff,
 	serverOwnedIds,
 } from "./DstWorld.js"
 import { SimPrng } from "./SimPrng.js"
@@ -15,6 +16,7 @@ export type {
 	DstClientName,
 	DstFaultKind,
 	DstFinalStates,
+	DstTabCoverage,
 	DstSchema,
 	DstTodo,
 	DstTraceRecord,
@@ -26,8 +28,10 @@ export interface DstRunOptions {
 	seed: number
 	steps: number
 	faultRate?: number
-	/** Chance per step that a running client crashes. */
+	/** Chance per step that a running client or tab crashes. */
 	crashRate?: number
+	/** Browser tabs sharing one client storage, besides the two clients. */
+	tabs?: number
 }
 
 export type DstRunResult = {
@@ -38,6 +42,8 @@ export type DstRunResult = {
 	states: DstFinalStates
 	violation: DstViolation | undefined
 	maxPendingCalls: number
+	/** Present when the run had a tab group. */
+	tabCoverage?: DstTabCoverage
 }
 
 /** A new mutation starts only while fewer calls than this are in flight. */
@@ -46,6 +52,8 @@ const maxCallsInFlight = 4
 const mutateRate = 0.35
 /** Share of new writes the server makes itself rather than a client. */
 const serverWriteRate = 0.4
+/** Chance that a tab's step disconnects it, or reconnects it. */
+const toggleTabRate = 0.05
 /** Chance per step that a crashed client restarts. */
 const restartRate = 0.25
 const poolOfIds = ["item-1", "item-2", "item-3"]
@@ -57,7 +65,7 @@ export class DstSimulation {
 	async execute(sink?: DstArtifactSink): Promise<DstRunResult> {
 		const { seed, steps } = this.options
 		sink?.write({ kind: "header", format: 1, options: this.options })
-		await using world = await DstWorld.start(seed)
+		await using world = await DstWorld.start(seed, { tabs: this.options.tabs })
 		// Drives choices only; ids come from their own streams.
 		const rng = new SimPrng(seed)
 		const trace: DstTraceRecord[] = []
@@ -92,16 +100,26 @@ export class DstSimulation {
 	): DstIntent | undefined {
 		const faultRate = this.options.faultRate ?? 0
 		const crashRate = this.options.crashRate ?? 0
-		// Faults model lost network messages, never a failed timer or disk write.
-		const droppable = pending.filter(isNetworkHandoff)
-		const { down, running, writers } = world
+		// Faults model lost network messages and, in a tab group, failed saves of
+		// forwarded writes; never a failed timer.
+		const droppable = pending.filter(({ droppable }) => droppable)
+		const { down, crashable, writers } = world
 
 		// Without crashes these draw nothing, so crash-free runs are unchanged.
 		if (down.length > 0 && rng.boolean(restartRate)) {
 			return { type: "restart", client: rng.pick(down) }
 		}
-		if (crashRate > 0 && running.length > 0 && rng.boolean(crashRate)) {
-			return { type: "crash", client: rng.pick(running) }
+		// Without a tab group this draws nothing either.
+		const tabs = this.options.tabs ?? 0
+		if (
+			tabs > 0 &&
+			(world.tabs?.alive.length ?? 0) < tabs &&
+			rng.boolean(restartRate)
+		) {
+			return { type: "openTab" }
+		}
+		if (crashRate > 0 && crashable.length > 0 && rng.boolean(crashRate)) {
+			return { type: "crash", client: rng.pick(crashable) }
 		}
 		if (faultRate > 0 && droppable.length > 0 && rng.boolean(faultRate)) {
 			return { type: "drop", call: rng.pick(droppable).name }
@@ -127,6 +145,9 @@ export class DstSimulation {
 				}
 			}
 			const client = rng.pick(writers)
+			// Only tabs draw this, so runs without tabs are unchanged.
+			if (client.startsWith("tab") && rng.boolean(toggleTabRate))
+				return { type: "toggleTab", tab: client as DstTabName }
 			const id = rng.pick(poolOfIds)
 			if (rng.boolean(0.2)) return { type: "remove", client, id }
 			// Only the server writes its own records.

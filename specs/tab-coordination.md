@@ -160,9 +160,51 @@ Server pokes from `main` can carry the records a commit changed. They reach the 
 
 Review found more takeover races, fixed here with tests. After `clear()`, a tab now leaves its previous session only after that session's requests settle, so a resent write still finds its receipt. A late leader announcement from a closed leader is covered by a test that delays it across the handoff. A tab that failed to lead joins the next leader. A leader that closes while a clear reconnects no longer writes shared storage after the next leader loaded it. A clear that overtakes the leader's save of a forwarded write no longer reports the write saved: the leader checks its replica after each flush, so the commit reports the clear, views are taken again, and the tab resends the write.
 
-### ⏳ Phase 4: Simulate tabs in the deterministic simulation
+### ✅ Phase 4: Simulate tabs in the deterministic simulation
 
-The next pull request in this stack adds tab groups to `dst/`.
+**Today**
+
+`dst/` drove two standalone clients and never elected a leader or crossed a tab channel.
+
+**Proposed**
+
+`--tabs N` adds a group of tabs that share one client storage, beside the two clients, in the same world, generator, trace, and replay.
+
+```changes
+b6456f6..6b6fb6e
+```
+
+Gatekeeper attributes a service call to the public operation that started it, and much of a leader's work starts from another tab's message after that operation returns. The tab group therefore holds its own steps for channel messages, the leader's storage commits and timers, and pokes to the leader. Its server calls still go through a `tabsRemote` Gatekeeper service, so the run delays and loses them like the clients' calls. Both kinds of step share one pending list.
+
+```callstack
+ DstSimulation.choose # tabs take the same random writes and toggle their connection; crashes and reopenings include tabs [[dst/DstSimulation.ts#DstSimulation]]
+ DstWorld.apply [[dst/DstWorld.ts#DstWorld.apply]]
++├── DstTabGroup.commit # tracks each tab write by its unique text [[dst/DstTabs.ts#DstTabGroup.commit]]
++├── DstTabGroup.advance / drop # message, save, tick, and poke steps [[dst/DstTabs.ts#DstTabGroup]]
++└── tabsRemote # a leader's server calls as Gatekeeper calls [[dst/DstWorld.ts#tabsRemote]]
+ DstWorld.finish [[dst/DstWorld.ts#DstWorld.finish]]
++└── DstTabGroup.heal # flush, connect, and pull every open tab [[dst/DstTabs.ts#DstTabGroup.heal]]
+```
+
+Faults also fail leader saves of forwarded writes. A crash ends a tab with its undelivered messages. Tab leaders' connects are never lost, so the completion check stays strict. Besides convergence, tab runs check that:
+
+- a completed write from a tab that wants the server reached the server, unless that tab or every tab gave up the server meanwhile, or a leader connect failed on a failed save;
+- no tab write reached the server in two leader mutations;
+- completed writes and writes of open tabs are on the server after settlement.
+
+Two existing tests also run with two tabs. Targeted tests drive a lost reply to an accepted push followed by a takeover, a leader crash after a durable save, a failed save ahead of a newer write, and a replacement leader's delayed connection.
+
+Sweeps of 150 seeds × 300 steps with `--tabs 3` alone, with `--fault-rate 0.1`, with `--crash-rate 0.02`, and with both found no violations. With faults and crashes they reached 30 takeovers with pending commits, 50 lost replies to accepted pushes, and 223 failed saves. Those counts are lower than before `main` added server writes to the workload, which now take a share of the steps. Reverting coordinator fixes one at a time:
+
+| Reverted behavior | Caught by |
+| --- | --- |
+| Receipt deduplication | Sweeps (19 of 120 seeds) and targeted tests |
+| Views accepted before the join reply | Sweeps (2 of 120 seeds) |
+| Retrying unsaved writes | Sweeps (2 of 120 seeds) and a targeted test |
+| Awaiting the server after the original commit | Targeted test |
+| Mutation-order resend | Targeted test |
+| Re-announcing over a stale leader | `packages/core/test/tabs.spec.ts`; crashed tabs lose undelivered messages here, so the simulation cannot reach it |
+| Connection state after a failed clear, and disconnect during a pending connect | `packages/core/test/tabs.spec.ts`; the simulation does not clear, and its delayed connects are always answered |
 
 ### Benchmark
 
@@ -242,3 +284,4 @@ The coordinator shows the edit in the other tab 24 to 53 percent sooner at the m
 - [[packages/core/test/tabs.spec.ts]] — tab workflows.
 - [[packages/core/benchmarks/tabs.ts]] — the benchmark.
 - [[docs/sync.md]] — the consumer-facing description.
+- [[dst/DstTabs.ts]] — the tab group in the deterministic simulation.

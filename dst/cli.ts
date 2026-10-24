@@ -2,6 +2,8 @@
  * pnpm dst:run --seed 123 --steps 300 [--fault-rate 0.1] [--crash-rate 0.02] [--out path]
  * pnpm dst:run --replay path.jsonl
  * pnpm dst:run --runs 24 --seed 2026092800 --steps 300 [--out-dir tmp/dst] [--fail-on-violation]
+ *
+ * --tabs 3 adds three browser tabs that share one client storage.
  */
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs"
 import { dirname, relative, resolve } from "node:path"
@@ -16,6 +18,7 @@ const { values } = parseArgs({
 		steps: { type: "string", default: "300" },
 		"fault-rate": { type: "string", default: "0" },
 		"crash-rate": { type: "string", default: "0" },
+		tabs: { type: "string", default: "0" },
 		out: { type: "string" },
 		replay: { type: "string" },
 		runs: { type: "string" },
@@ -63,6 +66,7 @@ if (values.replay) {
 		steps: number("steps", values.steps),
 		faultRate: number("fault-rate", values["fault-rate"]),
 		crashRate: number("crash-rate", values["crash-rate"]),
+		tabs: number("tabs", values.tabs),
 	}
 
 	if (values.runs) {
@@ -90,7 +94,7 @@ if (values.replay) {
 		)
 		mkdirSync(dirname(out), { recursive: true })
 		console.log(
-			`seed ${options.seed}, ${options.steps} steps, fault rate ${options.faultRate}, crash rate ${options.crashRate}`,
+			`seed ${options.seed}, ${options.steps} steps, fault rate ${options.faultRate}, crash rate ${options.crashRate}, ${options.tabs} tabs`,
 		)
 		const result = await new DstSimulation(options).execute(jsonlFileSink(out))
 		if (result.violation) {

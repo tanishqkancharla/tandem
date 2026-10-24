@@ -5,6 +5,7 @@ import * as errore from "errore"
 import { jsonlFileSink, parseArtifact, replay } from "./DstReplay.js"
 import {
 	type DstRunOptions,
+	type DstTabCoverage,
 	DstSimulation,
 	type DstTodo,
 	type DstViolation,
@@ -16,7 +17,7 @@ export class DstRunError extends errore.createTaggedError({
 }) {}
 
 export type DstSweepRun =
-	| { seed: number; outcome: "ok" }
+	| { seed: number; outcome: "ok"; tabCoverage?: DstTabCoverage }
 	| {
 			seed: number
 			outcome: "violation"
@@ -62,7 +63,7 @@ export async function sweep({
 		}
 		if (!result.violation) {
 			rmSync(artifact)
-			results.push({ seed, outcome: "ok" })
+			results.push({ seed, outcome: "ok", tabCoverage: result.tabCoverage })
 			continue
 		}
 		const replayed = await replay(parseArtifact(readFileSync(artifact, "utf8")))
@@ -103,6 +104,8 @@ export function describeViolation(violation: DstViolation): string {
 			`  previous: ${violation.previous?.text ?? "(absent)"}`,
 		].join("\n")
 	}
+	if (violation.kind !== "clientState")
+		return `${violation.kind}: ${violation.detail}`
 	return [
 		`${violation.client} differs from the server after settlement`,
 		`  expected: ${todos(violation.expected)}`,
@@ -118,15 +121,29 @@ export function sweepSummary(
 	const count = (outcome: DstSweepRun["outcome"]) =>
 		results.filter((result) => result.outcome === outcome).length
 	const failures = results.filter(({ outcome }) => outcome !== "ok")
+	// Passing seeds only count if they reached what tab coordination must survive.
+	const tabCoverage: Record<string, number> = {}
+	for (const result of results)
+		if (result.outcome === "ok")
+			for (const [key, value] of Object.entries(result.tabCoverage ?? {}))
+				tabCoverage[key] = (tabCoverage[key] ?? 0) + value
 	return [
 		`### DST sweep: seeds ${options.seed}–${options.seed + options.runs - 1}`,
 		"",
-		`${options.steps} steps, fault rate ${options.faultRate ?? 0}, crash rate ${options.crashRate ?? 0}.`,
+		`${options.steps} steps, fault rate ${options.faultRate ?? 0}, crash rate ${options.crashRate ?? 0}, ${options.tabs ?? 0} tabs.`,
 		"",
 		`| ok | violation | nondeterministic | error |`,
 		`|---|---|---|---|`,
 		`| ${count("ok")} | ${count("violation")} | ${count("nondeterministic")} | ${count("error")} |`,
 		"",
+		...(Object.keys(tabCoverage).length > 0
+			? [
+					`Tab coverage in passing runs: ${Object.entries(tabCoverage)
+						.map(([key, value]) => `${key} ${value}`)
+						.join(", ")}.`,
+					"",
+				]
+			: []),
 		...failures.map((failure) => {
 			const detail = matchBy(failure, "outcome", {
 				ok: () => "",
