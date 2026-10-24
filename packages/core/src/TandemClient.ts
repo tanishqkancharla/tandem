@@ -1,4 +1,6 @@
 import * as errore from "errore"
+// tuple-database does not re-export its conflict error from the package root.
+import { ReadWriteConflictError } from "tuple-database/database/ConcurrencyLog.js"
 import { Database } from "./Database.js"
 import {
 	_encodeRelationalQuery,
@@ -28,6 +30,14 @@ class MutatorRunError extends errore.createTaggedError({
 	name: "MutatorRunError",
 	message: "Mutator $mutator threw",
 }) {}
+
+class MutatorCommitError extends errore.createTaggedError({
+	name: "MutatorCommitError",
+	message: "Mutator $mutator could not commit",
+}) {}
+
+/** Runs of one call before a read-write conflict rejects it. */
+const maxMutatorAttempts = 3
 
 export type TandemClientArgs<
 	Schema extends AnySchema,
@@ -151,35 +161,50 @@ export class TandemClient<
 		if (!this.db.isReady) {
 			throw new Error("Await client.ready before calling a mutator")
 		}
-		const args = await validateMutatorArgs(name, definition.args, input)
+		// Copy at call time: the caller may change its object, and args must be JSON.
+		const call = { name, args: JSON.parse(JSON.stringify(input)) as Json }
+		const args = await validateMutatorArgs(name, definition.args, call.args)
 		if (args instanceof Error) throw args
-		const transaction = this.db.transact()
-		// The mutator is consumer code: a throw cancels its writes and rejects the call.
-		const ran = await Promise.resolve()
-			.then(() =>
-				definition.run(clientMutatorTransaction(transaction), args, {
-					location: "client",
-				}),
-			)
-			.catch((cause: unknown) => new MutatorRunError({ mutator: name, cause }))
-		if (ran instanceof Error) {
-			transaction.cancel()
-			throw ran.cause
-		}
 
-		this.logger.info({ message: "committing mutator", mutator: name })
-		if (!this.syncEngine) {
-			this.db.commit(transaction)
-			return
+		for (let attempt = 1; ; attempt++) {
+			const transaction = this.db.transact()
+			// The mutator is consumer code: a throw cancels its writes and rejects the call.
+			const ran = await Promise.resolve()
+				.then(() =>
+					definition.run(clientMutatorTransaction(transaction), args, {
+						location: "client",
+					}),
+				)
+				.catch(
+					(cause: unknown) => new MutatorRunError({ mutator: name, cause }),
+				)
+			if (ran instanceof Error) {
+				transaction.cancel()
+				throw ran.cause
+			}
+
+			this.logger.info({ message: "committing mutator", mutator: name })
+			const syncEngine = this.syncEngine
+			const committed = errore.try({
+				try: () => {
+					if (!syncEngine) return this.db.commit(transaction)
+					const commitPromise = syncEngine.commit(transaction, call)
+					commitPromise.catch((error) => {
+						this.logger.error({ message: "error pushing mutation", error })
+					})
+					return commitPromise
+				},
+				catch: (cause) => new MutatorCommitError({ mutator: name, cause }),
+			})
+			if (!(committed instanceof Error)) return committed
+			// A pull or another call wrote what this run read while it awaited.
+			// Nothing was pushed yet, so run it again on the new state.
+			if (
+				!(committed.cause instanceof ReadWriteConflictError) ||
+				attempt === maxMutatorAttempts
+			)
+				throw committed.cause
 		}
-		const commitPromise = this.syncEngine.commit(transaction, {
-			name,
-			args: input,
-		})
-		commitPromise.catch((error) => {
-			this.logger.error({ message: "error pushing mutation", error })
-		})
-		return commitPromise
 	}
 
 	pullFromRemote(): Promise<void> {

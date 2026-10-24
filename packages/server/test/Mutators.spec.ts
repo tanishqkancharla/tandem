@@ -65,7 +65,10 @@ class TodoBackend {
 	user: string | undefined = "ada"
 	/** Ids of todos whose `after` effect ran, in order. */
 	readonly announced: string[] = []
-	allowOps = true
+	/** Unset, a push with mutators refuses generic operations. */
+	allowOps: boolean | undefined = undefined
+	/** The addTodo override runs a malformed query, as a bug in it would. */
+	queryBug = false
 	/** Mutators an older server deploy still lacks. */
 	missing: (keyof typeof todoMutators)[] = []
 	/** The next push response is lost after the server applies it. */
@@ -76,6 +79,11 @@ class TodoBackend {
 		const mutators = this.tandem.serverMutators(todoMutators, {
 			addTodo: async (tx, { id, text }, ctx) => {
 				if (!user) throw new Error("Sign in to add todos")
+				if (this.queryBug)
+					await tx.query({
+						collection: "todos",
+						where: { done: { $bogus: true } } as never,
+					})
 				if (await tx.get("todos", id)) throw new Error(`Todo ${id} exists`)
 				tx.set("todos", { id, text, done: false, author: user })
 				ctx.after(() => this.announced.push(id))
@@ -272,22 +280,81 @@ test("a storage failure inside a mutator leaves it pending until a later push ap
 	expect(backend.announced).toEqual(["todo-1", "todo-2"])
 })
 
-test("a server that refuses operations rejects commits without blocking mutators", async ({
+test("a server with mutators refuses operations unless allowed, without blocking mutators", async ({
 	backend,
 	connect,
 }) => {
 	const { client } = await connect()
 
-	backend.allowOps = false
 	const tx = client.transact()
 	tx.set("todos", { id: "todo-1", text: "Forged", done: true, author: "eve" })
 	await expect(client.commit(tx)).rejects.toBeInstanceOf(MutationRejectedError)
 	await vi.waitFor(() =>
 		expect(client.query({ collection: "todos" })).toEqual([]),
 	)
-
 	await client.mutate.addTodo({ id: "todo-2", text: "Named" })
-	expect((await backend.todos()).map(({ id }) => id)).toEqual(["todo-2"])
+
+	// A server that opts in applies them again.
+	backend.allowOps = true
+	const allowedTx = client.transact()
+	allowedTx.set("todos", {
+		id: "todo-3",
+		text: "Raw",
+		done: false,
+		author: "ada",
+	})
+	await client.commit(allowedTx)
+	expect((await backend.todos()).map(({ id }) => id)).toEqual([
+		"todo-2",
+		"todo-3",
+	])
+})
+
+test("a bug in a server mutator is a refusal, not a storage failure that blocks the queue", async ({
+	backend,
+	connect,
+}) => {
+	const { client } = await connect()
+
+	backend.queryBug = true
+	await expect(
+		client.mutate.addTodo({ id: "todo-1", text: "Buggy" }),
+	).rejects.toBeInstanceOf(MutationRejectedError)
+
+	backend.queryBug = false
+	await client.mutate.addTodo({ id: "todo-2", text: "Fixed" })
+	expect(backend.announced).toEqual(["todo-2"])
+})
+
+test("concurrent calls that read the same record each apply on the latest state", async ({
+	backend,
+	connect,
+}) => {
+	const { client } = await connect()
+	await client.mutate.addTodo({ id: "todo-1", text: "Flip twice" })
+
+	await Promise.all([
+		client.mutate.toggleTodo({ id: "todo-1" }),
+		client.mutate.toggleTodo({ id: "todo-1" }),
+	])
+
+	expect(await backend.todos()).toEqual([
+		{ id: "todo-1", text: "Flip twice", done: false, author: "ada" },
+	])
+})
+
+test("changing the argument object after a call does not change what the server runs", async ({
+	backend,
+	connect,
+}) => {
+	const { client } = await connect()
+
+	const args = { id: "todo-1", text: "As called" }
+	const calling = client.mutate.addTodo(args)
+	args.text = "Changed later"
+	await calling
+
+	expect((await backend.todos()).map(({ text }) => text)).toEqual(["As called"])
 })
 
 test("a mutator the server does not have is rejected, as for a client newer than the deploy", async ({

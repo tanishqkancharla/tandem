@@ -113,7 +113,11 @@ class ChatServer {
 			sendMessage: async (tx, args, ctx) => {
 				if (!session.threads.includes(args.threadId))
 					throw new Error(`No access to ${args.threadId}`)
-				if (await tx.get("messages", args.messageId))
+				// Neither record may exist, or a client could overwrite history.
+				if (
+					(await tx.get("messages", args.messageId)) ||
+					(await tx.get("messages", replyId(args.messageId)))
+				)
 					throw new Error(`Message ${args.messageId} exists`)
 				await chatMutators.sendMessage.run(tx, args, ctx)
 				ctx.after(() => this.startReply(replyId(args.messageId), args.threadId))
@@ -141,9 +145,9 @@ class ChatServer {
 					poke: (payload) => client.poke(payload && overJson(payload)),
 				}),
 			push: async (args) => {
+				// With mutators, the push refuses raw set/update/remove operations.
 				const response = await this.tandem.push(overJson(args), {
 					mutators: this.mutators(session),
-					allowOps: false,
 				})
 				if (!network.loseNextPushResponse) return overJson(response)
 				network.loseNextPushResponse = false
@@ -169,8 +173,12 @@ class ChatServer {
 
 	private async streamReply(id: string, threadId: string) {
 		// Registered before any await, so a later stopReply always finds it.
+		await using cleanup = new errore.AsyncDisposableStack()
 		const controller = new AbortController()
 		this.controllers.set(id, controller)
+		cleanup.defer(() => {
+			this.controllers.delete(id)
+		})
 		const thread = await this.tandem.query({
 			collection: "messages",
 			where: { threadId },
@@ -178,7 +186,7 @@ class ChatServer {
 		const result = streamText({
 			model: this.model,
 			messages: await convertToModelMessages(
-				thread.filter((message) => message.role === "user"),
+				thread.filter((message) => message.id !== id),
 			),
 			abortSignal: controller.signal,
 		})
@@ -210,7 +218,6 @@ class ChatServer {
 			for await (const message of messages) parts = message.parts
 		})().catch((cause) => new Error(`Reply ${id} failed`, { cause }))
 		clearInterval(timer)
-		this.controllers.delete(id)
 		if (streamed instanceof Error) {
 			await save("error")
 			return streamed

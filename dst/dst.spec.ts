@@ -94,6 +94,58 @@ describe("Deterministic simulation testing", () => {
 		expect(result.violation).toBeUndefined()
 	})
 
+	it("pushes a bump left pending by a crash once the client restarts from storage", async () => {
+		await using world = await DstWorld.start(2)
+		const item = { id: "item-1", text: "Pending", done: false, priority: 3 }
+		await world.apply(0, { type: "set", client: "client1", item })
+		await world.finish()
+		// Offline, the bump reaches storage but not the server.
+		await world.apply(1, { type: "bump", client: "client1", id: "item-1" })
+		await world.drain()
+		await world.apply(2, { type: "crash", client: "client1" })
+
+		const result = await world.finish()
+		expect(result.states.server).toEqual([{ ...item, priority: 4 }])
+		expect(world.effectCount).toBe(1)
+		expect(result.violation).toBeUndefined()
+	})
+
+	it("runs a bump's effect once when the push response carrying it is lost", async () => {
+		await using world = await DstWorld.start(2)
+		const item = { id: "item-1", text: "Lost reply", done: false, priority: 3 }
+		await world.apply(0, { type: "set", client: "client1", item })
+		// Deliver the set, so the bump's push is the one whose reply is lost.
+		let step = 1
+		await world.settle()
+		while (world.pending().some(({ name }) => name === "client1.commit#1")) {
+			await world.apply(step++, { type: "advance", call: "client1.commit#1" })
+			await world.settle()
+		}
+		await world.apply(step++, { type: "bump", client: "client1", id: "item-1" })
+		await world.settle()
+		// Advance the bump until the server's reply to its push, then lose it.
+		for (;;) {
+			const call = world
+				.pending()
+				.find(({ name }) => name === "client1.bumpPriority#1")
+			if (!call) throw new Error("The bump finished before its push")
+			if (call.sentBy === "server") break
+			await world.apply(step++, { type: "advance", call: call.name })
+			await world.settle()
+		}
+		const dropped = await world.apply(step, {
+			type: "drop",
+			call: "client1.bumpPriority#1",
+		})
+		expect(dropped).toMatchObject({ fault: "responseLost" })
+
+		// Settlement resends the mutation; the server skips it.
+		const result = await world.finish()
+		expect(result.states.server).toEqual([{ ...item, priority: 4 }])
+		expect(world.effectCount).toBe(1)
+		expect(result.violation).toBeUndefined()
+	})
+
 	it.each([
 		{ seed: 5, steps: 300, faultRate: 0.1 },
 		{ seed: 11, steps: 300, faultRate: 0.1, crashRate: 0.02 },

@@ -169,7 +169,7 @@ function remoteWithPokeEvents(
 				},
 			})
 		},
-		push: (args) => server.push(roundTrip(args), { mutators }),
+		push: (args) => server.push(roundTrip(args), { mutators, allowOps: true }),
 		pull: (args) => server.pull(args),
 	}
 }

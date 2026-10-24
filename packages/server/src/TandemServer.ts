@@ -146,8 +146,8 @@ export type TandemServerPushOptions<
 	/**
 	 * Whether to apply mutations made of `set`, `update`, and `remove`
 	 * operations. When false they are acknowledged with no effect and reported
-	 * as rejected, like a failed mutator.
-	 * @default true
+	 * as rejected, like a failed mutator. Defaults to false when `mutators` is
+	 * given, so moving authorization into mutators cannot leave raw writes open.
 	 */
 	allowOps?: boolean
 }
@@ -233,12 +233,34 @@ async function applyMutationOperation<
 	}
 }
 
+/**
+ * Errors storage adapters threw. A server mutator that hits one has not refused
+ * its mutation, so the mutation stays pending instead of being rejected. Marked
+ * rather than wrapped, so callers still see the adapter's error as the cause.
+ */
+const storageFailures = new WeakSet<object>()
+
+function isStorageFailure(error: unknown): boolean {
+	const seen = new Set<unknown>()
+	for (let current = error; current instanceof Error; current = current.cause) {
+		if (seen.has(current)) return false
+		seen.add(current)
+		if (storageFailures.has(current)) return true
+	}
+	return false
+}
+
 function tandemStorageToTupleDatabaseStorage<Schema extends AnySchema>(
 	storage: TandemServerStorageApi<Schema>,
 ): AsyncTupleStorageApi {
+	const mark = (cause: unknown) => {
+		if (typeof cause === "object" && cause !== null) storageFailures.add(cause)
+		throw cause
+	}
 	return {
-		scan: (args) => storage.scan(args),
-		commit: (writes) => storage.commit(writes as WriteOps<TandemTuple<Schema>>),
+		scan: (args) => storage.scan(args).catch(mark),
+		commit: (writes) =>
+			storage.commit(writes as WriteOps<TandemTuple<Schema>>).catch(mark),
 		close: () => storage.close(),
 	}
 }
@@ -457,7 +479,10 @@ export class TandemServer<
 	private async applyPush(
 		clientId: ClientId,
 		mutations: Mutation<Schema>[],
-		{ mutators, allowOps = true }: TandemServerPushOptions<Schema, Relations>,
+		{
+			mutators,
+			allowOps = mutators === undefined,
+		}: TandemServerPushOptions<Schema, Relations>,
 	): Promise<
 		| TandemServerError
 		| RemoteInvalidRequestError
@@ -573,9 +598,9 @@ export class TandemServer<
 				.cancel()
 				.catch((cause) => new TandemServerError({ operation: "push", cause }))
 			if (cancelled instanceof Error) return cancelled
-			// Storage failures are not a refusal; leave the mutation pending.
-			const storage = errore.findCause(ran, TandemServerError)
-			if (storage) return storage
+			// A storage failure is not a refusal; leave the mutation pending.
+			if (isStorageFailure(ran))
+				return new TandemServerError({ operation: "push", cause: ran.cause })
 			return this.reject(clientId, mutationId, rejectionMessage(ran.cause))
 		}
 		const acknowledged = acknowledge(mutationId)
