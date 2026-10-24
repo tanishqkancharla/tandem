@@ -70,10 +70,10 @@ A server transaction could `set`, `update`, or `remove`. Every changed record we
 Add `append` to server transactions, apply it inside the run queue at commit, and send viewers that already have the record only the appended text. The client applies it only on top of the exact value it extends.
 
 ```changes
-954f2de..1a9247d
+954f2de..84e0752
 ```
 
-The payload names fields whose type is `string` ([[954f2de..1a9247d:packages/core/src/transaction/Transaction.ts#L125-L160]]):
+The payload names fields whose type is `string` ([[954f2de..84e0752:packages/core/src/transaction/Transaction.ts#L125-L159]]):
 
 ```ts
 type AppendPayload<Record> = { [Field in AppendableField<Record>]?: string }
@@ -97,24 +97,24 @@ type PokePayload<Schema> = {
 }
 ```
 
-The types live in [[954f2de..1a9247d:packages/core/src/sync/SyncEngine.ts#L76-L98]].
+The types live in [[954f2de..84e0752:packages/core/src/sync/SyncEngine.ts#L76-L98]].
 
 `tx.append` only stages text. The transaction reads the record at commit, inside the server's run queue, so appends from concurrent transactions all land. Later writes in the same transaction keep their order: a `set` or `remove` drops earlier appends to the record, and an `update` drops appends to the fields it assigns.
 
 ```callstack
- TandemServerTransaction.append [[954f2de..1a9247d:packages/server/src/TandemServerTransaction.ts#L238-L257]]
+ TandemServerTransaction.append [[954f2de..84e0752:packages/server/src/TandemServerTransaction.ts#L238-L257]]
 +└── stage text per record and field   # no read yet
- TandemServer.commitTransaction [[954f2de..1a9247d:packages/server/src/TandemServer.ts#L507-L569]]
-+├── TandemServerTransaction.applyAppends [[954f2de..1a9247d:packages/server/src/TandemServerTransaction.ts#L290-L340]]
+ TandemServer.commitTransaction [[954f2de..84e0752:packages/server/src/TandemServer.ts#L511-L577]]
++├── TandemServerTransaction.applyAppends [[954f2de..84e0752:packages/server/src/TandemServerTransaction.ts#L290-L340]]
 +│   ├── read each record through the transaction   # sees its own staged writes
 +│   ├── reject a non-string value
 +│   └── return appends to records the transaction did not otherwise write
  ├── read removed records
  ├── transaction.commit
 +├── attach after = the record's last write     # before recording this commit
-+├── recordLastWrites [[954f2de..1a9247d:packages/server/src/TandemServer.ts#L572-L583]]
++├── recordLastWrites [[954f2de..84e0752:packages/server/src/TandemServer.ts#L590-L601]]
  └── emitLivePokes
-     └── readLivePayload [[954f2de..1a9247d:packages/server/src/TandemServer.ts#L616-L671]]
+     └── readLivePayload [[954f2de..84e0752:packages/server/src/TandemServer.ts#L634-L689]]
 +        └── append op if the record is in view and known, else set
 ```
 
@@ -140,9 +140,9 @@ flowchart TB
 	O -->|no| W
 	O -->|yes| L[write extended value as a live record at the payload's revision]
 	L --> R[replay pending writes for the record]
-	%% ref node:V [[954f2de..1a9247d:packages/core/src/Database.ts#L562-L577]]
-	%% ref node:A [[954f2de..1a9247d:packages/core/src/Database.ts#L134-L149]]
-	%% ref node:L [[954f2de..1a9247d:packages/core/src/Database.ts#L497-L559]]
+	%% ref node:V [[954f2de..84e0752:packages/core/src/Database.ts#L564-L579]]
+	%% ref node:A [[954f2de..84e0752:packages/core/src/Database.ts#L134-L149]]
+	%% ref node:L [[954f2de..84e0752:packages/core/src/Database.ts#L497-L561]]
 ```
 
 ```ts
@@ -159,9 +159,11 @@ function extendServerValue(server, appends) {
 }
 ```
 
+A review then found two more cases. A client reconnecting over two connections can receive an older payload after a newer one, so `applyPoke` skips appends that a value from the payload's commit or later already covers, as it does for sets. And another process's write, reported through storage `subscribe`, did not move the last-write bookkeeping; a notification now forgets it, so appends wait for a pull read after that write. The server ignores notifications for its own commits.
+
 With `after`, the offset check never fails for `TandemServer`. It stays as a cross-check for custom remotes that send appends.
 
-`PokeApi.codec` passes the appended text through the collection codec as a partial record, as `MutationApi.codec` does for update payloads ([[954f2de..1a9247d:packages/core/src/sync/SyncEngine.ts#L228-L265]]). Any codec with `decode(encode(x)) = x` round-trips the fragment. A codec that rejects it fails the payload, and the SSE helpers fall back to a bare poke.
+`PokeApi.codec` passes the appended text through the collection codec as a partial record, as `MutationApi.codec` does for update payloads ([[954f2de..84e0752:packages/core/src/sync/SyncEngine.ts#L228-L265]]). Any codec with `decode(encode(x)) = x` round-trips the fragment. A codec that rejects it fails the payload, and the SSE helpers fall back to a bare poke.
 
 DST gains a `serverAppend` event on server-owned and shared records. The `movedBackwards` check already requires every value a client shows to be a server value no older than the last one shown, so a wrongly accepted append fails the run.
 
@@ -176,25 +178,25 @@ Each commit sent each viewer its own payload, and each payload made the viewer p
 Merge a client's payloads on the server over `livePokeInterval` (50 ms), and let the client defer the confirming pull while payloads keep arriving, up to `livePullMaxDelay` (1 s).
 
 ```changes
-1a9247d..1f51964
+84e0752..bb91b2a
 ```
 
 The server buffers each commit's changes per client and throttles with a leading edge: the first payload after a quiet interval goes out at once, later ones merge until the interval ends.
 
 ```callstack
- TandemServer.emitLivePokes [[1a9247d..1f51964:packages/server/src/TandemServer.ts#L615-L648]]
+ TandemServer.emitLivePokes [[84e0752..bb91b2a:packages/server/src/TandemServer.ts#L633-L666]]
 -├── readLivePayload → pokeClient(payload)
-+├── bufferLiveChanges [[1a9247d..1f51964:packages/server/src/TandemServer.ts#L651-L702]]
-+│   └── LivePayloadBuffer.add [[1a9247d..1f51964:packages/server/src/LivePayloadBuffer.ts#L76-L79]]
++├── bufferLiveChanges [[84e0752..bb91b2a:packages/server/src/TandemServer.ts#L669-L720]]
++│   └── LivePayloadBuffer.add [[84e0752..bb91b2a:packages/server/src/LivePayloadBuffer.ts#L76-L79]]
 +├── pusher or offset window: flushLivePayload, then a bare poke   # never delayed
-+└── scheduleLivePayload [[1a9247d..1f51964:packages/server/src/TandemServer.ts#L708-L724]]
-+    ├── flushLivePayload now if the client's interval is quiet [[1a9247d..1f51964:packages/server/src/TandemServer.ts#L726-L732]]
++└── scheduleLivePayload [[84e0752..bb91b2a:packages/server/src/TandemServer.ts#L726-L742]]
++    ├── flushLivePayload now if the client's interval is quiet [[84e0752..bb91b2a:packages/server/src/TandemServer.ts#L744-L750]]
 +    └── flush again at each interval end until one ends empty
  TandemServer.readPull
 +└── client.buffer.clear()   # the pull returns every buffered change
 ```
 
-Merging works per record, in commit order ([[1a9247d..1f51964:packages/server/src/LivePayloadBuffer.ts#L137-L153]]):
+Merging works per record, in commit order ([[84e0752..bb91b2a:packages/server/src/LivePayloadBuffer.ts#L137-L152]]):
 
 ```ts
 function merge(earlier, later) {
@@ -215,14 +217,14 @@ The pusher now always gets a bare poke, even when its commit changed records in 
 On the client, a payload poke shows its records at once and joins one deferral:
 
 ```callstack
- SyncEngine poke handler [[1a9247d..1f51964:packages/core/src/sync/SyncEngine.ts#L395-L415]]
+ SyncEngine poke handler [[84e0752..bb91b2a:packages/core/src/sync/SyncEngine.ts#L395-L415]]
  ├── Database.applyPoke
 -├── queuePull
-+├── deferPull [[1a9247d..1f51964:packages/core/src/sync/SyncEngine.ts#L475-L502]]   # payload pokes
++├── deferPull [[84e0752..bb91b2a:packages/core/src/sync/SyncEngine.ts#L475-L502]]   # payload pokes
 +│   ├── quiet loop: pull after a livePullDelay tick with no new payload
 +│   └── pull at the first livePullMaxDelay tick
  └── queuePull                                   # bare pokes, unchanged
- SyncEngine.pull [[1a9247d..1f51964:packages/core/src/sync/SyncEngine.ts#L504-L511]]
+ SyncEngine.pull [[84e0752..bb91b2a:packages/core/src/sync/SyncEngine.ts#L504-L511]]
 +├── take the deferral before the request       # this pull reads every commit already poked
  ├── pullFromRemote
 +└── settle the deferred pokes, whatever the outcome
@@ -251,20 +253,20 @@ The guide kept `UIMessage` parts on the message record and saved the whole snaps
 Store each part as its own record. Commit every `readUIMessageStream` snapshot: grown text as an append, any other change as a set of that part. Keep a plain heartbeat for the stale check.
 
 ```changes
-1f51964..3ce36eb
+bb91b2a..d2894c1
 ```
 
 ```callstack
  push (transport)
- ├── isClientWrite [[1f51964..3ce36eb:examples/agent-chat/apps/server/test/AgentChat.e2e.spec.ts#L122-L131]]   # reply messages and their parts are the server's
+ ├── isClientWrite [[bb91b2a..d2894c1:examples/agent-chat/apps/server/test/AgentChat.e2e.spec.ts#L122-L131]]   # reply messages and their parts are the server's
  ├── TandemServer.push
- └── streamReply [[1f51964..3ce36eb:examples/agent-chat/apps/server/test/AgentChat.e2e.spec.ts#L264-L342]]
+ └── streamReply [[bb91b2a..d2894c1:examples/agent-chat/apps/server/test/AgentChat.e2e.spec.ts#L264-L342]]
      ├── claim the reply record
      ├── heartbeat: set the reply whole every 5 s   # the server is its only writer
      ├── server.subscribe runs → AbortController.abort
      ├── streamText → toUIMessageStream → readUIMessageStream
 -    ├── a timer saves the newest parts every 100 ms
-+    ├── saveParts per snapshot [[1f51964..3ce36eb:examples/agent-chat/apps/server/test/AgentChat.e2e.spec.ts#L137-L157]]
++    ├── saveParts per snapshot [[bb91b2a..d2894c1:examples/agent-chat/apps/server/test/AgentChat.e2e.spec.ts#L137-L157]]
 +    │   ├── tx.append("parts", id, { text: delta })   # text that grew
 +    │   └── tx.set("parts", part)                     # tool and state changes
      └── set the final status
@@ -272,12 +274,14 @@ Store each part as its own record. Commit every `readUIMessageStream` snapshot: 
 
 The heartbeat sets the reply record from the server's in-memory copy instead of using `update`. `TandemServerTransaction.update` reads the record when called, so a heartbeat update could commit a stale `"streaming"` after the final status.
 
-The reference test's long reply ([[1f51964..3ce36eb:examples/agent-chat/apps/server/test/AgentChat.e2e.spec.ts#L472-L514]]) streams 300 tokens to two viewers with 15 ms pull latency. Each viewer's text only grows and converges on the final reply; each sees about 29 payloads and one or two pulls in 1.4 s. The suite passed 20 consecutive runs.
+The reference test's long reply ([[bb91b2a..d2894c1:examples/agent-chat/apps/server/test/AgentChat.e2e.spec.ts#L472-L514]]) streams 300 tokens to two viewers with 15 ms pull latency. Each viewer's text only grows and converges on the final reply; each sees about 29 payloads and one or two pulls in 1.4 s. The suite passed 20 consecutive runs.
 
 ## Limitations
 
 - Only server transactions append.
 - The last-write map holds 10,000 records per server instance. Appends to records written longer ago wait for clients' pulls if the clients have not pulled since the map forgot them.
+- Appends assume the server learns of every write. Another process's write that storage does not report through `subscribe` can let a client extend replaced text until its next pull.
+- A collection codec that renames fields makes append payloads fail encoding, so those appends fall back to a bare poke.
 - When an append is rejected (after a lost poke) while other records in the same payload apply, the client can briefly show records from different moments until the pull.
 - Merged payloads add up to 50 ms of latency during bursts, and confirmation pulls up to 1 s. Both are configurable.
 - A model error drops `readUIMessageStream` snapshots still queued, so a failed reply's saved text can end a few tokens early.
