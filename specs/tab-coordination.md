@@ -171,7 +171,7 @@ Review found more takeover races, fixed here with tests. After `clear()`, a tab 
 `--tabs N` adds a group of tabs that share one client storage, beside the two clients, in the same world, generator, trace, and replay.
 
 ```changes
-323d2a8..353056b
+6e9a4d5..02c03fa
 ```
 
 Gatekeeper attributes a service call to the public operation that started it, and much of a leader's work starts from another tab's message after that operation returns. The tab group therefore holds its own steps for channel messages, the leader's storage commits and timers, and pokes to the leader. Its server calls still go through a `tabsRemote` Gatekeeper service, so the run delays and loses them like the clients' calls. Both kinds of step share one pending list.
@@ -194,7 +194,7 @@ Faults also fail leader saves of forwarded writes. A crash ends a tab with its u
 
 Two existing tests also run with two tabs. Targeted tests drive a lost reply to an accepted push followed by a takeover, a leader crash after a durable save, a failed save ahead of a newer write, and a replacement leader's delayed connection.
 
-Sweeps of 150 seeds × 300 steps with `--tabs 3` alone, with `--fault-rate 0.1`, with `--crash-rate 0.02`, and with both found no violations. With faults and crashes they reached 53 takeovers with pending commits, 94 lost replies to accepted pushes, and 347 failed saves. Reverting coordinator fixes one at a time:
+Sweeps of 150 seeds × 300 steps with `--tabs 3` alone, with `--fault-rate 0.1`, with `--crash-rate 0.02`, and with both found no violations. With faults and crashes they reached 30 takeovers with pending commits, 50 lost replies to accepted pushes, and 223 failed saves. Those counts are lower than before `main` added server writes to the workload, which now take a share of the steps. Reverting coordinator fixes one at a time:
 
 | Reverted behavior | Caught by |
 | --- | --- |
