@@ -190,7 +190,14 @@ export class TabSession<
 		}
 		await this.db.clear(tag<ClientId>(this.rng.randomId()))
 		this.savedThrough = tag<MutationId>(0)
-		void this.request({ method: "leave" }, previous)
+		// Writes of the previous session may still be in flight and resent after
+		// the rejoin; the leader keeps their receipts until they settle.
+		const previousCalls = [...this.pending.values()]
+			.filter(({ message }) => message.sessionId === previous)
+			.map(({ result }) => result.promise)
+		void Promise.all(previousCalls).then(() =>
+			this.request({ method: "leave" }, previous),
+		)
 		const leaderId = this.leaderId
 		this.joined = false
 		const joined = await this.join()
