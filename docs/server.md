@@ -40,7 +40,9 @@ After every commit that writes data, the server pokes each connected client whos
 - `remove` holds records the client already has that the commit deleted or moved out of its view.
 - `append` holds the text an [`append`](#append-text) added to a record the client already has, instead of the whole record.
 
-Pokes never carry a record, or name a record ID, that a pull with the same window would not return. Relation includes, limits, and offsets are evaluated the way a pull evaluates them. A record that enters the view without changing, such as the next record under a `limit`, arrives with the pull that every poke still starts. A client that has not pulled yet gets a bare poke, and the client whose push made the commit always gets one, so it pulls the acknowledgement.
+A client's first payload goes out at once. Payloads from further commits within `livePokeInterval` (50 ms by default) merge into one sent when the interval ends: each record appears once, at its latest value, and consecutive appends to a field join into one. A burst of commits, such as a reply streamed token by token, therefore costs each viewer at most one payload per interval. Pass `livePokeInterval: 0` to send each commit's payload on its own.
+
+Pokes never carry a record, or name a record ID, that a pull with the same window would not return. Relation includes, limits, and offsets are evaluated the way a pull evaluates them. A record that enters the view without changing, such as the next record under a `limit`, arrives with the pull that every poke still starts. A client that has not pulled yet gets a bare poke, and the client whose push made the commit always gets one, so it pulls the acknowledgement at once instead of waiting for a stream of payloads to go quiet. Bare pokes are never delayed; a client's merged payload goes out right before one.
 
 Every pull reports the revision its read reflects. Revisions count this instance's commits and start over in a new instance, like cookies.
 

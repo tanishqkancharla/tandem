@@ -151,6 +151,20 @@ describe("Deterministic simulation testing", () => {
 		expect(result.violation).toBeUndefined()
 	})
 
+	it("merges bursts of server appends into single payloads under faults", async () => {
+		const result = await new DstSimulation({
+			seed: 1,
+			steps: 300,
+			faultRate: 0.1,
+			crashRate: 0.02,
+		}).execute()
+
+		expect(result.trace.some(({ type }) => type === "serverTick")).toBe(true)
+		// Text from several commits reached a client as one append.
+		expect(result.stats.mergedAppendsDelivered).toBeGreaterThan(0)
+		expect(result.violation).toBeUndefined()
+	})
+
 	it("replays a fault-and-crash run to the same final outcome", async () => {
 		const sink = memorySink()
 		const run = await new DstSimulation({

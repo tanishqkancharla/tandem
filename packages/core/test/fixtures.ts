@@ -140,6 +140,7 @@ export type MakeRemote = {
 	<Schema extends AnySchema, Relations extends AnyRelations<Schema>>(options: {
 		schema: RuntimeSchemaDefinition<Schema>
 		relations: Relations
+		livePokeInterval?: number | TimerApi
 	}): TandemServer<Schema, Relations>
 }
 
@@ -260,6 +261,7 @@ export const test = base.extend<Fixtures>({
 		>(options: {
 			schema: RuntimeSchemaDefinition<Schema>
 			relations: Relations
+			livePokeInterval?: number | TimerApi
 		}): TandemServer<Schema, Relations>
 		function makeRemote<
 			Schema extends AnySchema,
@@ -267,6 +269,7 @@ export const test = base.extend<Fixtures>({
 		>(options?: {
 			schema: RuntimeSchemaDefinition<Schema>
 			relations: Relations
+			livePokeInterval?: number | TimerApi
 		}) {
 			if (options) {
 				const remote = new TandemServer({

@@ -66,11 +66,11 @@ const { cookie, patch, lastMutationId } = await remote.pull({
 
 ### Poke
 
-`connect` gives the remote a `poke` function. Calling it makes the client pull. The remote decides when to poke, for example over a WebSocket, SSE, or a polling timer. Missing a poke delays a pull rather than losing changes. `connectTandemEventSource` pulls on every stream (re)connection, and fallback pulls check for missed updates every 60 seconds by default.
+`connect` gives the remote a `poke` function. Calling it makes the client pull. A poke with a [payload](#live-records) lets that pull wait while payloads keep arriving: the client pulls once `livePullDelay` (200 ms by default) passes without a new payload, or `livePullMaxDelay` (1 s) after the first of them. Any pull that starts sooner confirms them too, such as one a bare poke, `pullFromRemote`, or a new subscription starts. The remote decides when to poke, for example over a WebSocket, SSE, or a polling timer. Missing a poke delays a pull rather than losing changes. `connectTandemEventSource` pulls on every stream (re)connection, and fallback pulls check for missed updates every 60 seconds by default.
 
 ### Live records
 
-A poke can carry the records a server commit changed in the client's view, tagged with the commit's revision. [`TandemServer`](server.md#connect-clients) sends them after every commit. The client shows them at once, in the same tick, and still pulls. Queries and subscriptions need nothing special: a server that saves a record repeatedly, such as a streaming [agent reply](agent-chat.md), shows each save on every subscribed client. Like a pull, a live record can make an open transaction that read the record fail to commit.
+A poke can carry the records a server commit changed in the client's view, tagged with the commit's revision. [`TandemServer`](server.md#connect-clients) sends them after every commit. The client shows them at once, in the same tick, and still pulls once the payloads go quiet. Queries and subscriptions need nothing special: a server that saves a record repeatedly, such as a streaming [agent reply](agent-chat.md), shows each save on every subscribed client. Like a pull, a live record can make an open transaction that read the record fail to commit.
 
 A live record stands in for the server value under any pending local writes, which replay on top of it. It is never pushed. Each pull reports the revision its read reflects and replaces every live record at or below it, so a pull that read the server before a newer commit keeps the newer live record. The client ignores a poke record that is no newer than the latest pull or the record's current live value.
 

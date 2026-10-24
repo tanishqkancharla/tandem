@@ -8,6 +8,7 @@ import {
 	t,
 	TandemClient,
 	type TandemClientStorageApi,
+	type TimerApi,
 } from "@tanishqkancharla/tandem-core"
 import type { TandemServer } from "@tanishqkancharla/tandem-server"
 import * as errore from "errore"
@@ -61,9 +62,15 @@ class HeldPokes {
 				},
 			})
 		},
-		pull: (args) => this.server.pull(args),
+		pull: (args) => {
+			this.pulls += 1
+			return this.server.pull(args)
+		},
 		push: (args) => this.server.push(args),
 	}
+
+	/** Pulls that reached the server. */
+	pulls = 0
 
 	/** Removes held pokes. Each applies at once when called and settles after its pull. */
 	take(): (() => Promise<void>)[] {
@@ -90,11 +97,15 @@ function createClient({
 	logger,
 	rng,
 	clientStorage,
+	livePullDelay,
+	livePullMaxDelay,
 }: {
 	remote: RemoteApi<ChatSchema>
 	logger: Logger
 	rng: DemoRng
 	clientStorage?: TandemClientStorageApi<ChatSchema>
+	livePullDelay?: TimerApi
+	livePullMaxDelay?: TimerApi
 }): ChatClient {
 	return new TandemClient({
 		schema: chatSchema,
@@ -105,41 +116,74 @@ function createClient({
 		clientStorage,
 		autoConnect: false,
 		syncInterval: 0,
+		livePullDelay,
+		livePullMaxDelay,
 	})
 }
 
-const liveTest = test.extend<{
+/** A timer whose ticks happen only when the test says so. */
+class ManualTimer implements TimerApi {
+	private waiting: (() => void)[] = []
+
+	waitForNextTick(): Promise<void> {
+		return new Promise((resolve) => this.waiting.push(resolve))
+	}
+
+	/** Delivers the pending tick and lets its work reach the next await. */
+	async tick() {
+		for (const resolve of this.waiting.splice(0)) resolve()
+		await new Promise((resolve) => setImmediate(resolve))
+	}
+}
+
+async function useConnectedHarness(
+	pokes: HeldPokes,
+	create: (remote: RemoteApi<ChatSchema>) => ChatClient,
+	use: (harness: ChatHarness) => Promise<void>,
+) {
+	const clients: ChatClient[] = []
+	await using cleanup = new errore.AsyncDisposableStack()
+	await using harness = buildGatekeeperHarness({
+		server: pokes.remote,
+		createClient: (remote) => {
+			const client = create(remote)
+			clients.push(client)
+			cleanup.defer(() => client.disconnect())
+			return client
+		},
+	})
+	for (const client of clients) {
+		await client.ready
+		await client.connect()
+	}
+	await use(harness)
+	await harness.deactivateGatesAndSettle()
+}
+
+type ChatHarness = ReturnType<
+	typeof buildGatekeeperHarness<ChatSchema, ChatClient>
+>
+
+const serverTest = test.extend<{
 	chat: ChatServer
 	pokes: HeldPokes
-	harness: ReturnType<typeof buildGatekeeperHarness<ChatSchema, ChatClient>>
 	commitOnServer: (
 		write: (tx: ReturnType<ChatServer["transact"]>) => void,
 	) => Promise<void>
 }>({
 	chat: async ({ makeRemote }, use) => {
-		await use(makeRemote({ schema: chatSchema, relations: chatRelations }))
+		await use(
+			makeRemote({
+				schema: chatSchema,
+				relations: chatRelations,
+				// Each commit's payload goes out on its own, so a test can hold or
+				// drop any one of them.
+				livePokeInterval: 0,
+			}),
+		)
 	},
 	pokes: async ({ chat }, use) => {
 		await use(new HeldPokes(chat))
-	},
-	harness: async ({ pokes, logger, rng }, use) => {
-		const clients: ChatClient[] = []
-		await using cleanup = new errore.AsyncDisposableStack()
-		await using harness = buildGatekeeperHarness({
-			server: pokes.remote,
-			createClient: (remote) => {
-				const client = createClient({ remote, logger, rng })
-				clients.push(client)
-				cleanup.defer(() => client.disconnect())
-				return client
-			},
-		})
-		for (const client of clients) {
-			await client.ready
-			await client.connect()
-		}
-		await use(harness)
-		await harness.deactivateGatesAndSettle()
 	},
 	commitOnServer: async ({ chat }, use) => {
 		await use(async (write) => {
@@ -147,6 +191,16 @@ const liveTest = test.extend<{
 			write(tx)
 			await chat.commit(tx)
 		})
+	},
+})
+
+const liveTest = serverTest.extend<{ harness: ChatHarness }>({
+	harness: async ({ pokes, logger, rng }, use) => {
+		await useConnectedHarness(
+			pokes,
+			(remote) => createClient({ remote, logger, rng }),
+			use,
+		)
 	},
 })
 
@@ -387,7 +441,11 @@ describe("live pokes", () => {
 		logger,
 		rng,
 	}) => {
-		const chat = makeRemote({ schema: chatSchema, relations: chatRelations })
+		const chat = makeRemote({
+			schema: chatSchema,
+			relations: chatRelations,
+			livePokeInterval: 0,
+		})
 		const pokes = new HeldPokes(chat)
 		const storage = makeStorage<ChatSchema>({ schema: chatSchema })
 		const commitOnServer = async (message: Message) => {
@@ -651,7 +709,11 @@ describe("live pokes", () => {
 		logger,
 		rng,
 	}) => {
-		const chat = makeRemote({ schema: chatSchema, relations: chatRelations })
+		const chat = makeRemote({
+			schema: chatSchema,
+			relations: chatRelations,
+			livePokeInterval: 0,
+		})
 		const pokes = new HeldPokes(chat)
 		const storage = makeStorage<ChatSchema>({ schema: chatSchema })
 		const tx = chat.transact()
@@ -723,6 +785,134 @@ describe("live pokes", () => {
 			})
 
 			expect(client1.query({ collection: "messages" })).toEqual([])
+		},
+	)
+})
+
+/** Clients whose confirming pulls wait on timers the test controls. */
+const deferralTest = serverTest.extend<{
+	quiet: ManualTimer
+	max: ManualTimer
+	harness: ChatHarness
+}>({
+	quiet: async ({}, use) => {
+		await use(new ManualTimer())
+	},
+	max: async ({}, use) => {
+		await use(new ManualTimer())
+	},
+	harness: async ({ pokes, logger, rng, quiet, max }, use) => {
+		await useConnectedHarness(
+			pokes,
+			(remote) =>
+				createClient({
+					remote,
+					logger,
+					rng,
+					livePullDelay: quiet,
+					livePullMaxDelay: max,
+				}),
+			use,
+		)
+	},
+})
+
+describe("confirming pulls during a live stream", () => {
+	deferralTest(
+		"payloads defer their pull until an interval passes without a new one",
+		async ({ harness, pokes, quiet, commitOnServer }) => {
+			const { client1 } = harness
+			client1.subscribe({ collection: "messages" })
+			await commitOnServer((tx) => tx.set("messages", reply("Hel")))
+			await (
+				await client1.pullFromRemote()
+			).result
+			pokes.drop()
+			const pulls = pokes.pulls
+
+			await commitOnServer((tx) =>
+				tx.append("messages", "reply", { text: "lo" }),
+			)
+			const first = pokes.deliver()
+			await commitOnServer((tx) =>
+				tx.append("messages", "reply", { text: "!" }),
+			)
+			const second = pokes.deliver()
+
+			// Another payload arrived during this interval, so the pull waits.
+			await quiet.tick()
+			expect(pokes.pulls).toBe(pulls)
+			expect(client1.query({ collection: "messages" })).toEqual([
+				reply("Hello!"),
+			])
+
+			// A quiet interval starts one pull that confirms both payloads.
+			await quiet.tick()
+			await Promise.all([first, second])
+			expect(pokes.pulls).toBe(pulls + 1)
+		},
+	)
+
+	deferralTest(
+		"a stream that never goes quiet still pulls at the maximum delay",
+		async ({ harness, pokes, quiet, max, commitOnServer }) => {
+			const { client1 } = harness
+			client1.subscribe({ collection: "messages" })
+			await commitOnServer((tx) => tx.set("messages", reply("H")))
+			await (
+				await client1.pullFromRemote()
+			).result
+			pokes.drop()
+			const pulls = pokes.pulls
+
+			// Every interval sees a new payload.
+			const delivered: Promise<void[]>[] = []
+			for (const text of ["e", "l", "l", "o"]) {
+				await commitOnServer((tx) => tx.append("messages", "reply", { text }))
+				delivered.push(pokes.deliver())
+				if (text !== "e") await quiet.tick()
+			}
+			expect(pokes.pulls).toBe(pulls)
+
+			await max.tick()
+			await Promise.all(delivered)
+			expect(pokes.pulls).toBe(pulls + 1)
+			expect(client1.query({ collection: "messages" })).toEqual([
+				reply("Hello"),
+			])
+		},
+	)
+
+	deferralTest(
+		"a bare poke, such as the pusher's acknowledgement, pulls at once and confirms deferred payloads",
+		async ({ harness, pokes, commitOnServer }) => {
+			const { client1 } = harness
+			client1.subscribe({ collection: "messages" })
+			await commitOnServer((tx) => tx.set("messages", reply("Hel")))
+			await (
+				await client1.pullFromRemote()
+			).result
+			pokes.drop()
+			await commitOnServer((tx) =>
+				tx.append("messages", "reply", { text: "lo" }),
+			)
+			const streamed = pokes.deliver()
+			const pulls = pokes.pulls
+
+			// The client writes mid-stream; its timers never fire.
+			const tx = client1.transact()
+			tx.set("messages", { ...reply("Mine"), id: "mine" })
+			await (
+				await client1.commit(tx)
+			).result
+			await pokes.deliver()
+			await streamed
+
+			expect(pokes.pulls).toBe(pulls + 1)
+			expect(client1.query({ collection: "messages" })).toEqual([
+				{ ...reply("Mine"), id: "mine" },
+				reply("Hello"),
+			])
 		},
 	)
 })
