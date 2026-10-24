@@ -15,7 +15,7 @@
 			"@tanishqkancharla/gatekeeper": ["../gatekeeper/src/Gatekeeper.ts"]
 		}
 	},
-	"include": ["src/**/*.ts", "test/**/*.ts"],
+	"include": ["src/**/*.ts", "test/**/*.ts", "benchmarks/**/*.ts"],
 	"references": [
 		{
 			"path": "../server"

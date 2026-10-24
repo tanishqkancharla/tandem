@@ -2,6 +2,9 @@
  * pnpm dst:run --seed 123 --steps 300 [--fault-rate 0.1] [--crash-rate 0.02] [--out path]
  * pnpm dst:run --replay path.jsonl
  * pnpm dst:run --runs 24 --seed 2026092800 --steps 300 [--out-dir tmp/dst] [--fail-on-violation]
+ *
+ * --tabs simulates browser tabs sharing one client storage; --save-fault-rate
+ * fails leader saves of forwarded writes. A tabs artifact replays as tabs.
  */
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs"
 import { dirname, relative, resolve } from "node:path"
@@ -9,6 +12,14 @@ import { parseArgs } from "node:util"
 import { describeViolation, sweep, sweepSummary } from "./DstCli.js"
 import { jsonlFileSink, parseArtifact, replay } from "./DstReplay.js"
 import { type DstRunOptions, DstSimulation } from "./DstSimulation.js"
+import {
+	parseTabArtifact,
+	replayTabs,
+	sweepTabs,
+	tabFileSink,
+	TabSimulation,
+	tabSweepSummary,
+} from "./TabSimulation.js"
 
 const { values } = parseArgs({
 	options: {
@@ -16,6 +27,8 @@ const { values } = parseArgs({
 		steps: { type: "string", default: "300" },
 		"fault-rate": { type: "string", default: "0" },
 		"crash-rate": { type: "string", default: "0" },
+		"save-fault-rate": { type: "string", default: "0" },
+		tabs: { type: "boolean", default: false },
 		out: { type: "string" },
 		replay: { type: "string" },
 		runs: { type: "string" },
@@ -39,7 +52,71 @@ function number(name: string, value: string): number {
 	return parsed
 }
 
-if (values.replay) {
+if (
+	values.replay &&
+	readFileSync(fromInvocation(values.replay), "utf8").includes('"mode":"tabs"')
+) {
+	const artifact = parseTabArtifact(
+		readFileSync(fromInvocation(values.replay), "utf8"),
+	)
+	console.log(`replaying ${values.replay}: tabs seed ${artifact.options.seed}`)
+	const result = await replayTabs(artifact)
+	if (result.divergence) {
+		console.log(
+			`diverged at step ${result.divergence.step}: ${result.divergence.reason}`,
+		)
+		process.exitCode = 1
+	} else if (result.outcome?.violation) {
+		const { kind, detail } = result.outcome.violation
+		console.log(`${kind}: ${detail}`)
+		process.exitCode = 1
+	} else {
+		console.log("no violation")
+	}
+} else if (values.tabs) {
+	const options = {
+		seed: number("seed", values.seed ?? String(Date.now() % 2 ** 31)),
+		steps: number("steps", values.steps),
+		faultRate: number("fault-rate", values["fault-rate"]),
+		saveFaultRate: number("save-fault-rate", values["save-fault-rate"]),
+		crashRate: number("crash-rate", values["crash-rate"]),
+	}
+	if (values.runs) {
+		const runs = number("runs", values.runs)
+		const results = await sweepTabs({
+			...options,
+			runs,
+			outDir: fromInvocation(values["out-dir"]),
+		})
+		const summary = tabSweepSummary({ ...options, runs }, results)
+		console.log(summary)
+		if (process.env.GITHUB_STEP_SUMMARY)
+			appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary)
+		const harnessFailed = results.some(
+			({ outcome }) => outcome === "error" || outcome === "nondeterministic",
+		)
+		const violated = results.some(({ outcome }) => outcome === "violation")
+		if (harnessFailed || (violated && values["fail-on-violation"]))
+			process.exitCode = 1
+	} else {
+		const out = fromInvocation(
+			values.out ?? `tmp/dst/tabs-seed-${options.seed}.jsonl`,
+		)
+		mkdirSync(dirname(out), { recursive: true })
+		console.log(
+			`tabs seed ${options.seed}, ${options.steps} steps, fault rate ${options.faultRate}, save fault rate ${options.saveFaultRate}, crash rate ${options.crashRate}`,
+		)
+		const result = await new TabSimulation(options).execute(tabFileSink(out))
+		if (result.violation) {
+			console.log(`${result.violation.kind}: ${result.violation.detail}`)
+			console.log(`artifact: ${shown(out)}`)
+			console.log(`replay:   pnpm dst:run --replay ${shown(out)}`)
+			process.exitCode = 1
+		} else {
+			console.log(`no violation; coverage ${JSON.stringify(result.coverage)}`)
+		}
+	}
+} else if (values.replay) {
 	const artifact = parseArtifact(
 		readFileSync(fromInvocation(values.replay), "utf8"),
 	)
@@ -103,3 +180,7 @@ if (values.replay) {
 		}
 	}
 }
+
+// A crashed tab's leader leaves its one-minute inherited-session timer running,
+// as the code of a crashed browser tab would. Do not wait for it.
+if (values.tabs || values.replay) process.exit()

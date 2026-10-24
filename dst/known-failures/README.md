@@ -32,3 +32,10 @@ The failure was not that the write was lost. The failure was that final pulls le
 ## Fixed: a lost pull response loses removals
 
 The server retains the latest generated view and its opaque cookie per client. Missing or mismatched cookies receive an authoritative reset, so retrying after a lost removal response cannot silently omit the deletion. Subscription changes receive a new cookie even without a database revision change. `dst.spec.ts` checks fault seed 10 and crash/fault seed 7 at 300 steps against the server after settlement.
+
+## Fixed: shared tab coordination
+
+`pnpm dst:run --tabs` simulates browser tabs that share one client storage through an elected leader (`dst/TabWorld.ts`). Its oracles check that a commit from a tab that wants the server completes only after the server has the write, that completed commits and flushes are durable in shared storage, that acknowledged writes and writes of tabs still open reach the server, that no write reaches the server in two leader mutations, and that every open tab matches the server after healing.
+
+- `dst/regressions/tabs-stale-leader.jsonl`: a late announcement from a previous leader redirected a tab to it, and the tab's writes waited forever. A hub now announces itself again when it sees a join addressed to another leader.
+- `dst/regressions/tabs-view-before-join.jsonl`: the leader published a view before answering a tab's join; the tab dropped it, and the leader never resent it. Tabs now apply views from their current leader before the join reply.

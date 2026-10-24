@@ -52,7 +52,7 @@ export const dstSchemaDefinition = defineSchema({
 	}),
 }) satisfies RuntimeSchemaDefinition<DstSchema>
 
-class InMemoryServerStorage implements TandemServerStorageApi<DstSchema> {
+export class InMemoryServerStorage implements TandemServerStorageApi<DstSchema> {
 	private readonly memory = new InMemoryTupleStorage()
 
 	scan(args?: ScanStorageArgs): Promise<TandemTuple<DstSchema>[]> {
@@ -62,6 +62,13 @@ class InMemoryServerStorage implements TandemServerStorageApi<DstSchema> {
 	commit(writes: WriteOps<TandemTuple<DstSchema>>): Promise<void> {
 		this.memory.commit(writes)
 		return Promise.resolve()
+	}
+
+	/** The stored records, read synchronously so an oracle sees one instant. */
+	records(): TandemTuple<DstSchema>[] {
+		return (this.memory.scan() as TandemTuple<DstSchema>[]).filter(
+			({ key }) => key[0] === "record",
+		)
 	}
 
 	close(): Promise<void> {
@@ -98,7 +105,7 @@ function remoteWithPokeEvents(
 
 type DstClientTuple = TandemClientTuple<DstSchema>
 
-function roundTrip<Value>(value: Value): Value {
+export function roundTrip<Value>(value: Value): Value {
 	return JSON.parse(JSON.stringify(value)) as Value
 }
 
