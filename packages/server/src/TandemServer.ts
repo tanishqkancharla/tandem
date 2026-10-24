@@ -1,12 +1,19 @@
 import type {
+	AnyMutators,
 	AnySchema,
 	ClientApi,
 	ClientId,
 	CollectionName,
 	Cookie,
+	Json,
 	Mutation,
 	MutationId,
 	MutationOp,
+	MutationRejection,
+	MutatorArgs,
+	MutatorArgsOf,
+	MutatorCall,
+	MutatorContext,
 	PatchRemoveOp,
 	PatchSetOp,
 	PokePayload,
@@ -31,6 +38,7 @@ import {
 	scanWindowOffsetCollections,
 	selectScanWindowRecordsAsync,
 	UpdatePayloadError,
+	validateMutatorArgs,
 } from "@tanishqkancharla/tandem-core/internal"
 import type { ScanWindowRecord } from "@tanishqkancharla/tandem-core/internal"
 import * as errore from "errore"
@@ -92,6 +100,65 @@ type SyncClientState<Schema extends AnySchema> = {
 	scanWindow?: ScanWindow<Schema>
 	/** Record IDs sent in poke payloads since the latest pull. */
 	liveRecordIds: Set<string>
+}
+
+/** What a server mutator knows beyond a shared one. */
+export type ServerMutatorContext = MutatorContext & {
+	location: "server"
+	clientId: ClientId
+	mutationId: MutationId
+	/**
+	 * Runs `effect` once the mutation commits, after its pokes. A retried push
+	 * skips the mutation, so the effect runs at most once. It is not awaited and
+	 * does not survive a crash: write a record for work that must finish.
+	 */
+	after(effect: () => unknown): void
+}
+
+export type ServerMutator<
+	Schema extends AnySchema,
+	Relations extends AnyRelations<Schema>,
+	Args = Json,
+> = {
+	args: MutatorArgs<Json, Args>
+	run: (
+		tx: TandemServerTransaction<Schema, Relations>,
+		args: Args,
+		ctx: ServerMutatorContext,
+	) => unknown
+}
+
+export type ServerMutators<
+	Schema extends AnySchema,
+	Relations extends AnyRelations<Schema>,
+> = {
+	// Args is contravariant in run, so only any admits every concrete mutator.
+	// oxlint-disable-next-line typescript/no-explicit-any
+	[name: string]: ServerMutator<Schema, Relations, any>
+}
+
+export type TandemServerPushOptions<
+	Schema extends AnySchema,
+	Relations extends AnyRelations<Schema>,
+> = {
+	/** The mutators this push may run, usually built for the request's session. */
+	mutators?: ServerMutators<Schema, Relations>
+	/**
+	 * Whether to apply mutations made of `set`, `update`, and `remove`
+	 * operations. When false they are acknowledged with no effect and reported
+	 * as rejected, like a failed mutator.
+	 * @default true
+	 */
+	allowOps?: boolean
+}
+
+class MutatorRunError extends errore.createTaggedError({
+	name: "MutatorRunError",
+	message: "Mutator $mutator threw",
+}) {}
+
+function rejectionMessage(error: unknown) {
+	return error instanceof Error ? error.message : String(error)
 }
 
 type CommitOptions =
@@ -247,13 +314,38 @@ export class TandemServer<
 		})
 	}
 
-	push: RemoteApi<Schema>["push"] = ({ clientId, mutations }) =>
+	/**
+	 * Server mutators built from shared ones. An override replaces a shared
+	 * mutator's server run, for authorization and `ctx.after` effects.
+	 */
+	serverMutators<Shared extends AnyMutators<Schema>>(
+		shared: Shared,
+		overrides: {
+			[Name in keyof Shared]?: (
+				tx: TandemServerTransaction<Schema, Relations>,
+				args: MutatorArgsOf<Shared[Name]>,
+				ctx: ServerMutatorContext,
+			) => unknown
+		} = {},
+	): ServerMutators<Schema, Relations> {
+		return Object.fromEntries(
+			Object.entries(shared).map(([name, definition]) => [
+				name,
+				{ args: definition.args, run: overrides[name] ?? definition.run },
+			]),
+		)
+	}
+
+	push = (
+		{ clientId, mutations }: Parameters<RemoteApi<Schema>["push"]>[0],
+		options: TandemServerPushOptions<Schema, Relations> = {},
+	): ReturnType<RemoteApi<Schema>["push"]> =>
 		this.run(async () => {
-			const result = await this.applyPush(clientId, mutations)
+			const result = await this.applyPush(clientId, mutations, options)
 			if (result instanceof Error) {
 				return { error: "unavailable", message: result.message } as const
 			}
-			return result ?? ({ ok: true } as const)
+			return result
 		})
 
 	pull: RemoteApi<Schema>["pull"] = (args) =>
@@ -365,12 +457,19 @@ export class TandemServer<
 	private async applyPush(
 		clientId: ClientId,
 		mutations: Mutation<Schema>[],
+		{ mutators, allowOps = true }: TandemServerPushOptions<Schema, Relations>,
 	): Promise<
 		| TandemServerError
 		| RemoteInvalidRequestError
 		| RemoteMutationGapError
-		| undefined
+		| { ok: true; rejected?: MutationRejection[] }
 	> {
+		const rejected: MutationRejection[] = []
+		const accepted = () =>
+			({
+				ok: true,
+				...(rejected.length ? { rejected } : {}),
+			}) as const
 		for (const mutation of mutations) {
 			const lastMutationId = await this.readLastMutationId(clientId, "push")
 			if (lastMutationId instanceof Error) return lastMutationId
@@ -382,14 +481,29 @@ export class TandemServer<
 					receivedMutationId: mutation.id,
 				}
 			}
+			if (mutation.mutator) {
+				const outcome = await this.applyMutator(
+					clientId,
+					mutation.id,
+					mutation.mutator,
+					mutators,
+				)
+				if (outcome instanceof Error) return outcome
+				if (outcome) rejected.push(outcome)
+				continue
+			}
+			if (!allowOps) {
+				const outcome = await this.reject(
+					clientId,
+					mutation.id,
+					"This server accepts only named mutations",
+				)
+				if (outcome instanceof Error) return outcome
+				rejected.push(outcome)
+				continue
+			}
 
-			const tupleTx = this.tupleDb.transact(this.rng?.randomId())
-			const transaction = new TandemServerTransaction(tupleTx, this.relations)
-			// Narrow before selecting the namespace: tuple-database cannot resolve
-			// subspace types through the generic application-record union.
-			const clientTx = (
-				tupleTx as unknown as AsyncTupleRootTransactionApi<TandemClientTuple>
-			).subspace(["client"])
+			const { transaction, acknowledge } = this.pushTransaction(clientId)
 			for (const operation of mutation.ops) {
 				const staged = await applyMutationOperation(transaction, operation)
 				if (staged !== undefined) {
@@ -397,12 +511,10 @@ export class TandemServer<
 					return staged
 				}
 			}
-			const staged = errore.try(() =>
-				clientTx.set([clientId], { lastMutationId: mutation.id }),
-			)
-			if (staged instanceof Error) {
+			const acknowledged = acknowledge(mutation.id)
+			if (acknowledged instanceof Error) {
 				await transaction.cancel()
-				return new TandemServerError({ operation: "push", cause: staged })
+				return acknowledged
 			}
 
 			const committed = await this.commitTransaction(transaction, {
@@ -411,6 +523,121 @@ export class TandemServer<
 			})
 			if (committed instanceof Error) return committed
 		}
+		return accepted()
+	}
+
+	/**
+	 * Runs a named mutation and commits its writes with the client's
+	 * acknowledgement. A refusal is acknowledged with no effect and returned;
+	 * a storage failure is returned as an error so the client retries.
+	 */
+	private async applyMutator(
+		clientId: ClientId,
+		mutationId: MutationId,
+		call: MutatorCall,
+		mutators: ServerMutators<Schema, Relations> | undefined,
+	): Promise<TandemServerError | MutationRejection | undefined> {
+		const definition =
+			mutators && Object.hasOwn(mutators, call.name)
+				? mutators[call.name]
+				: undefined
+		if (!definition)
+			return this.reject(clientId, mutationId, `Unknown mutator ${call.name}`)
+		const args = await validateMutatorArgs(
+			call.name,
+			definition.args,
+			call.args,
+		)
+		if (args instanceof Error)
+			return this.reject(clientId, mutationId, args.message)
+
+		const { transaction, acknowledge } = this.pushTransaction(clientId)
+		const effects: (() => unknown)[] = []
+		// The mutator is consumer code: whatever it throws is its verdict.
+		const ran = await Promise.resolve()
+			.then(() =>
+				definition.run(transaction, args, {
+					location: "server",
+					clientId,
+					mutationId,
+					after: (effect) => {
+						effects.push(effect)
+					},
+				}),
+			)
+			.catch(
+				(cause: unknown) => new MutatorRunError({ mutator: call.name, cause }),
+			)
+		if (ran instanceof Error) {
+			const cancelled = await transaction
+				.cancel()
+				.catch((cause) => new TandemServerError({ operation: "push", cause }))
+			if (cancelled instanceof Error) return cancelled
+			// Storage failures are not a refusal; leave the mutation pending.
+			const storage = errore.findCause(ran, TandemServerError)
+			if (storage) return storage
+			return this.reject(clientId, mutationId, rejectionMessage(ran.cause))
+		}
+		const acknowledged = acknowledge(mutationId)
+		if (acknowledged instanceof Error) {
+			await transaction.cancel()
+			return acknowledged
+		}
+		const committed = await this.commitTransaction(transaction, {
+			operation: "push",
+			clientId,
+		})
+		if (committed instanceof Error) return committed
+		for (const effect of effects) this.runEffect(effect)
+	}
+
+	/** Acknowledges a mutation without applying it, so it never blocks the client. */
+	private async reject(
+		clientId: ClientId,
+		mutationId: MutationId,
+		message: string,
+	): Promise<TandemServerError | MutationRejection> {
+		const { transaction, acknowledge } = this.pushTransaction(clientId)
+		const acknowledged = acknowledge(mutationId)
+		if (acknowledged instanceof Error) {
+			await transaction.cancel()
+			return acknowledged
+		}
+		// The pusher is poked even without record changes, so it pulls the rollback.
+		const committed = await this.commitTransaction(transaction, {
+			operation: "push",
+			clientId,
+		})
+		if (committed instanceof Error) return committed
+		return { id: mutationId, message }
+	}
+
+	private pushTransaction(clientId: ClientId) {
+		const tupleTx = this.tupleDb.transact(this.rng?.randomId())
+		const transaction = new TandemServerTransaction(tupleTx, this.relations)
+		// Narrow before selecting the namespace: tuple-database cannot resolve
+		// subspace types through the generic application-record union.
+		const clientTx = (
+			tupleTx as unknown as AsyncTupleRootTransactionApi<TandemClientTuple>
+		).subspace(["client"])
+		const acknowledge = (mutationId: MutationId) => {
+			const staged = errore.try(() =>
+				clientTx.set([clientId], { lastMutationId: mutationId }),
+			)
+			return staged instanceof Error
+				? new TandemServerError({ operation: "push", cause: staged })
+				: undefined
+		}
+		return { transaction, acknowledge }
+	}
+
+	private runEffect(effect: () => unknown) {
+		const report = (cause: unknown) =>
+			console.error(new TandemServerError({ operation: "after", cause }))
+		// Effects are consumer code; their failures cannot undo the commit.
+		const result = errore.try(effect)
+		if (result instanceof Error) return report(result)
+		if (result instanceof Promise) void result.catch(report)
 	}
 
 	private async readLastMutationId(
