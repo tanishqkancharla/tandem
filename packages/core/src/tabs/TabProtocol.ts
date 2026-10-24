@@ -72,12 +72,12 @@ function transformValue<Schema extends AnySchema>(
 	return codec ? codec[direction](value) : value
 }
 
-function transformMutations<Schema extends AnySchema>(
+function transformMutation<Schema extends AnySchema>(
 	codecs: CollectionCodecs<Schema>,
-	mutations: Mutation<Schema>[],
+	{ id, ops }: Mutation<Schema>,
 	direction: "encode" | "decode",
-): Mutation<Schema>[] {
-	return mutations.map(({ id, ops }) => ({
+): Mutation<Schema> {
+	return {
 		id,
 		ops: ops.map((op): MutationOp<Schema> => {
 			switch (op.type) {
@@ -103,7 +103,7 @@ function transformMutations<Schema extends AnySchema>(
 					return unreachable(op)
 			}
 		}),
-	}))
+	}
 }
 
 function transformView<Schema extends AnySchema>(
@@ -124,15 +124,15 @@ function transformView<Schema extends AnySchema>(
 }
 
 export namespace TabCodec {
-	export const encodeMutations = <Schema extends AnySchema>(
+	export const encodeMutation = <Schema extends AnySchema>(
 		codecs: CollectionCodecs<Schema>,
-		mutations: Mutation<Schema>[],
-	) => transformMutations(codecs, mutations, "encode")
+		mutation: Mutation<Schema>,
+	) => transformMutation(codecs, mutation, "encode")
 
-	export const decodeMutations = <Schema extends AnySchema>(
+	export const decodeMutation = <Schema extends AnySchema>(
 		codecs: CollectionCodecs<Schema>,
-		mutations: Mutation<Schema>[],
-	) => transformMutations(codecs, mutations, "decode")
+		mutation: Mutation<Schema>,
+	) => transformMutation(codecs, mutation, "decode")
 
 	export const encodeView = <Schema extends AnySchema>(
 		codecs: CollectionCodecs<Schema>,

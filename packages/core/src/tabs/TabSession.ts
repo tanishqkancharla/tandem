@@ -244,12 +244,9 @@ export class TabSession<
 		waitForServer: boolean,
 	) {
 		const sessionId = this.db.replica.clientId
-		const [mutation] = TabCodec.encodeMutations(this.codecs, [
-			{ id: mutationId, ops },
-		])
 		const call = this.request({
 			method: "commit",
-			mutation: mutation!,
+			mutation: TabCodec.encodeMutation(this.codecs, { id: mutationId, ops }),
 			waitForServer,
 		})
 		void call.saved.promise.then((saved) => {

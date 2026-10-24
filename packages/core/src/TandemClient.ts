@@ -234,7 +234,9 @@ export class TandemClient<
 			if (result instanceof Error) throw result
 			return
 		}
-		await this.syncEngine?.queuePull()
+		if (!this.syncEngine) return
+		this.logger.info({ message: "pulling from remote" })
+		return this.syncEngine.queuePull()
 	}
 
 	query<Query extends RelationalQuery<Schema, Relations>>(
@@ -322,7 +324,13 @@ export class TandemClient<
 			if (result instanceof Error) throw result
 			return
 		}
-		return this.syncEngine?.disconnect()
+		if (!this.syncEngine) {
+			this.logger.warn({
+				message: "attempted to disconnect without a remote server configured",
+			})
+			return
+		}
+		return this.syncEngine.disconnect()
 	}
 
 	/**
