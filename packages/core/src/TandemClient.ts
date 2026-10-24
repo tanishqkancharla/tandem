@@ -1,3 +1,4 @@
+import * as errore from "errore"
 import { Database } from "./Database.js"
 import {
 	_encodeRelationalQuery,
@@ -11,18 +12,32 @@ import type {
 } from "./schema/Schema.js"
 import type { TandemClientStorageApi } from "./clientStorage/TandemClientStorage.js"
 import { SyncEngine, type ClientId, type RemoteApi } from "./sync/SyncEngine.js"
+import {
+	type AnyMutators,
+	clientMutatorTransaction,
+	type MutateApi,
+	validateMutatorArgs,
+} from "./mutator/Mutator.js"
 import { Transaction } from "./transaction/Transaction.js"
 import { ConsoleLoggerSink, Logger, type LoggerApi } from "./utils/Logger.js"
 import { randomId, type RngApi } from "./utils/randomId.js"
 import type { TimerApi } from "./utils/Timer.js"
-import type { AsyncUnsubscribe } from "./utils/typeUtils.js"
+import type { AsyncUnsubscribe, Json } from "./utils/typeUtils.js"
+
+class MutatorRunError extends errore.createTaggedError({
+	name: "MutatorRunError",
+	message: "Mutator $mutator threw",
+}) {}
 
 export type TandemClientArgs<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema>,
+	Mutators extends AnyMutators<Schema> = {},
 > = {
 	schema?: RuntimeSchemaDefinition<Schema>
 	relations?: Relations
+	/** Named mutators from `defineMutators`, called through `client.mutate`. */
+	mutators?: Mutators
 	/**
 	 * Optional replica cache (IndexedDB tuples). Not the backend
 	 * persistence adapter used by the server.
@@ -50,8 +65,16 @@ export type TandemClientArgs<
 export class TandemClient<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
+	Mutators extends AnyMutators<Schema> = {},
 > {
 	private readonly db: Database<Schema, Relations>
+	/**
+	 * Runs a mutator optimistically, then pushes its name and arguments for the
+	 * server to run. Resolves after that push; rejects with the mutator's error,
+	 * or with `MutationRejectedError` when the server refused it. A refused
+	 * mutation is rolled back by the next pull.
+	 */
+	readonly mutate: MutateApi<Mutators>
 	/**
 	 * Resolves after restoring the checkpoint and initializing replica metadata.
 	 * With client storage configured, await this before creating transactions
@@ -76,6 +99,7 @@ export class TandemClient<
 	constructor({
 		schema,
 		relations,
+		mutators,
 		clientStorage,
 		clientStorageWriteInterval = 120,
 		remote,
@@ -83,7 +107,7 @@ export class TandemClient<
 		autoConnect = true,
 		rng,
 		syncInterval = 150,
-	}: TandemClientArgs<Schema, Relations>) {
+	}: TandemClientArgs<Schema, Relations, Mutators>) {
 		this.rng = rng ?? { randomId }
 		this.initialClientId = this.rng.randomId() as ClientId
 		this.logger = logger ?? new Logger({ sinks: new ConsoleLoggerSink() })
@@ -110,6 +134,52 @@ export class TandemClient<
 			: undefined
 
 		this.ready = this.db.ready
+		// Object.fromEntries loses the per-name argument types MutateApi restores.
+		this.mutate = Object.fromEntries(
+			Object.entries(mutators ?? {}).map(([name, definition]) => [
+				name,
+				(args: Json) => this.runMutator(name, definition, args),
+			]),
+		) as unknown as MutateApi<Mutators>
+	}
+
+	private async runMutator(
+		name: string,
+		definition: AnyMutators<Schema>[string],
+		input: Json,
+	): Promise<void> {
+		if (!this.db.isReady) {
+			throw new Error("Await client.ready before calling a mutator")
+		}
+		const args = await validateMutatorArgs(name, definition.args, input)
+		if (args instanceof Error) throw args
+		const transaction = this.db.transact()
+		// The mutator is consumer code: a throw cancels its writes and rejects the call.
+		const ran = await Promise.resolve()
+			.then(() =>
+				definition.run(clientMutatorTransaction(transaction), args, {
+					location: "client",
+				}),
+			)
+			.catch((cause: unknown) => new MutatorRunError({ mutator: name, cause }))
+		if (ran instanceof Error) {
+			transaction.cancel()
+			throw ran.cause
+		}
+
+		this.logger.info({ message: "committing mutator", mutator: name })
+		if (!this.syncEngine) {
+			this.db.commit(transaction)
+			return
+		}
+		const commitPromise = this.syncEngine.commit(transaction, {
+			name,
+			args: input,
+		})
+		commitPromise.catch((error) => {
+			this.logger.error({ message: "error pushing mutation", error })
+		})
+		return commitPromise
 	}
 
 	pullFromRemote(): Promise<void> {

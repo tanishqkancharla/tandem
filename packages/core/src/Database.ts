@@ -34,6 +34,7 @@ import {
 	type SetMutationOp,
 	type RemoveMutationOp,
 	type TupleClientBase,
+	type TupleClientMutator,
 	type TupleClientOutbox,
 	type TupleClientRecord,
 	Transaction,
@@ -44,6 +45,7 @@ import type {
 	PullResponse,
 	Revision,
 } from "./sync/SyncEngine.js"
+import type { MutatorCall } from "./mutator/Mutator.js"
 import type { LoggerApi } from "./utils/Logger.js"
 import type { RngApi } from "./utils/randomId.js"
 import { isEqual } from "./utils/objectUtils.js"
@@ -202,6 +204,12 @@ export class Database<
 		return this.tupleDb.subspace(["outbox"]) as unknown as TupleDatabaseClient<
 			TupleClientOutbox<Schema>
 		>
+	}
+
+	get mutators() {
+		return this.tupleDb.subspace([
+			"mutator",
+		]) as unknown as TupleDatabaseClient<TupleClientMutator>
 	}
 
 	get replica() {
@@ -376,7 +384,11 @@ export class Database<
 		transaction.tupleDbTx.commit()
 	}
 
-	commitMutation(transaction: Transaction<Schema>): void {
+	/** A mutator call persists beside its operations, which replay locally until acknowledged. */
+	commitMutation(
+		transaction: Transaction<Schema>,
+		mutator?: MutatorCall,
+	): MutationId {
 		const tx = transaction.tupleDbTx
 		const replica = this.replica
 		const id = tag<MutationId>(replica.lastIssuedMutationId + 1)
@@ -394,8 +406,10 @@ export class Database<
 			})
 		}
 		transaction.outbox.set([id], [...transaction.ops])
+		if (mutator) transaction.mutators.set([id], mutator)
 		tx.set(["replica"], { ...replica, lastIssuedMutationId: id })
 		tx.commit()
+		return id
 	}
 
 	applyPull({
@@ -406,7 +420,7 @@ export class Database<
 	}: PullResponse<Schema>): void {
 		const transaction = this.transact()
 		const tx = transaction.tupleDbTx
-		const { records, bases, outbox } = transaction
+		const { records, bases, outbox, mutators } = transaction
 		if (patch.reset) {
 			for (const { key } of records.scan()) records.remove(key)
 			for (const { key, value } of bases.scan()) {
@@ -419,6 +433,8 @@ export class Database<
 			this.applyServerOp(transaction, { type: "remove", ...op })
 		for (const { key } of outbox.scan({ lte: [lastMutationId] }))
 			outbox.remove(key)
+		for (const { key } of mutators.scan({ lte: [lastMutationId] }))
+			mutators.remove(key)
 		// The pull reflects the server at its revision, so it replaces every live
 		// record from that commit or earlier: updates, deletes, and records that
 		// left the view alike. A newer live record stays over the rebuilt base.

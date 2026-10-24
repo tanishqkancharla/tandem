@@ -5,6 +5,7 @@ export type {
 	ClientApi,
 	ClientId,
 	Cookie,
+	MutationRejection,
 	Patch,
 	PatchRemoveOp,
 	PatchSetOp,
@@ -32,6 +33,18 @@ export type {
 	UpdateMutationOp,
 } from "./transaction/Transaction.js"
 export { MutationApi } from "./transaction/Transaction.js"
+export { defineMutators, MutationRejectedError } from "./mutator/Mutator.js"
+export type {
+	AnyMutators,
+	MutateApi,
+	MutatorArgs,
+	MutatorArgsOf,
+	MutatorCall,
+	MutatorContext,
+	MutatorDefinition,
+	MutatorTransaction,
+	StandardSchemaV1,
+} from "./mutator/Mutator.js"
 export { TandemClientStorage } from "./clientStorage/TandemClientStorage.js"
 export type {
 	TandemClientStorageApi,
