@@ -46,7 +46,7 @@ The sync engine batches queued pushes and pulls on an interval (`syncInterval`, 
 await remote.push({ clientId, mutations })
 ```
 
-If the push fails, the client drops that batch from its pending mutations and rebuilds their records from the base, and the `commit` promise rejects. While disconnected, the client skips pushes and sends pending mutations after `connect`.
+If the push fails, the `commit` promise rejects, but the mutation stays pending and goes out again with the next push or reconnect. While disconnected, the client skips pushes and sends pending mutations after `connect`.
 
 ### Pull
 
@@ -70,7 +70,7 @@ const { cookie, patch, lastMutationId } = await remote.pull({
 
 ### Live records
 
-A poke can carry the records a server commit changed in the client's view, tagged with the commit's revision. [`TandemServer`](server.md#connect-clients) sends them after every commit. The client shows them at once, in the same tick, and still pulls. Queries and subscriptions need nothing special: a server that saves a record repeatedly, such as a streaming agent reply, shows each save on every subscribed client. Like a pull, a live record can make an open transaction that read the record fail to commit.
+A poke can carry the records a server commit changed in the client's view, tagged with the commit's revision. [`TandemServer`](server.md#connect-clients) sends them after every commit. The client shows them at once, in the same tick, and still pulls. Queries and subscriptions need nothing special: a server that saves a record repeatedly, such as a streaming [agent reply](agent-chat.md), shows each save on every subscribed client. Like a pull, a live record can make an open transaction that read the record fail to commit.
 
 A live record stands in for the server value under any pending local writes, which replay on top of it. It is never pushed. Each pull reports the revision its read reflects and replaces every live record at or below it, so a pull that read the server before a newer commit keeps the newer live record. The client ignores a poke record that is no newer than the latest pull or the record's current live value.
 

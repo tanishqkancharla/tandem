@@ -14,7 +14,11 @@ type RemoteApi<Schema> = {
 	push(args: {
 		clientId: ClientId
 		mutations: Mutation<Schema>[]
-	}): Promise<void>
+	}): Promise<
+		| { ok: true }
+		| { error: "invalid-request" | "unavailable"; message: string }
+		| { error: "mutation-gap"; expectedMutationId: number; receivedMutationId: number }
+	>
 
 	pull(args: {
 		clientId: ClientId
@@ -56,7 +60,7 @@ A poke can also carry a payload: full records a commit wrote, and records it rem
 
 Apply the mutations in order. Each `set` carries a full record, each `remove` carries an ID, and each `update` carries an ID and partial `payload`. Merge updates into the current record, preserving omitted fields and leaving missing records absent. Mutation IDs are per-client counters, so they arrive in increasing order. After they are applied, remember the last mutation ID for `clientId` so `pull` can report it.
 
-Reject if the mutations cannot be applied. The client then rolls back the whole batch locally, and each affected `commit` promise rejects. Authorization and validation belong here too: reject a push the client may not make.
+Return an error if the mutations cannot be applied. Each affected `commit` promise rejects, but the client keeps the mutations pending and sends them again with its next push, so an error that repeats on every attempt stops that client's later pushes too. To deny a write the client may not make, drop the operation and still apply the mutation's other operations and its ID. The client's next pull acknowledges the mutation and shows the server's value instead.
 
 ## Mutation codecs at the wire boundary
 
@@ -105,14 +109,15 @@ function authorizedRemote(
 ): RemoteApi<TodoSchema> {
 	return {
 		connect: (api) => server.connect(api),
-		async push(args) {
-			for (const mutation of args.mutations) {
-				for (const op of mutation.ops) {
-					if (!canWrite(session, op)) throw new Error("Forbidden")
-				}
-			}
-			await server.push(args)
-		},
+		push: (args) =>
+			// Forbidden operations are dropped; the mutation is still acknowledged.
+			server.push({
+				...args,
+				mutations: args.mutations.map((mutation) => ({
+					...mutation,
+					ops: mutation.ops.filter((op) => canWrite(session, op)),
+				})),
+			}),
 		pull: (args) => server.pull(args),
 	}
 }

@@ -82,7 +82,7 @@ const { result, destroy } = db.subscribe({ collection: "todos" }, (todos) => {
 destroy()
 ```
 
-Writes go through transactions. `commit` applies the changes locally right away. The returned promise settles once the push to the remote finishes, and rejects if the push fails. When a push fails, the client rolls the changes back.
+Writes go through transactions. `commit` applies the changes locally right away. The returned promise settles once the push to the remote finishes, and rejects if the push fails. A failed write stays pending and is sent again with the next push.
 
 ```ts
 const tx = db.transact()
@@ -193,8 +193,8 @@ const server = new TandemServer({
 })
 
 // In your HTTP framework:
-// POST /api/tandem { action: "push", args } -> await server.push(args)
-// POST /api/tandem { action: "pull", args } -> await server.pull(args)
+// POST /api/tandem { action: "push", args } -> respond with await server.push(args)
+// POST /api/tandem { action: "pull", args } -> respond with await server.pull(args)
 // GET /api/tandem/events?clientId=... -> return the response below
 ```
 
@@ -242,9 +242,7 @@ export const todoRemote: RemoteApi<TodoSchema> = {
 			poke,
 		})
 	},
-	async push(args) {
-		await call("push", args)
-	},
+	push: (args) => call("push", args),
 	pull: (args) => call("pull", args),
 }
 ```
