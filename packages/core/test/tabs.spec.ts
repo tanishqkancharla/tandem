@@ -695,6 +695,49 @@ describe("TandemClient tabs", () => {
 	)
 
 	tabsTest(
+		"a tab's commit reaches the server after a clear failed to reconnect",
+		async ({ tabs, server }) => {
+			const first = await tabs.open("tab1")
+			const second = await tabs.open("tab2")
+
+			// The clear disconnects the leader, and reconnecting fails.
+			tabs.remote.down = true
+			await expect(first.client.clear()).rejects.toThrow()
+
+			// Once the server is back, connecting reaches it again before the commit completes.
+			tabs.remote.down = false
+			await second.client.connect()
+			const tx = second.client.transact()
+			tx.set("todos", todo("after-failed-clear"))
+			await second.client.commit(tx)
+			expect(await server.query({ collection: "todos" })).toEqual([
+				todo("after-failed-clear"),
+			])
+		},
+	)
+
+	tabsTest(
+		"disconnect does not wait for a connect the server has not answered",
+		async ({ tabs }) => {
+			const first = await tabs.open("tab1", { autoConnect: false })
+			const connect = Promise.withResolvers<void>()
+			tabs.remote.connectBarrier = connect.promise
+			const connecting = first.client.connect()
+			await expect.poll(() => tabs.remote.connecting).toBeGreaterThan(0)
+
+			await first.client.disconnect()
+			await connecting
+
+			// The late registration is released once the server answers it.
+			const disconnected = tabs.remote.disconnected
+			connect.resolve()
+			await expect
+				.poll(() => tabs.remote.disconnected)
+				.toBeGreaterThan(disconnected)
+		},
+	)
+
+	tabsTest(
 		"tabs sharing storage deliver every write under their own client IDs",
 		async ({ tabs, server }) => {
 			const first = await tabs.open("tab1")

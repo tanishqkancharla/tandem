@@ -110,10 +110,11 @@ export class TabHub<
 			// Observe pushes so a tab's commit awaits the server response that carried it.
 			remote: {
 				connect: async (api) => {
+					// Answer the connect that made this call, not one started later.
+					const registration = this.registration
 					const result = await remote.connect(api)
-					if (typeof result === "function") this.registration?.resolve()
-					else
-						this.registration?.reject(new TabConnectionError({ cause: result }))
+					if (typeof result === "function") registration?.resolve()
+					else registration?.reject(new TabConnectionError({ cause: result }))
 					return result
 				},
 				pull: (request) => remote.pull(request),
@@ -152,6 +153,9 @@ export class TabHub<
 			for (const [sessionId, state] of this.sessions)
 				if (state.inherited) this.forget(sessionId)
 		}, INHERITED_QUERY_GRACE_MS)
+		// In Node, such as a worker or a test, this grace period must not keep the
+		// process alive. Browsers return a number without `unref`.
+		;(this.inheritedQueryTimer as { unref?: () => void }).unref?.()
 		this.channel.addEventListener("message", this.onMessage)
 		this.unsubscribeFromRecords = this.db.subscribeToRecords(() =>
 			this.queueViews(),
@@ -165,6 +169,8 @@ export class TabHub<
 		this.channel.removeEventListener("message", this.onMessage)
 		this.channel.close()
 		this.unsubscribeFromRecords?.()
+		this.registration?.resolve()
+		this.registration = undefined
 		this.connected = false
 		await this.syncEngine.disconnect()
 		const flushed = await this.db.flushClientStorage()
@@ -268,10 +274,8 @@ export class TabHub<
 				)
 				return this.snapshot(sessionId)
 			case "commit": {
-				const [mutation] = TabCodec.decodeMutations(this.codecs, [
-					request.mutation,
-				])
-				return this.commit(sessionId, mutation!, request.waitForServer, saved)
+				const mutation = TabCodec.decodeMutation(this.codecs, request.mutation)
+				return this.commit(sessionId, mutation, request.waitForServer, saved)
 			}
 			case "finishWrite": {
 				const receipt = this.db.tabWrite(sessionId, request.mutationId)
@@ -294,13 +298,22 @@ export class TabHub<
 				const result = await this.db.flushClientStorage()
 				return result instanceof Error ? unavailable(result) : { ok: true }
 			}
-			case "clear":
+			case "clear": {
 				this.pushAttempts.clear()
-				await this.syncEngine.clear()
+				const cleared = await this.syncEngine
+					.clear()
+					.catch((cause: unknown) => new TabConnectionError({ cause }))
+				// A failed clear leaves the engine disconnected; reconnect if tabs want it.
+				if (cleared instanceof Error) {
+					this.connected = false
+					void this.updateConnection().catch(() => {})
+					return unavailable(cleared)
+				}
 				for (const [clientId, state] of this.sessions)
 					this.db.setSessionScanWindow(clientId, state.scanWindow)
 				this.queueViews()
 				return this.snapshot(sessionId)
+			}
 			case "leave":
 				this.forget(sessionId)
 				await this.updateConnection()
@@ -310,11 +323,18 @@ export class TabHub<
 		}
 	}
 
+	private get wantsConnection() {
+		return !this.stopped && this.connectedSessions.size > 0
+	}
+
 	private updateConnection({ sync = false } = {}) {
+		// A disconnect must not wait for a connect the remote has not answered. The
+		// queued disconnect below then cancels that connect, as SyncEngine does.
+		if (!this.wantsConnection) this.registration?.resolve()
 		this.connection = this.connection
 			.catch(() => {})
 			.then(async () => {
-				const wanted = !this.stopped && this.connectedSessions.size > 0
+				const wanted = this.wantsConnection
 				if (wanted && !this.connected) {
 					// SyncEngine.connect also pulls and pushes. Connection control waits
 					// only for the remote to accept, so a stalled sync cannot block it.
@@ -341,8 +361,10 @@ export class TabHub<
 							}),
 						)
 				}
-				if ((this.stopped || !this.connectedSessions.size) && this.connected) {
+				// Disconnecting also cancels a connect the remote has not answered.
+				if (!wanted && (this.connected || this.registration)) {
 					this.connected = false
+					this.registration = undefined
 					await this.syncEngine.disconnect()
 				}
 			})
