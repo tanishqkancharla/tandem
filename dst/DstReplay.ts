@@ -148,6 +148,10 @@ function cannotApply(
 		case "serverAppend":
 		case "serverRemove":
 			return undefined
+		case "serverTick":
+			return world.serverTicksPending > 0
+				? undefined
+				: "no server interval is waiting"
 		case "crash":
 			return world.running.includes(record.client)
 				? undefined
@@ -176,6 +180,8 @@ function intentOf(record: DstTraceRecord): DstIntent {
 			return { type: "serverSet", item: record.item }
 		case "serverAppend":
 			return { type: "serverAppend", id: record.id, text: record.text }
+		case "serverTick":
+			return { type: "serverTick" }
 		case "serverRemove":
 			return { type: "serverRemove", id: record.id }
 		case "advance":

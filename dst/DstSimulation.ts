@@ -50,6 +50,8 @@ const mutateRate = 0.35
 const serverWriteRate = 0.4
 /** Chance per step that a crashed client restarts. */
 const restartRate = 0.25
+/** Chance per step that waiting server poke intervals end. */
+const serverTickRate = 0.05
 const poolOfIds = ["item-1", "item-2", "item-3"]
 
 /** A random run: each step applies one event chosen from what is possible now. */
@@ -108,6 +110,9 @@ export class DstSimulation {
 		}
 		if (faultRate > 0 && droppable.length > 0 && rng.boolean(faultRate)) {
 			return { type: "drop", call: rng.pick(droppable).name }
+		}
+		if (world.serverTicksPending > 0 && rng.boolean(serverTickRate)) {
+			return { type: "serverTick" }
 		}
 		if (
 			writers.length > 0 &&

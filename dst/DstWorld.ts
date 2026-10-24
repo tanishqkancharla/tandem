@@ -98,6 +98,9 @@ function remoteWithPokeEvents(
 		"poke",
 		(payload) => {
 			if (payload?.append) stats.appendPayloadsDelivered += 1
+			// Each generated append is " t<step>", so merged text has several.
+			if (payload?.append?.some(({ text }) => text.split(" t").length > 2))
+				stats.mergedAppendsDelivered += 1
 			return poke(payload)
 		},
 	)
@@ -164,6 +167,40 @@ class DstTimer implements TimerApi {
 }
 
 const timerGates = { gates: { enter: false, exit: true } }
+
+/**
+ * Ends the server's live poke intervals only when the run chooses a
+ * `serverTick`. Not a Gatekeeper service: the server waits on it outside any
+ * call. While released, as before gates activate or after the run drains,
+ * intervals end at once.
+ */
+class DstServerTimer implements TimerApi {
+	private waiting: (() => void)[] = []
+	private holding = false
+
+	get pending(): number {
+		return this.waiting.length
+	}
+
+	waitForNextTick(): Promise<void> {
+		if (!this.holding) return Promise.resolve()
+		return new Promise((resolve) => this.waiting.push(resolve))
+	}
+
+	hold() {
+		this.holding = true
+	}
+
+	/** Ends every client's current interval. */
+	tick() {
+		for (const resolve of this.waiting.splice(0)) resolve()
+	}
+
+	release() {
+		this.holding = false
+		this.tick()
+	}
+}
 
 /**
  * A handoff that crosses the network: a request to the server, its reply, or a
@@ -246,6 +283,7 @@ export type DstTraceRecord =
 	| { type: "serverSet"; step: number; item: DstTodo }
 	| { type: "serverAppend"; step: number; id: string; text: string }
 	| { type: "serverRemove"; step: number; id: string }
+	| { type: "serverTick"; step: number }
 	| { type: "crash"; step: number; client: DstClientName }
 	| { type: "restart"; step: number; client: DstClientName; clientId: string }
 
@@ -278,6 +316,8 @@ export type DstIntent =
 	| { type: "serverSet"; item: DstTodo }
 	| { type: "serverAppend"; id: string; text: string }
 	| { type: "serverRemove"; id: string }
+	/** Ends the server's live poke intervals, sending merged payloads. */
+	| { type: "serverTick" }
 	| { type: "advance"; call: string }
 	| { type: "drop"; call: string }
 	| { type: "crash"; client: DstClientName }
@@ -287,6 +327,8 @@ export type DstIntent =
 export type DstStats = {
 	/** Poke payloads with appended text that reached a client. */
 	appendPayloadsDelivered: number
+	/** Of those, appends that merged text from several commits. */
+	mergedAppendsDelivered: number
 }
 
 /** A call held at a boundary, with its stable trace name. */
@@ -331,6 +373,7 @@ export class DstWorld implements AsyncDisposable {
 
 	private constructor(
 		private readonly server: TandemServer<DstSchema, {}>,
+		private readonly serverTimer: DstServerTimer,
 		private readonly storage: InMemoryServerStorage,
 		private readonly harness: DstHarness,
 		stats: DstStats,
@@ -340,14 +383,19 @@ export class DstWorld implements AsyncDisposable {
 
 	static async start(seed: number): Promise<DstWorld> {
 		const storage = new InMemoryServerStorage()
+		const serverTimer = new DstServerTimer()
 		const server = new TandemServer<DstSchema, {}>({
 			schema: dstSchemaDefinition,
 			relations: {},
 			storage,
 			rng: SimPrng.idSource(seed, "server"),
+			livePokeInterval: serverTimer,
 		})
 		let world: DstWorld | undefined
-		const stats: DstStats = { appendPayloadsDelivered: 0 }
+		const stats: DstStats = {
+			appendPayloadsDelivered: 0,
+			mergedAppendsDelivered: 0,
+		}
 		const harness = buildHarness({
 			server,
 			stats,
@@ -355,9 +403,10 @@ export class DstWorld implements AsyncDisposable {
 			idSource: (label) =>
 				SimPrng.idSource(seed, `${label}.${world?.generations[label] ?? 0}`),
 		})
-		world = new DstWorld(server, storage, harness, stats)
+		world = new DstWorld(server, serverTimer, storage, harness, stats)
 		for (const name of clientNames) await world.boot(name)
 		await harness.activateGates()
+		serverTimer.hold()
 		return world
 	}
 
@@ -397,6 +446,9 @@ export class DstWorld implements AsyncDisposable {
 			case "serverAppend":
 			case "serverRemove":
 				return this.writeOnServer(step, intent)
+			case "serverTick":
+				this.serverTimer.tick()
+				return { type: "serverTick", step }
 			case "advance": {
 				const target = this.find(intent.call)
 				this.deliveredEvents.add(target.handle)
@@ -430,6 +482,11 @@ export class DstWorld implements AsyncDisposable {
 				}
 			}
 		}
+	}
+
+	/** Server poke intervals waiting for a `serverTick`. */
+	get serverTicksPending(): number {
+		return this.serverTimer.pending
 	}
 
 	hasPending(call: string): boolean {
@@ -532,6 +589,9 @@ export class DstWorld implements AsyncDisposable {
 
 	/** Releases every gate and lets all work in flight finish. */
 	async drain(): Promise<void> {
+		// Merged payloads go out before the gates release, so their pokes run.
+		this.serverTimer.release()
+		await settle()
 		await this.harness.deactivateGatesAndSettle()
 		await Promise.all(this.inFlight)
 	}
@@ -669,6 +729,10 @@ function buildHarness({
 			autoConnect: false,
 			syncInterval: timer,
 			clientStorageWriteInterval: timer,
+			// Each tick of the client's timer is one quiet check, and the
+			// maximum delay is a single tick of its own.
+			livePullDelay: timer,
+			livePullMaxDelay: timer,
 		})
 		// The app subscribes at startup. Until it connects, the pull this queues
 		// is a no-op, so the first real pull runs inside connect.
