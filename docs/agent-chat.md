@@ -2,7 +2,7 @@
 
 This guide builds a streaming agent chat on Tandem. There is no separate stream and no version field. The server appends each text delta to the reply as the model generates it, and every client subscribed to the thread sees the text grow through an ordinary `useTandemQuery` or `client.subscribe`.
 
-This works because [`TandemServer`](server.md#connect-clients) sends each commit's changes to the clients that can see them, and clients show them at once ([live records](sync.md#live-records)). An [`append`](server.md#append-text) sends only the new text. The server merges a burst of commits into one payload per client every 50 ms, and a client confirms what it was shown with one pull once the stream goes quiet, or every second at most. So the reply loop can commit every delta with no timer of its own.
+This works because [`TandemServer`](server.md#connect-clients) sends each commit's changes to the clients that can see them, and clients show them at once ([live records](sync.md#live-records)). An [`append`](server.md#append-text) sends only the new text. The server merges a burst of commits into one payload per client every 50 ms (`livePokeInterval` on the server), and a client confirms what it was shown with one pull once payloads stop for 200 ms, and at least once a second while they keep coming ([`livePullDelay` and `livePullMaxDelay`](sync.md#poke) on the client). So the reply loop can commit every delta with no timer of its own.
 
 ## Rules
 
@@ -89,8 +89,12 @@ function fromPartRecord({ text, part }: Part): UIPart {
 The server is an ordinary [`TandemServer`](server.md) with the relations. `model` is any AI SDK language model; tests can use `MockLanguageModelV4` from `ai/test`.
 
 ```ts
-import type { MutationOp } from "@tanishqkancharla/tandem-core"
-import { TandemServer, TandemServerJsonFileStorage } from "@tanishqkancharla/tandem-server"
+import type { MutationOp, RemoteApi } from "@tanishqkancharla/tandem-core"
+import {
+	TandemServer,
+	TandemServerJsonFileStorage,
+	type TandemServerTransaction,
+} from "@tanishqkancharla/tandem-server"
 
 const server = new TandemServer({
 	schema,
@@ -116,23 +120,32 @@ function isClientWrite(op: MutationOp<ChatSchema>) {
 
 const replies = new Set<Promise<void>>()
 
-async push(args) {
-	const mutations = args.mutations.map((mutation) => ({
-		...mutation,
-		ops: mutation.ops.filter(isClientWrite),
-	}))
-	const response = await server.push({ ...args, mutations })
-	if ("error" in response) return response
-	for (const { ops } of mutations) {
-		for (const op of ops) {
-			if (op.type !== "set" || op.collection !== "messages") continue
-			// Await these on shutdown.
-			const reply = streamReply(op.value)
-			replies.add(reply)
-			void reply.finally(() => replies.delete(reply))
+// What your HTTP or WebSocket handlers call for this client.
+const remote: RemoteApi<ChatSchema> = {
+	connect: (client) => server.connect(client),
+	pull: (args) => server.pull(args),
+	async push(args) {
+		const mutations = args.mutations.map((mutation) => ({
+			...mutation,
+			ops: mutation.ops.filter(isClientWrite),
+		}))
+		const response = await server.push({ ...args, mutations })
+		if ("error" in response) return response
+		for (const { ops } of mutations) {
+			for (const op of ops) {
+				if (op.type !== "set" || op.collection !== "messages") continue
+				const reply = streamReply(op.value)
+				replies.add(reply)
+				void reply.finally(() => replies.delete(reply))
+			}
 		}
-	}
-	return response
+		return response
+	},
+}
+
+async function shutdown() {
+	await Promise.all(replies)
+	await server.close()
 }
 ```
 
@@ -143,7 +156,7 @@ import { convertToModelMessages, readUIMessageStream, streamText, toUIMessageStr
 
 /** Writes what changed between two snapshots of a reply's parts. */
 function saveParts(
-	tx: ReturnType<typeof server.transact>,
+	tx: TandemServerTransaction<ChatSchema, typeof relations>,
 	reply: Message,
 	previous: UIPart[],
 	parts: UIPart[],
@@ -207,7 +220,6 @@ async function streamReply(userMessage: Message) {
 				.filter((message) => message.id !== id)
 				.map(({ id, role, parts }) => ({ id, role, parts: parts.map(fromPartRecord) })),
 		),
-		tools, // A tool's part changes in place as its call streams and resolves.
 		abortSignal: controller.signal,
 	})
 
@@ -232,6 +244,8 @@ async function streamReply(userMessage: Message) {
 }
 ```
 
+Pass `tools` to `streamText` as usual: a tool part is set again each time its call streams, resolves, or fails. `saveParts` never removes a part, because a `UIMessage` stream only adds parts or changes them in place.
+
 An abort ends the loop without throwing, so the signal decides between `"complete"` and `"stopped"`. A model error throws because of `terminateOnError`; snapshots still queued at that moment are dropped, so the saved text can end a few tokens before the error.
 
 Before serving requests, mark replies a crash left behind:
@@ -251,6 +265,16 @@ await server.commit(tx)
 Run one `TandemServer` process for the chat. Live records come from the process that committed, so a client whose pokes and pulls reach different processes falls back to a poke and a pull per batch.
 
 ## Client
+
+The client needs the same schema and relations as the server, because it reads parts through the `parts` relation:
+
+```ts
+import { TandemClient } from "@tanishqkancharla/tandem-core"
+
+const client = new TandemClient({ schema, relations, remote })
+```
+
+Here `remote` is the client's transport to the server's handlers ([Custom remotes](custom-remote.md)). In a single process, such as a test, it can be the server-side `remote` above.
 
 Send a message and its text part in one commit:
 
@@ -311,4 +335,4 @@ await client.commit(tx)
 - Every viewer of the thread sees the reply grow, not only the sender.
 - A text part is resent whole only when something other than its text changes, such as its `state` at the end.
 
-The end-to-end test in [`examples/agent-chat/apps/server/test/AgentChat.e2e.spec.ts`](../examples/agent-chat/apps/server/test/AgentChat.e2e.spec.ts) implements this guide with the AI SDK's mock model: two viewers with slow pulls and a long reply, a tool call, the stop button, a model error, send order, and startup cleanup.
+The end-to-end test in [`examples/agent-chat/apps/server/test/AgentChat.e2e.spec.ts`](../examples/agent-chat/apps/server/test/AgentChat.e2e.spec.ts) implements this guide with the AI SDK's mock model, and shows a test setup (a silent logger, `syncInterval: 0`, and a JSON transport): two viewers with slow pulls and a long reply, a tool call, the stop button, a model error, send order, and startup cleanup.
