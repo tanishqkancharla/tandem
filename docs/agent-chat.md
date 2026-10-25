@@ -25,6 +25,8 @@ type Message = {
 	role: "user" | "assistant"
 	parts: UIMessage["parts"]
 	status: "streaming" | "complete" | "stopped" | "error"
+	/** Orders the thread. A reply sorts right after its user message. */
+	createdAt: number
 	/** When the server last saved the message. */
 	updatedAt: number
 }
@@ -36,7 +38,7 @@ type ChatSchema = { messages: Message; runs: Run }
 
 const schema = defineSchema({
 	messages: collection<Message>({
-		fields: ["id", "threadId", "role", "parts", "status", "updatedAt"],
+		fields: ["id", "threadId", "role", "parts", "status", "createdAt", "updatedAt"],
 	}),
 	runs: collection<Run>({ fields: ["id", "stopRequested"] }),
 })
@@ -110,6 +112,8 @@ async function streamReply(userMessage: Message) {
 		role: "assistant",
 		parts: [],
 		status: "streaming",
+		// Follow the user message even if the sender's clock is off.
+		createdAt: userMessage.createdAt + 1,
 		updatedAt: Date.now(),
 	}
 	claimTx.set("messages", reply)
@@ -125,6 +129,7 @@ async function streamReply(userMessage: Message) {
 	const thread = await server.query({
 		collection: "messages",
 		where: { threadId: userMessage.threadId },
+		orderBy: { createdAt: "asc" },
 	})
 	const result = streamText({
 		model,
@@ -198,15 +203,20 @@ tx.set("messages", {
 	role: "user",
 	parts: [{ type: "text", text }],
 	status: "complete",
+	createdAt: Date.now(),
 	updatedAt: Date.now(),
 })
 await client.commit(tx)
 ```
 
-Read the thread with a plain query and branch on `status`. A `"streaming"` reply that the server has not saved for a while belongs to a crashed process:
+Read the thread with a plain query ordered by `createdAt`, and branch on `status`. Without `orderBy`, the order is unspecified. A `"streaming"` reply that the server has not saved for a while belongs to a crashed process:
 
 ```tsx
-const messages = useTandemQuery({ collection: "messages", where: { threadId } })
+const messages = useTandemQuery({
+	collection: "messages",
+	where: { threadId },
+	orderBy: { createdAt: "asc" },
+})
 
 const stale = (message: Message) =>
 	message.status === "streaming" && Date.now() - message.updatedAt > 15_000
