@@ -1,26 +1,36 @@
+import type { MutationOp } from "@tanishqkancharla/tandem-core"
+import type { DstCoverage } from "./DstCoverage.js"
 import type { DstArtifactSink } from "./DstReplay.js"
+import { recover, type DstRecoveryResult } from "./DstRecovery.js"
 import {
+	type DstClientName,
 	type DstFinalStates,
 	type DstIntent,
 	type DstPendingCall,
+	type DstSchema,
 	type DstTraceRecord,
 	type DstViolation,
 	DstWorld,
+	dstCollections,
 	isNetworkHandoff,
 	serverOwnedIds,
 } from "./DstWorld.js"
 import { SimPrng } from "./SimPrng.js"
+import type {
+	DstSubscriptionMode,
+	DstSubscriptionSpec,
+} from "./DstSubscriptions.js"
 
 export type {
 	DstClientName,
 	DstFaultKind,
 	DstFinalStates,
+	DstInventory,
 	DstSchema,
-	DstTodo,
 	DstTraceRecord,
 	DstViolation,
 } from "./DstWorld.js"
-export { DstFaultError, dstSchemaDefinition } from "./DstWorld.js"
+export { DstFaultError, dstRelations, dstSchemaDefinition } from "./DstWorld.js"
 
 export interface DstRunOptions {
 	seed: number
@@ -29,11 +39,15 @@ export interface DstRunOptions {
 	/** Chance per step that a running client crashes. */
 	crashRate?: number
 	clientCount?: number
-	/** Number of ids in each shared or client-owned pool. */
+	/** IDs per collection's shared/owned pool; member IDs for memberships. */
 	recordCount?: number
 	maxMutationsInFlight?: number
 	/** Chance of targeting the shared pool rather than the writer's own pool. */
 	sharedWriteRate?: number
+	initialSubscriptions?: DstSubscriptionMode
+	subscriptionRate?: number
+	connectivityRate?: number
+	recoveryEvents?: number
 }
 
 export function resolveRunOptions(
@@ -48,6 +62,10 @@ export function resolveRunOptions(
 		recordCount: options.recordCount ?? 3,
 		maxMutationsInFlight: options.maxMutationsInFlight ?? 4,
 		sharedWriteRate: options.sharedWriteRate ?? 1,
+		initialSubscriptions: options.initialSubscriptions ?? "full",
+		subscriptionRate: options.subscriptionRate ?? 0.08,
+		connectivityRate: options.connectivityRate ?? 0.02,
+		recoveryEvents: options.recoveryEvents ?? (options.clientCount ?? 2) * 500,
 	}
 }
 
@@ -60,6 +78,8 @@ export type DstRunResult = {
 	violation: DstViolation | undefined
 	maxPendingCalls: number
 	maxMutationsInFlight: number
+	recovery: DstRecoveryResult
+	coverage: DstCoverage
 }
 
 /** How often a step starts a mutation rather than advancing a pending call. */
@@ -96,7 +116,14 @@ export class DstSimulation {
 			await world.settle()
 		}
 
-		const outcome = await world.finish()
+		const outcome = await recover(world, {
+			startStep: steps,
+			eventBudget: this.options.recoveryEvents,
+			record: (event) => {
+				trace.push(event)
+				sink?.write({ kind: "event", ...event })
+			},
+		})
 		sink?.write({ kind: "outcome", stepsCompleted, ...outcome })
 		return {
 			seed,
@@ -114,13 +141,7 @@ export class DstSimulation {
 		pending: readonly DstPendingCall[],
 		step: number,
 	): DstIntent | undefined {
-		const {
-			faultRate,
-			crashRate,
-			maxMutationsInFlight,
-			recordCount,
-			sharedWriteRate,
-		} = this.options
+		const { faultRate, crashRate, maxMutationsInFlight } = this.options
 		// Faults model lost network messages, never a failed timer or disk write.
 		const droppable = pending.filter(isNetworkHandoff)
 		const { down, running, writers } = world
@@ -137,6 +158,61 @@ export class DstSimulation {
 		}
 		if (
 			writers.length > 0 &&
+			this.options.connectivityRate > 0 &&
+			rng.boolean(this.options.connectivityRate)
+		) {
+			const client = rng.pick(writers)
+			if (world.partitioned.includes(client) && rng.boolean(0.5))
+				return { type: "heal", client }
+			if (world.offline.includes(client)) return { type: "reconnect", client }
+			if (rng.boolean(0.3)) return { type: "disconnect", client }
+			return {
+				type: "partition",
+				client,
+				direction: rng.pick(["requests", "replies", "both"]),
+			}
+		}
+		if (
+			writers.length > 0 &&
+			this.options.subscriptionRate > 0 &&
+			rng.boolean(this.options.subscriptionRate)
+		) {
+			const client = rng.pick(writers)
+			const id = `view-${rng.int(0, 2)}`
+			if (world.subscriptions(client).has(id) && rng.boolean(0.3))
+				return { type: "unsubscribe", client, id }
+			const inventory = world.inventoryOf(client)
+			const projectId =
+				inventory.projects.length > 0
+					? rng.pick(inventory.projects).id
+					: `item-${rng.int(1, this.options.recordCount)}`
+			const taskId =
+				inventory.tasks.length > 0
+					? rng.pick(inventory.tasks).id
+					: `item-${rng.int(1, this.options.recordCount)}`
+			const spec: DstSubscriptionSpec = rng.pick([
+				{
+					kind: "tasks",
+					...(rng.boolean(0.5) ? { projectId } : {}),
+					...(rng.boolean(0.7) ? { done: rng.boolean(0.5) } : {}),
+					minPriority: rng.int(1, 4),
+					limit: rng.int(1, 4),
+					offset: rng.int(0, 2),
+					projection: rng.boolean(0.5),
+				},
+				{ kind: "taskComments", taskId, limit: rng.int(1, 3) },
+				{
+					kind: "projectTasks",
+					projectId,
+					limit: rng.int(1, 3),
+					commentLimit: rng.int(1, 3),
+				},
+				{ kind: "inventory", collection: "memberships" },
+			])
+			return { type: "subscribe", client, id, spec }
+		}
+		if (
+			writers.length > 0 &&
 			world.mutationsInFlight < maxMutationsInFlight &&
 			(pending.length === 0 || rng.boolean(mutateRate))
 		) {
@@ -145,12 +221,13 @@ export class DstSimulation {
 				// also ones clients share, so writers conflict.
 				const id = rng.boolean(0.7)
 					? rng.pick(serverOwnedIds)
-					: `item-${rng.int(1, recordCount)}`
+					: `item-${rng.int(1, this.options.recordCount)}`
 				if (rng.boolean(0.2)) return { type: "serverRemove", id }
 				return {
 					type: "serverSet",
 					item: {
 						id,
+						projectId: `item-${rng.int(1, this.options.recordCount)}`,
 						text: `Server ${id} (rev ${step})`,
 						done: rng.boolean(0.3),
 						priority: rng.int(1, 5),
@@ -158,46 +235,223 @@ export class DstSimulation {
 				}
 			}
 			const client = rng.pick(writers)
-			const prefix = rng.boolean(sharedWriteRate) ? "item-" : `${client}-item-`
-			const id = `${prefix}${rng.int(1, recordCount)}`
-			if (rng.boolean(0.2)) return { type: "remove", client, id }
-			const todos = world
-				.todosOf(client)
-				.filter((todo) => todo.id.startsWith(prefix))
-			if (todos.length > 0 && rng.boolean(0.5)) {
-				// Target the local view so updates carry intent, not mostly missing-record no-ops.
-				const todo = rng.pick(todos)
-				const text = `Updated ${todo.id} (rev ${step})`
-				const done = !todo.done
-				const priority = rng.int(1, 5)
-				return {
-					type: "update",
-					client,
-					id: todo.id,
-					payload: rng.pick([
-						{ text },
-						{ done },
-						{ priority },
-						{ text, done },
-						{ text, priority },
-						{ done, priority },
-					]),
-				}
-			}
-			return {
-				type: "set",
-				client,
-				item: {
-					id,
-					text: `Note ${id} (rev ${step})`,
-					done: rng.boolean(0.3),
-					priority: rng.int(1, 5),
-				},
-			}
+			const ctx = { rng, world, step, client }
+			const ops = this.chooseBatch(ctx)
+			return { type: "mutate", client, ops }
 		}
 		if (pending.length > 0) {
 			return { type: "advance", call: rng.pick(pending).name }
 		}
 		return undefined
+	}
+
+	private chooseBatch(ctx: {
+		rng: SimPrng
+		world: DstWorld
+		step: number
+		client: DstClientName
+	}): MutationOp<DstSchema>[] {
+		const { rng, step, client } = ctx
+		if (rng.boolean(0.5)) {
+			return Array.from({ length: rng.int(1, 4) }, () =>
+				this.chooseOperation(ctx),
+			)
+		}
+		const prefix = rng.boolean(this.options.sharedWriteRate)
+			? "item-"
+			: `${client}-item-`
+		const id = `${prefix}${rng.int(1, this.options.recordCount)}`
+		const task: DstSchema["tasks"] = {
+			id,
+			projectId: id,
+			text: `Task ${id} (rev ${step})`,
+			done: false,
+			priority: rng.int(1, 5),
+		}
+		if (rng.boolean(0.5))
+			return [
+				{
+					type: "set",
+					collection: "projects",
+					value: { id, name: `Project ${id} (rev ${step})` },
+				},
+				{ type: "set", collection: "tasks", value: task },
+				{
+					type: "set",
+					collection: "comments",
+					value: { id, taskId: id, body: `Comment ${id} (rev ${step})` },
+				},
+			]
+		const set: MutationOp<DstSchema> = {
+			type: "set",
+			collection: "tasks",
+			value: task,
+		}
+		const remove: MutationOp<DstSchema> = {
+			type: "remove",
+			collection: "tasks",
+			id,
+		}
+		return rng.pick([
+			[
+				set,
+				{ type: "update", collection: "tasks", id, payload: { done: true } },
+			],
+			[set, remove],
+			[remove, set],
+		])
+	}
+
+	private chooseOperation({
+		rng,
+		world,
+		step,
+		client,
+	}: {
+		rng: SimPrng
+		world: DstWorld
+		step: number
+		client: DstClientName
+	}): MutationOp<DstSchema> {
+		const { recordCount, sharedWriteRate } = this.options
+		const prefix = rng.boolean(sharedWriteRate) ? "item-" : `${client}-item-`
+		const id = `${prefix}${rng.int(1, recordCount)}`
+		const inventory = world.inventoryOf(client)
+		// Most references resolve locally; missing ones exercise dangling relations.
+		const reference = (collection: "projects" | "tasks", current?: string) => {
+			const parents = inventory[collection].filter(({ id }) => id !== current)
+			if (parents.length > 0 && rng.boolean(0.8)) return rng.pick(parents).id
+			const missing = `missing-${prefix}${rng.int(1, recordCount)}`
+			return missing === current ? `${missing}-other` : missing
+		}
+		const collection = rng.pick(dstCollections)
+		const pickExisting = <Row extends DstSchema[keyof DstSchema]>(
+			records: readonly Row[],
+		) => {
+			const candidates = records.filter(({ id }) =>
+				(typeof id === "string" ? id : id[1]).startsWith(prefix),
+			)
+			return candidates.length > 0 ? rng.pick(candidates) : undefined
+		}
+		const remove = rng.boolean(0.2)
+		const update = rng.boolean(0.5)
+		switch (collection) {
+			case "projects": {
+				const project = pickExisting(inventory.projects)
+				if (remove)
+					return {
+						type: "remove",
+						collection,
+						id: project && rng.boolean(0.8) ? project.id : id,
+					}
+				if (update && project)
+					return {
+						type: "update",
+						collection,
+						id: project.id,
+						payload: { name: `Project ${project.id} (rev ${step})` },
+					}
+				return {
+					type: "set",
+					collection,
+					value: { id, name: `Project ${id} (rev ${step})` },
+				}
+			}
+			case "tasks": {
+				const task = pickExisting(inventory.tasks)
+				if (remove)
+					return {
+						type: "remove",
+						collection,
+						id: task && rng.boolean(0.8) ? task.id : id,
+					}
+				if (update && task) {
+					const text = `Updated ${task.id} (rev ${step})`
+					const done = !task.done
+					const priority = rng.int(1, 5)
+					return {
+						type: "update",
+						collection,
+						id: task.id,
+						payload: rng.pick([
+							{ text },
+							{ done },
+							{ priority },
+							{ text, done },
+							{ text, priority },
+							{ done, priority },
+							{ projectId: reference("projects", task.projectId) },
+						]),
+					}
+				}
+				return {
+					type: "set",
+					collection,
+					value: {
+						id,
+						projectId: reference("projects"),
+						text: `Note ${id} (rev ${step})`,
+						done: rng.boolean(0.3),
+						priority: rng.int(1, 5),
+					},
+				}
+			}
+			case "comments": {
+				const comment = pickExisting(inventory.comments)
+				if (remove)
+					return {
+						type: "remove",
+						collection,
+						id: comment && rng.boolean(0.8) ? comment.id : id,
+					}
+				if (update && comment)
+					return {
+						type: "update",
+						collection,
+						id: comment.id,
+						payload: rng.boolean(0.5)
+							? { body: `Comment ${comment.id} (rev ${step})` }
+							: { taskId: reference("tasks", comment.taskId) },
+					}
+				return {
+					type: "set",
+					collection,
+					value: {
+						id,
+						taskId: reference("tasks"),
+						body: `Comment ${id} (rev ${step})`,
+					},
+				}
+			}
+			case "memberships": {
+				const membership = pickExisting(inventory.memberships)
+				if (remove)
+					return {
+						type: "remove",
+						collection,
+						id:
+							membership && rng.boolean(0.8)
+								? membership.id
+								: [reference("projects"), id],
+					}
+				const role = rng.pick(
+					["reader", "editor", "owner"].filter(
+						(role) => role !== membership?.role,
+					),
+				)
+				if (update && membership)
+					return {
+						type: "update",
+						collection,
+						id: membership.id,
+						payload: { role },
+					}
+				return {
+					type: "set",
+					collection,
+					value: { id: [reference("projects"), id], role },
+				}
+			}
+		}
 	}
 }

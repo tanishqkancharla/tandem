@@ -1,28 +1,52 @@
 # Known failures
 
-One recorded failure remains here. Fixed recordings and their fixture-specific tests are removed; ordinary public-API tests still cover delivery, durable recovery, and convergence. Each JSONL artifact preserves resolved run options, scheduled events, and the original outcome. Random runs execute every requested step before checking convergence at `quiescence`.
+These recordings retain unresolved Tandem behavior. The sole-offset recording reproduces on the current stack; the crash-removal recording is historical and its schedule no longer applies, as described below. Fixed recordings and fixture-specific tests are removed; ordinary public-API delivery, persistence, and recovery tests remain. A passing known-defect detection test does not mean Tandem satisfies the contract.
 
-Settlement disables faults, drains calls, restarts crashed clients from storage, reconnects every client to resend retained writes, drains again, and pulls every client. All clients subscribe to the entire `todos` collection, so each final view must equal the server's state.
+Each JSONL artifact preserves resolved configuration, scheduled events, explicit recovery checkpoints, and final inventories. Replay checks event boundaries, checkpoint observations, and the complete final outcome. Boundary divergence requires investigation; it does not establish that a defect is fixed. A seed alone cannot reproduce an older generator's schedule.
 
-`dst.spec.ts` replays known failures without random choices and asserts their recorded violation until fixed. Boundary divergence means the recording needs investigation before it can test the bug again; it does not establish that the underlying issue is fixed.
+## What DST checks
 
-The server is authoritative. DST does not require every historical mutation to reach it, including writes lost from memory on a crash. It still rejects ghost local records absent from the server after final pulls. Protocol tests separately cover mutation ordering and deduplication.
+The server is authoritative. At healthy checkpoints, DST reads its records through public transaction `list()` calls and calculates the requested views with direct filtering, ordering, pagination, projection, and joins. It compares both fresh local queries and retained subscription callbacks. It does not predict mutation ordering, conflict winners, or rebase in a reference replica.
 
-## Unresolved: a removed record remains visible after crashes
+Random runs first heal transport, restart crashed clients, reconnect explicitly offline clients, and fairly deliver healthy work within `--recovery-events`. This ordinary stage does not force a pull on connected clients. A separate repair stage reconnects everyone and explicitly pulls. Ordinary mismatches and budget exhaustion remain failures even when repair succeeds. Only active subscriptions are checked; scoped readers receive no hidden full-inventory subscriptions.
 
-`dst/known-failures/crash-removal.jsonl` records seed 18 with ten clients, five IDs per client-owned pool, ten outstanding mutations, a 0.02 crash rate, and no network drops. After 1,000 steps and healthy settlement, client4 still sees `client4-item-1 (rev 176)`, which is absent from the server and the other clients. Replay reproduces the exact violation without boundary divergence. The root cause is not yet isolated.
+Both stored recordings have explicit repair checkpoints but no ordinary stage (`ordinary: "notRun"`). They make no ordinary-recovery claim.
 
-The recording still reproduces on this checkout. An isolated check against the newer fetched `origin/main` diverges at step 435 because connection changes alter the pending handoffs; a freshly generated seed 18 converges there. Keep the current reproduction until those changes are integrated and the original scenario can be reassessed, rather than treating a different schedule as proof of a fix.
+```tsx
+// Pseudocode: reproducibility is distinct from correctness.
+const result = await replay(artifact)
+expect(result.divergence).toBeUndefined()
+expect(result.violation).toEqual(artifact.outcome.violation)
+```
+
+Server-relative consistency cannot detect every lost write if every replica loses it. Focused tests separately verify uncontested durable writes, crash cutpoints, transaction ordering, and local batch observations. A volatile edit may disappear in a crash before durable storage commits; an edit that crossed that boundary must survive. Do not infer durability from optimistic visibility.
+
+## Historical, unresolved: a removed record remains visible after crashes
+
+`crash-removal.jsonl` preserves phase 1's seed 18 schedule: ten clients, five IDs per client-owned pool, ten outstanding mutations, a 0.02 crash rate, and no network drops. All 1,000 workload events retain their original steps and handoff boundaries. The schema translation changes todos to tasks with `projectId: "missing-project"`; each original operation is wrapped as a one-operation batch.
+
+The recorded outcome has client4 seeing task `client4-item-1`, text `Note client4-item-1 (rev 176)`, absent from the server and other clients after forced repair. The root cause was not isolated.
 
 ```sh
 pnpm dst:run --replay dst/known-failures/crash-removal.jsonl
 ```
 
-The phase 1 sweep covered seeds 1–20 across 1/2/3/5/10 clients in healthy, dropped-message, crash-only, and combined profiles: 399 runs converged and this one failed. `dst.spec.ts` preserves the recorded failure until a verified fix makes the recording obsolete; a passing replay test is not a claim that this consistency bug is fixed.
+With upstream live-poke payloads integrated, replay stops at step 51 because `client10.commit#3` is not held at the recorded boundary. The original 1,000 workload events and expected ghost remain intact for investigation; the test verifies that replay reports the incompatible schedule, not successful recovery. This is no longer an executable reproduction of the ghost on the current stack. Neither a different event schedule nor replay divergence proves the defect is fixed.
 
-```tsx
-// Pseudocode: a known-failure test checks reproducibility, not convergence.
-const replayed = await replay(artifact)
-expect(replayed.divergence).toBeUndefined()
-expect(replayed.violation).toEqual(artifact.outcome.violation)
+## Unresolved: a sole offset subscription returns an empty page
+
+`sole-offset.jsonl` contains two workload events: create three tasks, then install the reader's sole task subscription. Client2 requests offset 1, limit 1, ordered by descending priority and ascending ID, projected to ID/text. The expected result is `[{ id: "b", text: "Second" }]`; both the local query and latest callback return `[]` after forced repair.
+
+```sh
+pnpm dst:run --replay dst/known-failures/sole-offset.jsonl
 ```
+
+The reader caches the requested server row, but local pagination applies the offset again. An overlapping full subscription can mask this behavior. Keep the sole-reader subscription and nonempty expected page intact when investigating it.
+
+## Ordinary recovery limitation: a lost poke can leave no scheduled pull
+
+`recovery.spec.ts` drops a server poke, heals transport, and verifies that ordinary recovery reports a view mismatch while forced repair succeeds. Healing must not silently schedule an application pull. The configured sync timer debounces queued work; it is not periodic polling and does not by itself reacquire a lost notification.
+
+The merged generator also exposes a removal mismatch at seed 3, 300 steps, five clients, and one outstanding mutation. Client1 retains comment `item-3` in ordinary recovery although the server no longer has it; explicit repair succeeds. A literal detection test preserves that mismatch and verifies exact trace replay. This is separate from the historical crash ghost and does not diagnose its cause. Both current ordinary-recovery scenarios remain explicit detection tests without a third stored artifact.
+
+Randomized sweeps do not exempt equivalent known failures. CI passes `--fail-on-violation`, fails on incomplete recovery or missing required coverage, and uploads failing artifacts with replay commands.

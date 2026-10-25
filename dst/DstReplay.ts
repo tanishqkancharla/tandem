@@ -1,5 +1,7 @@
 import { appendFileSync, writeFileSync } from "node:fs"
 import type { DstRunOptions } from "./DstSimulation.js"
+import { recoveryOutcome, type DstRecoveryResult } from "./DstRecovery.js"
+import { isDeepStrictEqual } from "node:util"
 import {
 	type DstIntent,
 	type DstOutcome,
@@ -15,7 +17,11 @@ import {
 export type DstArtifactLine =
 	| { kind: "header"; format: 1; options: Required<DstRunOptions> }
 	| ({ kind: "event" } & DstTraceRecord)
-	| ({ kind: "outcome"; stepsCompleted: number } & DstOutcome)
+	| ({
+			kind: "outcome"
+			stepsCompleted: number
+			recovery?: DstRecoveryResult
+	  } & DstOutcome)
 
 export type DstArtifactSink = { write(line: DstArtifactLine): void }
 
@@ -23,7 +29,10 @@ export type DstArtifact = {
 	options: Required<DstRunOptions>
 	trace: DstTraceRecord[]
 	/** Missing when the run stopped before writing it. */
-	outcome?: { stepsCompleted: number } & DstOutcome
+	outcome?: {
+		stepsCompleted: number
+		recovery?: DstRecoveryResult
+	} & DstOutcome
 }
 
 /** Keeps lines in memory, for tests. */
@@ -79,6 +88,7 @@ export type DstReplayResult = {
 	stepsCompleted: number
 	violation: DstViolation | undefined
 	divergence: DstDivergence | undefined
+	recovery?: DstRecoveryResult
 }
 
 /**
@@ -89,10 +99,17 @@ export type DstReplayResult = {
 export async function replay(artifact: DstArtifact): Promise<DstReplayResult> {
 	await using world = await DstWorld.start(artifact.options)
 	const events = new Map(artifact.trace.map((record) => [record.step, record]))
-	const steps =
-		artifact.outcome?.stepsCompleted ?? (artifact.trace.at(-1)?.step ?? -1) + 1
+	const steps = Math.max(
+		artifact.outcome?.stepsCompleted ?? 0,
+		(artifact.trace.at(-1)?.step ?? -1) + 1,
+	)
+	let ordinary: DstOutcome | undefined
+	let repaired: DstOutcome | undefined
+	let eventsDelivered = 0
 
-	const stepsCompleted = steps
+	const stepsCompleted =
+		artifact.outcome?.stepsCompleted ??
+		Math.min(artifact.options.steps, (artifact.trace.at(-1)?.step ?? -1) + 1)
 	for (let step = 0; step < steps; step++) {
 		world.pending()
 		const expected = events.get(step)
@@ -107,7 +124,8 @@ export async function replay(artifact: DstArtifact): Promise<DstReplayResult> {
 				}
 			}
 			const actual = await world.apply(step, intentOf(expected))
-			if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+			// JSONL omits undefined object fields; key insertion order is not semantic.
+			if (!isDeepStrictEqual(JSON.parse(JSON.stringify(actual)), expected)) {
 				await world.drain()
 				return {
 					stepsCompleted: step,
@@ -120,12 +138,48 @@ export async function replay(artifact: DstArtifact): Promise<DstReplayResult> {
 					},
 				}
 			}
+			if (actual.type === "checkpoint") ordinary = actual.outcome
+			if (actual.type === "repair") repaired = actual.outcome
+			if (
+				step >= artifact.options.steps &&
+				(actual.type === "advance" || actual.type === "drop")
+			)
+				eventsDelivered++
 		}
 		await world.settle()
 	}
 
-	const outcome = await world.finish()
-	return { stepsCompleted, violation: outcome.violation, divergence: undefined }
+	if (!repaired) await world.drain()
+	if (artifact.outcome && !repaired)
+		throw new Error("Completed DST artifact has no repair checkpoint")
+	const outcome = repaired
+		? recoveryOutcome(ordinary, repaired, eventsDelivered)
+		: undefined
+	if (
+		artifact.outcome &&
+		outcome &&
+		!isDeepStrictEqual(
+			JSON.parse(JSON.stringify({ stepsCompleted, ...outcome })),
+			artifact.outcome,
+		)
+	) {
+		const expected = artifact.trace.at(-1)!
+		return {
+			stepsCompleted,
+			violation: outcome.violation,
+			divergence: {
+				step: expected.step,
+				expected,
+				reason: "the final outcome differs from the recording",
+			},
+		}
+	}
+	return {
+		stepsCompleted,
+		violation: outcome?.violation,
+		divergence: undefined,
+		recovery: outcome?.recovery,
+	}
 }
 
 function cannotApply(
@@ -138,9 +192,12 @@ function cannotApply(
 			return world.hasPending(record.call)
 				? undefined
 				: `${record.call} is not held at a boundary`
-		case "set":
-		case "update":
-		case "remove":
+		case "mutate":
+		case "subscribe":
+		case "unsubscribe":
+		case "disconnect":
+		case "reconnect":
+		case "partition":
 			return world.writers.includes(record.client)
 				? undefined
 				: `${record.client} cannot take writes`
@@ -155,31 +212,45 @@ function cannotApply(
 			return world.down.includes(record.client)
 				? undefined
 				: `${record.client} is not down`
+		case "checkpoint":
+		case "repair":
+		case "heal":
+			return undefined
 	}
 }
 
 function intentOf(record: DstTraceRecord): DstIntent {
 	switch (record.type) {
-		case "set":
-			return { type: "set", client: record.client, item: record.item }
-		case "update":
-			return {
-				type: "update",
-				client: record.client,
-				id: record.id,
-				payload: record.payload,
-			}
-		case "remove":
-			return { type: "remove", client: record.client, id: record.id }
 		case "serverSet":
 			return { type: "serverSet", item: record.item }
 		case "serverRemove":
 			return { type: "serverRemove", id: record.id }
+		case "mutate": {
+			const { step: _step, mutationId: _mutationId, ...intent } = record
+			return intent
+		}
+		case "subscribe":
+		case "unsubscribe": {
+			const { step: _step, ...intent } = record
+			return intent
+		}
 		case "advance":
 		case "drop":
 			return { type: record.type, call: record.call }
 		case "crash":
 		case "restart":
+		case "disconnect":
+		case "reconnect":
+		case "heal":
 			return { type: record.type, client: record.client }
+		case "partition":
+			return {
+				type: record.type,
+				client: record.client,
+				direction: record.direction,
+			}
+		case "checkpoint":
+		case "repair":
+			return { type: record.type }
 	}
 }

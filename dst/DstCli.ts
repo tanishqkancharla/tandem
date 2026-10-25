@@ -1,12 +1,18 @@
-import { mkdirSync, readFileSync, rmSync } from "node:fs"
-import { join } from "node:path"
+import fs from "node:fs"
+import path from "node:path"
+import util from "node:util"
 import { matchBy } from "@tanishqkancharla/tandem-core"
 import * as errore from "errore"
+import {
+	aggregateCoverage,
+	type DstCoverage,
+	missingCoverage,
+} from "./DstCoverage.js"
+import type { DstRecoveryResult } from "./DstRecovery.js"
 import { jsonlFileSink, parseArtifact, replay } from "./DstReplay.js"
 import {
 	type DstRunOptions,
 	DstSimulation,
-	type DstTodo,
 	type DstViolation,
 	resolveRunOptions,
 } from "./DstSimulation.js"
@@ -17,83 +23,128 @@ export class DstRunError extends errore.createTaggedError({
 }) {}
 
 export type DstSweepRun =
-	| { seed: number; outcome: "ok" }
-	| {
+	| ({
 			seed: number
-			outcome: "violation"
-			violation: DstViolation
-			artifact: string
-	  }
-	/** The run's artifact did not replay to the same violation: the harness is not deterministic. */
-	| {
-			seed: number
-			outcome: "nondeterministic"
-			artifact: string
-			detail: string
-	  }
+			coverage: DstCoverage
+			recovery: DstRecoveryResult
+	  } & (
+			| { outcome: "ok" }
+			| {
+					outcome: "violation"
+					violation: DstViolation
+					artifact: string
+			  }
+			| {
+					outcome: "budgetExceeded"
+					artifact: string
+					violation?: DstViolation
+			  }
+			/** The recorded failure did not reproduce. */
+			| { outcome: "nondeterministic"; artifact: string; detail: string }
+	  ))
 	/** The run threw: a harness bug, not a sync bug. */
 	| { seed: number; outcome: "error"; artifact: string; detail: string }
 
 /**
  * Runs `runs` consecutive seeds starting at `seed`. Each run streams its
  * artifact into `outDir`; artifacts are kept only for runs that fail, and every
- * violating run is replayed from its artifact to confirm it reproduces.
+ * failing run (including budget exhaustion and harness errors) is replayed.
  */
 export async function sweep({
 	runs,
 	outDir,
 	...options
 }: DstRunOptions & { runs: number; outDir: string }): Promise<DstSweepRun[]> {
-	mkdirSync(outDir, { recursive: true })
+	fs.mkdirSync(outDir, { recursive: true })
 	const results: DstSweepRun[] = []
 	for (let index = 0; index < runs; index++) {
 		const seed = options.seed + index
-		const artifact = join(outDir, `seed-${seed}.jsonl`)
+		const artifact = path.join(outDir, `seed-${seed}.jsonl`)
 		const result = await new DstSimulation({ ...options, seed })
 			.execute(jsonlFileSink(artifact))
 			.catch((cause) => new DstRunError({ seed: String(seed), cause }))
+		if (
+			!(result instanceof Error) &&
+			!result.violation &&
+			result.recovery.ordinary !== "budgetExceeded"
+		) {
+			fs.rmSync(artifact)
+			results.push({
+				seed,
+				outcome: "ok",
+				coverage: result.coverage,
+				recovery: result.recovery,
+			})
+			continue
+		}
+		const recorded = errore.try({
+			try: () => parseArtifact(fs.readFileSync(artifact, "utf8")),
+			catch: (cause) => new DstRunError({ seed: String(seed), cause }),
+		})
+		const replayed =
+			recorded instanceof Error
+				? recorded
+				: await replay(recorded).catch(
+						(cause) => new DstRunError({ seed: String(seed), cause }),
+					)
 		if (result instanceof Error) {
 			results.push({
 				seed,
 				outcome: "error",
 				artifact,
-				detail: String(result.cause),
+				detail: `${String(result.cause)}; replay: ${
+					replayed instanceof Error
+						? String(replayed.cause)
+						: replayed.divergence
+							? `diverged at step ${replayed.divergence.step}: ${replayed.divergence.reason}`
+							: "recorded prefix replayed"
+				}`,
 			})
 			continue
 		}
-		if (!result.violation) {
-			rmSync(artifact)
-			results.push({ seed, outcome: "ok" })
-			continue
+		const completed = {
+			seed,
+			coverage: result.coverage,
+			recovery: result.recovery,
 		}
-		const replayed = await replay(parseArtifact(readFileSync(artifact, "utf8")))
 		if (
+			replayed instanceof Error ||
 			replayed.divergence ||
-			JSON.stringify(replayed.violation) !== JSON.stringify(result.violation)
+			!util.isDeepStrictEqual(replayed.violation, result.violation) ||
+			!util.isDeepStrictEqual(replayed.recovery, result.recovery)
 		) {
 			results.push({
-				seed,
+				...completed,
 				outcome: "nondeterministic",
 				artifact,
-				detail: replayed.divergence
-					? `diverged at step ${replayed.divergence.step}: ${replayed.divergence.reason}`
-					: "replayed to a different violation",
+				detail:
+					replayed instanceof Error
+						? `replay threw: ${String(replayed.cause)}`
+						: replayed.divergence
+							? `diverged at step ${replayed.divergence.step}: ${replayed.divergence.reason}`
+							: "replayed to a different violation or recovery outcome",
 			})
 			continue
 		}
-		results.push({
-			seed,
-			outcome: "violation",
-			violation: result.violation,
-			artifact,
-		})
+		if (result.recovery.ordinary === "budgetExceeded") {
+			results.push({
+				...completed,
+				outcome: "budgetExceeded",
+				violation: result.violation,
+				artifact,
+			})
+			continue
+		}
+		if (result.violation) {
+			results.push({
+				...completed,
+				outcome: "violation",
+				violation: result.violation,
+				artifact,
+			})
+		}
 	}
 	return results
-}
-
-function todos(list: readonly DstTodo[]): string {
-	if (list.length === 0) return "(none)"
-	return list.map(({ text }) => text).join(", ")
 }
 
 export function describeViolation(violation: DstViolation): string {
@@ -105,40 +156,59 @@ export function describeViolation(violation: DstViolation): string {
 		].join("\n")
 	}
 	return [
-		`${violation.client} differs from the server after settlement`,
-		`  expected: ${todos(violation.expected)}`,
-		`  actual:   ${todos(violation.actual)}`,
+		`${violation.client}/${violation.subscriptionId}: ${violation.kind} at ${violation.checkpoint}`,
+		`  query: ${JSON.stringify(violation.spec)}`,
+		`  expected: ${JSON.stringify(violation.expected)}`,
+		`  actual:   ${JSON.stringify(violation.actual)}`,
 	].join("\n")
 }
 
 /** A Markdown summary of a sweep, for a CI job summary. */
 export function sweepSummary(
-	options: DstRunOptions & { runs: number },
+	options: DstRunOptions & {
+		runs: number
+		requireCoverage?: Parameters<typeof missingCoverage>[1]
+	},
 	results: readonly DstSweepRun[],
 ): string {
 	const workload = resolveRunOptions(options)
 	const count = (outcome: DstSweepRun["outcome"]) =>
 		results.filter((result) => result.outcome === outcome).length
-	const failures = results.filter(({ outcome }) => outcome !== "ok")
+	const failures = results.filter((result) => result.outcome !== "ok")
+	const completed = results.filter((result) => result.outcome !== "error")
+	const coverage = aggregateCoverage(completed.map((result) => result.coverage))
+	const missing = missingCoverage(coverage, options.requireCoverage ?? "all")
 	return [
 		`### DST sweep: seeds ${options.seed}–${options.seed + options.runs - 1}`,
 		"",
 		`${options.steps} steps, fault rate ${options.faultRate ?? 0}, crash rate ${options.crashRate ?? 0}.`,
 		`${workload.clientCount} clients, ${workload.recordCount} ids per pool, max ${workload.maxMutationsInFlight} mutations in flight, shared write rate ${workload.sharedWriteRate}.`,
+		`Initial subscriptions ${workload.initialSubscriptions}, subscription rate ${workload.subscriptionRate}, connectivity rate ${workload.connectivityRate}, recovery budget ${workload.recoveryEvents} events.`,
 		"",
-		`| ok | violation | nondeterministic | error |`,
-		`|---|---|---|---|`,
-		`| ${count("ok")} | ${count("violation")} | ${count("nondeterministic")} | ${count("error")} |`,
+		`| ok | violation | budgetExceeded | nondeterministic | error |`,
+		`|---|---|---|---|---|`,
+		`| ${count("ok")} | ${count("violation")} | ${count("budgetExceeded")} | ${count("nondeterministic")} | ${count("error")} |`,
+		"",
+		"Recovery (completed runs):",
+		`- ordinary: ${["passed", "budgetExceeded", "viewMismatch", "notRun"].map((status) => `${status} ${completed.filter(({ recovery }) => recovery.ordinary === status).length}`).join(", ")}`,
+		`- repaired: ${["passed", "viewMismatch"].map((status) => `${status} ${completed.filter(({ recovery }) => recovery.repaired === status).length}`).join(", ")}`,
+		"",
+		"Aggregate executed coverage:",
+		"```json",
+		JSON.stringify(coverage, null, 2),
+		"```",
+		`Missing ${options.requireCoverage ?? "all"} coverage${options.requireCoverage ? " (required)" : " (informational)"}: ${missing.length > 0 ? missing.join(", ") : "none"}.`,
 		"",
 		...failures.map((failure) => {
 			const detail = matchBy(failure, "outcome", {
-				ok: () => "",
 				violation: ({ violation }) =>
 					describeViolation(violation).split("\n")[0],
+				budgetExceeded: ({ recovery, violation }) =>
+					`ordinary recovery budget exhausted after ${recovery.eventsDelivered} events; repaired ${recovery.repaired}${violation ? `; ${describeViolation(violation).split("\n")[0]}` : ""}`,
 				nondeterministic: ({ detail }) => detail,
 				error: ({ detail }) => detail,
 			})
-			return `- seed ${failure.seed} (${failure.outcome}): ${detail}`
+			return `- seed ${failure.seed} (${failure.outcome}): ${detail}\n  - artifact: ${failure.artifact}\n  - replay: \`pnpm dst:run --replay '${failure.artifact.replaceAll("'", "'\\''")}'\``
 		}),
 		"",
 	].join("\n")
