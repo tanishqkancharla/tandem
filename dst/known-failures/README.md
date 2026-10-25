@@ -1,46 +1,58 @@
 # Known failures
 
-No recorded failures remain here. The fixed cases below live in `dst/regressions/`. Each JSONL artifact preserves run options, scheduled events, and the original outcome. Random runs execute every requested step before checking convergence at `quiescence`.
+These recordings retain unresolved Tandem behavior. The sole-offset recording reproduces on the current stack; the crash-removal recording is historical and its schedule no longer applies, as described below. Fixed recordings and fixture-specific tests are removed; ordinary public-API delivery, persistence, and recovery tests remain. A passing known-defect detection test does not mean Tandem satisfies the contract.
 
-Settlement disables faults, drains calls, restarts crashed clients from storage, reconnects every client to resend retained writes, drains again, and pulls every client. All clients subscribe to the entire `todos` collection, so each final view must equal the server's state.
+Each JSONL artifact preserves resolved configuration, scheduled events, explicit recovery checkpoints, and final inventories. Replay checks event boundaries, checkpoint observations, and the complete final outcome. Boundary divergence requires investigation; it does not establish that a defect is fixed. A seed alone cannot reproduce an older generator's schedule.
 
-`dst.spec.ts` replays regression artifacts without random choices and requires convergence. New known failures should assert their recorded violation until fixed, then move to the successful regressions. Boundary divergence instead means the recording needs investigation before it can test the bug again.
+## What DST checks
 
-The server is authoritative. DST does not require every historical mutation to reach it, including writes lost from memory on a crash. It still rejects ghost local records absent from the server after final pulls. Protocol tests separately cover mutation ordering and deduplication.
+The server is authoritative. At healthy checkpoints, DST reads its records through public transaction `list()` calls and calculates the requested views with direct filtering, ordering, pagination, projection, and joins. It compares both fresh local queries and retained subscription callbacks. It does not predict mutation ordering, conflict winners, or rebase in a reference replica.
 
-## Fixed: a lost push request
+Random runs first heal transport, restart crashed clients, reconnect explicitly offline clients, and fairly deliver healthy work within `--recovery-events`. This ordinary stage does not force a pull on connected clients. A separate repair stage reconnects everyone and explicitly pulls. Ordinary mismatches and budget exhaustion remain failures even when repair succeeds. Only active subscriptions are checked; scoped readers receive no hidden full-inventory subscriptions.
 
-`dst/regressions/lost-push.jsonl` preserves the original six-event reproduction: client1 writes `item-3`, then its push request is dropped. The sync engine now retains that mutation. Settlement reconnects the client, delivers the write, and pulls both clients into agreement with the server. No automatic retry or persistence is required for this case.
+Both stored recordings have explicit repair checkpoints but no ordinary stage (`ordinary: "notRun"`). They make no ordinary-recovery claim.
 
-## Fixed: a ghost record survives restart
-
-`dst/regressions/crash-ghost.jsonl`, recorded with `{ seed: 13, steps: 15, crashRate: 0.1 }`, preserves the original failing trace and outcome. It now replays without a convergence violation: the first pull without a cookie resets the cached view to the server's subscribed records, removing `item-2 (rev 5)`.
-
-- step 5: client2 writes `item-2`, and the write reaches its storage; the push does not reach the server.
-- step 12: client2 crashes.
-- At quiescence, the run restarts client2 from storage with a new client id.
-
-```text
-client storage persists:  materialized tuples only
-not persisted:            pending mutations, speculative mutations, client id, cookie
-restart:                  item-2 loads as if it were confirmed data, and no mutation
-                          exists to push it, so it never reaches the server
+```tsx
+// Pseudocode: reproducibility is distinct from correctness.
+const result = await replay(artifact)
+expect(result.divergence).toBeUndefined()
+expect(result.violation).toEqual(artifact.outcome.violation)
 ```
 
-The failure was not that the write was lost. The failure was that final pulls left the client's view different from the server. The reset removes the ghost record without introducing a durable outbox. Pending writes still in memory are replayed over the reset snapshot.
+Server-relative consistency cannot detect every lost write if every replica loses it. Focused tests separately verify uncontested durable writes, crash cutpoints, transaction ordering, and local batch observations. A volatile edit may disappear in a crash before durable storage commits; an edit that crossed that boundary must survive. Do not infer durability from optimistic visibility.
 
-## Fixed: a lost pull response loses removals
+## Historical, unresolved: a removed record remains visible after crashes
 
-The server retains the latest generated view and its opaque cookie per client. Missing or mismatched cookies receive an authoritative reset, so retrying after a lost removal response cannot silently omit the deletion. Subscription changes receive a new cookie even without a database revision change. `dst.spec.ts` checks fault seed 10 and crash/fault seed 7 at 300 steps against the server after settlement.
+`crash-removal.jsonl` preserves phase 1's seed 18 schedule: ten clients, five IDs per client-owned pool, ten outstanding mutations, a 0.02 crash rate, and no network drops. All 1,000 workload events retain their original steps and handoff boundaries. The schema translation changes todos to tasks with `projectId: "missing-project"`; each original operation is wrapped as a one-operation batch.
 
-## Shared tabs
+The recorded outcome has client4 seeing task `client4-item-1`, text `Note client4-item-1 (rev 176)`, absent from the server and other clients after forced repair. The root cause was not isolated.
 
-`--tabs N` adds a group of browser tabs that share one client storage through an elected leader, beside the two clients (`dst/DstTabs.ts`). Tabs take the same writes as the clients. Their leader's server calls are Gatekeeper calls, so they are delayed and lost like the clients' calls. Channel messages, the leader's storage commits and timers, and pokes to the leader are held tab steps. Crashes end tabs, and their undelivered messages are lost with them. As with a crashed client, a server request a crashed tab already sent still arrives, but its reply is lost and the tab sends nothing more. Faults also fail leader saves of forwarded writes.
+```sh
+pnpm dst:run --replay dst/known-failures/crash-removal.jsonl
+```
 
-Besides convergence, tab runs check that:
+With upstream live-poke payloads integrated, replay stops at step 51 because `client10.commit#3` is not held at the recorded boundary. The original 1,000 workload events and expected ghost remain intact for investigation; the test verifies that replay reports the incompatible schedule, not successful recovery. This is no longer an executable reproduction of the ghost on the current stack. Neither a different event schedule nor replay divergence proves the defect is fixed.
 
-- a completed tab write reached the server, unless the leader lost its connection to a failed save or every tab crashed;
-- no tab write reached the server in two leader mutations;
-- completed writes and writes of open tabs are on the server after settlement.
+## Unresolved: a sole offset subscription returns an empty page
 
-`dst.spec.ts` asserts a sweep reaches leader takeovers with pending commits, lost replies to accepted pushes, and failed saves, and drives those situations directly in targeted tests.
+`sole-offset.jsonl` contains two workload events: create three tasks, then install the reader's sole task subscription. Client2 requests offset 1, limit 1, ordered by descending priority and ascending ID, projected to ID/text. The expected result is `[{ id: "b", text: "Second" }]`; both the local query and latest callback return `[]` after forced repair.
+
+```sh
+pnpm dst:run --replay dst/known-failures/sole-offset.jsonl
+```
+
+The reader caches the requested server row, but local pagination applies the offset again. An overlapping full subscription can mask this behavior. Keep the sole-reader subscription and nonempty expected page intact when investigating it.
+
+## Ordinary recovery limitation: a lost poke can leave no scheduled pull
+
+`recovery.spec.ts` drops a server poke, heals transport, and verifies that ordinary recovery reports a view mismatch while forced repair succeeds. Healing must not silently schedule an application pull. The configured sync timer debounces queued work; it is not periodic polling and does not by itself reacquire a lost notification.
+
+The merged generator also exposes a stale project view at seed 6, 300 steps, five clients, and one outstanding mutation. Client4 retains project `item-1` at revision 187 in ordinary recovery while the server has revision 220; explicit repair succeeds. The prior seed 3 literal became stale after other main changes. Seed 6 was reproduced on unmodified main, and the detection test verifies the exact mismatch and trace replay. This is separate from the historical crash ghost and does not diagnose its cause. Both current ordinary-recovery scenarios remain explicit detection tests without a third stored artifact.
+
+Randomized sweeps do not exempt equivalent known failures. CI passes `--fail-on-violation`, fails on incomplete recovery or missing required coverage, and uploads failing artifacts with replay commands.
+
+## Shared-tab fault sweeps
+
+`--tabs N` adds shared-storage tabs to the current multi-collection workload. Tab server calls use Gatekeeper; channel messages, saves, timers, and pokes are also scheduled steps. Ordinary recovery records tab reopen, reconnect, flush, and retained-write connect operations for exact replay. Sweep summaries include aggregate tab coverage.
+
+The tab simulation checks forwarding and durability separately from convergence. A 150-seed fault/crash sweep with three tabs found 17 ordinary stale-view mismatches, all on standalone clients, and no forced-repair mismatches. The no-tab workload also reproduces stale views after lost notifications. In `tmp/merge-pr73-20261025/seed7.jsonl`, lost `client1.poke` calls precede an old project in client1's ordinary view; replay reproduces the mismatch. These ordinary failures remain reported.

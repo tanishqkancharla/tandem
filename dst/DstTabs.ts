@@ -19,7 +19,10 @@ import {
 	roundTrip,
 	type DstSchema,
 	type DstTabName,
-	type DstTodo,
+	type DstInventory,
+	dstCollections,
+	dstRelations,
+	dstSchemaDefinition,
 } from "./DstWorld.js"
 import { SimPrng } from "./SimPrng.js"
 
@@ -69,6 +72,10 @@ export type DstTabCoverage = {
 	failedSaves: number
 	/** Tab commits that completed after the server accepted them. */
 	serverCompletions: number
+	/** Public commits that settled successfully, excluding the tracking marker. */
+	successfulCommits: number
+	operations: Record<string, number>
+	batchSizes: Record<string, number>
 }
 
 /** A tab's server calls, which the world makes as Gatekeeper calls. */
@@ -82,17 +89,21 @@ type Tab = {
 	ready: boolean
 	/** Whether the tab wants the leader connected to the server. */
 	wantsServer: boolean
+	/** Advances whenever this tab explicitly gives up the server. */
+	disconnectEpoch: number
 }
 
 type TabWrite = {
 	tab: DstTabName
-	/** The unique text the write carries, so the server's copy can be found. */
-	text: string
+	/** A unique marker carried by this public commit. */
+	marker: string
 	commit: "pending" | "completed" | "rejected"
 	/** Whether the tab wanted the server when it wrote. */
 	needsServer: boolean
 	/** The offline period count when the write was issued. */
 	offlineSince: number
+	/** The tab's own connection epoch when it wrote. */
+	disconnectEpoch: number
 }
 
 const storageName = "dst-tabs"
@@ -131,9 +142,12 @@ class DstChannel implements TabChannelApi {
 	}
 }
 
-/** The text a set writes; the world tracks tab writes by it. */
-function textOf(op: MutationOp<DstSchema>): string | undefined {
-	return op.type === "set" ? op.value.text : undefined
+function markerOf(op: MutationOp<DstSchema>): string | undefined {
+	return op.type === "set" &&
+		op.collection === "comments" &&
+		op.value.id.startsWith("tab-write-")
+		? op.value.id
+		: undefined
 }
 
 /**
@@ -147,6 +161,9 @@ export class DstTabGroup {
 		acceptedPushRepliesLost: 0,
 		failedSaves: 0,
 		serverCompletions: 0,
+		successfulCommits: 0,
+		operations: {},
+		batchSizes: {},
 	}
 	violation: DstTabViolation | undefined
 	private readonly tabs = new Map<DstTabName, Tab>()
@@ -185,11 +202,36 @@ export class DstTabGroup {
 			.map(({ name }) => name)
 	}
 
+	get offline(): DstTabName[] {
+		return [...this.tabs.values()]
+			.filter(({ alive, wantsServer }) => alive && !wantsServer)
+			.map(({ name }) => name)
+	}
+
 	/** Live tabs restored from the leader, so they can transact. */
 	get writers(): DstTabName[] {
 		return [...this.tabs.values()]
 			.filter(({ alive, ready }) => alive && ready)
 			.map(({ name }) => name)
+	}
+
+	get pendingCommits(): number {
+		return this.writes.filter(
+			({ tab, commit }) => commit === "pending" && this.isAlive(tab),
+		).length
+	}
+
+	get unacceptedTabs(): DstTabName[] {
+		return [
+			...new Set(
+				this.writes
+					.filter(
+						({ tab, marker }) =>
+							this.isAlive(tab) && !this.carriers.has(marker),
+					)
+					.map(({ tab }) => tab),
+			),
+		]
 	}
 
 	get leader(): DstTabName | undefined {
@@ -226,6 +268,8 @@ export class DstTabGroup {
 		const name: DstTabName = `tab${++this.opened}`
 		const env = this.browser.openTab()
 		const client = new TandemClient<DstSchema>({
+			schema: dstSchemaDefinition,
+			relations: dstRelations,
 			remote: this.remoteFor(name),
 			clientStorage: this.storageFor(name),
 			logger: this.logger,
@@ -257,9 +301,10 @@ export class DstTabGroup {
 			alive: true,
 			ready: false,
 			wantsServer: true,
+			disconnectEpoch: 0,
 		}
 		this.tabs.set(name, tab)
-		client.subscribe({ collection: "todos" })
+		for (const collection of dstCollections) client.subscribe({ collection })
 		void client.ready.then(
 			() => {
 				tab.ready = true
@@ -308,12 +353,37 @@ export class DstTabGroup {
 	toggle(name: DstTabName): boolean {
 		const tab = this.tabs.get(name)!
 		tab.wantsServer = !tab.wantsServer
+		if (!tab.wantsServer) tab.disconnectEpoch++
 		// A wish can fail to reach a leader that is changing; healing reconnects.
 		void (
 			tab.wantsServer ? tab.client.connect() : tab.client.disconnect()
 		).catch(() => {})
 		this.noteOffline()
 		return tab.wantsServer
+	}
+
+	/** Starts a public flush; the simulation delivers its channel and save steps. */
+	flush(name: DstTabName) {
+		void (async () => {
+			const client = this.tabs.get(name)!.client
+			for (let attempt = 0; attempt < 3; attempt++) {
+				const saved = await client.flushClientStorage().then(
+					() => true,
+					() => false,
+				)
+				if (saved) return
+			}
+			console.warn(`${name} could not flush retained writes during recovery`)
+		})()
+	}
+
+	connect(name: DstTabName) {
+		void this.tabs
+			.get(name)!
+			.client.connect()
+			.catch((error: unknown) => {
+				console.warn(`${name} could not reconnect retained writes:`, error)
+			})
 	}
 
 	/** Starts an offline period when no live tab wants the server. */
@@ -323,53 +393,80 @@ export class DstTabGroup {
 	}
 
 	/** Commits a change in a tab, and checks its completion against the server. */
-	commit(
-		name: DstTabName,
-		change: (tx: ReturnType<TandemClient<DstSchema>["transact"]>) => void,
-		text: string | undefined,
-	) {
+	commit(name: DstTabName, ops: MutationOp<DstSchema>[], marker: string) {
 		const tab = this.tabs.get(name)!
 		const tx = tab.client.transact()
-		change(tx)
-		const write: TabWrite | undefined = text
-			? {
-					tab: name,
-					text,
-					commit: "pending",
-					needsServer: tab.wantsServer,
-					offlineSince: this.offlinePeriods,
-				}
-			: undefined
-		if (write) this.writes.push(write)
+		const effectiveOps: MutationOp<DstSchema>[] = []
+		for (const op of ops) {
+			switch (op.type) {
+				case "set":
+					tx.set(op.collection, op.value)
+					effectiveOps.push(op)
+					break
+				case "update":
+					if (
+						Object.keys(op.payload).length > 0 &&
+						tx.get(op.collection, op.id) !== undefined
+					)
+						effectiveOps.push(op)
+					tx.update(op.collection, op.id, op.payload)
+					break
+				case "remove":
+					tx.remove(op.collection, op.id)
+					effectiveOps.push(op)
+					break
+			}
+		}
+		tx.set("comments", { id: marker, taskId: marker, body: marker })
+		const write: TabWrite = {
+			tab: name,
+			marker,
+			commit: "pending",
+			needsServer: tab.wantsServer,
+			offlineSince: this.offlinePeriods,
+			disconnectEpoch: tab.disconnectEpoch,
+		}
+		this.writes.push(write)
 		tab.client.commit(tx).then(
 			() => {
-				if (!write || !tab.alive) return
+				if (!tab.alive) return
 				write.commit = "completed"
+				this.coverage.successfulCommits++
+				const size = String(effectiveOps.length)
+				this.coverage.batchSizes[size] =
+					(this.coverage.batchSizes[size] ?? 0) + 1
+				for (const op of effectiveOps) {
+					const key = `${op.collection}.${op.type}`
+					this.coverage.operations[key] =
+						(this.coverage.operations[key] ?? 0) + 1
+				}
 				// Leader connects are never lost, so a commit from a tab that wants the
 				// server completes only after the server accepted the write. It may
 				// complete offline if this tab or every tab gave up the server, or a
 				// failed save failed the leader's connection.
-				if (this.carriers.has(write.text)) this.coverage.serverCompletions += 1
+				if (this.carriers.has(write.marker))
+					this.coverage.serverCompletions += 1
 				else if (
 					write.needsServer &&
 					tab.wantsServer &&
+					tab.disconnectEpoch === write.disconnectEpoch &&
 					!this.connectionFailed &&
 					this.offlinePeriods === write.offlineSince
 				)
 					this.fail({
 						kind: "tabCompletedBeforeServer",
-						detail: `${name} completed "${write.text}" before the server accepted it`,
+						detail: `${name} completed "${write.marker}" before the server accepted it`,
 					})
 			},
 			() => {
-				if (write) write.commit = "rejected"
+				write.commit = "rejected"
 			},
 		)
 	}
 
 	/** How the public commit of the write carrying `text` has settled so far. */
-	commitOf(text: string): TabWrite["commit"] | undefined {
-		return this.writes.find((write) => write.text === text)?.commit
+	commitOf(marker: string): TabWrite["commit"] | undefined {
+		return this.writes.find((write) => write.marker === marker)?.commit
 	}
 
 	/** Whether shared client storage holds the record `id`. */
@@ -379,8 +476,16 @@ export class DstTabGroup {
 			.some(({ key }) => key[0] === "record" && key[2] === id)
 	}
 
-	todosOf(name: DstTabName): DstTodo[] {
-		return [...this.tabs.get(name)!.client.query({ collection: "todos" })]
+	inventoryOf(name: DstTabName): DstInventory {
+		const client = this.tabs.get(name)!.client
+		const byId = (a: { id: unknown }, b: { id: unknown }) =>
+			JSON.stringify(a.id).localeCompare(JSON.stringify(b.id))
+		return {
+			projects: [...client.query({ collection: "projects" })].sort(byId),
+			tasks: [...client.query({ collection: "tasks" })].sort(byId),
+			comments: [...client.query({ collection: "comments" })].sort(byId),
+			memberships: [...client.query({ collection: "memberships" })].sort(byId),
+		}
 	}
 
 	/**
@@ -390,15 +495,16 @@ export class DstTabGroup {
 	accepted(args: Parameters<RemoteApi<DstSchema>["push"]>[0]) {
 		for (const mutation of args.mutations)
 			for (const op of mutation.ops) {
-				const text = textOf(op)
-				if (!text || !this.writes.some((write) => write.text === text)) continue
-				const carriers = this.carriers.get(text) ?? new Set()
+				const marker = markerOf(op)
+				if (!marker || !this.writes.some((write) => write.marker === marker))
+					continue
+				const carriers = this.carriers.get(marker) ?? new Set()
 				carriers.add(`${args.clientId}:${mutation.id}`)
-				this.carriers.set(text, carriers)
+				this.carriers.set(marker, carriers)
 				if (carriers.size > 1)
 					this.fail({
 						kind: "tabWriteAppliedTwice",
-						detail: `"${text}" reached the server in ${[...carriers].join(" and ")}`,
+						detail: `"${marker}" reached the server in ${[...carriers].join(" and ")}`,
 					})
 			}
 	}
@@ -449,16 +555,16 @@ export class DstTabGroup {
 	/** After healing: acknowledged writes and writes of live tabs reached the server. */
 	checkDelivered() {
 		for (const write of this.writes) {
-			if (this.carriers.has(write.text)) continue
+			if (this.carriers.has(write.marker)) continue
 			if (write.commit === "completed")
 				this.fail({
 					kind: "tabLostAcknowledgedWrite",
-					detail: `${write.tab} completed "${write.text}", but the server never accepted it`,
+					detail: `${write.tab} completed "${write.marker}", but the server never accepted it`,
 				})
 			if (this.tabs.get(write.tab)?.alive)
 				this.fail({
 					kind: "tabLostRetainedWrite",
-					detail: `${write.tab} is still open, but "${write.text}" never reached the server`,
+					detail: `${write.tab} is still open, but "${write.marker}" never reached the server`,
 				})
 		}
 	}
