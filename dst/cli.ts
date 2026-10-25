@@ -2,7 +2,7 @@
  * pnpm dst:run --seed 123 --steps 300 [--fault-rate 0.1] [--crash-rate 0.02] [--out path]
  * pnpm dst:run --replay path.jsonl
  * pnpm dst:run --runs 24 --seed 2026092800 --steps 300 [--out-dir tmp/dst] [--fail-on-violation]
- * Workload: --client-count 5 --record-count 20 --max-mutations-in-flight 8 --shared-write-rate 0.5
+ * Workload: --tabs 3 --client-count 5 --record-count 20 --max-mutations-in-flight 8 --shared-write-rate 0.5
  */
 import fs from "node:fs"
 import path from "node:path"
@@ -21,6 +21,7 @@ const { values } = util.parseArgs({
 		"fault-rate": { type: "string", default: String(defaults.faultRate) },
 		"crash-rate": { type: "string", default: String(defaults.crashRate) },
 		"client-count": { type: "string", default: String(defaults.clientCount) },
+		tabs: { type: "string", default: "0" },
 		"record-count": { type: "string", default: String(defaults.recordCount) },
 		"max-mutations-in-flight": {
 			type: "string",
@@ -150,6 +151,7 @@ if (values.replay) {
 		faultRate: probability("fault-rate", values["fault-rate"]),
 		crashRate: probability("crash-rate", values["crash-rate"]),
 		clientCount: positiveInteger("client-count", values["client-count"]),
+		tabs: nonnegativeInteger("tabs", values.tabs),
 		recordCount: positiveInteger("record-count", values["record-count"]),
 		maxMutationsInFlight: positiveInteger(
 			"max-mutations-in-flight",
@@ -218,7 +220,7 @@ if (values.replay) {
 		)
 		fs.mkdirSync(path.dirname(out), { recursive: true })
 		console.log(
-			`seed ${options.seed}, ${options.steps} steps, ${options.clientCount} clients, ${options.recordCount} ids per pool, max ${options.maxMutationsInFlight} mutations in flight, shared write rate ${options.sharedWriteRate}, fault rate ${options.faultRate}, crash rate ${options.crashRate}`,
+			`seed ${options.seed}, ${options.steps} steps, ${options.clientCount} clients and ${options.tabs} shared tabs, ${options.recordCount} ids per pool, max ${options.maxMutationsInFlight} mutations in flight, shared write rate ${options.sharedWriteRate}, fault rate ${options.faultRate}, crash rate ${options.crashRate}`,
 		)
 		const result = await new DstSimulation(options).execute(jsonlFileSink(out))
 		printRecovery(result.recovery)

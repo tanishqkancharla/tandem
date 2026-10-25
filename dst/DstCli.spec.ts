@@ -14,6 +14,32 @@ function temporaryDirectory() {
 }
 
 describe("DST CLI coverage and recovery", () => {
+	it("preserves tab coverage in sweep results and the summary", async () => {
+		const options = {
+			seed: 1,
+			steps: 100,
+			runs: 2,
+			tabs: 2,
+			outDir: temporaryDirectory(),
+			connectivityRate: 0,
+		}
+		const results = await sweep(options)
+		const successfulCommits = results.reduce(
+			(total, result) =>
+				total +
+				(result.outcome === "error"
+					? 0
+					: (result.tabCoverage?.successfulCommits ?? 0)),
+			0,
+		)
+		expect(results).toHaveLength(2)
+		expect(successfulCommits).toBeGreaterThan(0)
+		expect(sweepSummary(options, results)).toContain("Tab coverage:")
+		expect(sweepSummary(options, results)).toContain(
+			`"successfulCommits": ${successfulCommits}`,
+		)
+	})
+
 	it("removes passing artifacts while summarizing aggregate executed coverage", async () => {
 		const outDir = temporaryDirectory()
 		const options = {

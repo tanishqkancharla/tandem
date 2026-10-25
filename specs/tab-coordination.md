@@ -160,9 +160,40 @@ Server pokes from `main` can carry the records a commit changed. They reach the 
 
 Review found more takeover races, fixed here with tests. After `clear()`, a tab now leaves its previous session only after that session's requests settle, so a resent write still finds its receipt. A late leader announcement from a closed leader is covered by a test that delays it across the handoff. A tab that failed to lead joins the next leader. A leader that closes while a clear reconnects no longer writes shared storage after the next leader loaded it. A clear that overtakes the leader's save of a forwarded write no longer reports the write saved: the leader checks its replica after each flush, so the commit reports the clear, views are taken again, and the tab resends the write.
 
-### ⏳ Phase 4: Simulate tabs in the deterministic simulation
+### ✅ Phase 4: Simulate tabs in the deterministic simulation
 
-The next pull request in this stack adds tab groups to `dst/`.
+**Today**
+
+`dst/` drove standalone clients and never elected a leader or crossed a tab channel. Main now drives configurable clients over projects, tasks, comments, memberships, relations, batched mutations, subscriptions, and ordinary recovery.
+
+**Proposed**
+
+`--tabs N` adds a shared-storage group to that same world, generator, trace, and replay. Each tab takes the generated operation batches. A unique comment marker travels with its public transaction, so the simulation can identify the leader mutation that delivered it.
+
+```changes
+b6456f6..6b6fb6e
+```
+
+Gatekeeper schedules a tab leader's server calls. The tab group schedules its channel messages, storage commits, timers, and pokes. Both kinds of handoff share one pending list, so faults and crashes can interrupt the same commit from either side:
+
+```callstack
+ DstSimulation.choose [[dst/DstSimulation.ts#DstSimulation.choose]]
++├── select a tab for the shared operation batch or a lifecycle event
+ DstWorld.apply [[dst/DstWorld.ts#DstWorld.apply]]
++├── DstTabGroup.commit # submit through the public tab client with a delivery marker [[dst/DstTabs.ts#DstTabGroup.commit]]
++├── DstTabGroup.advance / drop # schedule messages, saves, timers, and pokes
++└── tabsRemote # send leader calls through Gatekeeper
+ DstRecovery.recover [[dst/DstRecovery.ts#recover]]
++├── reopen a group with no survivors and reconnect intentionally offline tabs
++├── flush and reconnect tabs with retained, unaccepted writes
++└── record every recovery control for replay before ordinary and forced checkpoints
+```
+
+The generator counts live pending tab commits toward its concurrency limit. Ordinary recovery cannot claim settlement while a tab commit is still pending. The tab group checks that connected public commits do not finish before server acceptance, each forwarded write uses one leader mutation, and completed or retained writes reach the server. Tab coverage counts successful public commits, operation kinds, and batch sizes as well as takeovers, lost replies, failed saves, and server completions.
+
+Focused tests use the new schema for a lost accepted reply across takeover, a leader crash after a durable save, failed save ordering, a replacement leader's delayed connection, and a batch spanning relations and compound IDs. They also cover all tabs being intentionally offline, all tabs crashing before recovery, a crashed leader's server unregistration, a failed connection retried with no unaccepted writes, and a seed where a tab disconnects and reconnects while its commit is pending. A 30-seed fault/crash test requires nonzero takeover, lost-reply, failed-save, server-completion, and multi-operation coverage.
+
+A 150-seed × 300-step sweep with three tabs, 10% faults, and 2% crashes reached 88 takeovers with pending commits, 50 accepted pushes whose replies were lost, 377 failed saves, and 267 server completions. All 150 forced repairs passed; 135 ordinary recoveries passed. The 15 ordinary mismatches were all on standalone clients. Main's no-tab workload also shows ordinary stale-view mismatches, and its direct lost-poke test reproduces that failure. The exact CI scoped-view command also fails on the same five seeds and views on unchanged main and on this branch. In the tab run for seed 7, `client1.poke` losses preceded an old project remaining in client1's ordinary view; replay reproduces it. These failures remain visible in the sweep and are not treated as tab success.
 
 ### Benchmark
 
@@ -242,3 +273,4 @@ The coordinator shows the edit in the other tab 24 to 53 percent sooner at the m
 - [[packages/core/test/tabs.spec.ts]] — tab workflows.
 - [[packages/core/benchmarks/tabs.ts]] — the benchmark.
 - [[docs/sync.md]] — the consumer-facing description.
+- [[dst/DstTabs.ts]] — the tab group in the deterministic simulation.

@@ -72,7 +72,11 @@ describe("DST executed coverage", () => {
 			offsetViewChecks: 2,
 			nestedRelationChecks: 2,
 			compoundViewChecks: 2,
-			dropsByKind: { requestLost: 2, responseLost: 2, pokeLost: 2 },
+			dropsByKind: {
+				requestLost: 2,
+				responseLost: 2,
+				pokeLost: 2,
+			},
 			partitionDrops: 2,
 			disconnects: 2,
 			reconnects: 2,

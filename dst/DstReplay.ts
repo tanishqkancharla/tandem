@@ -205,7 +205,7 @@ function cannotApply(
 		case "serverRemove":
 			return undefined
 		case "crash":
-			return world.running.includes(record.client)
+			return world.crashable.includes(record.client)
 				? undefined
 				: `${record.client} is not running`
 		case "restart":
@@ -215,7 +215,14 @@ function cannotApply(
 		case "checkpoint":
 		case "repair":
 		case "heal":
+		case "openTab":
 			return undefined
+		case "toggleTab":
+		case "flushTab":
+		case "connectTab":
+			return world.tabs?.alive.includes(record.tab)
+				? undefined
+				: `${record.tab} is not open`
 	}
 }
 
@@ -238,6 +245,7 @@ function intentOf(record: DstTraceRecord): DstIntent {
 		case "drop":
 			return { type: record.type, call: record.call }
 		case "crash":
+			return { type: "crash", client: record.client }
 		case "restart":
 		case "disconnect":
 		case "reconnect":
@@ -251,6 +259,13 @@ function intentOf(record: DstTraceRecord): DstIntent {
 			}
 		case "checkpoint":
 		case "repair":
+		case "openTab":
 			return { type: record.type }
+		case "toggleTab":
+			return { type: "toggleTab", tab: record.tab }
+		case "flushTab":
+			return { type: "flushTab", tab: record.tab }
+		case "connectTab":
+			return { type: "connectTab", tab: record.tab }
 	}
 }

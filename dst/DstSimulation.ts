@@ -4,6 +4,9 @@ import type { DstArtifactSink } from "./DstReplay.js"
 import { recover, type DstRecoveryResult } from "./DstRecovery.js"
 import {
 	type DstClientName,
+	type DstWriterName,
+	type DstTabCoverage,
+	type DstTabName,
 	type DstFinalStates,
 	type DstIntent,
 	type DstPendingCall,
@@ -12,7 +15,6 @@ import {
 	type DstViolation,
 	DstWorld,
 	dstCollections,
-	isNetworkHandoff,
 	serverOwnedIds,
 } from "./DstWorld.js"
 import { SimPrng } from "./SimPrng.js"
@@ -29,6 +31,7 @@ export type {
 	DstSchema,
 	DstTraceRecord,
 	DstViolation,
+	DstTabCoverage,
 } from "./DstWorld.js"
 export { DstFaultError, dstRelations, dstSchemaDefinition } from "./DstWorld.js"
 
@@ -38,6 +41,8 @@ export interface DstRunOptions {
 	faultRate?: number
 	/** Chance per step that a running client crashes. */
 	crashRate?: number
+	/** Tabs sharing one durable replica, in addition to the standalone clients. */
+	tabs?: number
 	clientCount?: number
 	/** IDs per collection's shared/owned pool; member IDs for memberships. */
 	recordCount?: number
@@ -58,6 +63,7 @@ export function resolveRunOptions(
 		steps: options.steps,
 		faultRate: options.faultRate ?? 0,
 		crashRate: options.crashRate ?? 0,
+		tabs: options.tabs ?? 0,
 		clientCount: options.clientCount ?? 2,
 		recordCount: options.recordCount ?? 3,
 		maxMutationsInFlight: options.maxMutationsInFlight ?? 4,
@@ -80,6 +86,7 @@ export type DstRunResult = {
 	maxMutationsInFlight: number
 	recovery: DstRecoveryResult
 	coverage: DstCoverage
+	tabCoverage?: DstTabCoverage
 }
 
 /** How often a step starts a mutation rather than advancing a pending call. */
@@ -88,6 +95,7 @@ const mutateRate = 0.35
 const serverWriteRate = 0.4
 /** Chance per step that a crashed client restarts. */
 const restartRate = 0.25
+const toggleTabRate = 0.05
 
 /** A random run: each step applies one event chosen from what is possible now. */
 export class DstSimulation {
@@ -142,16 +150,25 @@ export class DstSimulation {
 		step: number,
 	): DstIntent | undefined {
 		const { faultRate, crashRate, maxMutationsInFlight } = this.options
-		// Faults model lost network messages, never a failed timer or disk write.
-		const droppable = pending.filter(isNetworkHandoff)
-		const { down, running, writers } = world
+		// Faults can lose network messages or fail tab leader saves, but not timers.
+		const droppable = pending.filter(({ droppable }) => droppable)
+		const { down, crashable, writers } = world
+		const standaloneWriters = writers.filter(
+			(writer): writer is DstClientName => !writer.startsWith("tab"),
+		)
 
 		// Without crashes these draw nothing, so crash-free runs are unchanged.
 		if (down.length > 0 && rng.boolean(restartRate)) {
 			return { type: "restart", client: rng.pick(down) }
 		}
-		if (crashRate > 0 && running.length > 0 && rng.boolean(crashRate)) {
-			return { type: "crash", client: rng.pick(running) }
+		if (
+			this.options.tabs > 0 &&
+			(world.tabs?.alive.length ?? 0) < this.options.tabs &&
+			rng.boolean(restartRate)
+		)
+			return { type: "openTab" }
+		if (crashRate > 0 && crashable.length > 0 && rng.boolean(crashRate)) {
+			return { type: "crash", client: rng.pick(crashable) }
 		}
 		if (faultRate > 0 && droppable.length > 0 && rng.boolean(faultRate)) {
 			return { type: "drop", call: rng.pick(droppable).name }
@@ -162,22 +179,26 @@ export class DstSimulation {
 			rng.boolean(this.options.connectivityRate)
 		) {
 			const client = rng.pick(writers)
-			if (world.partitioned.includes(client) && rng.boolean(0.5))
-				return { type: "heal", client }
-			if (world.offline.includes(client)) return { type: "reconnect", client }
-			if (rng.boolean(0.3)) return { type: "disconnect", client }
+			if (client.startsWith("tab"))
+				return { type: "toggleTab", tab: client as DstTabName }
+			const standalone = client as DstClientName
+			if (world.partitioned.includes(standalone) && rng.boolean(0.5))
+				return { type: "heal", client: standalone }
+			if (world.offline.includes(standalone))
+				return { type: "reconnect", client: standalone }
+			if (rng.boolean(0.3)) return { type: "disconnect", client: standalone }
 			return {
 				type: "partition",
-				client,
+				client: standalone,
 				direction: rng.pick(["requests", "replies", "both"]),
 			}
 		}
 		if (
-			writers.length > 0 &&
+			standaloneWriters.length > 0 &&
 			this.options.subscriptionRate > 0 &&
 			rng.boolean(this.options.subscriptionRate)
 		) {
-			const client = rng.pick(writers)
+			const client = rng.pick(standaloneWriters)
 			const id = `view-${rng.int(0, 2)}`
 			if (world.subscriptions(client).has(id) && rng.boolean(0.3))
 				return { type: "unsubscribe", client, id }
@@ -235,6 +256,8 @@ export class DstSimulation {
 				}
 			}
 			const client = rng.pick(writers)
+			if (client.startsWith("tab") && rng.boolean(toggleTabRate))
+				return { type: "toggleTab", tab: client as DstTabName }
 			const ctx = { rng, world, step, client }
 			const ops = this.chooseBatch(ctx)
 			return { type: "mutate", client, ops }
@@ -249,7 +272,7 @@ export class DstSimulation {
 		rng: SimPrng
 		world: DstWorld
 		step: number
-		client: DstClientName
+		client: DstWriterName
 	}): MutationOp<DstSchema>[] {
 		const { rng, step, client } = ctx
 		if (rng.boolean(0.5)) {
@@ -311,12 +334,14 @@ export class DstSimulation {
 		rng: SimPrng
 		world: DstWorld
 		step: number
-		client: DstClientName
+		client: DstWriterName
 	}): MutationOp<DstSchema> {
 		const { recordCount, sharedWriteRate } = this.options
 		const prefix = rng.boolean(sharedWriteRate) ? "item-" : `${client}-item-`
 		const id = `${prefix}${rng.int(1, recordCount)}`
-		const inventory = world.inventoryOf(client)
+		const inventory = client.startsWith("tab")
+			? world.tabs!.inventoryOf(client as DstTabName)
+			: world.inventoryOf(client as DstClientName)
 		// Most references resolve locally; missing ones exercise dangling relations.
 		const reference = (collection: "projects" | "tasks", current?: string) => {
 			const parents = inventory[collection].filter(({ id }) => id !== current)

@@ -85,7 +85,11 @@ export function emptyCoverage(
 		offsetViewChecks: 0,
 		nestedRelationChecks: 0,
 		compoundViewChecks: 0,
-		dropsByKind: { requestLost: 0, responseLost: 0, pokeLost: 0 },
+		dropsByKind: {
+			requestLost: 0,
+			responseLost: 0,
+			pokeLost: 0,
+		},
 		partitionDrops: 0,
 		disconnects: 0,
 		reconnects: 0,

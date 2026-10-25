@@ -59,6 +59,17 @@ export async function recover(
 	for (const client of world.partitioned) await emit({ type: "heal", client })
 	for (const client of world.down) await emit({ type: "restart", client })
 	for (const client of world.offline) await emit({ type: "reconnect", client })
+	if (world.tabs && world.tabs.alive.length === 0)
+		await emit({ type: "openTab" })
+	for (const tab of world.tabs?.offline ?? [])
+		await emit({ type: "toggleTab", tab })
+	for (const tab of world.tabs?.alive ?? [])
+		await emit({ type: "flushTab", tab })
+	for (const tab of new Set([
+		...(world.tabs?.unacceptedTabs ?? []),
+		...(world.tabs?.failedConnectionTabs ?? []),
+	]))
+		await emit({ type: "connectTab", tab })
 	let queue: string[] = []
 	let eventsDelivered = 0
 	for (; eventsDelivered < eventBudget; eventsDelivered++) {

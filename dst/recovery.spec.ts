@@ -33,10 +33,10 @@ async function advanceHeld(world: DstWorld, startStep: number) {
 }
 
 describe("DST ordinary recovery", () => {
-	it("retains a removal mismatch found with live pokes even when forced repair succeeds", async () => {
+	it("retains a stale project view found with live pokes even when forced repair succeeds", async () => {
 		const sink = memorySink()
 		const result = await new DstSimulation({
-			seed: 3,
+			seed: 6,
 			steps: 300,
 			clientCount: 5,
 			maxMutationsInFlight: 1,
@@ -44,15 +44,16 @@ describe("DST ordinary recovery", () => {
 		expect(result.violation).toEqual({
 			kind: "subscriptionView",
 			checkpoint: "ordinary",
-			client: "client1",
-			subscriptionId: "inventory-comments",
-			spec: { kind: "inventory", collection: "comments" },
+			client: "client4",
+			subscriptionId: "inventory-projects",
+			spec: { kind: "inventory", collection: "projects" },
 			expected: [
-				{ id: "item-2", taskId: "item-2", body: "Comment item-2 (rev 291)" },
+				{ id: "item-1", name: "Project item-1 (rev 220)" },
+				{ id: "item-2", name: "Project item-2 (rev 259)" },
 			],
 			actual: [
-				{ id: "item-2", taskId: "item-2", body: "Comment item-2 (rev 291)" },
-				{ id: "item-3", taskId: "reply-1", body: "Comment item-3 (rev 276)" },
+				{ id: "item-1", name: "Project item-1 (rev 187)" },
+				{ id: "item-2", name: "Project item-2 (rev 259)" },
 			],
 		})
 		expect(result.recovery).toMatchObject({

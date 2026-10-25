@@ -47,6 +47,12 @@ The reader caches the requested server row, but local pagination applies the off
 
 `recovery.spec.ts` drops a server poke, heals transport, and verifies that ordinary recovery reports a view mismatch while forced repair succeeds. Healing must not silently schedule an application pull. The configured sync timer debounces queued work; it is not periodic polling and does not by itself reacquire a lost notification.
 
-The merged generator also exposes a removal mismatch at seed 3, 300 steps, five clients, and one outstanding mutation. Client1 retains comment `item-3` in ordinary recovery although the server no longer has it; explicit repair succeeds. A literal detection test preserves that mismatch and verifies exact trace replay. This is separate from the historical crash ghost and does not diagnose its cause. Both current ordinary-recovery scenarios remain explicit detection tests without a third stored artifact.
+The merged generator also exposes a stale project view at seed 6, 300 steps, five clients, and one outstanding mutation. Client4 retains project `item-1` at revision 187 in ordinary recovery while the server has revision 220; explicit repair succeeds. The prior seed 3 literal became stale after other main changes. Seed 6 was reproduced on unmodified main, and the detection test verifies the exact mismatch and trace replay. This is separate from the historical crash ghost and does not diagnose its cause. Both current ordinary-recovery scenarios remain explicit detection tests without a third stored artifact.
 
 Randomized sweeps do not exempt equivalent known failures. CI passes `--fail-on-violation`, fails on incomplete recovery or missing required coverage, and uploads failing artifacts with replay commands.
+
+## Shared-tab fault sweeps
+
+`--tabs N` adds shared-storage tabs to the current multi-collection workload. Tab server calls use Gatekeeper; channel messages, saves, timers, and pokes are also scheduled steps. Ordinary recovery records tab reopen, reconnect, flush, and retained-write connect operations for exact replay. Sweep summaries include aggregate tab coverage.
+
+The tab simulation checks forwarding and durability separately from convergence. A 150-seed fault/crash sweep with three tabs found 17 ordinary stale-view mismatches, all on standalone clients, and no forced-repair mismatches. The no-tab workload also reproduces stale views after lost notifications. In `tmp/merge-pr73-20261025/seed7.jsonl`, lost `client1.poke` calls precede an old project in client1's ordinary view; replay reproduces the mismatch. These ordinary failures remain reported.

@@ -59,6 +59,7 @@ describe("Deterministic simulation testing", () => {
 					sharedWriteRate: 1,
 					faultRate: 0,
 					crashRate: 0,
+					tabs: 0,
 					initialSubscriptions: "full",
 					subscriptionRate: 0.08,
 					connectivityRate: 0,
@@ -66,6 +67,7 @@ describe("Deterministic simulation testing", () => {
 				},
 			})
 		},
+		30_000,
 	)
 
 	it("moves relations, preserves children of deleted parents, and keeps collections isolated", async () => {

@@ -9,6 +9,7 @@ import {
 	missingCoverage,
 } from "./DstCoverage.js"
 import type { DstRecoveryResult } from "./DstRecovery.js"
+import type { DstTabCoverage } from "./DstTabs.js"
 import { jsonlFileSink, parseArtifact, replay } from "./DstReplay.js"
 import {
 	type DstRunOptions,
@@ -26,6 +27,7 @@ export type DstSweepRun =
 	| ({
 			seed: number
 			coverage: DstCoverage
+			tabCoverage?: DstTabCoverage
 			recovery: DstRecoveryResult
 	  } & (
 			| { outcome: "ok" }
@@ -73,6 +75,7 @@ export async function sweep({
 				seed,
 				outcome: "ok",
 				coverage: result.coverage,
+				tabCoverage: result.tabCoverage,
 				recovery: result.recovery,
 			})
 			continue
@@ -105,6 +108,7 @@ export async function sweep({
 		const completed = {
 			seed,
 			coverage: result.coverage,
+			tabCoverage: result.tabCoverage,
 			recovery: result.recovery,
 		}
 		if (
@@ -148,6 +152,7 @@ export async function sweep({
 }
 
 export function describeViolation(violation: DstViolation): string {
+	if ("detail" in violation) return `${violation.kind}: ${violation.detail}`
 	if (violation.kind === "movedBackwards") {
 		return [
 			`${violation.client} moved ${violation.id} backwards at step ${violation.step}`,
@@ -178,11 +183,39 @@ export function sweepSummary(
 	const completed = results.filter((result) => result.outcome !== "error")
 	const coverage = aggregateCoverage(completed.map((result) => result.coverage))
 	const missing = missingCoverage(coverage, options.requireCoverage ?? "all")
+	const tabCoverage = completed.reduce<DstTabCoverage | undefined>(
+		(total, result) => {
+			if (!result.tabCoverage) return total
+			const next = total ?? {
+				takeoversWithPendingCommits: 0,
+				acceptedPushRepliesLost: 0,
+				failedSaves: 0,
+				serverCompletions: 0,
+				successfulCommits: 0,
+				operations: {},
+				batchSizes: {},
+			}
+			for (const key of [
+				"takeoversWithPendingCommits",
+				"acceptedPushRepliesLost",
+				"failedSaves",
+				"serverCompletions",
+				"successfulCommits",
+			] as const)
+				next[key] += result.tabCoverage[key]
+			for (const [key, count] of Object.entries(result.tabCoverage.operations))
+				next.operations[key] = (next.operations[key] ?? 0) + count
+			for (const [key, count] of Object.entries(result.tabCoverage.batchSizes))
+				next.batchSizes[key] = (next.batchSizes[key] ?? 0) + count
+			return next
+		},
+		undefined,
+	)
 	return [
 		`### DST sweep: seeds ${options.seed}–${options.seed + options.runs - 1}`,
 		"",
 		`${options.steps} steps, fault rate ${options.faultRate ?? 0}, crash rate ${options.crashRate ?? 0}.`,
-		`${workload.clientCount} clients, ${workload.recordCount} ids per pool, max ${workload.maxMutationsInFlight} mutations in flight, shared write rate ${workload.sharedWriteRate}.`,
+		`${workload.clientCount} clients and ${workload.tabs} shared tabs, ${workload.recordCount} ids per pool, max ${workload.maxMutationsInFlight} mutations in flight, shared write rate ${workload.sharedWriteRate}.`,
 		`Initial subscriptions ${workload.initialSubscriptions}, subscription rate ${workload.subscriptionRate}, connectivity rate ${workload.connectivityRate}, recovery budget ${workload.recoveryEvents} events.`,
 		"",
 		`| ok | violation | budgetExceeded | nondeterministic | error |`,
@@ -197,6 +230,14 @@ export function sweepSummary(
 		"```json",
 		JSON.stringify(coverage, null, 2),
 		"```",
+		...(tabCoverage
+			? [
+					"Tab coverage:",
+					"```json",
+					JSON.stringify(tabCoverage, null, 2),
+					"```",
+				]
+			: []),
 		`Missing ${options.requireCoverage ?? "all"} coverage${options.requireCoverage ? " (required)" : " (informational)"}: ${missing.length > 0 ? missing.join(", ") : "none"}.`,
 		"",
 		...failures.map((failure) => {

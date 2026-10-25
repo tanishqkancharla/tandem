@@ -39,6 +39,11 @@ import {
 import * as errore from "errore"
 import { isDeepStrictEqual } from "node:util"
 import { SimPrng } from "./SimPrng.js"
+import {
+	DstTabGroup,
+	type DstTabCoverage,
+	type DstTabViolation,
+} from "./DstTabs.js"
 import { emptyCoverage, type DstCoverage } from "./DstCoverage.js"
 import {
 	expectedView,
@@ -160,7 +165,7 @@ function remoteWithPokeEvents(
 
 type DstClientTuple = TandemClientTuple<DstSchema>
 
-function roundTrip<Value>(value: Value): Value {
+export function roundTrip<Value>(value: Value): Value {
 	return JSON.parse(JSON.stringify(value)) as Value
 }
 
@@ -209,15 +214,25 @@ const timerGates = { gates: { enter: false, exit: true } }
  * A handoff that crosses the network: a request to the server, its reply, or a
  * poke. Timer ticks and storage writes are local, so a fault never drops them.
  */
-export function isNetworkHandoff({ sentBy, waitingFor }: PendingCall): boolean {
+export function isNetworkHandoff({
+	sentBy,
+	waitingFor,
+}: Pick<PendingCall, "sentBy" | "waitingFor">): boolean {
 	return sentBy === "server" || waitingFor === "server"
 }
 
 export type DstClientName = `client${number}`
+export type DstTabName = `tab${number}`
+export type DstWriterName = DstClientName | DstTabName
+const isTab = (name: DstWriterName): name is DstTabName =>
+	name.startsWith("tab")
+export type { DstTabCoverage } from "./DstTabs.js"
 
 /** Each participant's collection inventories when the run ended. */
 export type DstFinalStates = Record<"server", DstInventory> &
-	Record<DstClientName, DstInventory>
+	Record<DstClientName, DstInventory> & {
+		tabs?: Record<DstTabName, DstInventory>
+	}
 
 export type DstCheckpoint = "quiescence" | "ordinary" | "repaired"
 
@@ -226,7 +241,7 @@ export type DstViolation =
 	| {
 			kind: "subscriptionView" | "subscriptionNotification"
 			checkpoint: DstCheckpoint
-			client: DstClientName
+			client: DstWriterName
 			subscriptionId: string
 			spec: DstSubscriptionSpec
 			expected: unknown[]
@@ -244,6 +259,7 @@ export type DstViolation =
 			shown: DstSchema["tasks"] | null
 			previous: DstSchema["tasks"] | null
 	  }
+	| DstTabViolation
 
 /** Where a dropped handoff was lost, which decides what its sender can know. */
 export type DstFaultKind =
@@ -343,21 +359,29 @@ export type DstTraceRecord =
 			type: "mutate"
 			ops: MutationOp<DstSchema>[]
 			step: number
-			client: DstClientName
+			client: DstWriterName
 			mutationId: number
 	  }
 	| ({ type: "advance"; step: number } & DstBoundary)
-	| ({ type: "drop"; step: number; fault: DstFaultKind } & DstBoundary)
+	| ({
+			type: "drop"
+			step: number
+			fault: DstFaultKind | "saveFailed"
+	  } & DstBoundary)
 	| { type: "serverSet"; step: number; item: DstSchema["tasks"] }
 	| { type: "serverRemove"; step: number; id: string }
-	| { type: "crash"; step: number; client: DstClientName }
+	| { type: "crash"; step: number; client: DstWriterName }
 	| { type: "restart"; step: number; client: DstClientName; clientId: string }
+	| { type: "openTab"; step: number; tab: DstTabName }
+	| { type: "toggleTab"; step: number; tab: DstTabName; wantsServer: boolean }
+	| { type: "flushTab"; step: number; tab: DstTabName }
+	| { type: "connectTab"; step: number; tab: DstTabName }
 	| (DstSubscriptionIntent & { step: number })
 	| (DstConnectivityIntent & { step: number })
 	| { type: "checkpoint" | "repair"; step: number; outcome: DstOutcome }
 
 function faultKind(
-	{ label, waitingFor }: PendingCall,
+	{ label, waitingFor }: Pick<PendingCall, "label" | "waitingFor">,
 	eventDelivered: boolean,
 ): DstFaultKind {
 	// A poke call first stops at the poke itself; after delivery its boundaries
@@ -376,17 +400,28 @@ export type DstIntent =
 	/** The server writes on its own, as an agent saving its reply would. */
 	| { type: "serverSet"; item: DstSchema["tasks"] }
 	| { type: "serverRemove"; id: string }
-	| { type: "mutate"; client: DstClientName; ops: MutationOp<DstSchema>[] }
+	| { type: "mutate"; client: DstWriterName; ops: MutationOp<DstSchema>[] }
 	| DstSubscriptionIntent
 	| DstConnectivityIntent
 	| { type: "checkpoint" | "repair" }
 	| { type: "advance"; call: string }
 	| { type: "drop"; call: string }
-	| { type: "crash"; client: DstClientName }
+	| { type: "crash"; client: DstWriterName }
+	| { type: "openTab" }
+	| { type: "toggleTab"; tab: DstTabName }
+	| { type: "flushTab"; tab: DstTabName }
+	| { type: "connectTab"; tab: DstTabName }
 	| { type: "restart"; client: DstClientName }
 
 /** A call held at a boundary, with its stable trace name. */
-export type DstPendingCall = PendingCall & { name: string }
+export type DstPendingCall = {
+	name: string
+	sentBy: string
+	waitingFor: string
+	droppable: boolean
+	handle?: CallHandle<unknown>
+	label: string
+}
 
 export type DstOutcome = {
 	violation: DstViolation | undefined
@@ -394,6 +429,7 @@ export type DstOutcome = {
 	clientIds: readonly (string | null)[]
 	settled: boolean
 	coverage: DstCoverage
+	tabCoverage?: DstTabCoverage
 }
 
 /**
@@ -414,7 +450,7 @@ export class DstWorld implements AsyncDisposable {
 	// The generation whose storage has loaded, so it can take writes.
 	private readonly loaded = new Map<DstClientName, number>()
 	// Trace IDs only; correctness does not depend on tracking every mutation.
-	private readonly writeCounts = new Map<DstClientName, number>()
+	private readonly writeCounts = new Map<DstWriterName, number>()
 	private readonly callNames = new Map<CallHandle<unknown>, string>()
 	private readonly labelCounts = new Map<string, number>()
 	private readonly deliveredEvents = new Set<CallHandle<unknown>>()
@@ -429,6 +465,7 @@ export class DstWorld implements AsyncDisposable {
 	// depend on other held calls, so a step starts them without waiting.
 	private readonly inFlight: Promise<unknown>[] = []
 	private held: readonly DstPendingCall[] = []
+	tabs?: DstTabGroup
 	// The server history index of the last value each client showed per
 	// server-owned record. A restart may show older synced values, so it resets.
 	private readonly shown = new Map<string, number>()
@@ -474,10 +511,12 @@ export class DstWorld implements AsyncDisposable {
 		seed,
 		clientCount = 2,
 		initialSubscriptions = "full",
+		tabs = 0,
 	}: {
 		seed: number
 		clientCount?: number
 		initialSubscriptions?: DstSubscriptionMode
+		tabs?: number
 	}): Promise<DstWorld> {
 		const clientNames = Array.from(
 			{ length: clientCount },
@@ -516,6 +555,8 @@ export class DstWorld implements AsyncDisposable {
 		const harness = buildHarness({
 			server,
 			clientNames,
+			withTabs: tabs > 0,
+			tabs: () => world?.tabs,
 			onCreate: (name, client) => {
 				const generation = world?.generations[name] ?? 0
 				for (const [id, spec] of desired.get(name)!)
@@ -543,6 +584,17 @@ export class DstWorld implements AsyncDisposable {
 			coverage,
 		})
 		for (const name of clientNames) await world.boot(name)
+		if (tabs > 0) {
+			const group = new DstTabGroup(seed, (tab) => ({
+				connect: async (api) =>
+					(await harness.tabsRemote.connect(tab, api)).result,
+				push: async (args) => (await harness.tabsRemote.push(args)).result,
+				pull: async (args) => (await harness.tabsRemote.pull(args)).result,
+			}))
+			world.tabs = group
+			for (let index = 0; index < tabs; index++) group.open()
+			await group.heal(() => Promise.resolve(), settle)
+		}
 		await harness.activateGates()
 		return world
 	}
@@ -555,22 +607,45 @@ export class DstWorld implements AsyncDisposable {
 		return this.clientNames.filter((name) => this.crashed.has(name))
 	}
 
+	get crashable(): readonly DstWriterName[] {
+		return [...this.running, ...(this.tabs?.alive ?? [])]
+	}
+
 	get mutationsInFlight(): number {
-		return this.activeMutations
+		return this.activeMutations + (this.tabs?.pendingCommits ?? 0)
 	}
 
 	/** Running clients whose storage has loaded, so they can take writes. */
-	get writers(): readonly DstClientName[] {
-		return this.running.filter(
-			(name) => this.loaded.get(name) === this.generations[name],
-		)
+	get writers(): readonly DstWriterName[] {
+		return [
+			...this.running.filter(
+				(name) => this.loaded.get(name) === this.generations[name],
+			),
+			...(this.tabs?.writers ?? []),
+		]
 	}
 
 	/** Calls held at a boundary, named in creation order so names never depend on choices. */
 	pending(): readonly DstPendingCall[] {
-		this.held = this.harness
-			.pendingCalls()
-			.map((call) => ({ ...call, name: this.nameCall(call) }))
+		this.held = [
+			...this.harness.pendingCalls().map((call) => ({
+				name: this.nameCall(call),
+				sentBy: call.sentBy,
+				waitingFor: call.waitingFor,
+				droppable:
+					isNetworkHandoff(call) &&
+					!call.label.startsWith("tabsRemote.connect"),
+				handle: call.handle,
+				label: call.label,
+			})),
+			...(this.tabs?.pending() ?? []).map(({ name, kind, droppable }) => ({
+				name,
+				label: name,
+				sentBy: "tabs",
+				waitingFor: kind,
+				droppable,
+			})),
+		]
 		this.maxPendingCalls = Math.max(this.maxPendingCalls, this.held.length)
 		return this.held
 	}
@@ -606,6 +681,21 @@ export class DstWorld implements AsyncDisposable {
 				return { ...intent, step }
 			case "mutate":
 				return this.write(step, intent)
+			case "openTab":
+				return { type: "openTab", step, tab: this.tabs!.open() }
+			case "toggleTab":
+				return {
+					type: "toggleTab",
+					step,
+					tab: intent.tab,
+					wantsServer: this.tabs!.toggle(intent.tab),
+				}
+			case "flushTab":
+				this.tabs!.flush(intent.tab)
+				return { ...intent, step }
+			case "connectTab":
+				this.tabs!.connect(intent.tab)
+				return { ...intent, step }
 			case "serverSet":
 			case "serverRemove":
 				return this.writeOnServer(step, intent)
@@ -621,6 +711,10 @@ export class DstWorld implements AsyncDisposable {
 				return { ...intent, step }
 			case "advance": {
 				const target = this.find(intent.call)
+				if (!target.handle) {
+					this.tabs!.advance(target.name)
+					return { type: "advance", step, ...boundaryOf(target) }
+				}
 				if (this.partitionBlocks(target))
 					return this.apply(step, { type: "drop", call: intent.call })
 				this.deliveredEvents.add(target.handle)
@@ -629,8 +723,19 @@ export class DstWorld implements AsyncDisposable {
 			}
 			case "drop": {
 				const target = this.find(intent.call)
-				const kind = faultKind(target, this.deliveredEvents.has(target.handle))
+				if (!target.handle) {
+					const kind =
+						this.tabs!.drop(target.name) === "poke" ? "pokeLost" : "saveFailed"
+					if (kind === "pokeLost") this.coverage.dropsByKind.pokeLost++
+					return { type: "drop", step, fault: kind, ...boundaryOf(target) }
+				}
+				const kind = faultKind(
+					{ label: target.label!, waitingFor: target.waitingFor },
+					this.deliveredEvents.has(target.handle),
+				)
 				this.coverage.dropsByKind[kind]++
+				if (kind === "responseLost" && target.label === "tabsRemote.push")
+					this.tabs!.coverage.acceptedPushRepliesLost++
 				if (this.partitionBlocks(target)) this.coverage.partitionDrops++
 				this.inFlight.push(
 					target.handle.fail(new DstFaultError({ call: target.name, kind })),
@@ -638,6 +743,11 @@ export class DstWorld implements AsyncDisposable {
 				return { type: "drop", step, fault: kind, ...boundaryOf(target) }
 			}
 			case "crash": {
+				if (isTab(intent.client)) {
+					this.tabs!.crash(intent.client)
+					this.writeCounts.delete(intent.client)
+					return { type: "crash", step, client: intent.client }
+				}
 				const calls = this.harness
 					.pendingCalls()
 					.filter(({ label }) => label === `${intent.client}.commit`)
@@ -732,6 +842,17 @@ export class DstWorld implements AsyncDisposable {
 			await this.harness.restart(name)
 			await this.boot(name)
 		}
+		await this.tabs?.heal(async (client) => {
+			for (let attempt = 0; attempt < 3; attempt++)
+				if (
+					await client.flushClientStorage().then(
+						() => true,
+						() => false,
+					)
+				)
+					break
+			await client.connect()
+		}, settle)
 		for (const name of this.clientNames) {
 			this.disconnected.delete(name)
 			this.failedConnections.delete(name)
@@ -749,6 +870,8 @@ export class DstWorld implements AsyncDisposable {
 			).result
 		}
 		await this.drain()
+		await this.tabs?.heal((client) => client.pullFromRemote(), settle)
+		this.tabs?.checkDelivered()
 
 		const outcome = await this.checkpoint(checkpoint)
 		for (const name of this.running) {
@@ -766,6 +889,11 @@ export class DstWorld implements AsyncDisposable {
 			...Object.fromEntries(
 				this.clientNames.map((name) => [name, this.inventoryOf(name)]),
 			),
+			...(this.tabs && {
+				tabs: Object.fromEntries(
+					this.tabs.alive.map((tab) => [tab, this.tabs!.inventoryOf(tab)]),
+				),
+			}),
 		}
 		const violations: DstViolation[] = []
 		for (const client of this.running) {
@@ -817,19 +945,39 @@ export class DstWorld implements AsyncDisposable {
 					})
 			}
 		}
+		if (this.tabs)
+			for (const tab of this.tabs.alive) {
+				const actual = this.tabs.inventoryOf(tab)
+				for (const collection of dstCollections) {
+					this.coverage.viewChecks++
+					if (!isDeepStrictEqual(actual[collection], states.server[collection]))
+						violations.push({
+							kind: "subscriptionView",
+							checkpoint,
+							client: tab,
+							subscriptionId: `inventory-${collection}`,
+							spec: { kind: "inventory", collection },
+							expected: states.server[collection],
+							actual: actual[collection],
+						})
+				}
+			}
 		const clientIds = this.clientNames.map((name) =>
 			this.crashed.has(name) ? null : this.harness[name].clientId,
 		)
 		return {
-			violation: this.orderViolation ?? violations[0],
+			violation: this.orderViolation ?? violations[0] ?? this.tabs?.violation,
 			states,
 			clientIds,
 			coverage: structuredClone(this.coverage),
+			...(this.tabs && { tabCoverage: structuredClone(this.tabs.coverage) }),
 			settled:
 				this.mutationsInFlight === 0 &&
-				this.writers.length === this.clientNames.length &&
+				this.clientNames.every((name) => this.writers.includes(name)) &&
+				(this.tabs?.writers.length ?? 0) === (this.tabs?.alive.length ?? 0) &&
 				this.offline.length === 0 &&
-				this.harness.pendingCalls().length === 0,
+				this.harness.pendingCalls().length === 0 &&
+				(this.tabs?.pending().length ?? 0) === 0,
 		}
 	}
 
@@ -842,6 +990,7 @@ export class DstWorld implements AsyncDisposable {
 	}
 
 	async [Symbol.asyncDispose](): Promise<void> {
+		this.tabs?.close()
 		await this.harness[Symbol.asyncDispose]()
 		await this.server.close()
 	}
@@ -850,7 +999,22 @@ export class DstWorld implements AsyncDisposable {
 		step: number,
 		intent: Extract<DstIntent, { type: "mutate" }>,
 	): DstTraceRecord {
-		const client = this.harness[intent.client]
+		const mutationId = (this.writeCounts.get(intent.client) ?? 0) + 1
+		this.writeCounts.set(intent.client, mutationId)
+		if (isTab(intent.client)) {
+			this.tabs!.commit(
+				intent.client,
+				intent.ops,
+				`tab-write-${intent.client}-${mutationId}`,
+			)
+			this.maxMutationsInFlight = Math.max(
+				this.maxMutationsInFlight,
+				this.mutationsInFlight,
+			)
+			return { ...intent, step, mutationId }
+		}
+		const clientName = intent.client as DstClientName
+		const client = this.harness[clientName]
 		const tx = client.transact()
 		const effectiveOps: MutationOp<DstSchema>[] = []
 		for (const op of intent.ops) {
@@ -902,8 +1066,6 @@ export class DstWorld implements AsyncDisposable {
 				}
 			}
 		}
-		const mutationId = (this.writeCounts.get(intent.client) ?? 0) + 1
-		this.writeCounts.set(intent.client, mutationId)
 		const generation = this.generations[intent.client]
 		const token = `${intent.client}.${generation}.${mutationId}`
 		const keys = new Set(
@@ -947,15 +1109,15 @@ export class DstWorld implements AsyncDisposable {
 					if (
 						result.cause instanceof DstFaultError ||
 						(result.cause instanceof GatekeeperError &&
-							(this.crashed.has(intent.client) ||
-								this.generations[intent.client] !== generation))
+							(this.crashed.has(clientName) ||
+								this.generations[clientName] !== generation))
 					)
 						return
 					return result
 				}
 				if (effectiveOps.length === 0) return
 				this.coverage.filterMembershipChanges += filterMembershipChanges
-				this.coverage.mutationsByClient[intent.client]!++
+				this.coverage.mutationsByClient[clientName]!++
 				const size = String(effectiveOps.length)
 				this.coverage.batchSizes[size] =
 					(this.coverage.batchSizes[size] ?? 0) + 1
@@ -1164,11 +1326,15 @@ function buildHarness({
 	clientNames,
 	idSource,
 	onCreate,
+	withTabs,
+	tabs,
 }: {
 	server: TandemServer<DstSchema, typeof dstRelations>
 	clientNames: readonly DstClientName[]
 	idSource: (label: DstClientName) => RngApi
 	onCreate: (name: DstClientName, client: DstClient) => void
+	withTabs: boolean
+	tabs: () => DstTabGroup | undefined
 }) {
 	const logger = new Logger({ sinks: [] })
 	const createClient = (
@@ -1192,7 +1358,9 @@ function buildHarness({
 		return client
 	}
 
-	let builder = new Gatekeeper().add("server", () => server)
+	let builder = new Gatekeeper().add("server", () =>
+		withTabs ? observedServer(server, tabs) : server,
+	)
 	// Register dependencies before any client, preserving stable construction order.
 	for (const name of clientNames) {
 		builder = builder.add(`${name}Timer`, () => new DstTimer(), timerGates)
@@ -1214,12 +1382,65 @@ function buildHarness({
 			)
 		})
 	}
-	return builder.build() as DstHarness
+	return (
+		withTabs
+			? builder
+					.add("tabsRemote", ({ server }) => tabsRemote(server, tabs))
+					.build()
+			: builder.build()
+	) as DstHarness
 }
 
 type DstHarness = Harness<
-	{ server: TandemServer<DstSchema, typeof dstRelations> } & Record<
-		DstClientName,
-		DstClient
-	>
+	{
+		server: TandemServer<DstSchema, typeof dstRelations>
+		tabsRemote: ReturnType<typeof tabsRemote>
+	} & Record<DstClientName, DstClient>
 >
+
+/** Tab leader calls cross the same network gate as standalone clients. */
+function tabsRemote(
+	server: RemoteApi<DstSchema>,
+	tabs: () => DstTabGroup | undefined,
+) {
+	return {
+		connect: async (tab: DstTabName, api: ClientApi<DstSchema>) => {
+			const connected = await server.connect({
+				...api,
+				poke: (payload) => {
+					tabs()?.poke(tab, () => api.poke(payload && roundTrip(payload)))
+					return Promise.resolve()
+				},
+			})
+			if (typeof connected === "function") {
+				if (!tabs()?.isAlive(tab)) await connected()
+				else {
+					tabs()?.connected()
+					return tabs()!.trackRemoteDisconnect(tab, connected)
+				}
+			}
+			return connected
+		},
+		push: (args: Parameters<RemoteApi<DstSchema>["push"]>[0]) =>
+			server.push(args),
+		pull: (args: Parameters<RemoteApi<DstSchema>["pull"]>[0]) =>
+			server.pull(args),
+	}
+}
+
+function observedServer(
+	server: TandemServer<DstSchema, typeof dstRelations>,
+	tabs: () => DstTabGroup | undefined,
+) {
+	return {
+		transact: () => server.transact(),
+		commit: (tx: Parameters<typeof server.commit>[0]) => server.commit(tx),
+		connect: (api: Parameters<typeof server.connect>[0]) => server.connect(api),
+		pull: (args: Parameters<typeof server.pull>[0]) => server.pull(args),
+		push: async (args: Parameters<typeof server.push>[0]) => {
+			const response = await server.push(args)
+			if (!("error" in response)) tabs()?.accepted(args)
+			return response
+		},
+	}
+}
