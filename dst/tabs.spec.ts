@@ -39,6 +39,57 @@ const write = (id: string) => ({
 })
 
 describe("DST shared tabs", () => {
+	it("unregisters a connected leader when its browser tab crashes", async () => {
+		await using world = await DstWorld.start({ seed: 17, tabs: 2 })
+		await world.drain()
+		const leader = world.tabs!.leader!
+		await world.apply(0, { type: "crash", client: leader })
+		await world.settle()
+		const pokesAfterCrash = world.tabs!.pokesAfterCrash
+		await world.apply(1, { type: "serverSet", item: task("after-crash") })
+		const outcome = await recover(world, {
+			startStep: 2,
+			eventBudget: 300,
+			record: () => {},
+		})
+		expect(outcome.violation).toBeUndefined()
+		expect(outcome.recovery.ordinary).toBe("passed")
+		expect(world.tabs!.pokesAfterCrash).toBe(pokesAfterCrash)
+	})
+
+	it("retries a failed tab connection without unaccepted writes", async () => {
+		await using world = await DstWorld.start({ seed: 18, tabs: 2 })
+		await world.apply(0, { type: "crash", client: "tab1" })
+		await world.settle()
+		const connecting = () =>
+			world
+				.pending()
+				.find(
+					({ name, waitingFor }) =>
+						name.startsWith("tabsRemote.connect") && waitingFor === "server",
+				)
+		await advanceUntil(world, () => connecting() !== undefined)
+		await world.apply(1, { type: "drop", call: connecting()!.name })
+		await world.settle()
+		await advanceUntil(world, () => world.tabs!.failedConnectionTabs.length > 0)
+		expect(world.tabs!.unacceptedTabs).toEqual([])
+		await world.apply(2, { type: "serverSet", item: task("after-failure") })
+		const events: DstTraceRecord[] = []
+		const outcome = await recover(world, {
+			startStep: 3,
+			eventBudget: 300,
+			record: (event) => events.push(event),
+		})
+		expect(events).toContainEqual(
+			expect.objectContaining({ type: "connectTab", tab: "tab2" }),
+		)
+		expect(outcome.recovery.ordinary).toBe("passed")
+		expect(outcome.violation).toBeUndefined()
+		expect(outcome.states.tabs?.tab2.tasks).toContainEqual(
+			task("after-failure"),
+		)
+	})
+
 	it("reopens shared storage when every tab crashed before ordinary recovery", async () => {
 		await using world = await DstWorld.start({ seed: 9, tabs: 2 })
 		const trace: DstTraceRecord[] = [

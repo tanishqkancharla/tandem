@@ -7,6 +7,7 @@ import {
 	type TandemClientTuple,
 	TandemClient,
 	type TimerApi,
+	unreachable,
 } from "@tanishqkancharla/tandem-core"
 import {
 	InMemoryTabs,
@@ -183,7 +184,12 @@ export class DstTabGroup {
 	// A failed save before connecting fails the leader's connection, so its
 	// commits can complete offline until it connects again.
 	private connectionFailed = false
+	private readonly remoteDisconnects = new Map<
+		DstTabName,
+		Set<() => Promise<void>>
+	>()
 	private offlinePeriods = 0
+	pokesAfterCrash = 0
 	private opened = 0
 
 	constructor(
@@ -232,6 +238,22 @@ export class DstTabGroup {
 					.map(({ tab }) => tab),
 			),
 		]
+	}
+
+	get failedConnectionTabs(): DstTabName[] {
+		return this.connectionFailed ? this.alive : []
+	}
+
+	/** A connected leader must stop receiving pokes when its browser tab crashes. */
+	trackRemoteDisconnect(name: DstTabName, disconnect: () => Promise<void>) {
+		const callbacks = this.remoteDisconnects.get(name) ?? new Set()
+		callbacks.add(disconnect)
+		this.remoteDisconnects.set(name, callbacks)
+		return () => {
+			callbacks.delete(disconnect)
+			if (callbacks.size === 0) this.remoteDisconnects.delete(name)
+			return disconnect()
+		}
 	}
 
 	get leader(): DstTabName | undefined {
@@ -331,6 +353,9 @@ export class DstTabGroup {
 			this.coverage.takeoversWithPendingCommits += 1
 		tab.alive = false
 		tab.ready = false
+		for (const disconnect of this.remoteDisconnects.get(name) ?? [])
+			void disconnect()
+		this.remoteDisconnects.delete(name)
 		tab.env.close()
 		for (const channel of this.channels)
 			if (channel.tab === name) {
@@ -415,6 +440,8 @@ export class DstTabGroup {
 					tx.remove(op.collection, op.id)
 					effectiveOps.push(op)
 					break
+				default:
+					unreachable(op)
 			}
 		}
 		tx.set("comments", { id: marker, taskId: marker, body: marker })
@@ -594,6 +621,10 @@ export class DstTabGroup {
 
 	/** Holds a poke the server sent to a leader, so the run can deliver or lose it. */
 	poke(tab: DstTabName, poke: () => Promise<void>) {
+		if (!this.isAlive(tab)) {
+			this.pokesAfterCrash++
+			return
+		}
 		this.schedule({
 			label: `${tab}.poke`,
 			kind: "poke",
@@ -714,15 +745,10 @@ export class DstTabGroup {
 	}
 
 	private observeLog(entry: LoggerEntry) {
-		const { message, error } = entry.data
-		// The leader saves before connecting, so a failed save fails the connect,
-		// which the hub logs with its storage cause.
-		if (
-			entry.level === "error" &&
-			message === "error syncing after connect" &&
-			error instanceof Error &&
-			error.name === "ClientStorageError"
-		) {
+		const { message } = entry.data
+		// A failed save or network call can leave the hub disconnected while every
+		// tab still wants the server. Ordinary recovery must retry the connection.
+		if (entry.level === "error" && message === "error syncing after connect") {
 			this.connectionFailed = true
 			this.offlinePeriods += 1
 		}

@@ -1414,7 +1414,10 @@ function tabsRemote(
 			})
 			if (typeof connected === "function") {
 				if (!tabs()?.isAlive(tab)) await connected()
-				else tabs()?.connected()
+				else {
+					tabs()?.connected()
+					return tabs()!.trackRemoteDisconnect(tab, connected)
+				}
 			}
 			return connected
 		},

@@ -65,7 +65,10 @@ export async function recover(
 		await emit({ type: "toggleTab", tab })
 	for (const tab of world.tabs?.alive ?? [])
 		await emit({ type: "flushTab", tab })
-	for (const tab of world.tabs?.unacceptedTabs ?? [])
+	for (const tab of new Set([
+		...(world.tabs?.unacceptedTabs ?? []),
+		...(world.tabs?.failedConnectionTabs ?? []),
+	]))
 		await emit({ type: "connectTab", tab })
 	let queue: string[] = []
 	let eventsDelivered = 0
