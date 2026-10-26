@@ -19,8 +19,13 @@ import {
 import {
 	type RelationalQuery,
 	type RelationalQueryResult,
+	type ScanWindow,
 } from "./query/Query.js"
-import { executeQuerySync } from "./query/executeQuery.js"
+import {
+	executeQuerySync,
+	executeScanWindowSync,
+	type ScanWindowRecord,
+} from "./query/executeQuery.js"
 import {
 	TandemClientStorage,
 	type TandemClientBase,
@@ -41,6 +46,8 @@ import {
 import type {
 	ClientId,
 	PokeAppendOp,
+	Cookie,
+	Patch,
 	PokePayload,
 	PullResponse,
 	Revision,
@@ -50,7 +57,7 @@ import type { RngApi } from "./utils/randomId.js"
 import { isEqual } from "./utils/objectUtils.js"
 import { ThrottleQueue } from "./utils/ThrottleQueue.js"
 import { Timer, type TimerApi } from "./utils/Timer.js"
-import { tag, unreachable } from "./utils/typeUtils.js"
+import { tag, unreachable, type Unsubscribe } from "./utils/typeUtils.js"
 
 class ClientStorageError extends errore.createTaggedError({
 	name: "ClientStorageError",
@@ -241,6 +248,15 @@ export class Database<
 		>
 	}
 
+	private get sessions() {
+		return this.tupleDb.subspace([
+			"session",
+		]) as unknown as TupleDatabaseClient<{
+			key: [ClientId]
+			value: { lastMutationId?: MutationId; scanWindow?: ScanWindow<Schema> }
+		}>
+	}
+
 	get replica() {
 		// Sync operations run only after hydration has restored or initialized this tuple.
 		const replica = this.tupleDb.get(["replica"])
@@ -413,7 +429,15 @@ export class Database<
 		transaction.tupleDbTx.commit()
 	}
 
-	commitMutation(transaction: Transaction<Schema>): void {
+	/**
+	 * Commits a pending mutation. A leader forwarding a tab's mutation records
+	 * that tab's mutation ID in the same transaction, so the forwarded write and
+	 * its deduplication marker persist together.
+	 */
+	commitMutation(
+		transaction: Transaction<Schema>,
+		forwarded?: { clientId: ClientId; mutationId: MutationId },
+	): void {
 		const tx = transaction.tupleDbTx
 		const replica = this.replica
 		const id = tag<MutationId>(replica.lastIssuedMutationId + 1)
@@ -432,15 +456,115 @@ export class Database<
 		}
 		transaction.outbox.set([id], [...transaction.ops])
 		tx.set(["replica"], { ...replica, lastIssuedMutationId: id })
+		if (forwarded) {
+			tx.set(["tab-write", forwarded.clientId, forwarded.mutationId], {
+				clientId: replica.clientId,
+				mutationId: id,
+			})
+			tx.set(["session", forwarded.clientId], {
+				...this.sessions.get([forwarded.clientId]),
+				lastMutationId: forwarded.mutationId,
+			})
+		}
 		tx.commit()
 	}
 
-	applyPull({
-		patch,
+	/** The last mutation this replica committed for a forwarding tab session. */
+	sessionLastMutationId(clientId: ClientId): MutationId | undefined {
+		return this.sessions.get([clientId])?.lastMutationId
+	}
+
+	tabWrite(clientId: ClientId, mutationId: MutationId) {
+		return this.tupleDb.get(["tab-write", clientId, mutationId])
+	}
+
+	forgetTabWrite(clientId: ClientId, mutationId: MutationId) {
+		this.tupleDb.commit({ remove: [["tab-write", clientId, mutationId]] })
+	}
+
+	/** Removes a tab session's receipts and returns them. */
+	forgetTabWrites(clientId: ClientId) {
+		const receipts = this.tupleDb.scan({ prefix: ["tab-write", clientId] })
+		this.tupleDb.commit({ remove: receipts.map(({ key }) => key) })
+		return receipts.map(({ value }) => value)
+	}
+
+	/** Saves a tab session's queries, so a later leader keeps syncing them. */
+	setSessionScanWindow(
+		clientId: ClientId,
+		scanWindow: ScanWindow<Schema> | undefined,
+	) {
+		const { scanWindow: _previous, ...session } =
+			this.sessions.get([clientId]) ?? {}
+		const tx = this.tupleDb.transact(this.rng.randomId())
+		if (scanWindow) tx.set(["session", clientId], { ...session, scanWindow })
+		else if (session.lastMutationId !== undefined)
+			tx.set(["session", clientId], session)
+		else tx.remove(["session", clientId])
+		tx.commit()
+	}
+
+	sessionScanWindows(): {
+		clientId: ClientId
+		scanWindow: ScanWindow<Schema>
+	}[] {
+		return this.sessions
+			.scan()
+			.flatMap(({ key: [clientId], value: { scanWindow } }) =>
+				scanWindow ? [{ clientId, scanWindow }] : [],
+			)
+	}
+
+	/** Every record, which restores a tab when it joins the leader. */
+	scanRecords(): ScanWindowRecord<Schema>[] {
+		return this.records
+			.scan()
+			.map(
+				({ key, value }) =>
+					({ collection: key[0], value }) as ScanWindowRecord<Schema>,
+			)
+	}
+
+	scanWindow(scanWindow: ScanWindow<Schema>) {
+		// Scan windows only read the record namespace, like queries.
+		return executeScanWindowSync<Schema, AnyRelations<Schema>>(
+			this.tupleDb as unknown as ReadOnlyTupleDatabaseClientApi<
+				SchemaToTupleSchema<Schema>
+			>,
+			this.relations ?? {},
+			scanWindow,
+		)
+	}
+
+	/** Calls back after each commit that writes records. */
+	subscribeToRecords(callback: () => void): Unsubscribe {
+		return this.tupleDb.subscribe({ prefix: ["record"] }, callback)
+	}
+
+	applyPull(response: PullResponse<Schema>): void {
+		this.reconcile(response, response.cookie)
+	}
+
+	/** Replace a tab's leader view while preserving edits the leader has not included. */
+	applyTabView({
+		records,
 		lastMutationId,
-		cookie,
-		revision,
-	}: PullResponse<Schema>): void {
+	}: {
+		records: Patch<Schema>["set"]
+		lastMutationId: MutationId
+	}): void {
+		this.reconcile({ patch: { reset: true, set: records }, lastMutationId })
+	}
+
+	/** Pulls pass a cookie; tab views pass neither a cookie nor a revision. */
+	private reconcile(
+		{
+			patch,
+			lastMutationId,
+			revision,
+		}: Pick<PullResponse<Schema>, "patch" | "lastMutationId" | "revision">,
+		cookie?: Cookie,
+	): void {
 		const transaction = this.transact()
 		const tx = transaction.tupleDbTx
 		const { records, bases, outbox } = transaction
@@ -483,7 +607,7 @@ export class Database<
 			)
 				bases.remove(key)
 		}
-		tx.set(["replica"], { ...this.replica, cookie })
+		if (cookie !== undefined) tx.set(["replica"], { ...this.replica, cookie })
 		tx.commit()
 		this.live.clear()
 		for (const [id, live] of remaining) this.live.set(id, live)

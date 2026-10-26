@@ -10,11 +10,12 @@
 		"declarationMap": false,
 		"paths": {
 			"@tanishqkancharla/tandem-core": ["./src/index.ts"],
+			"@tanishqkancharla/tandem-core/internal": ["./src/internal.ts"],
 			"@tanishqkancharla/tandem-server": ["../server/src/index.ts"],
 			"@tanishqkancharla/gatekeeper": ["../gatekeeper/src/Gatekeeper.ts"]
 		}
 	},
-	"include": ["src/**/*.ts", "test/**/*.ts"],
+	"include": ["src/**/*.ts", "test/**/*.ts", "benchmarks/**/*.ts"],
 	"references": [
 		{
 			"path": "../server"
