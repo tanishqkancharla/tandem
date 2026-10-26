@@ -8,6 +8,7 @@ import {
 	type DstTabCoverage,
 	type DstTabName,
 	type DstFinalStates,
+	type DstStats,
 	type DstIntent,
 	type DstPendingCall,
 	type DstSchema,
@@ -83,6 +84,7 @@ export type DstRunResult = {
 	states: DstFinalStates
 	violation: DstViolation | undefined
 	maxPendingCalls: number
+	stats: DstStats
 	maxMutationsInFlight: number
 	recovery: DstRecoveryResult
 	coverage: DstCoverage
@@ -95,6 +97,8 @@ const mutateRate = 0.35
 const serverWriteRate = 0.4
 /** Chance per step that a crashed client restarts. */
 const restartRate = 0.25
+/** Chance per step that waiting server poke intervals end. */
+const serverTickRate = 0.05
 const toggleTabRate = 0.05
 
 /** A random run: each step applies one event chosen from what is possible now. */
@@ -139,6 +143,7 @@ export class DstSimulation {
 			trace,
 			...outcome,
 			maxPendingCalls: world.maxPendingCalls,
+			stats: world.stats,
 			maxMutationsInFlight: world.maxMutationsInFlight,
 		}
 	}
@@ -172,6 +177,9 @@ export class DstSimulation {
 		}
 		if (faultRate > 0 && droppable.length > 0 && rng.boolean(faultRate)) {
 			return { type: "drop", call: rng.pick(droppable).name }
+		}
+		if (world.serverTicksPending > 0 && rng.boolean(serverTickRate)) {
+			return { type: "serverTick" }
 		}
 		if (
 			writers.length > 0 &&
@@ -243,7 +251,10 @@ export class DstSimulation {
 				const id = rng.boolean(0.7)
 					? rng.pick(serverOwnedIds)
 					: `item-${rng.int(1, this.options.recordCount)}`
-				if (rng.boolean(0.2)) return { type: "serverRemove", id }
+				if (rng.boolean(0.1)) return { type: "serverRemove", id }
+				// Streams text into the record, as a reply would token by token.
+				if (rng.boolean(0.6))
+					return { type: "serverAppend", id, text: ` t${step}` }
 				return {
 					type: "serverSet",
 					item: {

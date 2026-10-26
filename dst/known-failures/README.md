@@ -31,7 +31,7 @@ The recorded outcome has client4 seeing task `client4-item-1`, text `Note client
 pnpm dst:run --replay dst/known-failures/crash-removal.jsonl
 ```
 
-With upstream live-poke payloads integrated, replay stops at step 51 because `client10.commit#3` is not held at the recorded boundary. The original 1,000 workload events and expected ghost remain intact for investigation; the test verifies that replay reports the incompatible schedule, not successful recovery. This is no longer an executable reproduction of the ghost on the current stack. Neither a different event schedule nor replay divergence proves the defect is fixed.
+With append batching integrated, replay stops at step 32 because `client1.poke#1` reaches a different recorded boundary. The original 1,000 workload events and expected ghost remain intact for investigation; the test verifies that replay reports the incompatible schedule, not successful recovery. This is no longer an executable reproduction of the ghost on the current stack. Neither a different event schedule nor replay divergence proves the defect is fixed.
 
 ## Unresolved: a sole offset subscription returns an empty page
 
@@ -47,7 +47,7 @@ The reader caches the requested server row, but local pagination applies the off
 
 `recovery.spec.ts` drops a server poke, heals transport, and verifies that ordinary recovery reports a view mismatch while forced repair succeeds. Healing must not silently schedule an application pull. The configured sync timer debounces queued work; it is not periodic polling and does not by itself reacquire a lost notification.
 
-The merged generator also exposes a stale project view at seed 6, 300 steps, five clients, and one outstanding mutation. Client4 retains project `item-1` at revision 187 in ordinary recovery while the server has revision 220; explicit repair succeeds. The prior seed 3 literal became stale after other main changes. Seed 6 was reproduced on unmodified main, and the detection test verifies the exact mismatch and trace replay. This is separate from the historical crash ghost and does not diagnose its cause. Both current ordinary-recovery scenarios remain explicit detection tests without a third stored artifact.
+The generator exposes an ordinary stale project view at seed 3, 300 steps, five clients, and one outstanding mutation. Client2 retains project `item-1` at revision 208 while the server has revision 90; explicit repair succeeds. Append batching changed the prior seed 6 schedule. The detection test verifies the exact mismatch and trace replay. This is separate from the historical crash ghost and does not diagnose its cause. Both current ordinary-recovery scenarios remain explicit detection tests without a third stored artifact.
 
 Randomized sweeps do not exempt equivalent known failures. CI passes `--fail-on-violation`, fails on incomplete recovery or missing required coverage, and uploads failing artifacts with replay commands.
 

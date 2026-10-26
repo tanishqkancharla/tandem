@@ -74,11 +74,16 @@ export async function recover(
 	let eventsDelivered = 0
 	for (; eventsDelivered < eventBudget; eventsDelivered++) {
 		const pending = new Set(world.pending().map(({ name }) => name))
+		if (world.serverTicksPending > 0) pending.add("serverTick")
 		queue = queue.filter((name) => pending.has(name))
 		for (const name of pending) if (!queue.includes(name)) queue.push(name)
 		const next = queue.shift()
 		if (!next) break
-		await emit({ type: "advance", call: next })
+		await emit(
+			next === "serverTick"
+				? { type: "serverTick" }
+				: { type: "advance", call: next },
+		)
 	}
 	const ordinary = await emit({ type: "checkpoint" })
 	const repaired = await emit({ type: "repair" })

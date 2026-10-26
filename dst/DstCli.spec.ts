@@ -137,7 +137,7 @@ describe("DST CLI coverage and recovery", () => {
 					"--runs",
 					"2",
 					"--seed",
-					"1",
+					"18",
 					"--steps",
 					"2000",
 					"--client-count",
@@ -158,18 +158,18 @@ describe("DST CLI coverage and recovery", () => {
 				],
 				{ cwd: new URL(".", import.meta.url), encoding: "utf8" },
 			)
-			const artifactPath = path.join(directory, "seed-1.jsonl")
+			const artifactPath = path.join(directory, "seed-18.jsonl")
 			const artifact = parseArtifact(fs.readFileSync(artifactPath, "utf8"))
 			const replayed = await replay(artifact)
 
 			expect(result.status, result.stderr).toBe(failOnViolation ? 1 : 0)
 			expect(result.stdout).toContain("| 0 | 2 | 0 | 0 | 0 |")
-			expect(result.stdout).toContain("seed 1 (violation)")
-			expect(result.stdout).toContain("seed 2 (violation)")
+			expect(result.stdout).toContain("seed 18 (violation)")
+			expect(result.stdout).toContain("seed 19 (violation)")
 			expect(result.stdout).toContain(`pnpm dst:run --replay '${artifactPath}'`)
 			expect(fs.readdirSync(directory).sort()).toEqual([
-				"seed-1.jsonl",
-				"seed-2.jsonl",
+				"seed-18.jsonl",
+				"seed-19.jsonl",
 			])
 			expect(replayed).toEqual({
 				stepsCompleted: 2000,

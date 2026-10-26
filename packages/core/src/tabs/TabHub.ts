@@ -57,6 +57,8 @@ type TabHubArgs<
 	db: Database<Schema, Relations>
 	remote: RemoteApi<Schema>
 	syncInterval: TimerApi
+	livePullDelay: TimerApi
+	livePullMaxDelay: TimerApi
 	codecs: CollectionCodecs<Schema>
 	logger: LoggerApi
 	rng: RngApi
@@ -133,6 +135,8 @@ export class TabHub<
 			logger: args.logger.scope("sync-engine"),
 			rng: args.rng,
 			syncInterval: args.syncInterval,
+			livePullDelay: args.livePullDelay,
+			livePullMaxDelay: args.livePullMaxDelay,
 		})
 		this.codecs = args.codecs
 		this.logger = args.logger

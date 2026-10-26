@@ -142,7 +142,9 @@ export async function replay(artifact: DstArtifact): Promise<DstReplayResult> {
 			if (actual.type === "repair") repaired = actual.outcome
 			if (
 				step >= artifact.options.steps &&
-				(actual.type === "advance" || actual.type === "drop")
+				(actual.type === "advance" ||
+					actual.type === "drop" ||
+					actual.type === "serverTick")
 			)
 				eventsDelivered++
 		}
@@ -202,8 +204,13 @@ function cannotApply(
 				? undefined
 				: `${record.client} cannot take writes`
 		case "serverSet":
+		case "serverAppend":
 		case "serverRemove":
 			return undefined
+		case "serverTick":
+			return world.serverTicksPending > 0
+				? undefined
+				: "no server interval is waiting"
 		case "crash":
 			return world.crashable.includes(record.client)
 				? undefined
@@ -230,6 +237,10 @@ function intentOf(record: DstTraceRecord): DstIntent {
 	switch (record.type) {
 		case "serverSet":
 			return { type: "serverSet", item: record.item }
+		case "serverAppend":
+			return { type: "serverAppend", id: record.id, text: record.text }
+		case "serverTick":
+			return { type: "serverTick" }
 		case "serverRemove":
 			return { type: "serverRemove", id: record.id }
 		case "mutate": {

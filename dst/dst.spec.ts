@@ -745,18 +745,34 @@ describe("Deterministic simulation testing", () => {
 			crashRate: 0.02,
 		}).execute()
 
-		expect(
-			result.trace.filter(
-				(record) =>
-					record.type === "serverSet" &&
-					serverOwnedIds.includes(record.item.id),
-			).length,
-		).toBeGreaterThan(5)
+		const serverOwnedWrites = result.trace.filter(
+			(record) =>
+				(record.type === "serverSet" &&
+					serverOwnedIds.includes(record.item.id)) ||
+				(record.type === "serverAppend" && serverOwnedIds.includes(record.id)),
+		)
+		expect(serverOwnedWrites.length).toBeGreaterThan(5)
+		// Appended text reached clients live, not only through pulls.
+		expect(result.stats.appendPayloadsDelivered).toBeGreaterThan(0)
 		expect(
 			result.trace.some(
 				(record) => record.type === "drop" && record.fault === "pokeLost",
 			),
 		).toBe(true)
+		expect(result.violation).toBeUndefined()
+	})
+
+	it("merges bursts of server appends into single payloads under faults", async () => {
+		const result = await new DstSimulation({
+			seed: 1,
+			steps: 300,
+			faultRate: 0.1,
+			crashRate: 0.02,
+		}).execute()
+
+		expect(result.trace.some(({ type }) => type === "serverTick")).toBe(true)
+		// Text from several commits reached a client as one append.
+		expect(result.stats.mergedAppendsDelivered).toBeGreaterThan(0)
 		expect(result.violation).toBeUndefined()
 	})
 
@@ -775,13 +791,15 @@ describe("Deterministic simulation testing", () => {
 		const older = world.pending().find(({ label }) => label === "client1.poke")!
 		await world.apply(1, { type: "serverSet", item: second })
 		await world.settle()
+		await world.apply(2, { type: "serverTick" })
+		await world.settle()
 		const newer = world
 			.pending()
 			.find(
 				({ label, name }) => label === "client1.poke" && name !== older.name,
 			)!
 
-		await world.apply(2, { type: "advance", call: newer.name })
+		await world.apply(3, { type: "advance", call: newer.name })
 		await world.settle()
 		expect(world.inventoryOf("client1").tasks).toEqual([second])
 		expect(
@@ -791,21 +809,23 @@ describe("Deterministic simulation testing", () => {
 		expect(world.pending()).toContainEqual(
 			expect.objectContaining({ name: newer.name, sentBy: "client1Timer" }),
 		)
-		await world.apply(3, { type: "advance", call: older.name })
+		await world.apply(4, { type: "advance", call: older.name })
 		await world.settle()
 		expect(world.inventoryOf("client1").tasks).toEqual([second])
 		expect(
 			world.subscriptions("client1").get("inventory-tasks")?.snapshots,
 		).not.toContainEqual([first])
 
-		await world.apply(4, { type: "serverRemove", id: first.id })
+		await world.apply(5, { type: "serverRemove", id: first.id })
+		await world.settle()
+		await world.apply(6, { type: "serverTick" })
 		await world.settle()
 		const removal = world
 			.pending()
 			.find(
 				({ label, sentBy }) => label === "client1.poke" && sentBy === "server",
 			)!
-		await world.apply(5, { type: "advance", call: removal.name })
+		await world.apply(7, { type: "advance", call: removal.name })
 		await world.settle()
 		expect(world.inventoryOf("client1").tasks).toEqual([])
 		expect((await world.finish()).violation).toBeUndefined()
@@ -1009,8 +1029,8 @@ describe("Deterministic simulation testing", () => {
 		// artifact intact: rejecting its schedule is not proof the ghost is fixed.
 		expect(result.stepsCompleted).toBeLessThan(artifact.options.steps)
 		expect(result.divergence).toMatchObject({
-			expected: { type: "advance", call: "client10.commit#3" },
-			reason: "client10.commit#3 is not held at a boundary",
+			expected: { type: "advance", call: "client1.poke#1" },
+			reason: "the event applied differently",
 		})
 		expect(result.violation).toBeUndefined()
 		expect(result.recovery).toBeUndefined()

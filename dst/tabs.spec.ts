@@ -120,7 +120,7 @@ describe("DST shared tabs", () => {
 
 	it("does not mistake a tab's offline completion for early server completion", async () => {
 		const result = await new DstSimulation({
-			seed: 71,
+			seed: 1,
 			steps: 300,
 			tabs: 3,
 			crashRate: 0.02,

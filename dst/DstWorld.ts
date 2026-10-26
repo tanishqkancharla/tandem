@@ -140,11 +140,18 @@ class InMemoryServerStorage implements TandemServerStorageApi<DstSchema> {
 function remoteWithPokeEvents(
 	server: RemoteApi<DstSchema>,
 	events: GatekeeperEvents,
+	stats: DstStats,
 ): RemoteApi<DstSchema> {
 	let poke: ClientApi<DstSchema>["poke"] = () => Promise.resolve()
 	const pokeEvent = events.on<PokePayload<DstSchema> | undefined>(
 		"poke",
-		(payload) => poke(payload),
+		(payload) => {
+			if (payload?.append) stats.appendPayloadsDelivered += 1
+			// Each generated append is " t<step>", so merged text has several.
+			if (payload?.append?.some(({ text }) => text.split(" t").length > 2))
+				stats.mergedAppendsDelivered += 1
+			return poke(payload)
+		},
 	)
 	return {
 		connect: (client) => {
@@ -209,6 +216,40 @@ class DstTimer implements TimerApi {
 }
 
 const timerGates = { gates: { enter: false, exit: true } }
+
+/**
+ * Ends the server's live poke intervals only when the run chooses a
+ * `serverTick`. Not a Gatekeeper service: the server waits on it outside any
+ * call. While released, as before gates activate or after the run drains,
+ * intervals end at once.
+ */
+class DstServerTimer implements TimerApi {
+	private waiting: (() => void)[] = []
+	private holding = false
+
+	get pending(): number {
+		return this.waiting.length
+	}
+
+	waitForNextTick(): Promise<void> {
+		if (!this.holding) return Promise.resolve()
+		return new Promise((resolve) => this.waiting.push(resolve))
+	}
+
+	hold() {
+		this.holding = true
+	}
+
+	/** Ends every client's current interval. */
+	tick() {
+		for (const resolve of this.waiting.splice(0)) resolve()
+	}
+
+	release() {
+		this.holding = false
+		this.tick()
+	}
+}
 
 /**
  * A handoff that crosses the network: a request to the server, its reply, or a
@@ -369,7 +410,9 @@ export type DstTraceRecord =
 			fault: DstFaultKind | "saveFailed"
 	  } & DstBoundary)
 	| { type: "serverSet"; step: number; item: DstSchema["tasks"] }
+	| { type: "serverAppend"; step: number; id: string; text: string }
 	| { type: "serverRemove"; step: number; id: string }
+	| { type: "serverTick"; step: number }
 	| { type: "crash"; step: number; client: DstWriterName }
 	| { type: "restart"; step: number; client: DstClientName; clientId: string }
 	| { type: "openTab"; step: number; tab: DstTabName }
@@ -399,7 +442,10 @@ function settle(): Promise<void> {
 export type DstIntent =
 	/** The server writes on its own, as an agent saving its reply would. */
 	| { type: "serverSet"; item: DstSchema["tasks"] }
+	| { type: "serverAppend"; id: string; text: string }
 	| { type: "serverRemove"; id: string }
+	/** Ends the server's live poke intervals, sending merged payloads. */
+	| { type: "serverTick" }
 	| { type: "mutate"; client: DstWriterName; ops: MutationOp<DstSchema>[] }
 	| DstSubscriptionIntent
 	| DstConnectivityIntent
@@ -412,6 +458,14 @@ export type DstIntent =
 	| { type: "flushTab"; tab: DstTabName }
 	| { type: "connectTab"; tab: DstTabName }
 	| { type: "restart"; client: DstClientName }
+
+/** Counts that show a run exercised a behavior, not just converged. */
+export type DstStats = {
+	/** Poke payloads with appended text that reached a client. */
+	appendPayloadsDelivered: number
+	/** Of those, appends that merged text from several commits. */
+	mergedAppendsDelivered: number
+}
 
 /** A call held at a boundary, with its stable trace name. */
 export type DstPendingCall = {
@@ -472,23 +526,28 @@ export class DstWorld implements AsyncDisposable {
 	private lastStep = -1
 	private orderViolation: DstViolation | undefined
 	maxPendingCalls = 0
+	readonly stats: DstStats
 	maxMutationsInFlight = 0
 
 	readonly clientNames: readonly DstClientName[]
 	readonly coverage: DstCoverage
 	private readonly server: TandemServer<DstSchema, typeof dstRelations>
 	private readonly harness: DstHarness
+	private readonly serverTimer: DstServerTimer
 	private readonly storage: InMemoryServerStorage
 
 	private constructor({
 		server,
+		serverTimer,
 		harness,
 		clientNames,
 		storage,
 		desired,
 		observations,
 		coverage,
+		stats,
 	}: {
+		serverTimer: DstServerTimer
 		server: TandemServer<DstSchema, typeof dstRelations>
 		harness: DstHarness
 		clientNames: readonly DstClientName[]
@@ -496,13 +555,16 @@ export class DstWorld implements AsyncDisposable {
 		desired: DstWorld["desired"]
 		observations: DstWorld["observations"]
 		coverage: DstCoverage
+		stats: DstStats
 	}) {
+		this.serverTimer = serverTimer
 		this.server = server
 		this.harness = harness
 		this.clientNames = clientNames
 		this.storage = storage
 		this.desired = desired
 		this.observations = observations
+		this.stats = stats
 		this.coverage = coverage
 		this.generations = Object.fromEntries(clientNames.map((name) => [name, 0]))
 	}
@@ -523,11 +585,13 @@ export class DstWorld implements AsyncDisposable {
 			(_, index): DstClientName => `client${index + 1}`,
 		)
 		const storage = new InMemoryServerStorage()
+		const serverTimer = new DstServerTimer()
 		const server = new TandemServer<DstSchema, typeof dstRelations>({
 			schema: dstSchemaDefinition,
 			relations: dstRelations,
 			storage,
 			rng: SimPrng.idSource(seed, "server"),
+			livePokeInterval: serverTimer,
 		})
 		const desired: DstWorld["desired"] = new Map()
 		const observations: DstWorld["observations"] = new Map()
@@ -552,8 +616,13 @@ export class DstWorld implements AsyncDisposable {
 			observations.set(name, new Map())
 		}
 		let world: DstWorld | undefined
+		const stats: DstStats = {
+			appendPayloadsDelivered: 0,
+			mergedAppendsDelivered: 0,
+		}
 		const harness = buildHarness({
 			server,
+			stats,
 			clientNames,
 			withTabs: tabs > 0,
 			tabs: () => world?.tabs,
@@ -576,12 +645,14 @@ export class DstWorld implements AsyncDisposable {
 		})
 		world = new DstWorld({
 			server,
+			serverTimer,
 			storage,
 			harness,
 			clientNames,
 			desired,
 			observations,
 			coverage,
+			stats,
 		})
 		for (const name of clientNames) await world.boot(name)
 		if (tabs > 0) {
@@ -596,6 +667,7 @@ export class DstWorld implements AsyncDisposable {
 			await group.heal(() => Promise.resolve(), settle)
 		}
 		await harness.activateGates()
+		serverTimer.hold()
 		return world
 	}
 
@@ -697,8 +769,12 @@ export class DstWorld implements AsyncDisposable {
 				this.tabs!.connect(intent.tab)
 				return { ...intent, step }
 			case "serverSet":
+			case "serverAppend":
 			case "serverRemove":
 				return this.writeOnServer(step, intent)
+			case "serverTick":
+				this.serverTimer.tick()
+				return { type: "serverTick", step }
 			case "subscribe":
 				this.coverage.subscriptionChanges++
 				this.unsubscribe(intent.client, intent.id)
@@ -784,6 +860,11 @@ export class DstWorld implements AsyncDisposable {
 				}
 			}
 		}
+	}
+
+	/** Server poke intervals waiting for a `serverTick`. */
+	get serverTicksPending(): number {
+		return this.serverTimer.pending
 	}
 
 	hasPending(call: string): boolean {
@@ -977,12 +1058,16 @@ export class DstWorld implements AsyncDisposable {
 				(this.tabs?.writers.length ?? 0) === (this.tabs?.alive.length ?? 0) &&
 				this.offline.length === 0 &&
 				this.harness.pendingCalls().length === 0 &&
+				this.serverTicksPending === 0 &&
 				(this.tabs?.pending().length ?? 0) === 0,
 		}
 	}
 
 	/** Releases every gate and lets all work in flight finish. */
 	async drain(): Promise<void> {
+		// Merged payloads go out before the gates release, so their pokes run.
+		this.serverTimer.release()
+		await settle()
 		await this.harness.deactivateGatesAndSettle()
 		const results = await Promise.all(this.inFlight)
 		const error = results.find((result) => result instanceof Error)
@@ -1136,11 +1221,25 @@ export class DstWorld implements AsyncDisposable {
 
 	private writeOnServer(
 		step: number,
-		intent: Extract<DstIntent, { type: "serverSet" | "serverRemove" }>,
+		intent: Extract<
+			DstIntent,
+			{ type: "serverSet" | "serverAppend" | "serverRemove" }
+		>,
 	): DstTraceRecord {
 		const tx = this.harness.server.transact()
-		if (intent.type === "serverSet") tx.set("tasks", intent.item)
-		else tx.remove("tasks", intent.id)
+		switch (intent.type) {
+			case "serverSet":
+				tx.set("tasks", intent.item)
+				break
+			case "serverAppend":
+				tx.append("tasks", intent.id, { text: intent.text })
+				break
+			case "serverRemove":
+				tx.remove("tasks", intent.id)
+				break
+			default:
+				return unreachable(intent)
+		}
 		// Its pokes, with the records each client views, are events the run can lose.
 		this.activeMutations += 1
 		this.maxMutationsInFlight = Math.max(
@@ -1323,6 +1422,7 @@ function boundaryOf(call: DstPendingCall): DstBoundary {
 
 function buildHarness({
 	server,
+	stats,
 	clientNames,
 	idSource,
 	onCreate,
@@ -1331,6 +1431,7 @@ function buildHarness({
 }: {
 	server: TandemServer<DstSchema, typeof dstRelations>
 	clientNames: readonly DstClientName[]
+	stats: DstStats
 	idSource: (label: DstClientName) => RngApi
 	onCreate: (name: DstClientName, client: DstClient) => void
 	withTabs: boolean
@@ -1353,6 +1454,10 @@ function buildHarness({
 			autoConnect: false,
 			syncInterval: timer,
 			clientStorageWriteInterval: timer,
+			// Each tick of the client's timer is one quiet check, and the
+			// maximum delay is a single tick of its own.
+			livePullDelay: timer,
+			livePullMaxDelay: timer,
 		})
 		onCreate(label, client)
 		return client
@@ -1376,7 +1481,7 @@ function buildHarness({
 				Record<`${DstClientName}Storage`, TandemClientStorageApi<DstSchema>>
 			return createClient(
 				name,
-				remoteWithPokeEvents(services.server, events),
+				remoteWithPokeEvents(services.server, events, stats),
 				dependencies[`${name}Timer`],
 				dependencies[`${name}Storage`],
 			)

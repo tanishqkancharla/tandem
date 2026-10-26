@@ -20,6 +20,12 @@ async function advanceHeld(world: DstWorld, startStep: number) {
 		const next = [...world.pending()].sort(
 			(a, b) => (serviced.get(a.name) ?? -1) - (serviced.get(b.name) ?? -1),
 		)[0]
+		if (world.serverTicksPending > 0) {
+			events.push(
+				await world.apply(startStep + events.length, { type: "serverTick" }),
+			)
+			continue
+		}
 		if (!next) return events
 		serviced.set(next.name, count)
 		events.push(
@@ -36,7 +42,7 @@ describe("DST ordinary recovery", () => {
 	it("retains a stale project view found with live pokes even when forced repair succeeds", async () => {
 		const sink = memorySink()
 		const result = await new DstSimulation({
-			seed: 6,
+			seed: 3,
 			steps: 300,
 			clientCount: 5,
 			maxMutationsInFlight: 1,
@@ -44,16 +50,18 @@ describe("DST ordinary recovery", () => {
 		expect(result.violation).toEqual({
 			kind: "subscriptionView",
 			checkpoint: "ordinary",
-			client: "client4",
+			client: "client2",
 			subscriptionId: "inventory-projects",
 			spec: { kind: "inventory", collection: "projects" },
 			expected: [
-				{ id: "item-1", name: "Project item-1 (rev 220)" },
-				{ id: "item-2", name: "Project item-2 (rev 259)" },
+				{ id: "item-1", name: "Project item-1 (rev 90)" },
+				{ id: "item-2", name: "Project item-2 (rev 14)" },
+				{ id: "item-3", name: "Project item-3 (rev 271)" },
 			],
 			actual: [
-				{ id: "item-1", name: "Project item-1 (rev 187)" },
-				{ id: "item-2", name: "Project item-2 (rev 259)" },
+				{ id: "item-1", name: "Project item-1 (rev 208)" },
+				{ id: "item-2", name: "Project item-2 (rev 14)" },
+				{ id: "item-3", name: "Project item-3 (rev 271)" },
 			],
 		})
 		expect(result.recovery).toMatchObject({
@@ -95,9 +103,13 @@ describe("DST ordinary recovery", () => {
 		expect(checkpoint?.outcome.states.client2.projects).toEqual([
 			{ id: "connected", name: "Ordinary propagation" },
 		])
-		expect(events.slice(0, -2).every((event) => event.type === "advance")).toBe(
-			true,
-		)
+		expect(
+			events
+				.slice(0, -2)
+				.every(
+					(event) => event.type === "advance" || event.type === "serverTick",
+				),
+		).toBe(true)
 		expect(events.at(-1)?.type).toBe("repair")
 		expect(result.recovery).toMatchObject({
 			ordinary: "passed",
@@ -496,7 +508,9 @@ describe("DST ordinary recovery", () => {
 		expect(result.recovery.eventsDelivered).toBeGreaterThan(0)
 		expect(result.recovery.eventsDelivered).toBe(
 			result.trace.filter(
-				(event) => event.step >= 30 && event.type === "advance",
+				(event) =>
+					event.step >= 30 &&
+					(event.type === "advance" || event.type === "serverTick"),
 			).length,
 		)
 		const artifact = parseArtifact(formatArtifact(sink.lines))
@@ -513,7 +527,7 @@ describe("DST ordinary recovery", () => {
 		async (eventBudget) => {
 			const sink = memorySink()
 			const result = await new DstSimulation({
-				seed: 65,
+				seed: 1,
 				steps: 1,
 				clientCount: 2,
 				connectivityRate: 0,

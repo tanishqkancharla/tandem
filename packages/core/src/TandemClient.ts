@@ -66,6 +66,18 @@ export type TandemClientArgs<
 	 * @default 150
 	 */
 	syncInterval?: number | TimerApi
+	/**
+	 * Milliseconds without new live payloads before the client pulls to
+	 * confirm them, or a host-provided timer.
+	 * @default 200
+	 */
+	livePullDelay?: number | TimerApi
+	/**
+	 * Milliseconds after a live payload by which the client pulls even while
+	 * payloads keep arriving, or a host-provided timer.
+	 * @default 1000
+	 */
+	livePullMaxDelay?: number | TimerApi
 	autoConnect?: boolean
 	/**
 	 * Share `clientStorage` with other tabs. One tab, the leader, owns the
@@ -144,6 +156,8 @@ export class TandemClient<
 		autoConnect = true,
 		rng,
 		syncInterval = 150,
+		livePullDelay = 200,
+		livePullMaxDelay = 1000,
 		tabs,
 	}: TandemClientArgs<Schema, Relations>) {
 		this.rng = rng ?? { randomId }
@@ -187,6 +201,8 @@ export class TandemClient<
 						db: leaderDb,
 						remote,
 						syncInterval: leaderTimer(syncInterval),
+						livePullDelay: leaderTimer(livePullDelay),
+						livePullMaxDelay: leaderTimer(livePullMaxDelay),
 						codecs,
 						logger: this.logger.scope("tab-hub"),
 						rng: this.rng,
@@ -222,6 +238,8 @@ export class TandemClient<
 					logger: this.logger.scope("sync-engine"),
 					rng: this.rng,
 					syncInterval,
+					livePullDelay,
+					livePullMaxDelay,
 				})
 			: undefined
 

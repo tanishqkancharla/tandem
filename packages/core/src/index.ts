@@ -13,6 +13,7 @@ export type {
 	RemoteInvalidRequestError,
 	RemoteMutationGapError,
 	RemoteRequestError,
+	PokeAppendOp,
 	PokePayload,
 	PushResponse,
 	PullResponse,
@@ -24,6 +25,8 @@ export { connectTandemEventSource } from "./sync/TandemEventSource.js"
 export type { TandemEventSourceArgs } from "./sync/TandemEventSource.js"
 export { Transaction } from "./transaction/Transaction.js"
 export type {
+	AppendableField,
+	AppendPayload,
 	Mutation,
 	MutationId,
 	MutationOp,

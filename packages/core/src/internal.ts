@@ -9,7 +9,9 @@ export {
 export type { ScanWindowRecord } from "./query/executeQuery.js"
 export { collectionIdsEqual, collectionIdToTuple } from "./schema/Schema.js"
 export {
+	AppendPayloadError,
 	UpdatePayloadError,
+	validateAppendPayload,
 	validateUpdatePayload,
 } from "./transaction/Transaction.js"
 // In-memory tabs, for tests and hosts outside a browser document.

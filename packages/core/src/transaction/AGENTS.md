@@ -32,6 +32,8 @@ await db.commit(tx)
 - `remove` - Delete record by id, recorded even when the record isn't local
 - `update` - Assign supplied top-level payload fields on an existing record; missing records remain absent
 
+`TandemServerTransaction.append` is server-only and never becomes a client mutation; see the sync engine's live appends.
+
 Ops store only the new value, id, or partial payload, never the previous value. Replay reapplies each op in order. `tx.update(collection, id, payload)` accepts explicit partial assignments, copies their supplied fields, and records an `update` operation. Omitted fields remain untouched; nested values replace their top-level field. Equal assignments still record intent. Missing records and empty payloads add no operation. Reject payload identity changes; field deletion is not supported.
 
 `MutationApi.codec(schema)` belongs at a transport boundary: encode mutations before serializing and decode them before calling a runtime remote. It runs collection codecs on set values, update payloads, and identities; it preserves mutation IDs and operation order. Decode all mutations before applying the request so a codec failure cannot apply a prefix. Do not run validation-only encode/decode passes in `TandemServer`.
