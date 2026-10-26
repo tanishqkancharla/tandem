@@ -1,0 +1,36 @@
+{
+	"name": "@tandem/website",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "vite --host 0.0.0.0 --port 3000 --strictPort",
+		"build": "vite build",
+		"preview": "vite preview --host 0.0.0.0 --port 3000 --strictPort",
+		"type-check": "tsc --noEmit",
+		"test:e2e": "playwright test",
+		"lint": "oxlint src e2e vite.config.ts playwright.config.ts",
+		"format": "oxfmt src e2e *.ts *.json README.md"
+	},
+	"dependencies": {
+		"@tanstack/react-router": "1.170.46",
+		"@tanstack/react-start": "1.169.4",
+		"errore": "^0.14.1",
+		"maui": "npm:@tanishqkancharla/maui@^0.0.62",
+		"motion": "^14.6.0",
+		"purse-styles": "^0.2.6",
+		"react": "^19.3.0",
+		"react-dom": "^19.3.0",
+		"react-markdown": "^10.1.0",
+		"rehype-slug": "^6.0.0",
+		"remark-gfm": "^4.0.1"
+	},
+	"devDependencies": {
+		"@playwright/test": "^1.63.0",
+		"@types/node": "^26.6.4",
+		"@types/react": "^19.3.0",
+		"@types/react-dom": "^19.3.0",
+		"@vitejs/plugin-react": "^6.1.2",
+		"typescript": "^7.0.2",
+		"vite": "^8.3.5"
+	}
+}

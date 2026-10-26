@@ -335,4 +335,4 @@ await client.commit(tx)
 - Every viewer of the thread sees the reply grow, not only the sender.
 - A text part is resent whole only when something other than its text changes, such as its `state` at the end.
 
-The end-to-end test in [`examples/agent-chat/apps/server/test/AgentChat.e2e.spec.ts`](../examples/agent-chat/apps/server/test/AgentChat.e2e.spec.ts) implements this guide with the AI SDK's mock model, and shows a test setup (a silent logger, `syncInterval: 0`, and a JSON transport): two viewers with slow pulls and a long reply, a tool call, the stop button, a model error, send order, and startup cleanup.
+The end-to-end test in [`examples/agent-chat/apps/server/test/AgentChat.e2e.spec.ts`](https://github.com/tanishqkancharla/tandem/blob/main/examples/agent-chat/apps/server/test/AgentChat.e2e.spec.ts) implements this guide with the AI SDK's mock model, and shows a test setup (a silent logger, `syncInterval: 0`, and a JSON transport): two viewers with slow pulls and a long reply, a tool call, the stop button, a model error, send order, and startup cleanup.

@@ -1,0 +1,7 @@
+{
+	"$schema": "https://openapi.vercel.sh/vercel.json",
+	"framework": null,
+	"buildCommand": "pnpm --filter @tandem/website build",
+	"outputDirectory": "dist/client",
+	"rewrites": [{ "source": "/(.*)", "destination": "/_shell.html" }]
+}

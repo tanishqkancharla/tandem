@@ -32,7 +32,7 @@ Call `server.close()` on shutdown to close storage.
 const client = new TandemClient({ schema, remote: server })
 ```
 
-Across a network, the client's `remote` is a transport that forwards `push` and `pull` to the server and calls `poke` when there may be new data. The [Quickstart](quickstart.md#5-add-a-server) shows a minimal HTTP transport, and [`examples/todo`](../examples/todo) has a complete Hono server.
+Across a network, the client's `remote` is a transport that forwards `push` and `pull` to the server and calls `poke` when there may be new data. The [Quickstart](quickstart.md#5-add-a-server) shows a minimal HTTP transport, and [`examples/todo`](https://github.com/tanishqkancharla/tandem/tree/main/examples/todo) has a complete Hono server.
 
 After every commit that writes data, the server pokes each connected client whose view the commit changed. A client's view is the scan window of its latest pull made while connected, so the first view comes from the pull an event stream's `ready` starts. The poke carries the commit's revision and the changed records inside that view, so the client shows them before it pulls:
 

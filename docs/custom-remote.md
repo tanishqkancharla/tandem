@@ -90,7 +90,7 @@ await server.push({ clientId: request.clientId, mutations: decoded })
 
 Decode the request's mutations before applying any of them. Return `invalid-request` if decoding fails; do not acknowledge or apply a prefix of an undecodable request. `TandemServer` does not repeat collection encoding or decoding when applying runtime operations.
 
-Collection codecs are optional; collections without them pass their values through and require JSON-native values or transport-owned validation. This codec handles push mutations only, not pull response records, authentication, or authorization. `PokeApi.codec(schema)` does the same for poke payloads; the SSE helpers apply it when given `schema`. The [todo HTTP transport](../examples/todo/apps/server/src/app.ts) shows the complete request path.
+Collection codecs are optional; collections without them pass their values through and require JSON-native values or transport-owned validation. This codec handles push mutations only, not pull response records, authentication, or authorization. `PokeApi.codec(schema)` does the same for poke payloads; the SSE helpers apply it when given `schema`. The [todo HTTP transport](https://github.com/tanishqkancharla/tandem/blob/main/examples/todo/apps/server/src/app.ts) shows the complete request path.
 
 ## `pull`
 
@@ -133,4 +133,4 @@ function authorizedRemote(
 
 ## Testing
 
-The Tandem test suites exercise remotes through real clients. [`packages/server/test`](../packages/server/test) and [`packages/core/test/sync`](../packages/core/test/sync) show how to wire two clients to one remote. [Gatekeeper](../packages/gatekeeper/README.md) can reorder calls and inject faults between them.
+The Tandem test suites exercise remotes through real clients. [`packages/server/test`](https://github.com/tanishqkancharla/tandem/tree/main/packages/server/test) and [`packages/core/test/sync`](https://github.com/tanishqkancharla/tandem/tree/main/packages/core/test/sync) show how to wire two clients to one remote. [Gatekeeper](https://github.com/tanishqkancharla/tandem/blob/main/packages/gatekeeper/README.md) can reorder calls and inject faults between them.
