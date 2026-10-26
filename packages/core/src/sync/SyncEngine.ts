@@ -461,6 +461,8 @@ export class SyncEngine<Schema extends AnySchema> {
 		})
 		// A response from before clear() must not acknowledge the new session.
 		if (clientId !== this.clientId) return
+		// A response that arrives after disconnect is dropped; the next connect pulls again.
+		if (!this.disconnectFromRemote) return
 		if ("error" in response) {
 			return new RemoteResponseError({ operation: "pull", cause: response })
 		}
@@ -477,9 +479,12 @@ export class SyncEngine<Schema extends AnySchema> {
 		return this.db.persistClientStorage()
 	}
 
-	commit(transaction: Transaction<Schema>): Promise<void> {
+	commit(
+		transaction: Transaction<Schema>,
+		forwarded?: { clientId: ClientId; mutationId: MutationId },
+	): Promise<void> {
 		const clientId = this.clientId
-		this.db.commitMutation(transaction)
+		this.db.commitMutation(transaction, forwarded)
 		const pendingCheckpoint = this.db.persistClientStorage()
 		if (!pendingCheckpoint) return this.syncQueue.enqueue("push")
 		return pendingCheckpoint.then((checkpoint) => {
@@ -488,6 +493,11 @@ export class SyncEngine<Schema extends AnySchema> {
 			this.logger.info({ message: "queueing push" })
 			return this.syncQueue.enqueue("push")
 		})
+	}
+
+	/** Push pending mutations without waiting for another commit. */
+	queuePush(): Promise<void> {
+		return this.syncQueue.enqueue("push")
 	}
 
 	private async push() {
