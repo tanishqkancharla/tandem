@@ -494,6 +494,7 @@ describe("live pokes", () => {
 			{ ...reply("Other"), id: "other", threadId: "thread-2" },
 			reply("Hel"),
 		])
+		await restarted.flushClientStorage()
 	})
 
 	liveTest(

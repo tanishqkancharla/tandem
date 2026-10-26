@@ -13,7 +13,7 @@ Tandem gives each client a local, queryable database. Writes apply locally first
 - Typed object queries with `select`, `where`, `orderBy`, `limit`, `offset`, and relations through `with`
 - Live query subscriptions that re-run when matching data changes
 - Server changes reach subscribed clients in one hop, before the pull that confirms them
-- Optional IndexedDB persistence on the client
+- Optional IndexedDB persistence on the client, shared safely between browser tabs
 - Scalar or compound tuple IDs, with typed prefix scans
 - A server database that implements the sync protocol
 - React bindings
