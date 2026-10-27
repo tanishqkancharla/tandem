@@ -67,10 +67,16 @@ import type {
 export type TandemServerArgs<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema>,
+	Mutators extends AnyMutators<Schema> = {},
+	RequestContext = unknown,
 > = {
 	schema: RuntimeSchemaDefinition<Schema>
 	relations: Relations
 	storage: TandemServerStorageApi<NoInfer<Schema>>
+	mutators?: Mutators
+	hooks?: (
+		request: RequestContext | undefined,
+	) => ServerMutatorHooks<Schema, Relations, Mutators>
 	rng?: RngApi
 	/**
 	 * Milliseconds, or a host-provided timer, during which a client's live
@@ -120,9 +126,9 @@ export type ServerMutatorContext = {
 	location: "server"
 	clientId: ClientId
 	mutationId: MutationId
-}
+} & { source: "client" | "server" }
 
-export type ServerMutator<
+type ServerMutator<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema>,
 	Args = Json,
@@ -141,7 +147,7 @@ export type ServerMutator<
 	afterCommit?: (args: Args, ctx: ServerMutatorContext) => unknown
 }
 
-export type ServerMutators<
+type ServerMutators<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema>,
 > = {
@@ -150,23 +156,26 @@ export type ServerMutators<
 }
 
 /** Contextually types the hooks for a registry of shared definitions. */
-export type ServerMutatorsFor<
+export type ServerMutatorHooks<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema>,
 	Shared extends AnyMutators<Schema>,
 > = {
-	[Name in keyof Shared]: ServerMutator<
-		Schema,
-		Relations,
-		MutatorArgsOf<Shared[Name]>
-	>
+	[Name in keyof Shared]?: {
+		authorize?: (
+			tx: TandemServerTransaction<Schema, Relations>,
+			args: MutatorArgsOf<Shared[Name]>,
+			ctx: ServerMutatorContext,
+		) => unknown
+		afterCommit?: (
+			args: MutatorArgsOf<Shared[Name]>,
+			ctx: ServerMutatorContext,
+		) => unknown
+	}
 }
 
-export type TandemServerPushOptions<
-	Schema extends AnySchema,
-	Relations extends AnyRelations<Schema>,
-> = {
-	mutators?: ServerMutators<Schema, Relations>
+export type TandemServerPushOptions<RequestContext = unknown> = {
+	context?: RequestContext
 	/** Raw operation pushes are refused by default when mutators are registered. */
 	allowOps?: boolean
 }
@@ -374,8 +383,17 @@ function tandemStorageToTupleDatabaseStorage<Schema extends AnySchema>(
 export class TandemServer<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema>,
+	Mutators extends AnyMutators<Schema> = {},
+	RequestContext = unknown,
 > implements RemoteApi<Schema> {
 	private readonly relations: Relations
+	private readonly mutators?: Mutators
+	private readonly hooks?: TandemServerArgs<
+		Schema,
+		Relations,
+		Mutators,
+		RequestContext
+	>["hooks"]
 	private readonly subscriptions = new Set<() => void>()
 	private readonly syncClients = new Map<ClientId, SyncClientState<Schema>>()
 	private readonly schema: RuntimeSchemaDefinition<Schema>
@@ -399,9 +417,13 @@ export class TandemServer<
 	// asynchronous storage commits. Order sync reads and commits here.
 	private queue: Promise<void> = Promise.resolve()
 
-	constructor(args: TandemServerArgs<Schema, Relations>) {
+	constructor(
+		args: TandemServerArgs<Schema, Relations, Mutators, RequestContext>,
+	) {
 		this.schema = args.schema
 		this.relations = args.relations
+		this.mutators = args.mutators
+		this.hooks = args.hooks
 		this.rng = args.rng
 		const livePokeInterval = args.livePokeInterval ?? 50
 		this.livePokeTimer =
@@ -450,25 +472,38 @@ export class TandemServer<
 		)
 	}
 
+	private registered(
+		name: string,
+		request?: RequestContext,
+	): ServerMutators<Schema, Relations>[string] | Error | undefined {
+		if (!this.mutators || !Object.hasOwn(this.mutators, name)) return
+		const hooks = errore.try({
+			try: () => this.hooks?.(request)?.[name as keyof Mutators],
+			catch: (cause) => new MutatorRunError({ mutator: name, cause }),
+		})
+		if (hooks instanceof Error) return hooks
+		return {
+			...this.mutators[name as keyof Mutators],
+			...(hooks?.authorize && { authorize: hooks.authorize }),
+			...(hooks?.afterCommit && { afterCommit: hooks.afterCommit }),
+		} as ServerMutators<Schema, Relations>[string]
+	}
+
 	/** Run a registered named mutator for server-owned work such as a stream chunk. */
-	mutate<
-		Mutators extends ServerMutators<Schema, Relations>,
-		Name extends keyof Mutators & string,
-	>(
+	mutate<Name extends keyof Mutators & string>(
 		name: Name,
 		input: MutatorArgsOf<Mutators[Name]>,
-		{ mutators }: { mutators: Mutators },
 	): Promise<void> {
 		return this.run(async () => {
-			const definition = Object.hasOwn(mutators, name)
-				? mutators[name]
-				: undefined
+			const definition = this.registered(name)
+			if (definition instanceof Error) return definition
 			if (!definition) return new Error(`Unknown mutator ${name}`)
 			const args = await validateMutatorArgs(name, definition.args, input)
 			if (args instanceof Error) return args
 			const transaction = this.transact()
 			const context: ServerMutatorContext = {
 				location: "server",
+				source: "server",
 				clientId: this.instanceId as unknown as ClientId,
 				mutationId: tag<MutationId>(++this.directMutationId),
 			}
@@ -515,7 +550,7 @@ export class TandemServer<
 
 	push = (
 		{ clientId, mutations }: Parameters<RemoteApi<Schema>["push"]>[0],
-		options: TandemServerPushOptions<Schema, Relations> = {},
+		options: TandemServerPushOptions<RequestContext> = {},
 	): ReturnType<RemoteApi<Schema>["push"]> =>
 		this.run(async () => {
 			const result = await this.applyPush(clientId, mutations, options)
@@ -637,9 +672,9 @@ export class TandemServer<
 		clientId: ClientId,
 		mutations: Mutation<Schema>[],
 		{
-			mutators,
-			allowOps = mutators === undefined,
-		}: TandemServerPushOptions<Schema, Relations>,
+			context,
+			allowOps = this.mutators === undefined,
+		}: TandemServerPushOptions<RequestContext>,
 	): Promise<
 		| TandemServerError
 		| RemoteInvalidRequestError
@@ -668,7 +703,7 @@ export class TandemServer<
 					clientId,
 					mutation.id,
 					mutation.mutator,
-					mutators,
+					context,
 				)
 				if (outcome instanceof Error) return outcome
 				if (outcome) rejected.push(outcome)
@@ -717,12 +752,11 @@ export class TandemServer<
 		clientId: ClientId,
 		mutationId: MutationId,
 		call: MutatorCall,
-		mutators: ServerMutators<Schema, Relations> | undefined,
+		request: RequestContext | undefined,
 	): Promise<TandemServerError | MutationRejection | undefined> {
-		const definition =
-			mutators && Object.hasOwn(mutators, call.name)
-				? mutators[call.name]
-				: undefined
+		const definition = this.registered(call.name, request)
+		if (definition instanceof Error)
+			return this.reject(clientId, mutationId, definition.message)
 		if (!definition)
 			return this.reject(clientId, mutationId, `Unknown mutator ${call.name}`)
 		const args = await validateMutatorArgs(
@@ -736,6 +770,7 @@ export class TandemServer<
 		const { transaction, acknowledge } = this.pushTransaction(clientId)
 		const context: ServerMutatorContext = {
 			location: "server",
+			source: "client",
 			clientId,
 			mutationId,
 		}
@@ -950,35 +985,41 @@ export class TandemServer<
 			DerivedAppend<Schema> & { after: Revision }
 		>()
 		for (const [index, { key, value }] of writes.set.entries()) {
-			const fields = appendedFields(
-				previous[index] as Record<string, unknown> | undefined,
-				value as Record<string, unknown>,
-			)
-			if (!fields) continue
+			const fields = errore.try({
+				try: () =>
+					appendedFields(
+						previous[index] as Record<string, unknown> | undefined,
+						value as Record<string, unknown>,
+					),
+				catch: () => new Error("Append fields cannot be compared"),
+			})
+			if (!fields || fields instanceof Error) continue
 			const valueCodec = this.schema.collections[key[1]].codec
-			if (
-				valueCodec &&
-				fields.some(({ field, text }) => {
-					const encoded = errore.try({
-						try: () => valueCodec.encode({ [field]: text }),
-						catch: () => new Error("Append suffix cannot be encoded"),
-					})
-					if (
-						encoded instanceof Error ||
-						typeof (encoded as Record<string, unknown>)[field] !== "string"
-					)
-						return true
-					const decoded = errore.try({
-						try: () => valueCodec.decode(encoded),
-						catch: () => new Error("Append suffix cannot be decoded"),
-					})
-					return (
-						decoded instanceof Error ||
-						(decoded as Record<string, unknown>)[field] !== text
-					)
-				})
-			)
-				continue
+			const suffixSupported = errore.try({
+				try: () =>
+					!valueCodec ||
+					fields.every(({ field, text }) => {
+						const encoded = errore.try({
+							try: () => valueCodec.encode({ [field]: text }),
+							catch: () => new Error("Append suffix cannot be encoded"),
+						})
+						if (
+							encoded instanceof Error ||
+							typeof (encoded as Record<string, unknown>)[field] !== "string"
+						)
+							return false
+						const decoded = errore.try({
+							try: () => valueCodec.decode(encoded),
+							catch: () => new Error("Append suffix cannot be decoded"),
+						})
+						return (
+							!(decoded instanceof Error) &&
+							(decoded as Record<string, unknown>)[field] === text
+						)
+					}),
+				catch: () => new Error("Append suffix cannot be represented"),
+			})
+			if (suffixSupported !== true) continue
 			const append = {
 				collection: key[1],
 				id: (value as Schema[CollectionName<Schema>]).id,

@@ -13,7 +13,6 @@ import {
 import {
 	TandemServer,
 	TandemServerJsonFileStorage,
-	type ServerMutatorsFor,
 } from "@tanishqkancharla/tandem-server"
 import { convertToModelMessages, type LanguageModel, streamText } from "ai"
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test"
@@ -80,6 +79,14 @@ const chatMutators = defineMutators(schema, {
 			if (message) tx.set("messages", { ...message, text: message.text + text })
 		},
 	},
+	finishReply: {
+		args: z.object({ id: z.string(), status: z.enum(["complete", "error"]) }),
+		run: async (tx, { id, status }) => {
+			const message = await tx.get("messages", id)
+			if (message)
+				tx.set("messages", { ...message, status, updatedAt: Date.now() })
+		},
+	},
 	/** The server aborts the model; the reply's final save says "stopped". */
 	stopReply: {
 		args: z.object({ messageId: z.string() }),
@@ -91,7 +98,7 @@ const chatMutators = defineMutators(schema, {
 type Session = { threads: string[] }
 
 class ChatServer {
-	readonly tandem: TandemServer<ChatSchema, {}>
+	readonly tandem: TandemServer<ChatSchema, {}, typeof chatMutators, Session>
 	/** Reply IDs in the order the server started them. */
 	readonly started: string[] = []
 	private readonly controllers = new Map<string, AbortController>()
@@ -100,49 +107,79 @@ class ChatServer {
 	constructor(
 		filePath: string,
 		private readonly model: LanguageModel,
+		private readonly generation: "server" | "client" = "server",
 	) {
 		this.tandem = new TandemServer({
 			schema,
 			relations: {},
 			storage: new TandemServerJsonFileStorage<ChatSchema>({ filePath }),
+			mutators: chatMutators,
+			hooks: (session: Session | undefined) => ({
+				sendMessage: {
+					authorize: async (tx, args, ctx) => {
+						if (
+							ctx.source !== "client" ||
+							!session?.threads.includes(args.threadId)
+						)
+							throw new Error(`No access to ${args.threadId}`)
+						if (
+							(await tx.get("messages", args.messageId)) ||
+							(await tx.get("messages", replyId(args.messageId)))
+						)
+							throw new Error(`Message ${args.messageId} exists`)
+					},
+					...(this.generation === "server" && {
+						afterCommit: (args) =>
+							this.startReply(replyId(args.messageId), args.threadId),
+					}),
+				},
+				appendReply: {
+					authorize: async (tx, args, ctx) => {
+						const reply = await tx.get("messages", args.id)
+						if (
+							!reply ||
+							!args.id.endsWith(":reply") ||
+							reply.status !== "streaming"
+						)
+							throw new Error("No streaming reply")
+						if (
+							this.generation === "server"
+								? ctx.source !== "server"
+								: ctx.source !== "client" ||
+									!session?.threads.includes(reply.threadId)
+						)
+							throw new Error("No access to reply")
+					},
+				},
+				finishReply: {
+					authorize: async (tx, { id }, ctx) => {
+						const reply = await tx.get("messages", id)
+						if (
+							this.generation !== "client" ||
+							ctx.source !== "client" ||
+							!reply ||
+							!id.endsWith(":reply") ||
+							reply.status !== "streaming" ||
+							!session?.threads.includes(reply.threadId)
+						)
+							throw new Error("No access to reply")
+					},
+				},
+				stopReply: {
+					authorize: async (tx, { messageId }, ctx) => {
+						const reply = await tx.get("messages", replyId(messageId))
+						if (
+							ctx.source !== "client" ||
+							!reply ||
+							!session?.threads.includes(reply.threadId)
+						)
+							throw new Error(`No reply to ${messageId}`)
+					},
+					afterCommit: ({ messageId }) =>
+						this.controllers.get(replyId(messageId))?.abort(),
+				},
+			}),
 		})
-	}
-
-	/** Server hooks stay beside their shared mutators and capture the request session. */
-	private mutators(session: Session, serverOwned = false) {
-		return {
-			sendMessage: {
-				...chatMutators.sendMessage,
-				authorize: async (tx, args) => {
-					if (!session.threads.includes(args.threadId))
-						throw new Error(`No access to ${args.threadId}`)
-					if (
-						(await tx.get("messages", args.messageId)) ||
-						(await tx.get("messages", replyId(args.messageId)))
-					)
-						throw new Error(`Message ${args.messageId} exists`)
-				},
-				afterCommit: (args) =>
-					this.startReply(replyId(args.messageId), args.threadId),
-			},
-			appendReply: {
-				...chatMutators.appendReply,
-				authorize: (_tx, args) => {
-					if (!serverOwned || !args.id.endsWith(":reply"))
-						throw new Error("Only the server appends replies")
-				},
-			},
-			stopReply: {
-				...chatMutators.stopReply,
-				authorize: async (tx, { messageId }) => {
-					const reply = await tx.get("messages", replyId(messageId))
-					if (!reply || !session.threads.includes(reply.threadId))
-						throw new Error(`No reply to ${messageId}`)
-				},
-				afterCommit: ({ messageId }) =>
-					this.controllers.get(replyId(messageId))?.abort(),
-			},
-		} satisfies ServerMutatorsFor<ChatSchema, {}, typeof chatMutators>
 	}
 
 	/** The JSON transport a browser would use. */
@@ -161,7 +198,7 @@ class ChatServer {
 			push: async (args) => {
 				// With mutators, the push refuses raw set/update/remove operations.
 				const response = await this.tandem.push(overJson(args), {
-					mutators: this.mutators(session),
+					context: session,
 				})
 				if (!network.loseNextPushResponse) return overJson(response)
 				network.loseNextPushResponse = false
@@ -212,13 +249,7 @@ class ChatServer {
 		})
 		const streamed = await (async () => {
 			for await (const delta of result.textStream)
-				await this.tandem.mutate(
-					"appendReply",
-					{ id, text: delta },
-					{
-						mutators: this.mutators({ threads: [threadId] }, true),
-					},
-				)
+				await this.tandem.mutate("appendReply", { id, text: delta })
 		})().catch((cause) => new Error(`Reply ${id} failed`, { cause }))
 		const tx = this.tandem.transact()
 		await tx.update("messages", id, {
@@ -358,6 +389,42 @@ test("sending shows the message and an empty reply at once, then the server stre
 	// The optimistic run showed the empty reply before the server saved any text.
 	expect(shown[0]).toEqual({ text: "", status: "streaming" })
 	expect(shown.at(-1)).toEqual({ text: tokens.join(""), status: "complete" })
+	await chat.close()
+})
+
+test("a client consumes model chunks and syncs a complete reply to another viewer", async ({
+	filePath,
+	viewer,
+}) => {
+	const chat = new ChatServer(filePath, textModel(tokens), "client")
+	const writer = await viewer(chat, member)
+	const reader = await viewer(chat, member)
+	const outsider = await viewer(chat, { threads: [] })
+	await writer.mutate.sendMessage({
+		messageId: "message-1",
+		threadId: "thread-1",
+		text: "Stream here",
+	})
+	await expect(
+		outsider.mutate.appendReply({
+			id: replyId("message-1"),
+			text: "forged",
+		}),
+	).rejects.toThrow("No access to reply")
+	const stream = streamText({ model: textModel(tokens), prompt: "Stream here" })
+	for await (const delta of stream.textStream)
+		await writer.mutate.appendReply({ id: replyId("message-1"), text: delta })
+	await writer.mutate.finishReply({
+		id: replyId("message-1"),
+		status: "complete",
+	})
+	await vi.waitFor(() =>
+		expect(reply(reader, "message-1")).toMatchObject({
+			text: tokens.join(""),
+			status: "complete",
+		}),
+	)
+	expect(chat.started).toEqual([])
 	await chat.close()
 })
 

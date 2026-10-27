@@ -276,38 +276,48 @@ test("codec-backed Map metadata changes force a full set", async () => {
 	await server.close()
 })
 
-test("named direct appends retain deltas, concurrent text, and nested afterCommit calls", async ({
-	server,
-	viewer,
-	commit,
-}) => {
-	await commit((tx) => tx.set("messages", message("reply", { text: "Start" })))
-	const pokes = await viewer("named-reader", [{ collection: "messages" }])
-	const mutators = {
-		appendMessage: {
-			...appendMessage,
-			afterCommit: ({
-				id,
-				follow,
-			}: {
-				id: string
-				text: string
-				follow?: boolean
-			}) => {
-				if (follow)
-					return server.mutate("appendMessage", { id, text: "!" }, { mutators })
+test("named direct appends retain deltas, concurrent text, and nested afterCommit calls", async () => {
+	let server!: TandemServer<
+		ChatSchema,
+		{},
+		{ appendMessage: typeof appendMessage }
+	>
+	server = new TandemServer({
+		schema,
+		relations: {},
+		storage: new TestTandemServerStorage<ChatSchema>(),
+		livePokeInterval: 0,
+		mutators: { appendMessage },
+		hooks: () => ({
+			appendMessage: {
+				afterCommit: ({ id, follow }) => {
+					if (follow) return server.mutate("appendMessage", { id, text: "!" })
+				},
 			},
+		}),
+	})
+	const tx = server.transact()
+	tx.set("messages", message("reply", { text: "Start" }))
+	await server.commit(tx)
+	const pokes: (PokePayload<ChatSchema> | undefined)[] = []
+	const clientId = tag<ClientId>("named-reader")
+	await server.connect({
+		clientId,
+		poke: (payload) => {
+			pokes.push(payload)
+			return Promise.resolve()
 		},
-	}
+	})
+	await server.pull({ clientId, scanWindow: [{ collection: "messages" }] })
 	await Promise.all([
-		server.mutate("appendMessage", { id: "reply", text: " A" }, { mutators }),
-		server.mutate("appendMessage", { id: "reply", text: " B" }, { mutators }),
+		server.mutate("appendMessage", { id: "reply", text: " A" }),
+		server.mutate("appendMessage", { id: "reply", text: " B" }),
 	])
-	await server.mutate(
-		"appendMessage",
-		{ id: "reply", text: " C", follow: true },
-		{ mutators },
-	)
+	await server.mutate("appendMessage", {
+		id: "reply",
+		text: " C",
+		follow: true,
+	})
 	await vi.waitFor(async () =>
 		expect((await server.query({ collection: "messages" }))[0]?.text).toBe(
 			"Start A B C!",
@@ -318,32 +328,34 @@ test("named direct appends retain deltas, concurrent text, and nested afterCommi
 			payload?.append?.some(({ text }) => text.includes(" A")),
 		),
 	).toBe(true)
+	await server.close()
 })
 
-test("a failing afterCommit is logged after the named append commits", async ({
-	server,
-	commit,
-}) => {
-	await commit((tx) => tx.set("messages", message("reply")))
-	const logged = vi.spyOn(console, "error").mockImplementation(() => {})
-	const mutators = {
-		appendMessage: {
-			...appendMessage,
-			afterCommit: () => {
-				throw new Error("Notification unavailable")
+test("a failing afterCommit is logged after the named append commits", async () => {
+	const server = new TandemServer({
+		schema,
+		relations: {},
+		storage: new TestTandemServerStorage<ChatSchema>(),
+		mutators: { appendMessage },
+		hooks: () => ({
+			appendMessage: {
+				afterCommit: () => {
+					throw new Error("Notification unavailable")
+				},
 			},
-		},
-	}
-	await server.mutate(
-		"appendMessage",
-		{ id: "reply", text: "Saved" },
-		{ mutators },
-	)
+		}),
+	})
+	const tx = server.transact()
+	tx.set("messages", message("reply"))
+	await server.commit(tx)
+	const logged = vi.spyOn(console, "error").mockImplementation(() => {})
+	await server.mutate("appendMessage", { id: "reply", text: "Saved" })
 	expect((await server.query({ collection: "messages" }))[0]?.text).toBe(
 		"Saved",
 	)
 	expect(logged).toHaveBeenCalledOnce()
 	logged.mockRestore()
+	await server.close()
 })
 
 test("final transaction writes determine whether a poke is an append", async ({

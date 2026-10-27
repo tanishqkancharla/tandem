@@ -30,6 +30,7 @@ import {
 } from "@tanishqkancharla/tandem-core"
 import {
 	TandemServer,
+	type ServerMutatorHooks,
 	type TandemServerStorageApi,
 	type TandemTuple,
 } from "@tanishqkancharla/tandem-server"
@@ -103,25 +104,26 @@ export const dstMutators = defineMutators(dstSchemaDefinition, {
 	},
 })
 
-function dstServerMutators(stats: DstStats) {
+type DstServer = TandemServer<
+	DstSchema,
+	typeof dstRelations,
+	typeof dstMutators
+>
+
+function dstServerMutators(
+	stats: DstStats,
+): ServerMutatorHooks<DstSchema, typeof dstRelations, typeof dstMutators> {
 	const effectKeys = new Set<string>()
 	return {
 		appendTask: {
-			...dstMutators.appendTask,
-			authorize: async (
-				tx: ReturnType<
-					TandemServer<DstSchema, typeof dstRelations>["transact"]
-				>,
-				{ id }: { id: string; text: string; field?: "text" | "note" },
-			) => {
-				if (serverOwnedIds.includes(id))
+			authorize: async (tx, { id }, ctx) => {
+				if (ctx.source === "client" && serverOwnedIds.includes(id))
 					throw new Error(`Only the server writes ${id}`)
-				if (!(await tx.get("tasks", id))) throw new Error(`No task ${id}`)
+				if (ctx.source === "client" && !(await tx.get("tasks", id)))
+					throw new Error(`No task ${id}`)
 			},
-			afterCommit: (
-				_args: { id: string; text: string; field?: "text" | "note" },
-				ctx: { clientId: string; mutationId: number },
-			) => {
+			afterCommit: (_args, ctx) => {
+				if (ctx.source === "server") return
 				const key = JSON.stringify([ctx.clientId, ctx.mutationId])
 				if (effectKeys.has(key)) stats.effectRepeated = key
 				effectKeys.add(key)
@@ -186,13 +188,9 @@ class InMemoryServerStorage implements TandemServerStorageApi<DstSchema> {
  * event owned by that client, so the run can deliver, delay, or drop it.
  */
 function remoteWithPokeEvents(
-	server: Pick<
-		TandemServer<DstSchema, typeof dstRelations>,
-		"connect" | "push" | "pull"
-	>,
+	server: Pick<DstServer, "connect" | "push" | "pull">,
 	events: GatekeeperEvents,
 	stats: DstStats,
-	mutators: ReturnType<typeof dstServerMutators>,
 ): RemoteApi<DstSchema> {
 	let poke: ClientApi<DstSchema>["poke"] = () => Promise.resolve()
 	const pokeEvent = events.on<PokePayload<DstSchema> | undefined>(
@@ -217,7 +215,7 @@ function remoteWithPokeEvents(
 				},
 			})
 		},
-		push: (args) => server.push(args, { mutators, allowOps: true }),
+		push: (args) => server.push(args, { allowOps: true }),
 		pull: (args) => server.pull(args),
 	}
 }
@@ -609,7 +607,7 @@ export class DstWorld implements AsyncDisposable {
 
 	readonly clientNames: readonly DstClientName[]
 	readonly coverage: DstCoverage
-	private readonly server: TandemServer<DstSchema, typeof dstRelations>
+	private readonly server: DstServer
 	private readonly harness: DstHarness
 	private readonly serverTimer: DstServerTimer
 	private readonly storage: InMemoryServerStorage
@@ -626,7 +624,7 @@ export class DstWorld implements AsyncDisposable {
 		stats,
 	}: {
 		serverTimer: DstServerTimer
-		server: TandemServer<DstSchema, typeof dstRelations>
+		server: DstServer
 		harness: DstHarness
 		clientNames: readonly DstClientName[]
 		storage: InMemoryServerStorage
@@ -664,10 +662,22 @@ export class DstWorld implements AsyncDisposable {
 		)
 		const storage = new InMemoryServerStorage()
 		const serverTimer = new DstServerTimer()
-		const server = new TandemServer<DstSchema, typeof dstRelations>({
+		const stats: DstStats = {
+			namedAppendCommits: 0,
+			appendPayloadsDelivered: 0,
+			mergedAppendsDelivered: 0,
+		}
+		const hooks = dstServerMutators(stats)
+		const server = new TandemServer<
+			DstSchema,
+			typeof dstRelations,
+			typeof dstMutators
+		>({
 			schema: dstSchemaDefinition,
 			relations: dstRelations,
 			storage,
+			mutators: dstMutators,
+			hooks: () => hooks,
 			rng: SimPrng.idSource(seed, "server"),
 			livePokeInterval: serverTimer,
 		})
@@ -694,15 +704,9 @@ export class DstWorld implements AsyncDisposable {
 			observations.set(name, new Map())
 		}
 		let world: DstWorld | undefined
-		const stats: DstStats = {
-			namedAppendCommits: 0,
-			appendPayloadsDelivered: 0,
-			mergedAppendsDelivered: 0,
-		}
 		const harness = buildHarness({
 			server,
 			stats,
-			mutators: dstServerMutators(stats),
 			clientNames,
 			withTabs: tabs > 0,
 			tabs: () => world?.tabs,
@@ -1365,11 +1369,10 @@ export class DstWorld implements AsyncDisposable {
 		)
 		const committed =
 			intent.type === "serverAppend"
-				? this.harness.server.mutate(
-						"appendTask",
-						{ id: intent.id, text: intent.text },
-						{ mutators: { appendTask: dstMutators.appendTask } },
-					)
+				? this.harness.server.mutate("appendTask", {
+						id: intent.id,
+						text: intent.text,
+					})
 				: this.harness.server.commit(tx)
 		this.inFlight.push(
 			committed.then(async (handle) => {
@@ -1548,17 +1551,15 @@ function boundaryOf(call: DstPendingCall): DstBoundary {
 function buildHarness({
 	server,
 	stats,
-	mutators,
 	clientNames,
 	idSource,
 	onCreate,
 	withTabs,
 	tabs,
 }: {
-	server: TandemServer<DstSchema, typeof dstRelations>
+	server: DstServer
 	clientNames: readonly DstClientName[]
 	stats: DstStats
-	mutators: ReturnType<typeof dstServerMutators>
 	idSource: (label: DstClientName) => RngApi
 	onCreate: (name: DstClientName, client: DstClient) => void
 	withTabs: boolean
@@ -1609,7 +1610,7 @@ function buildHarness({
 				Record<`${DstClientName}Storage`, TandemClientStorageApi<DstSchema>>
 			return createClient(
 				name,
-				remoteWithPokeEvents(services.server, events, stats, mutators),
+				remoteWithPokeEvents(services.server, events, stats),
 				dependencies[`${name}Timer`],
 				dependencies[`${name}Storage`],
 			)
@@ -1626,14 +1627,14 @@ function buildHarness({
 
 type DstHarness = Harness<
 	{
-		server: TandemServer<DstSchema, typeof dstRelations>
+		server: DstServer
 		tabsRemote: ReturnType<typeof tabsRemote>
 	} & Record<DstClientName, DstClient>
 >
 
 /** Tab leader calls cross the same network gate as standalone clients. */
 function tabsRemote(
-	server: RemoteApi<DstSchema>,
+	server: Pick<DstServer, "connect" | "push" | "pull">,
 	tabs: () => DstTabGroup | undefined,
 ) {
 	return {
@@ -1655,22 +1656,21 @@ function tabsRemote(
 			return connected
 		},
 		push: (args: Parameters<RemoteApi<DstSchema>["push"]>[0]) =>
-			server.push(args),
+			server.push(args, { allowOps: true }),
 		pull: (args: Parameters<RemoteApi<DstSchema>["pull"]>[0]) =>
 			server.pull(args),
 	}
 }
 
 function observedServer(
-	server: TandemServer<DstSchema, typeof dstRelations>,
+	server: DstServer,
 	tabs: () => DstTabGroup | undefined,
 ) {
 	return {
 		transact: () => server.transact(),
 		commit: (tx: Parameters<typeof server.commit>[0]) => server.commit(tx),
-		mutate: (name: "appendTask", args: { id: string; text: string }, options: {
-			mutators: { appendTask: typeof dstMutators.appendTask }
-		}) => server.mutate(name, args, options),
+		mutate: (name: "appendTask", args: { id: string; text: string }) =>
+			server.mutate(name, args),
 		connect: (api: Parameters<typeof server.connect>[0]) => server.connect(api),
 		pull: (args: Parameters<typeof server.pull>[0]) => server.pull(args),
 		push: async (

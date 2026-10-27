@@ -24,6 +24,8 @@ const server = new TandemServer({
 
 Call `server.close()` on shutdown to close storage.
 
+Register shared mutators once in the constructor with `mutators`; optional `hooks` add server-only authorization and post-commit work. `server.mutate(name, args)` then retains the registered name and argument types. Pass authenticated request context to `server.push(request, { context })`; the hooks factory receives it for that request. See [Agent chat](agent-chat.md) for the full pattern.
+
 ## Connect clients
 
 `TandemServer` has `connect`, `push`, and `pull` methods that match `RemoteApi`. Clients in the same process can use the server as their `remote` directly:

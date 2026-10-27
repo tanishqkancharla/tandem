@@ -4,6 +4,9 @@ import {
 	defineSchema,
 	Logger,
 	MutationRejectedError,
+	tag,
+	type ClientId,
+	type MutationId,
 	type RemoteApi,
 	TandemClient,
 	type TandemClientStorageApi,
@@ -14,11 +17,7 @@ import { InMemoryTupleStorage } from "tuple-database"
 import { InMemoryTabs } from "@tanishqkancharla/tandem-core/internal"
 import type { ScanStorageArgs, WriteOps } from "tuple-database"
 import { expect, test as baseTest, vi } from "vitest"
-import {
-	TandemServer,
-	type ServerMutatorsFor,
-	type TandemServerPushOptions,
-} from "../src/index.js"
+import { TandemServer, type TandemServerPushOptions } from "../src/index.js"
 import { TestTandemServerStorage } from "./TandemServerStorage.fixture.js"
 
 type Todo = {
@@ -73,15 +72,34 @@ const todoMutators = defineMutators(schema, {
 	},
 })
 
-type TodoServer = TandemServer<TodoSchema, {}>
-
 class TodoBackend {
 	readonly storage = new TestTandemServerStorage<TodoSchema>()
-	readonly tandem: TodoServer = new TandemServer({
-		schema,
-		relations: {},
-		storage: this.storage,
-	})
+	readonly tandem: TandemServer<TodoSchema, {}, typeof todoMutators, string>
+	constructor() {
+		this.tandem = new TandemServer({
+			schema,
+			relations: {},
+			storage: this.storage,
+			mutators: todoMutators,
+			hooks: (user: string | undefined) => ({
+				addTodo: {
+					authorize: async (tx, { id }, ctx) => {
+						if (ctx.source !== "client" || !user)
+							throw new Error("Sign in to add todos")
+						if (this.queryBug)
+							await tx.query({
+								collection: "todos",
+								where: { done: { $bogus: true } } as never,
+							})
+						if (await tx.get("todos", id)) throw new Error(`Todo ${id} exists`)
+					},
+					afterCommit: ({ id }) => {
+						this.announced.push(id)
+					},
+				},
+			}),
+		})
+	}
 	/** The signed-in user each push runs as. */
 	user: string | undefined = "ada"
 	/** Ids of todos whose `after` effect ran, in order. */
@@ -90,36 +108,13 @@ class TodoBackend {
 	allowOps: boolean | undefined = undefined
 	/** The addTodo override runs a malformed query, as a bug in it would. */
 	queryBug = false
-	/** Mutators an older server deploy still lacks. */
-	missing: (keyof typeof todoMutators)[] = []
 	/** The next push response is lost after the server applies it. */
 	loseNextResponse = false
 	/** Holds a push so tests can inspect the local optimistic value. */
 	pushGate?: Promise<void>
 
-	private pushOptions(): TandemServerPushOptions<TodoSchema, {}> {
-		const mutators = {
-			addTodo: {
-				...todoMutators.addTodo,
-				authorize: async (tx, { id }) => {
-					if (!this.user) throw new Error("Sign in to add todos")
-					if (this.queryBug)
-						await tx.query({
-							collection: "todos",
-							where: { done: { $bogus: true } } as never,
-						})
-					if (await tx.get("todos", id)) throw new Error(`Todo ${id} exists`)
-				},
-				afterCommit: ({ id }) => {
-					this.announced.push(id)
-				},
-			},
-			toggleTodo: todoMutators.toggleTodo,
-			appendNote: todoMutators.appendNote,
-		} satisfies ServerMutatorsFor<TodoSchema, {}, typeof todoMutators>
-
-		for (const name of this.missing) delete mutators[name]
-		return { mutators, allowOps: this.allowOps }
+	private pushOptions(): TandemServerPushOptions<string> {
+		return { context: this.user, allowOps: this.allowOps }
 	}
 
 	remote(): RemoteApi<TodoSchema> {
@@ -406,6 +401,45 @@ test("concurrent calls that read the same record each apply on the latest state"
 	])
 })
 
+test("concurrent request hooks retain their own session after commit", async () => {
+	const gate = Promise.withResolvers<void>()
+	const observed: string[] = []
+	const server = new TandemServer({
+		schema,
+		relations: {},
+		storage: new TestTandemServerStorage<TodoSchema>(),
+		mutators: todoMutators,
+		hooks: (session: { user: string } | undefined) => ({
+			addTodo: {
+				afterCommit: async ({ id }) => {
+					await gate.promise
+					observed.push(`${id}:${session?.user}`)
+				},
+			},
+		}),
+	})
+	const push = (user: string) =>
+		server.push(
+			{
+				clientId: tag<ClientId>(user),
+				mutations: [
+					{
+						id: tag<MutationId>(1),
+						ops: [],
+						mutator: { name: "addTodo", args: { id: user, text: user } },
+					},
+				],
+			},
+			{ context: { user } },
+		)
+	await Promise.all([push("ada"), push("lin")])
+	gate.resolve()
+	await vi.waitFor(() =>
+		expect(observed.sort()).toEqual(["ada:ada", "lin:lin"]),
+	)
+	await server.close()
+})
+
 test("changing the argument object after a call does not change what the server runs", async ({
 	backend,
 	connect,
@@ -420,22 +454,32 @@ test("changing the argument object after a call does not change what the server 
 	expect((await backend.todos()).map(({ text }) => text)).toEqual(["As called"])
 })
 
-test("a mutator the server does not have is rejected, as for a client newer than the deploy", async ({
-	backend,
-	connect,
-}) => {
-	const { client } = await connect()
+test("a newer client receives a refusal from an older server registry", async () => {
+	const oldServer = new TandemServer({
+		schema,
+		relations: {},
+		storage: new TestTandemServerStorage<TodoSchema>(),
+		mutators: { addTodo: todoMutators.addTodo },
+	})
+	const client = new TandemClient({
+		schema,
+		mutators: todoMutators,
+		remote: oldServer,
+		logger: new Logger({ sinks: [] }),
+		syncInterval: 0,
+	})
+	await client.ready
+	client.subscribe({ collection: "todos" })
 	await client.mutate.addTodo({ id: "todo-1", text: "Buy milk" })
-
-	backend.missing = ["toggleTodo"]
 	await expect(client.mutate.toggleTodo({ id: "todo-1" })).rejects.toThrow(
 		"Unknown mutator toggleTodo",
 	)
 	await vi.waitFor(() =>
-		expect(client.query({ collection: "todos" })).toEqual([
-			{ id: "todo-1", text: "Buy milk", done: false, author: "you" },
-		]),
+		expect(client.query({ collection: "todos" })[0]?.done).toBe(false),
 	)
+	expect((await oldServer.query({ collection: "todos" }))[0]?.done).toBe(false)
+	await client.disconnect()
+	await oldServer.close()
 })
 
 test("a named mutation made offline survives a restart and runs on the server after reconnect", async ({
