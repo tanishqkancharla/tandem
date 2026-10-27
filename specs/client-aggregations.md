@@ -80,12 +80,12 @@ publishIfChanged()
 Keep the current callback in a ref and key the subscription by serializable source and grouping parameters. Publish callback changes from local data without reopening the remote subscription.
 
 ```changes
-0071c64
+c01681f
 ```
 
 ```callstack
- useTandemQuery [[0071c64:packages/react/src/TandemClientProvider.tsx#L176-L237]]
-+├── retain current callback # inline closures stay current [[0071c64:packages/react/src/TandemClientProvider.tsx#L192-L215]]
+ useTandemQuery [[c01681f:packages/react/src/TandemClientProvider.tsx#L176-L237]]
++├── retain current callback # inline closures stay current [[c01681f:packages/react/src/TandemClientProvider.tsx#L192-L215]]
  └── TandemClient.subscribe [[3d7c238:packages/core/src/TandemClient.ts#L312-L328]]
 ```
 
