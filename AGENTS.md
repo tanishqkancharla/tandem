@@ -1,10 +1,43 @@
 # Agent Instructions
 
+Tandem is a sync engine and database for collaborative apps. Each client gets a local, queryable database: writes apply locally first, sync to a server in the background, and replay on top of what the server sends back.
+
+```
+packages/
+  core/        @tanishqkancharla/tandem-core: client database, schema, queries, sync engine
+  server/      @tanishqkancharla/tandem-server: server database and storage adapters
+  react/       @tanishqkancharla/tandem-react: React provider and hooks
+  gatekeeper/  @tanishqkancharla/gatekeeper: test harness that controls call order and faults
+dst/           deterministic simulation tests
+examples/      todo and agent-chat apps
+docs/          user docs
+website/       project website
+tools/         dst-video: renders videos of DST failures
+```
+
 Tandem is unreleased. Do not preserve migrations, compatibility fallbacks, or legacy code paths unless the user explicitly asks for them. Prefer cutting and editing relentlessly before release: keep the design small, remove obsolete behavior, and avoid compatibility layers that only serve pre-release states.
+
+## Goals
+
+Both goals are still in progress. Move toward them with each change.
+
+- Support every layer of the stack: any frontend, any application server, any database.
+- Test rigorously: public API tests, deterministic simulation with faults and crashes, and end-to-end tests in the examples.
 
 ## Skills
 
 Use the [conventions skill](.agents/skills/conventions/SKILL.md) when writing, refactoring, or reviewing TypeScript packages, services, state, dependencies, environments, or tests. Read the pages relevant to the change rather than the whole handbook. When changing tests, also read the existing [testing skill](.agents/skills/testing/SKILL.md) and any closer package-level `AGENTS.md` instructions.
+
+## Writing
+
+Follow George Orwell's six rules when writing prose meant for people to read, such as docs, READMEs, specs, comments, commit messages, and PR descriptions:
+
+1. Never use a metaphor, simile, or other figure of speech which you are used to seeing in print.
+2. Never use a long word where a short one will do.
+3. If it is possible to cut a word out, always cut it out.
+4. Never use the passive where you can use the active.
+5. Never use a foreign phrase, a scientific word, or a jargon word if you can think of an everyday English equivalent.
+6. Break any of these rules sooner than say anything outright barbarous.
 
 ## Naming
 
