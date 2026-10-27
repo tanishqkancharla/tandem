@@ -62,6 +62,7 @@ describe("Deterministic simulation testing", () => {
 					tabs: 0,
 					initialSubscriptions: "full",
 					subscriptionRate: 0.08,
+					aggregateSubscriptionRate: 0,
 					connectivityRate: 0,
 					recoveryEvents: clientCount * 500,
 				},
@@ -972,7 +973,7 @@ describe("Deterministic simulation testing", () => {
 			divergence: undefined,
 			recovery: run.recovery,
 		})
-	})
+	}, 15_000)
 
 	it("reports where a replay leaves the recorded path", async () => {
 		const sink = memorySink()

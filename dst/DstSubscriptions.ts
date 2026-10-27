@@ -1,4 +1,7 @@
-import type { RelationalQuery } from "@tanishqkancharla/tandem-core"
+import type {
+	RelationalQuery,
+	TandemClient,
+} from "@tanishqkancharla/tandem-core"
 import type { DstInventory, DstSchema, dstRelations } from "./DstWorld.js"
 
 /** Closed, JSON-serializable application queries, not a query interpreter. */
@@ -14,6 +17,7 @@ export type DstSubscriptionSpec =
 			projection: boolean
 	  }
 	| { kind: "taskComments"; taskId: string; limit: number }
+	| { kind: "taskStats" }
 	| {
 			kind: "projectTasks"
 			projectId: string
@@ -24,7 +28,7 @@ export type DstSubscriptionSpec =
 export type DstSubscriptionMode = "full" | "scoped" | "none"
 
 export function subscriptionQuery(
-	spec: DstSubscriptionSpec,
+	spec: Exclude<DstSubscriptionSpec, { kind: "taskStats" }>,
 ): RelationalQuery<DstSchema, typeof dstRelations> {
 	switch (spec.kind) {
 		case "inventory":
@@ -70,6 +74,38 @@ export function subscriptionQuery(
 	}
 }
 
+function taskStatsQuery() {
+	return {
+		collection: "tasks" as const,
+		where: { done: false },
+		groupBy: ["projectId"] as const,
+		aggregate: (rows: readonly DstSchema["tasks"][]) => ({
+			count: rows.length,
+			averagePriority:
+				rows.reduce((sum, row) => sum + row.priority, 0) / rows.length,
+		}),
+	}
+}
+
+export function querySubscription(
+	client: TandemClient<DstSchema, typeof dstRelations>,
+	spec: DstSubscriptionSpec,
+): unknown[] {
+	return spec.kind === "taskStats"
+		? client.query(taskStatsQuery())
+		: client.query(subscriptionQuery(spec))
+}
+
+export function subscribeToSpec(
+	client: TandemClient<DstSchema, typeof dstRelations>,
+	spec: DstSubscriptionSpec,
+	callback: (rows: unknown[]) => void,
+) {
+	return spec.kind === "taskStats"
+		? client.subscribe(taskStatsQuery(), callback)
+		: client.subscribe(subscriptionQuery(spec), callback)
+}
+
 function compareString(a: string, b: string): number {
 	return a < b ? -1 : a > b ? 1 : 0
 }
@@ -113,6 +149,23 @@ export function expectedView(
 			.sort(compareIdentity)
 			.slice(0, limit)
 	switch (spec.kind) {
+		case "taskStats": {
+			const groups = new Map<string, DstSchema["tasks"][]>()
+			for (const task of inventory.tasks) {
+				if (task.done) continue
+				const rows = groups.get(task.projectId) ?? []
+				rows.push(task)
+				groups.set(task.projectId, rows)
+			}
+			return [...groups]
+				.sort(([left], [right]) => compareString(left, right))
+				.map(([projectId, rows]) => ({
+					projectId,
+					count: rows.length,
+					averagePriority:
+						rows.reduce((sum, row) => sum + row.priority, 0) / rows.length,
+				}))
+		}
 		case "inventory":
 			return [...inventory[spec.collection]].sort(compareIdentity)
 		case "tasks": {

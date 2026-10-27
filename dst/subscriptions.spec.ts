@@ -1,7 +1,149 @@
 import { describe, expect, it } from "vitest"
 import { DstWorld } from "./DstWorld.js"
+import { DstSimulation } from "./DstSimulation.js"
 
 describe("DST subscription workflows", () => {
+	it("tracks grouped statistics across remote deletion and group and filter changes", async () => {
+		await using world = await DstWorld.start({
+			seed: 77,
+			clientCount: 2,
+			initialSubscriptions: "none",
+		})
+		await world.apply(0, {
+			type: "subscribe",
+			client: "client2",
+			id: "stats",
+			spec: { kind: "taskStats" },
+		})
+		await world.apply(1, {
+			type: "subscribe",
+			client: "client1",
+			id: "writer-stats",
+			spec: { kind: "taskStats" },
+		})
+		await world.apply(2, {
+			type: "subscribe",
+			client: "client1",
+			id: "editor",
+			spec: { kind: "inventory", collection: "tasks" },
+		})
+		await world.apply(3, {
+			type: "mutate",
+			client: "client1",
+			ops: [
+				{
+					type: "set",
+					collection: "tasks",
+					value: {
+						id: "a",
+						projectId: "alpha",
+						text: "A",
+						done: false,
+						priority: 2,
+					},
+				},
+				{
+					type: "set",
+					collection: "tasks",
+					value: {
+						id: "b",
+						projectId: "alpha",
+						text: "B",
+						done: false,
+						priority: 4,
+					},
+				},
+			],
+		})
+		await world.drain()
+		expect(world.subscriptions("client2").get("stats")?.latest).toEqual([
+			{ projectId: "alpha", count: 2, averagePriority: 3 },
+		])
+		expect(world.subscriptions("client1").get("writer-stats")?.latest).toEqual([
+			{ projectId: "alpha", count: 2, averagePriority: 3 },
+		])
+
+		await world.apply(4, {
+			type: "mutate",
+			client: "client1",
+			ops: [
+				{
+					type: "update",
+					collection: "tasks",
+					id: "a",
+					payload: { projectId: "beta" },
+				},
+			],
+		})
+		await world.drain()
+		expect(world.subscriptions("client2").get("stats")?.latest).toEqual([
+			{ projectId: "alpha", count: 1, averagePriority: 4 },
+			{ projectId: "beta", count: 1, averagePriority: 2 },
+		])
+
+		await world.apply(5, {
+			type: "mutate",
+			client: "client1",
+			ops: [{ type: "remove", collection: "tasks", id: "b" }],
+		})
+		await world.drain()
+		expect(world.subscriptions("client2").get("stats")?.latest).toEqual([
+			{ projectId: "beta", count: 1, averagePriority: 2 },
+		])
+
+		await world.apply(6, {
+			type: "mutate",
+			client: "client1",
+			ops: [
+				{
+					type: "update",
+					collection: "tasks",
+					id: "a",
+					payload: { done: true },
+				},
+			],
+		})
+		await world.drain()
+		expect(world.subscriptions("client2").get("stats")?.latest).toEqual([])
+	})
+
+	it("checks aggregate oracles in fault and crash seed sweeps", async () => {
+		for (const seed of [2718, 2719, 2720]) {
+			const result = await new DstSimulation({
+				seed,
+				steps: 400,
+				faultRate: 0.08,
+				crashRate: 0.02,
+				subscriptionRate: 0.25,
+				aggregateSubscriptionRate: 0.5,
+			}).execute()
+			expect(result.violation).toBeUndefined()
+			expect(
+				result.trace.some(
+					(event) =>
+						event.type === "subscribe" && event.spec.kind === "taskStats",
+				),
+			).toBe(true)
+			expect(
+				result.trace.some(
+					(event) =>
+						event.type === "mutate" &&
+						event.ops.some(
+							(op) => op.collection === "tasks" && op.type === "remove",
+						),
+				),
+			).toBe(true)
+			expect(
+				result.trace.some(
+					(event) =>
+						event.type === "mutate" &&
+						event.ops.some(
+							(op) => op.collection === "tasks" && op.type === "update",
+						),
+				),
+			).toBe(true)
+		}
+	})
 	it("maintains overlapping and disjoint filtered pages with independent projections", async () => {
 		await using world = await DstWorld.start({
 			seed: 41,

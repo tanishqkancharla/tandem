@@ -36,6 +36,10 @@ const { values } = util.parseArgs({
 			type: "string",
 			default: String(defaults.subscriptionRate),
 		},
+		"aggregate-subscription-rate": {
+			type: "string",
+			default: String(defaults.aggregateSubscriptionRate),
+		},
 		"connectivity-rate": {
 			type: "string",
 			default: String(defaults.connectivityRate),
@@ -165,6 +169,10 @@ if (values.replay) {
 		subscriptionRate: probability(
 			"subscription-rate",
 			values["subscription-rate"],
+		),
+		aggregateSubscriptionRate: probability(
+			"aggregate-subscription-rate",
+			values["aggregate-subscription-rate"],
 		),
 		connectivityRate: probability(
 			"connectivity-rate",

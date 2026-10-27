@@ -48,7 +48,8 @@ import { emptyCoverage, type DstCoverage } from "./DstCoverage.js"
 import {
 	expectedView,
 	matchesTask,
-	subscriptionQuery,
+	querySubscription,
+	subscribeToSpec,
 	type DstSubscriptionMode,
 	type DstSubscriptionSpec,
 } from "./DstSubscriptions.js"
@@ -346,6 +347,9 @@ export type DstObservation = {
 
 /** Gatekeeper requires an async root for subscription-triggered remote work. */
 class DstClient extends TandemClient<DstSchema, typeof dstRelations> {
+	querySubscription(spec: DstSubscriptionSpec): unknown[] {
+		return querySubscription(this, spec)
+	}
 	async observe(
 		install: (client: TandemClient<DstSchema, typeof dstRelations>) => void,
 	): Promise<void> {
@@ -368,7 +372,7 @@ function installObservation(
 		snapshots: [],
 		destroy: () => {},
 	}
-	const handle = client.subscribe(subscriptionQuery(spec), (result) => {
+	const handle = subscribeToSpec(client, spec, (result) => {
 		// A dead application cannot observe, but a broken destroy must remain visible.
 		if (!current()) return
 		coverage.callbacks++
@@ -981,7 +985,7 @@ export class DstWorld implements AsyncDisposable {
 			for (const [subscriptionId, observation] of this.subscriptions(client)) {
 				const { spec, latest } = observation
 				const expected = expectedView(states.server, spec)
-				const local = this.harness[client].query(subscriptionQuery(spec))
+				const local = this.harness[client].querySubscription(spec)
 				this.coverage.viewChecks++
 				if (expected.length > 0) {
 					this.coverage.nonemptyViewChecks++
