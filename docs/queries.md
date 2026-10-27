@@ -61,7 +61,7 @@ const stats = client.query({
 })
 ```
 
-Without `groupBy`, the callback runs once even when no rows match. Grouped callbacks return an object; each group produces one row containing the group keys and callback fields. Empty groups disappear. A callback field that duplicates a group key throws. Group keys must have primitive values (`string`, finite `number`, `boolean`, `null`, or `undefined`). Source rows are passed in ID order, and result groups are ordered by their key values. Callback input arrays and rows are read-only in TypeScript; callbacks should not mutate their input or depend on external side effects.
+Without `groupBy`, the callback runs once even when no rows match. Grouped callbacks return an object; each group produces one row containing the group keys and callback fields. Empty groups disappear. A callback field that duplicates a group key throws. Group keys must have primitive values (`string`, finite `number`, `boolean`, `null`, or `undefined`). Source rows are passed in serialized ID order, and result groups are ordered by serialized group keys. Callback input arrays and rows are read-only in TypeScript; callbacks should not mutate their input or depend on external side effects.
 
 ```ts
 const byWorkspace = client.subscribe({
