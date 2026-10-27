@@ -42,15 +42,16 @@ const _subscribed = client.subscribe(
 	},
 )
 
-// @ts-expect-error Aggregate inputs cannot be paginated.
 client.query({
 	collection: "threads",
 	limit: 2,
+	// @ts-expect-error Aggregate inputs cannot be paginated.
 	aggregate: (rows: readonly Schema["threads"][]) => rows.length,
 })
-// @ts-expect-error Unknown fields cannot be grouping keys.
 client.query({
 	collection: "threads",
+	// @ts-expect-error Unknown fields cannot be grouping keys.
 	groupBy: ["missing"],
+	// @ts-expect-error A row query cannot accept an aggregate callback.
 	aggregate: (rows: readonly Schema["threads"][]) => ({ count: rows.length }),
 })
