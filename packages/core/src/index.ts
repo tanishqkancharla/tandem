@@ -80,6 +80,9 @@ export type {
 	SchemaToTupleSchema,
 } from "./schema/Schema.js"
 export type {
+	AggregateQuery,
+	AggregateGroupFields,
+	GroupedAggregateRow,
 	EncodedQuery,
 	EncodedWhereClause,
 	FieldWhereOperators,

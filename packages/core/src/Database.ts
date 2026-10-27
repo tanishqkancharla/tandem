@@ -19,6 +19,9 @@ import {
 import {
 	type RelationalQuery,
 	type RelationalQueryResult,
+	type AggregateQuery,
+	type AggregateGroupFields,
+	type GroupedAggregateRow,
 	type ScanWindow,
 } from "./query/Query.js"
 import {
@@ -26,6 +29,7 @@ import {
 	executeScanWindowSync,
 	type ScanWindowRecord,
 } from "./query/executeQuery.js"
+import { subscribeAggregate } from "./query/aggregateQuery.js"
 import {
 	TandemClientStorage,
 	type TandemClientBase,
@@ -765,13 +769,45 @@ export class Database<
 		applyOp(transaction, op)
 	}
 
+	subscribe<
+		Collection extends CollectionName<Schema>,
+		const Keys extends readonly AggregateGroupFields<Schema[Collection]>[],
+		Result extends Record<string, unknown>,
+	>(
+		query: AggregateQuery<Schema, Collection, Result, Keys> & { groupBy: Keys },
+		callback: (
+			result: GroupedAggregateRow<Schema[Collection], Keys, Result>[],
+		) => void,
+	): {
+		result: GroupedAggregateRow<Schema[Collection], Keys, Result>[]
+		destroy: () => void
+	}
+	subscribe<Collection extends CollectionName<Schema>, Result>(
+		query: AggregateQuery<Schema, Collection, Result>,
+		callback: (result: Result) => void,
+	): { result: Result; destroy: () => void }
 	subscribe<Query extends RelationalQuery<Schema, Relations>>(
 		query: Query,
 		callback: (result: RelationalQueryResult<Schema, Relations, Query>) => void,
 	): {
 		result: RelationalQueryResult<Schema, Relations, Query>
 		destroy: () => void
-	} {
+	}
+	subscribe(
+		query:
+			| RelationalQuery<Schema, Relations>
+			| AggregateQuery<Schema, CollectionName<Schema>, unknown, any>,
+		callback: (result: any) => void,
+	): { result: any; destroy: () => void } {
+		if ("aggregate" in query) {
+			return subscribeAggregate(
+				this.tupleDb as unknown as TupleDatabaseClient<
+					SchemaToTupleSchema<Schema>
+				>,
+				query as never,
+				callback,
+			)
+		}
 		return subscribeQuery(
 			this.tupleDb,
 			(db) => this.executeQuery(db, query),
@@ -779,9 +815,29 @@ export class Database<
 		)
 	}
 
+	query<
+		Collection extends CollectionName<Schema>,
+		const Keys extends readonly AggregateGroupFields<Schema[Collection]>[],
+		Result extends Record<string, unknown>,
+	>(
+		query: AggregateQuery<Schema, Collection, Result, Keys> & { groupBy: Keys },
+	): GroupedAggregateRow<Schema[Collection], Keys, Result>[]
+	query<Collection extends CollectionName<Schema>, Result>(
+		query: AggregateQuery<Schema, Collection, Result>,
+	): Result
 	query<Query extends RelationalQuery<Schema, Relations>>(
 		query: Query,
-	): RelationalQueryResult<Schema, Relations, Query> {
+	): RelationalQueryResult<Schema, Relations, Query>
+	query(
+		query:
+			| RelationalQuery<Schema, Relations>
+			| AggregateQuery<Schema, CollectionName<Schema>, unknown, any>,
+	): any {
+		if ("aggregate" in query) {
+			const { result, destroy } = this.subscribe(query as never, () => {})
+			destroy()
+			return result
+		}
 		return this.executeQuery(this.tupleDb, query)
 	}
 
