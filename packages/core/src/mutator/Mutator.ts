@@ -5,7 +5,11 @@ import type {
 	CollectionScanArgs,
 	RuntimeSchemaDefinition,
 } from "../schema/Schema.js"
-import type { AppendPayload, Transaction } from "../transaction/Transaction.js"
+import {
+	type AppendPayload,
+	type Transaction,
+	validateAppendPayload,
+} from "../transaction/Transaction.js"
 import type { Json } from "../utils/typeUtils.js"
 
 /**
@@ -183,13 +187,21 @@ export function clientMutatorTransaction<Schema extends AnySchema>(
 		update: (collection, id, payload) =>
 			Promise.resolve(tx.update(collection, id, payload)),
 		append: (collection, id, payload) => {
+			const invalid = validateAppendPayload(payload)
+			if (invalid instanceof Error) throw invalid
+			const fields = (Object.entries(payload) as [string, string][]).filter(
+				([, text]) => text.length > 0,
+			)
+			if (fields.length === 0) return
 			const record = tx.get(collection, id)
 			if (!record) return
 			const next = Object.fromEntries(
-				Object.entries(payload).map(([field, text]) => {
-					const value = record[field as keyof typeof record]
+				fields.map(([field, text]) => {
+					const value = record[field as keyof typeof record] ?? ""
 					if (typeof value !== "string")
-						throw new Error(`Cannot append to ${String(collection)}.${field}`)
+						throw new Error(
+							`Cannot append to ${String(collection)}.${field}: its value is not a string`,
+						)
 					return [field, value + text]
 				}),
 			)

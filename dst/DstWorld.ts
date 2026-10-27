@@ -61,6 +61,7 @@ export type DstSchema = {
 		id: string
 		projectId: string
 		text: string
+		note?: string
 		done: boolean
 		priority: number
 	}
@@ -74,7 +75,7 @@ export type DstSchema = {
 export const dstSchemaDefinition = defineSchema({
 	projects: collection<DstSchema["projects"]>({ fields: ["id", "name"] }),
 	tasks: collection<DstSchema["tasks"]>({
-		fields: ["id", "projectId", "text", "done", "priority"],
+		fields: ["id", "projectId", "text", "note", "done", "priority"],
 	}),
 	comments: collection<DstSchema["comments"]>({
 		fields: ["id", "taskId", "body"],
@@ -87,8 +88,10 @@ export const serverOwnedIds = ["reply-1", "reply-2"]
 
 export const dstMutators = defineMutators(dstSchemaDefinition, {
 	appendTask: {
-		args: (input: unknown) => input as { id: string; text: string },
-		run: (tx, { id, text }) => tx.append("tasks", id, { text }),
+		args: (input: unknown) =>
+			input as { id: string; text: string; field?: "text" | "note" },
+		run: (tx, { id, text, field }) =>
+			tx.append("tasks", id, field === "note" ? { note: text } : { text }),
 	},
 })
 
@@ -101,14 +104,14 @@ function dstServerMutators(stats: DstStats) {
 				tx: ReturnType<
 					TandemServer<DstSchema, typeof dstRelations>["transact"]
 				>,
-				{ id }: { id: string; text: string },
+				{ id }: { id: string; text: string; field?: "text" | "note" },
 			) => {
 				if (serverOwnedIds.includes(id))
 					throw new Error(`Only the server writes ${id}`)
 				if (!(await tx.get("tasks", id))) throw new Error(`No task ${id}`)
 			},
 			afterCommit: (
-				_args: { id: string; text: string },
+				_args: { id: string; text: string; field?: "text" | "note" },
 				ctx: { clientId: string; mutationId: number },
 			) => {
 				const key = JSON.stringify([ctx.clientId, ctx.mutationId])
@@ -392,8 +395,8 @@ class DstClient extends TandemClient<
 	typeof dstRelations,
 	typeof dstMutators
 > {
-	appendTask(id: string, text: string) {
-		return this.mutate.appendTask({ id, text })
+	appendTask(id: string, text: string, field?: "text" | "note") {
+		return this.mutate.appendTask({ id, text, ...(field && { field }) })
 	}
 	async observe(
 		install: (client: TandemClient<DstSchema, typeof dstRelations>) => void,
@@ -451,6 +454,7 @@ export type DstTraceRecord =
 			client: DstClientName
 			id: string
 			text: string
+			field?: "text" | "note"
 			mutationId: number
 	  }
 	| {
@@ -497,7 +501,13 @@ function settle(): Promise<void> {
 
 /** A change the run applies in one step; its trace record adds what it observed. */
 export type DstIntent =
-	| { type: "namedAppend"; client: DstClientName; id: string; text: string }
+	| {
+			type: "namedAppend"
+			client: DstClientName
+			id: string
+			text: string
+			field?: "text" | "note"
+	  }
 	/** The server writes on its own, as an agent saving its reply would. */
 	| { type: "serverSet"; item: DstSchema["tasks"] }
 	| { type: "serverAppend"; id: string; text: string }
@@ -1295,7 +1305,7 @@ export class DstWorld implements AsyncDisposable {
 		this.activeMutations += 1
 		this.inFlight.push(
 			this.harness[intent.client]
-				.appendTask(intent.id, intent.text)
+				.appendTask(intent.id, intent.text, intent.field)
 				.then(async (handle) => {
 					const result = await handle.result.catch(
 						(cause: unknown) =>

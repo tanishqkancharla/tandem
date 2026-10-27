@@ -295,6 +295,7 @@ export class DstSimulation {
 						client: client as DstClientName,
 						id: rng.pick(tasks).id,
 						text: ` n${step}`,
+						...(step % 4 === 0 && { field: "note" as const }),
 					}
 			}
 			const ctx = { rng, world, step, client }

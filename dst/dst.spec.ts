@@ -587,18 +587,26 @@ describe("Deterministic simulation testing", () => {
 			id: task.id,
 			text: " B",
 		})
+		await world.apply(3, {
+			type: "namedAppend",
+			client: "client1",
+			id: task.id,
+			text: "!",
+			field: "note",
+		})
 		const result = await world.finish()
 		expect(result.states.server.tasks[0]?.text).toBe("Start A B")
+		expect(result.states.server.tasks[0]?.note).toBe("!")
 		expect(result.states.client1).toEqual(result.states.server)
 		expect(result.states.client2).toEqual(result.states.server)
-		expect(world.stats.namedAppendCommits).toBe(2)
+		expect(world.stats.namedAppendCommits).toBe(3)
 		expect(result.violation).toBeUndefined()
 	})
 
 	it.each([
 		{ seed: 5, steps: 300, faultRate: 0.1, namedAppendRate: 0.15 },
 		{
-			seed: 11,
+			seed: 6,
 			steps: 300,
 			faultRate: 0.1,
 			crashRate: 0.02,
@@ -607,10 +615,19 @@ describe("Deterministic simulation testing", () => {
 	])(
 		"exercises named appends under faults and crashes: %j",
 		async (options) => {
-			const result = await new DstSimulation(options).execute()
+			const sink = memorySink()
+			const result = await new DstSimulation(options).execute(sink)
 			expect(result.trace.some(({ type }) => type === "namedAppend")).toBe(true)
+			expect(
+				result.trace.some(
+					(record) => record.type === "namedAppend" && record.field === "note",
+				),
+			).toBe(true)
 			expect(result.stats.namedAppendCommits).toBeGreaterThan(0)
 			expect(result.violation).toBeUndefined()
+			const replayed = await replay(parseArtifact(formatArtifact(sink.lines)))
+			expect(replayed.divergence).toBeUndefined()
+			expect(replayed.violation).toEqual(result.violation)
 		},
 	)
 

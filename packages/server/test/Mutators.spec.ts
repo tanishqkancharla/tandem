@@ -21,11 +21,17 @@ import {
 } from "../src/index.js"
 import { TestTandemServerStorage } from "./TandemServerStorage.fixture.js"
 
-type Todo = { id: string; text: string; done: boolean; author: string }
+type Todo = {
+	id: string
+	text: string
+	done: boolean
+	author: string
+	note?: string
+}
 type TodoSchema = { todos: Todo }
 
 const schema = defineSchema({
-	todos: collection<Todo>({ fields: ["id", "text", "done", "author"] }),
+	todos: collection<Todo>({ fields: ["id", "text", "done", "author", "note"] }),
 })
 
 const isAddTodoArgs = (input: unknown): input is { id: string; text: string } =>
@@ -55,6 +61,10 @@ const todoMutators = defineMutators(schema, {
 			await tx.update("todos", id, { done: !todo.done })
 		},
 	},
+	appendNote: {
+		args: (input: unknown) => input as { id: string; text: string },
+		run: (tx, { id, text }) => tx.append("todos", id, { note: text }),
+	},
 })
 
 type TodoServer = TandemServer<TodoSchema, {}>
@@ -78,6 +88,8 @@ class TodoBackend {
 	missing: (keyof typeof todoMutators)[] = []
 	/** The next push response is lost after the server applies it. */
 	loseNextResponse = false
+	/** Holds a push so tests can inspect the local optimistic value. */
+	pushGate?: Promise<void>
 
 	private pushOptions(): TandemServerPushOptions<TodoSchema, {}> {
 		const mutators = {
@@ -97,6 +109,7 @@ class TodoBackend {
 				},
 			},
 			toggleTodo: todoMutators.toggleTodo,
+			appendNote: todoMutators.appendNote,
 		} satisfies ServerMutatorsFor<TodoSchema, {}, typeof todoMutators>
 
 		for (const name of this.missing) delete mutators[name]
@@ -107,6 +120,7 @@ class TodoBackend {
 		return {
 			connect: (client) => this.tandem.connect(client),
 			push: async (args) => {
+				if (this.pushGate) await this.pushGate
 				const response = await this.tandem.push(args, this.pushOptions())
 				if (!this.loseNextResponse) return response
 				this.loseNextResponse = false
@@ -203,6 +217,42 @@ test("a shared mutator runs optimistically and on the server", async ({
 	)
 	expect(seen).toEqual([[{ ...todo, author: "you" }]])
 	expect(await backend.todos()).toEqual([{ ...todo, author: "you" }])
+})
+
+test("a named append fills an absent optional string locally and on the server", async ({
+	backend,
+	connect,
+}) => {
+	const { client } = await connect()
+	await client.mutate.addTodo({ id: "todo-1", text: "Draft" })
+	const before = { id: "todo-1", text: "Draft", done: false, author: "you" }
+	await client.mutate.appendNote({ id: "todo-1", text: "" })
+	expect(client.query({ collection: "todos" })).toEqual([before])
+	expect(await backend.todos()).toEqual([before])
+
+	const pushGate = Promise.withResolvers<void>()
+	backend.pushGate = pushGate.promise
+	const appending = client.mutate.appendNote({ id: "todo-1", text: "!" })
+	await vi.waitFor(() =>
+		expect(client.query({ collection: "todos" })).toEqual([
+			{ ...before, note: "!" },
+		]),
+	)
+	expect(await backend.todos()).toEqual([before])
+	pushGate.resolve()
+	await appending
+	expect(await backend.todos()).toEqual([{ ...before, note: "!" }])
+
+	await expect(
+		client.mutate.appendNote({
+			id: "todo-1",
+			text: 42 as unknown as string,
+		}),
+	).rejects.toThrow("Appended text must be a string")
+	expect(client.query({ collection: "todos" })).toEqual([
+		{ ...before, note: "!" },
+	])
+	expect(await backend.todos()).toEqual([{ ...before, note: "!" }])
 })
 
 test("a mutator that throws on the client writes nothing and is never pushed", async ({
