@@ -75,7 +75,10 @@ const chatMutators = defineMutators(schema, {
 	},
 	appendReply: {
 		args: z.object({ id: z.string(), text: z.string() }),
-		run: (tx, { id, text }) => tx.append("messages", id, { text }),
+		run: async (tx, { id, text }) => {
+			const message = await tx.get("messages", id)
+			if (message) tx.set("messages", { ...message, text: message.text + text })
+		},
 	},
 	/** The server aborts the model; the reply's final save says "stopped". */
 	stopReply: {

@@ -31,6 +31,10 @@ const { values } = util.parseArgs({
 			type: "string",
 			default: String(defaults.sharedWriteRate),
 		},
+		"named-append-rate": {
+			type: "string",
+			default: String(defaults.namedAppendRate),
+		},
 		"initial-subscriptions": { type: "string", default: "scoped" },
 		"subscription-rate": {
 			type: "string",
@@ -160,6 +164,10 @@ if (values.replay) {
 		sharedWriteRate: probability(
 			"shared-write-rate",
 			values["shared-write-rate"],
+		),
+		namedAppendRate: probability(
+			"named-append-rate",
+			values["named-append-rate"],
 		),
 		initialSubscriptions: subscriptionMode(values["initial-subscriptions"]),
 		subscriptionRate: probability(

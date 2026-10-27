@@ -63,7 +63,13 @@ const todoMutators = defineMutators(schema, {
 	},
 	appendNote: {
 		args: (input: unknown) => input as { id: string; text: string },
-		run: (tx, { id, text }) => tx.append("todos", id, { note: text }),
+		run: async (tx, { id, text }) => {
+			if (typeof text !== "string")
+				throw new Error("Appended text must be a string")
+			const todo = await tx.get("todos", id)
+			if (todo && text)
+				tx.set("todos", { ...todo, note: (todo.note ?? "") + text })
+		},
 	},
 })
 

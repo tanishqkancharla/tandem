@@ -9,9 +9,7 @@ export {
 export type { ScanWindowRecord } from "./query/executeQuery.js"
 export { collectionIdsEqual, collectionIdToTuple } from "./schema/Schema.js"
 export {
-	AppendPayloadError,
 	UpdatePayloadError,
-	validateAppendPayload,
 	validateUpdatePayload,
 } from "./transaction/Transaction.js"
 export { MutatorArgsError, validateMutatorArgs } from "./mutator/Mutator.js"

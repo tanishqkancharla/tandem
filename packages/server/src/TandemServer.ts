@@ -57,10 +57,7 @@ import type {
 } from "tuple-database"
 import { LivePayloadBuffer } from "./LivePayloadBuffer.js"
 import { TandemServerError } from "./TandemServerError.js"
-import {
-	type AppliedAppend,
-	TandemServerTransaction,
-} from "./TandemServerTransaction.js"
+import { TandemServerTransaction } from "./TandemServerTransaction.js"
 import type {
 	TandemClientTuple,
 	TandemTuple,
@@ -196,9 +193,91 @@ type CommitChanges<Schema extends AnySchema> = {
 	set: PatchSetOp<Schema>[]
 	remove: PatchRemoveOp<Schema>[]
 	/** Records the commit changed only by appending, by record ID. */
-	append: Map<string, AppliedAppend<Schema> & { after: Revision }>
+	append: Map<string, DerivedAppend<Schema> & { after: Revision }>
 	/** The client whose push made the commit. It pulls to acknowledge it. */
 	pusher?: ClientId
+}
+
+type DerivedAppend<Schema extends AnySchema> = {
+	collection: CollectionName<Schema>
+	id: Schema[CollectionName<Schema>]["id"]
+	fields: { field: string; offset: number; text: string }[]
+}
+
+/** Compare only plain data whose equality we can prove without serialization. */
+function safelyEqual(
+	before: unknown,
+	after: unknown,
+	seen = new WeakSet<object>(),
+): boolean {
+	if (Object.is(before, after)) return true
+	if (
+		before === null ||
+		after === null ||
+		typeof before !== "object" ||
+		typeof after !== "object"
+	)
+		return false
+	if (seen.has(before) || seen.has(after)) return false
+	seen.add(before)
+	seen.add(after)
+	if (Array.isArray(before) !== Array.isArray(after)) return false
+	if (
+		Object.getPrototypeOf(before) !==
+			(Array.isArray(before) ? Array.prototype : Object.prototype) ||
+		Object.getPrototypeOf(after) !==
+			(Array.isArray(after) ? Array.prototype : Object.prototype)
+	)
+		return false
+	const beforeKeys = Reflect.ownKeys(before)
+	const afterKeys = Reflect.ownKeys(after)
+	if (beforeKeys.length !== afterKeys.length) return false
+	const beforeFields = Object.getOwnPropertyDescriptors(before)
+	const afterFields = Object.getOwnPropertyDescriptors(after)
+	return beforeKeys.every((key) => {
+		const left = beforeFields[key as keyof typeof beforeFields]
+		const right = afterFields[key as keyof typeof afterFields]
+		return (
+			left &&
+			right &&
+			"value" in left &&
+			"value" in right &&
+			safelyEqual(left.value, right.value, seen)
+		)
+	})
+}
+
+function appendedFields(
+	previous: Record<string, unknown> | undefined,
+	next: Record<string, unknown>,
+): DerivedAppend<AnySchema>["fields"] | undefined {
+	if (!previous) return
+	const fields: DerivedAppend<AnySchema>["fields"] = []
+	for (const field of new Set([
+		...Object.keys(previous),
+		...Object.keys(next),
+	])) {
+		const before = previous[field]
+		const after = next[field]
+		const existed = Object.hasOwn(previous, field)
+		const exists = Object.hasOwn(next, field)
+		if (existed && exists && safelyEqual(before, after)) continue
+		const prefix = before ?? ""
+		if (
+			field === "id" ||
+			typeof prefix !== "string" ||
+			typeof after !== "string" ||
+			!after.startsWith(prefix) ||
+			after.length === prefix.length
+		)
+			return
+		fields.push({
+			field,
+			offset: prefix.length,
+			text: after.slice(prefix.length),
+		})
+	}
+	return fields.length ? fields : undefined
 }
 
 function scanWindowRecordToKey<
@@ -299,6 +378,7 @@ export class TandemServer<
 	private readonly relations: Relations
 	private readonly subscriptions = new Set<() => void>()
 	private readonly syncClients = new Map<ClientId, SyncClientState<Schema>>()
+	private readonly schema: RuntimeSchemaDefinition<Schema>
 	private readonly tupleDb: AsyncTupleDatabaseClient<TandemTuple<Schema>>
 	private readonly rng?: RngApi
 	private readonly livePokeTimer?: TimerApi
@@ -320,6 +400,7 @@ export class TandemServer<
 	private queue: Promise<void> = Promise.resolve()
 
 	constructor(args: TandemServerArgs<Schema, Relations>) {
+		this.schema = args.schema
 		this.relations = args.relations
 		this.rng = args.rng
 		const livePokeInterval = args.livePokeInterval ?? 50
@@ -828,12 +909,15 @@ export class TandemServer<
 		transaction: TandemServerTransaction<Schema, Relations>,
 		options: CommitOptions,
 	): Promise<TandemServerError | undefined> {
-		const appended = await transaction.applyAppends()
-		if (appended instanceof Error) {
-			await transaction.cancel()
-			return appended
-		}
 		const writes = transaction.recordWrites()
+		const previous = await Promise.all(
+			writes.set.map(({ key }) =>
+				this.recordDb.get(key as SchemaToTupleSchema<Schema>["key"]),
+			),
+		).catch(
+			(cause) => new TandemServerError({ operation: options.operation, cause }),
+		)
+		if (previous instanceof Error) return previous
 		// Removals carry the client's identity form, which only the old record has.
 		const removed = await Promise.all(
 			writes.remove.map(
@@ -860,15 +944,55 @@ export class TandemServer<
 		if (!hasWrites) return
 
 		this.commitCount += 1
-		// An append extends what the record has held since its previous write.
-		const extended = (append: AppliedAppend<Schema>) => ({
-			...append,
-			after: {
-				server: this.instanceId,
-				commit:
-					this.lastWrites.get(recordId(append)) ?? this.forgottenWritesThrough,
-			},
-		})
+		// Compare the committed before-image with the final transaction write.
+		const appended = new Map<
+			string,
+			DerivedAppend<Schema> & { after: Revision }
+		>()
+		for (const [index, { key, value }] of writes.set.entries()) {
+			const fields = appendedFields(
+				previous[index] as Record<string, unknown> | undefined,
+				value as Record<string, unknown>,
+			)
+			if (!fields) continue
+			const valueCodec = this.schema.collections[key[1]].codec
+			if (
+				valueCodec &&
+				fields.some(({ field, text }) => {
+					const encoded = errore.try({
+						try: () => valueCodec.encode({ [field]: text }),
+						catch: () => new Error("Append suffix cannot be encoded"),
+					})
+					if (
+						encoded instanceof Error ||
+						typeof (encoded as Record<string, unknown>)[field] !== "string"
+					)
+						return true
+					const decoded = errore.try({
+						try: () => valueCodec.decode(encoded),
+						catch: () => new Error("Append suffix cannot be decoded"),
+					})
+					return (
+						decoded instanceof Error ||
+						(decoded as Record<string, unknown>)[field] !== text
+					)
+				})
+			)
+				continue
+			const append = {
+				collection: key[1],
+				id: (value as Schema[CollectionName<Schema>]).id,
+				fields,
+			} as DerivedAppend<Schema>
+			const id = recordId(append)
+			appended.set(id, {
+				...append,
+				after: {
+					server: this.instanceId,
+					commit: this.lastWrites.get(id) ?? this.forgottenWritesThrough,
+				},
+			})
+		}
 		const changes: CommitChanges<Schema> = {
 			revision: this.revision,
 			set: writes.set.map(({ key, value }) => ({
@@ -880,9 +1004,7 @@ export class TandemServer<
 					? []
 					: [{ collection: writes.remove[index]![1], id: record.id }],
 			) as PatchRemoveOp<Schema>[],
-			append: new Map(
-				appended.map((append) => [recordId(append), extended(append)]),
-			),
+			append: appended,
 			pusher: options.operation === "push" ? options.clientId : undefined,
 		}
 		this.recordLastWrites([

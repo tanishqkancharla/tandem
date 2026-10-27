@@ -14,7 +14,10 @@ A shared mutator owns transactional database logic. Both the client and server i
 // shared/mutations.ts
 export const appendReply = defineMutator(schema, {
   args: z.object({ id: z.string(), text: z.string() }),
-  run: (tx, { id, text }) => tx.append("messages", id, { text }),
+  run: async (tx, { id, text }) => {
+    const message = await tx.get("messages", id)
+    if (message) tx.set("messages", { ...message, text: message.text + text })
+  },
 })
 
 export const mutators = { appendReply }
@@ -63,12 +66,12 @@ A rejected call is acknowledged without its writes. The client call rejects with
 - Shared, typed transactional logic and typed optimistic client calls.
 - Request authorization before commit with transaction reads and session data.
 - Best effort effects after a successful server commit, deduplicated across retried pushes in one server process.
-- Named append for server streams without losing the server append delta path.
+- Named get/set append for server streams with derived compact delta pokes.
 - Named calls survive client storage and coordinated tab forwarding.
 
 ## Limits
 
-- A pending client mutation replays its recorded operations after a pull; Tandem does not rerun its function on rebase. The client append adapter therefore records a full field update. Its optimistic value can temporarily cover a newer live append until confirmation. The server runs the append against its current value at commit and supplies the final authoritative text.
+- A pending client mutation replays its recorded operations after a pull; Tandem does not rerun its function on rebase. The shared get/set mutator records a full set operation. Its optimistic value can temporarily cover a newer live append until confirmation. The server runs each named call against its current value in the serialized queue and supplies the final authoritative text.
 - `afterCommit` is best effort and in memory. A crash after commit can lose an effect. A durable record and startup recovery remain the app's responsibility for work that must finish.
 - A lost push response can reject a call even though its server transaction committed. Retry deduplication prevents repeating its writes or effect.
 
@@ -89,7 +92,7 @@ A shared definition validates JSON arguments, runs against typed collection oper
 ```callstack
  TandemClient.mutate.name [[4847cd4:packages/core/src/TandemClient.ts#L291-L353]]
 +├── validateMutatorArgs [[4847cd4:packages/core/src/mutator/Mutator.ts#L149-L174]] # validate the copied arguments
-+├── clientMutatorTransaction [[4847cd4:packages/core/src/mutator/Mutator.ts#L176-L204]] # adapt synchronous reads and append
++├── clientMutatorTransaction [[4847cd4:packages/core/src/mutator/Mutator.ts#L176-L204]] # adapt synchronous reads and writes
 +└── SyncEngine.commit [[4847cd4:packages/core/src/sync/SyncEngine.ts#L558-L592]] # persist name, arguments, and recorded writes
 ```
 
@@ -139,11 +142,11 @@ if (definition.afterCommit) runEffect(() => definition.afterCommit!(args, contex
 
 **Today**
 
-A tab leader forwards operations, and a server append is available only on a server transaction.
+A tab leader forwards operations.
 
 **Proposed**
 
-The tab protocol retains name and arguments across encoding, outbox persistence, handoff, and leader receipts. Shared `tx.append` uses the server's staged append and live delta path; the client shows an optimistic full field update.
+The tab protocol retains name and arguments across encoding, outbox persistence, handoff, and leader receipts. Shared get/set code runs on the client and server. The server derives live append deltas from committed before and after records.
 
 ```changes
 4847cd4
@@ -153,8 +156,7 @@ The tab protocol retains name and arguments across encoding, outbox persistence,
  TabSession.commit [[4847cd4:packages/core/src/tabs/TabSession.ts#L129-L144]]
 +├── TabCodec.encodeMutation [[4847cd4:packages/core/src/tabs/TabProtocol.ts#L76-L105]] # keep the named call
 +└── TabHub.commit [[4847cd4:packages/core/src/tabs/TabHub.ts#L385-L457]] # forward it to SyncEngine
- TandemServerTransaction.append [[4847cd4:packages/server/src/TandemServerTransaction.ts#L238-L260]]
-+└── TandemServer.commitTransaction [[4847cd4:packages/server/src/TandemServer.ts#L816-L870]] # emit append delta pokes
+ TandemServer.commitTransaction [[packages/server/src/TandemServer.ts#TandemServer.commitTransaction]] # infer lossless append deltas from final writes
 ```
 
 ```ts
@@ -216,11 +218,11 @@ Pull scan windows include the matching prefix through `offset + limit`; the clie
 
 **Today**
 
-The server treats an absent optional string as empty when appending, but the client adapter rejects it before the named mutation can be pushed.
+The earlier built-in append adapter needed parity for absent optional strings; the current shared get/set mutator handles this in app code.
 
 **Implemented**
 
-The client adapter uses the shared payload validator before record lookup, skips empty text, and treats `null` or `undefined` current values as empty strings. Other current values still reject. A public `client.mutate.appendNote` test holds the push to verify the optimistic value before checking the server result and malformed numeric-text rejection. DST generates optional-field named appends and replays their traces under network faults and crashes.
+The shared mutator validates arguments, reads the record, and uses `(record.note ?? "") + text` on both client and server. A public `client.mutate.appendNote` test holds the push to verify the optimistic value before checking the server result and malformed numeric-text rejection. DST generates optional-field named appends and replays their traces under network faults and crashes.
 
 ```changes
 be69e2e
@@ -228,9 +230,7 @@ be69e2e
 
 ```callstack
  TandemClient.mutate.appendNote [[be69e2e:packages/server/test/Mutators.spec.ts#L222-L258]]
-+└── clientMutatorTransaction.append [[be69e2e:packages/core/src/mutator/Mutator.ts#L180-L216]]
-+    ├── validateAppendPayload # reject malformed text before record lookup
-+    └── Transaction.update # record the optimistic optional-string value
++└── shared appendNote.run # validate arguments, read optional note, set the extended record
  DstSimulation.choose [[be69e2e:dst/DstSimulation.ts#L279-L301]]
 +└── DstWorld.writeNamedAppend [[be69e2e:dst/DstWorld.ts#L1300-L1334]] # exercise note appends through the public client API
 ```
@@ -240,3 +240,7 @@ be69e2e
 - [Agent chat guide](../docs/agent-chat.md)
 - [Append and batching](append-and-batching.md)
 - [Deterministic simulation testing](deterministic-simulation-testing.md)
+
+## ✅ Phase 7: App-defined append and derived live deltas
+
+The built-in transaction append method and staging are removed. Shared named mutators append with `get` and `set`; the server reads each before image inside its commit queue and compares it with the final write. It emits compact deltas only when every changed field is a string extension and the suffix round trips through the collection codec. It sends a full set for new records, replacements, metadata changes, uncertain object equality, and codecs that cannot encode a suffix. Existing revision guards, visibility checks, and batching remain in the live-poke path.

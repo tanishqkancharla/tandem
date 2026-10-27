@@ -51,7 +51,7 @@ type Part = {
 	messageId: string
 	/** The part's position in the message. */
 	index: number
-	/** A text or reasoning part's text. The server appends to it as it streams. */
+	/** A text or reasoning part's text. The server extends it as it streams. */
 	text: string
 	/** The rest of the part, with `text` left empty. */
 	part: UIPart
@@ -104,13 +104,16 @@ function toPartRecord(
 	part: UIPart,
 ): Part {
 	const hasText = "text" in part
+	const storedPart = Object.fromEntries(
+		Object.entries(part).filter(([, value]) => value !== undefined),
+	) as UIPart
 	return {
 		id: partId(message.id, index),
 		threadId: message.threadId,
 		messageId: message.id,
 		index,
 		text: hasText ? part.text : "",
-		part: hasText ? { ...part, text: "" } : part,
+		part: (hasText ? { ...storedPart, text: "" } : storedPart) as UIPart,
 	}
 }
 
@@ -152,7 +155,7 @@ function saveParts(
 			return
 		}
 		const delta = next.text.slice(saved.text.length)
-		if (delta) tx.append("parts", next.id, { text: delta })
+		if (delta) tx.set("parts", next)
 	})
 }
 

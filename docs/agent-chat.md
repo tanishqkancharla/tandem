@@ -19,13 +19,16 @@ const sendMessage = defineMutator(schema, {
 
 const appendReply = defineMutator(schema, {
   args: z.object({ id: z.string(), text: z.string() }),
-  run: (tx, { id, text }) => tx.append("messages", id, { text }),
+  run: async (tx, { id, text }) => {
+    const message = await tx.get("messages", id)
+    if (message) tx.set("messages", { ...message, text: message.text + text })
+  },
 })
 
 const mutators = { sendMessage, appendReply }
 ```
 
-The example includes `updatedAt` and a `stopReply` mutation; the snippets here show the write path. `tx.append` uses the server's append operation, which applies text against the value present at commit and emits compact delta pokes. On the client it records an update for optimistic display. The custom mutations spec (`specs/custom-mutations.md`) describes the resulting pending rebase limit.
+The example includes `updatedAt` and a `stopReply` mutation; the snippets here show the write path. The shared function reads and extends the current record in each client and server transaction. Server named calls run in commit order; the sync path derives compact delta pokes when the committed change is only string growth. The custom mutations spec (`specs/custom-mutations.md`) describes the resulting pending rebase limit.
 
 ## Server registration
 

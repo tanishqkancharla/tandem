@@ -90,8 +90,16 @@ export const dstMutators = defineMutators(dstSchemaDefinition, {
 	appendTask: {
 		args: (input: unknown) =>
 			input as { id: string; text: string; field?: "text" | "note" },
-		run: (tx, { id, text, field }) =>
-			tx.append("tasks", id, field === "note" ? { note: text } : { text }),
+		run: async (tx, { id, text, field }) => {
+			const task = await tx.get("tasks", id)
+			if (!task) return
+			tx.set(
+				"tasks",
+				field === "note"
+					? { ...task, note: (task.note ?? "") + text }
+					: { ...task, text: task.text + text },
+			)
+		},
 	},
 })
 
@@ -1342,7 +1350,6 @@ export class DstWorld implements AsyncDisposable {
 				tx.set("tasks", intent.item)
 				break
 			case "serverAppend":
-				tx.append("tasks", intent.id, { text: intent.text })
 				break
 			case "serverRemove":
 				tx.remove("tasks", intent.id)
@@ -1356,8 +1363,16 @@ export class DstWorld implements AsyncDisposable {
 			this.maxMutationsInFlight,
 			this.mutationsInFlight,
 		)
+		const committed =
+			intent.type === "serverAppend"
+				? this.harness.server.mutate(
+						"appendTask",
+						{ id: intent.id, text: intent.text },
+						{ mutators: { appendTask: dstMutators.appendTask } },
+					)
+				: this.harness.server.commit(tx)
 		this.inFlight.push(
-			this.harness.server.commit(tx).then(async (handle) => {
+			committed.then(async (handle) => {
 				await handle.result
 				this.activeMutations -= 1
 			}),
@@ -1653,6 +1668,9 @@ function observedServer(
 	return {
 		transact: () => server.transact(),
 		commit: (tx: Parameters<typeof server.commit>[0]) => server.commit(tx),
+		mutate: (name: "appendTask", args: { id: string; text: string }, options: {
+			mutators: { appendTask: typeof dstMutators.appendTask }
+		}) => server.mutate(name, args, options),
 		connect: (api: Parameters<typeof server.connect>[0]) => server.connect(api),
 		pull: (args: Parameters<typeof server.pull>[0]) => server.pull(args),
 		push: async (

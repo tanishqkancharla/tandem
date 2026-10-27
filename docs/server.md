@@ -38,7 +38,7 @@ After every commit that writes data, the server pokes each connected client whos
 
 - `set` holds each changed record in the view, in full, even after a partial `update`.
 - `remove` holds records the client already has that the commit deleted or moved out of its view.
-- `append` holds the text an [`append`](#append-text) added to a record the client already has, instead of the whole record.
+- `append` holds text inferred from a committed string extension to a record the client already has, instead of the whole record.
 
 A client's first payload goes out at once. Payloads from further commits within `livePokeInterval` (50 ms by default) merge into one sent when the interval ends: each record appears once, at its latest value, and consecutive appends to a field join into one. A burst of commits, such as a reply streamed token by token, therefore costs each viewer at most one payload per interval. Pass `livePokeInterval: 0` to send each commit's payload on its own.
 
@@ -81,7 +81,7 @@ if (!existing) {
 await server.commit(tx)
 ```
 
-A transaction also has `list`, `scan`, `update`, `append`, `remove`, `query`, and `cancel`.
+A transaction also has `list`, `scan`, `update`, `remove`, `query`, and `cancel`.
 
 `update` accepts partial assignments and awaits the current record. Reads in the same transaction see those assignments; missing records and empty payloads are no-ops. Supplied nested objects and arrays replace their entire field. Use `set` for complete replacements; updates cannot change identity or delete fields.
 
@@ -93,17 +93,23 @@ await server.commit(tx)
 
 ### Append text
 
-`append` adds text to the end of string fields. It suits text that grows in many small steps, such as a streamed reply.
+Define a shared named mutator that reads the record and writes its extended value. The client runs it optimistically; the server runs the same code in its serialized mutation queue.
 
 ```ts
-const tx = server.transact()
-tx.append("messages", replyId, { text: delta })
-await server.commit(tx)
+const appendReply = defineMutator(schema, {
+  args: z.object({ id: z.string(), text: z.string() }),
+  run: async (tx, { id, text }) => {
+    const message = await tx.get("messages", id)
+    if (message) tx.set("messages", { ...message, text: message.text + text })
+  },
+})
 ```
 
-The server reads the record when the transaction commits, in commit order, so appends from concurrent transactions all land. A missing record stays missing, and a missing field starts empty. Within a transaction, a later `set` or `remove` of the record replaces earlier appends, and a later `update` replaces the appends to the fields it assigns. Storage, queries, and pulls see the whole record.
+A missing record stays missing. A nullable string field can use `(message.note ?? "") + text`. The app's argument schema should reject malformed text. Concurrent named calls each read the latest committed value in the server queue. Raw transactions whose reads ran before another commit do not gain that guarantee.
 
-A client that already has the record receives only the appended text, with the field's previous length and the commit that last wrote the record before it. The client applies it only to a value it has from that commit or later, which is the value the append extends; otherwise it waits for the pull the poke starts, so a lost poke never shows text the server did not have. The server remembers the last write of the 10,000 most recently written records; an append to an older one names a later commit, so clients that have not pulled since then wait for their pull. Collection codecs see the appended text on its own, as a partial record. Only server transactions can append.
+The server compares each committed record with its before image. If the only differences are string extensions whose suffixes round trip through the collection codec, a viewer that already has the record receives compact append pokes. Other changes send a full record. A poke carries each field's previous length and a guarded previous revision; missing or reordered pokes fall back to a pull. The server tracks the last write of its 10,000 most recently written records; older entries use a conservative guard.
+
+Pending client mutations replay their recorded set operations during rebase, so an optimistic append may temporarily cover newer live text until its confirming pull. The server's named mutation result is authoritative.
 
 ## Compound IDs
 

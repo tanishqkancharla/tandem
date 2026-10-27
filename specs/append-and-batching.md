@@ -1,5 +1,7 @@
 # Append and stream-friendly sync batching
 
+Current implementation: app-defined shared mutators use `get` and `set`; server commits infer compact append pokes from final record changes. The original phased design below records the historical built-in transaction append, which was removed in the custom-mutations follow-up.
+
 ## Problem overview
 
 [Live records](agent-chat-streaming.md) made every server commit reach each viewer in one hop. The agent chat guide then saved the whole reply snapshot about every 100 ms. Each save resent the full text, and every save made each viewer pull its whole scan window.
@@ -20,7 +22,7 @@ A reply of a few thousand tokens therefore cost every viewer hundreds of full-re
 
 Two engine changes, and a guide that uses them:
 
-1. `append` adds text to a string field without resending the record. Live pokes carry only the appended text, with the field's previous length and the revision from which the record held the value it extends.
+1. A shared get/set mutator extends a string field; the server infers compact append pokes when the committed record differs only by lossless string growth. Live pokes carry only the appended text, with the field's previous length and the revision from which the record held the value it extends.
 2. The server merges a client's live payloads over a short interval, and the client defers the pull that confirms them until payloads stop arriving, or at most a second.
 
 ```mermaid
@@ -52,14 +54,14 @@ The reply loop commits every delta. Neither the app nor the viewer pays per toke
 
 ## Non-goals
 
-- Client-side `append`. Replaying a non-idempotent operation over a live value that may already contain it would duplicate text until the pull.
+- A built-in append operation. Shared mutators record set operations and retain the bounded pending-replay limitation.
 - Field paths. `append` extends top-level string fields; the guide stores each `UIMessage` part as its own record.
 - Reply status, heartbeats, crash cleanup, stop, and server write hooks. They stay app code in `docs/agent-chat.md`.
-- Custom mutations.
+- Additional mutator composition or a new rebase engine.
 
 ## Implementation
 
-### ✅ Phase 1: Append
+### Historical Phase 1: Built-in append
 
 **Today**
 
@@ -76,8 +78,6 @@ Add `append` to server transactions, apply it inside the run queue at commit, an
 The payload names fields whose type is `string` ([[954f2de..84e0752:packages/core/src/transaction/Transaction.ts#L125-L159]]):
 
 ```ts
-type AppendPayload<Record> = { [Field in AppendableField<Record>]?: string }
-
 type PokeAppendOp<Schema> = {
 	collection: string
 	id: Id
@@ -267,7 +267,7 @@ bb91b2a..d2894c1
      ├── streamText → toUIMessageStream → readUIMessageStream
 -    ├── a timer saves the newest parts every 100 ms
 +    ├── saveParts per snapshot [[bb91b2a..d2894c1:examples/agent-chat/apps/server/test/AgentChat.e2e.spec.ts#L137-L157]]
-+    │   ├── tx.append("parts", id, { text: delta })   # text that grew
++    │   ├── tx.set("parts", next)                    # final text that grew
 +    │   └── tx.set("parts", part)                     # tool and state changes
      └── set the final status
 ```
@@ -278,7 +278,7 @@ The reference test's long reply ([[bb91b2a..d2894c1:examples/agent-chat/apps/ser
 
 ## Limitations
 
-- Only server transactions append.
+- Shared named mutators append through get/set on both client and server.
 - The last-write map holds 10,000 records per server instance. Appends to records written longer ago wait for clients' pulls if the clients have not pulled since the map forgot them.
 - Appends assume the server learns of every write. Another process's write that storage does not report through `subscribe` can let a client extend replaced text until its next pull.
 - A collection codec that renames fields makes append payloads fail encoding, so those appends fall back to a bare poke.
@@ -291,3 +291,7 @@ The reference test's long reply ([[bb91b2a..d2894c1:examples/agent-chat/apps/ser
 - `docs/server.md#append-text`, `docs/sync.md#live-records`, `docs/sync.md#poke`, `docs/custom-remote.md`, `docs/agent-chat.md`
 - `packages/server/test/Append.spec.ts`, `packages/server/test/LivePokeBatching.spec.ts`, `packages/core/test/sync/live.spec.ts`, `packages/server/test/LiveEventStream.spec.ts`
 - `specs/agent-chat-streaming.md` (live records)
+
+## Current append derivation
+
+`TandemServer.commitTransaction` reads each changed record's committed before image in the serialized queue. It compares that image with the transaction's final set write. Plain data objects and arrays are compared structurally; values with uncertain semantics, such as Map, Set, or class instances, force a full set. Removed keys, changed metadata, replacements, shrinking text, and record creation also force a full set. Every inferred suffix must round trip through its collection codec as a string; otherwise the commit sends the full record. The existing live buffer still merges consecutive deltas and uses the record's previous revision guard. Concurrent named get/set calls run in commit order, while pre-created raw transactions do not have append-specific conflict handling.

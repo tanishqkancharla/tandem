@@ -133,7 +133,7 @@ export type Mutation<Schema extends AnySchema> = {
 	mutator?: MutatorCall
 }
 
-/** Fields `append` can extend: those whose value is a string, never `id`. */
+/** String fields that a compact live poke can extend, excluding identity. */
 export type AppendableField<Record> = {
 	[Field in keyof Record]-?: Field extends "id"
 		? never
@@ -144,31 +144,6 @@ export type AppendableField<Record> = {
 			: never
 }[keyof Record] &
 	string
-
-/** Text to add to the end of each named string field. */
-export type AppendPayload<Record> = {
-	[Field in AppendableField<Record>]?: string
-}
-
-/** @internal */
-export class AppendPayloadError extends errore.createTaggedError({
-	name: "AppendPayloadError",
-	message: "$detail",
-}) {}
-
-/** @internal */
-export function validateAppendPayload(payload: unknown) {
-	if (!isObject(payload) || Array.isArray(payload))
-		return new AppendPayloadError({
-			detail: "Append payload must be an object",
-		})
-	if (Object.hasOwn(payload, "id"))
-		return new AppendPayloadError({
-			detail: "An append cannot change record identity",
-		})
-	if (Object.values(payload).some((text) => typeof text !== "string"))
-		return new AppendPayloadError({ detail: "Appended text must be a string" })
-}
 
 /** @internal */
 export class UpdatePayloadError extends errore.createTaggedError({
