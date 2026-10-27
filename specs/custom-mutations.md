@@ -189,6 +189,29 @@ for await (const delta of result.textStream)
   await tandem.mutate("appendReply", { id, text: delta }, { mutators: serverMutators })
 ```
 
+## ✅ Phase 5: Offset page scan-window repair
+
+**Today**
+
+A sole offset subscription can cache only the requested page. The local query applies the offset again and returns an empty result. This pre-existing defect also fails the scoped CI sweep.
+
+**Implemented**
+
+Pull scan windows include the matching prefix through `offset + limit`; the client applies the original query to those records. Live-poke membership still uses the requested page and offset shifts trigger a pull without sending prefix details. DST keeps a broad offset subscription in scoped sweeps and asserts the nonempty page through the public client API.
+
+```changes
+78e0ad4
+```
+
+```callstack
+ TandemServer.readPull [[78e0ad4:packages/server/src/TandemServer.ts#L768-L785]]
++└── executeScanWindowAsync [[78e0ad4:packages/core/src/query/executeQuery.ts#L607-L620]]
++    └── collectScanWindow → windowQueryPrefix [[78e0ad4:packages/core/src/query/executeQuery.ts#L546-L601]] # include rows before the offset
+ TandemServer.emitLivePokes [[78e0ad4:packages/server/src/TandemServer.ts#L923-L956]]
++├── selectScanWindowRecordsAsync [[78e0ad4:packages/core/src/query/executeQuery.ts#L640-L677]] # check the original page
++└── pokeClient # ask the client to pull when an offset page shifts
+```
+
 ## References
 
 - [Agent chat guide](../docs/agent-chat.md)
