@@ -69,7 +69,7 @@ for (const group of dirtyGroups) recompute(group)
 publishIfChanged()
 ```
 
-### Phase 2: React and documentation
+### ✅ Phase 2: React and documentation
 
 **Today**
 
@@ -79,10 +79,14 @@ publishIfChanged()
 
 Keep the current callback in a ref and key the subscription by serializable source and grouping parameters. Publish callback changes from local data without reopening the remote subscription.
 
+```changes
+0071c64
+```
+
 ```callstack
- useTandemQuery [[packages/react/src/TandemClientProvider.tsx#useTandemQuery]]
-+├── retain current callback # inline closures stay current
- └── TandemClient.subscribe [[packages/core/src/TandemClient.ts#TandemClient.subscribe]]
+ useTandemQuery [[0071c64:packages/react/src/TandemClientProvider.tsx#L176-L237]]
++├── retain current callback # inline closures stay current [[0071c64:packages/react/src/TandemClientProvider.tsx#L192-L215]]
+ └── TandemClient.subscribe [[3d7c238:packages/core/src/TandemClient.ts#L312-L328]]
 ```
 
 ### Phase 3: Simulation and integration
