@@ -100,12 +100,12 @@ DST checks subscribed record views, but has no independent aggregate oracle.
 Exercise aggregate subscriptions through the public client API with fault and crash seeds; compare each result with an independently computed statistic.
 
 ```changes
-16c46fb
+ece4850
 ```
 
 ```callstack
- DstSimulation [[16c46fb:dst/DstSimulation.ts#L91-L145]]
-+└── expectedView # compare against independent source calculation [[16c46fb:dst/DstSubscriptions.ts#L145-L185]]
+ DstSimulation [[ece4850:dst/DstSimulation.ts#L91-L145]]
++└── expectedView # compare against independent source calculation [[ece4850:dst/DstSubscriptions.ts#L145-L185]]
 ```
 
 ## References
