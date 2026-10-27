@@ -46,11 +46,11 @@ const _subscribed = client.subscribe(
 client.query({
 	collection: "threads",
 	limit: 2,
-	aggregate: (rows) => rows.length,
+	aggregate: (rows: readonly Schema["threads"][]) => rows.length,
 })
-// @ts-expect-error Nonprimitive fields cannot be grouping keys.
+// @ts-expect-error Unknown fields cannot be grouping keys.
 client.query({
 	collection: "threads",
 	groupBy: ["missing"],
-	aggregate: (rows) => ({ count: rows.length }),
+	aggregate: (rows: readonly Schema["threads"][]) => ({ count: rows.length }),
 })

@@ -136,7 +136,7 @@ describe("callback aggregations", () => {
 			client.query({
 				collection: "threads",
 				limit: 1,
-				aggregate: (rows) => rows.length,
+				aggregate: (rows: readonly Schema["threads"][]) => rows.length,
 			} as never),
 		).toThrow(/support only/)
 		await client.close()

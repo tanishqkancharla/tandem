@@ -71,6 +71,8 @@ export type RelationalQueryOptions<
 	Relations extends AnyRelations<Schema>,
 	Collection extends CollectionName<Schema>,
 > = {
+	readonly aggregate?: never
+	readonly groupBy?: never
 	readonly select?: RelationalSelectOptions<Schema, Collection>
 	readonly where?: RelationalWhereOptions<Schema, Collection>
 	readonly with?: RelationalWithOptions<Schema, Relations, Collection>
