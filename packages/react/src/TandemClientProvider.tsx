@@ -205,13 +205,15 @@ export function useTandemQuery(
 		}
 
 		const subscriptionQuery =
-			"aggregate" in currentQuery
+			typeof currentQuery.aggregate === "function"
 				? {
 						...currentQuery,
-						aggregate: (rows: readonly unknown[]) =>
-							(queryRef.current as typeof currentQuery).aggregate(
-								rows as never,
-							),
+						aggregate: (rows: readonly unknown[]) => {
+							const latest = queryRef.current
+							return latest && typeof latest.aggregate === "function"
+								? latest.aggregate(rows as never)
+								: currentQuery.aggregate(rows as never)
+						},
 					}
 				: currentQuery
 		const subscription = db.subscribe(
