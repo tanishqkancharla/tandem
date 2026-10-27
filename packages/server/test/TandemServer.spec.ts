@@ -552,7 +552,7 @@ test("subscriptions reject initial reads and report recomputation failures", asy
 		(result) => callbacks.push(result),
 		{ onError: (error) => errors.push(error) },
 	)
-	storage.failNextScan(new Error("recompute failed"))
+	const gate = storage.pauseNextCommit()
 	const update = server.transact()
 	update.set("threads", {
 		id: "thread-1",
@@ -561,7 +561,11 @@ test("subscriptions reject initial reads and report recomputation failures", asy
 		status: "open",
 		createdAt: 1,
 	})
-	await server.commit(update)
+	const committed = server.commit(update)
+	await gate.entered
+	storage.failNextScan(new Error("recompute failed"))
+	gate.release()
+	await committed
 	expect(errors.at(-1)).toBeInstanceOf(Error)
 
 	const callbackCount = callbacks.length

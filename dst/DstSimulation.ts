@@ -50,6 +50,8 @@ export interface DstRunOptions {
 	maxMutationsInFlight?: number
 	/** Chance of targeting the shared pool rather than the writer's own pool. */
 	sharedWriteRate?: number
+	/** Chance a writer calls the shared named append mutation. */
+	namedAppendRate?: number
 	initialSubscriptions?: DstSubscriptionMode
 	subscriptionRate?: number
 	connectivityRate?: number
@@ -69,6 +71,7 @@ export function resolveRunOptions(
 		recordCount: options.recordCount ?? 3,
 		maxMutationsInFlight: options.maxMutationsInFlight ?? 4,
 		sharedWriteRate: options.sharedWriteRate ?? 1,
+		namedAppendRate: options.namedAppendRate ?? 0,
 		initialSubscriptions: options.initialSubscriptions ?? "full",
 		subscriptionRate: options.subscriptionRate ?? 0.08,
 		connectivityRate: options.connectivityRate ?? 0.02,
@@ -219,7 +222,7 @@ export class DstSimulation {
 				inventory.tasks.length > 0
 					? rng.pick(inventory.tasks).id
 					: `item-${rng.int(1, this.options.recordCount)}`
-			const spec: DstSubscriptionSpec = rng.pick([
+			const choices: DstSubscriptionSpec[] = [
 				{
 					kind: "tasks",
 					...(rng.boolean(0.5) ? { projectId } : {}),
@@ -237,7 +240,16 @@ export class DstSimulation {
 					commentLimit: rng.int(1, 3),
 				},
 				{ kind: "inventory", collection: "memberships" },
-			])
+			]
+			if (this.options.initialSubscriptions === "scoped")
+				choices.push({
+					kind: "tasks",
+					minPriority: 1,
+					limit: 2,
+					offset: 1,
+					projection: true,
+				})
+			const spec = rng.pick(choices)
 			return { type: "subscribe", client, id, spec }
 		}
 		if (
@@ -269,6 +281,23 @@ export class DstSimulation {
 			const client = rng.pick(writers)
 			if (client.startsWith("tab") && rng.boolean(toggleTabRate))
 				return { type: "toggleTab", tab: client as DstTabName }
+			if (
+				this.options.namedAppendRate > 0 &&
+				!client.startsWith("tab") &&
+				rng.boolean(this.options.namedAppendRate)
+			) {
+				const tasks = world
+					.inventoryOf(client as DstClientName)
+					.tasks.filter(({ id }) => !serverOwnedIds.includes(id))
+				if (tasks.length)
+					return {
+						type: "namedAppend",
+						client: client as DstClientName,
+						id: rng.pick(tasks).id,
+						text: ` n${step}`,
+						...(step % 4 === 0 && { field: "note" as const }),
+					}
+			}
 			const ctx = { rng, world, step, client }
 			const ops = this.chooseBatch(ctx)
 			return { type: "mutate", client, ops }

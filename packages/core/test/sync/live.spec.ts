@@ -164,11 +164,19 @@ type ChatHarness = ReturnType<
 	typeof buildGatekeeperHarness<ChatSchema, ChatClient>
 >
 
+async function appendServer(
+	tx: ReturnType<ChatServer["transact"]>,
+	text: string,
+) {
+	const current = await tx.get("messages", "reply")
+	if (current) tx.set("messages", { ...current, text: current.text + text })
+}
+
 const serverTest = test.extend<{
 	chat: ChatServer
 	pokes: HeldPokes
 	commitOnServer: (
-		write: (tx: ReturnType<ChatServer["transact"]>) => void,
+		write: (tx: ReturnType<ChatServer["transact"]>) => unknown,
 	) => Promise<void>
 }>({
 	chat: async ({ makeRemote }, use) => {
@@ -188,7 +196,7 @@ const serverTest = test.extend<{
 	commitOnServer: async ({ chat }, use) => {
 		await use(async (write) => {
 			const tx = chat.transact()
-			write(tx)
+			await write(tx)
 			await chat.commit(tx)
 		})
 	},
@@ -292,25 +300,25 @@ describe("live pokes", () => {
 			await (
 				await client1.pullFromRemote()
 			).result
-			await commitOnServer((tx) => tx.set("messages", reply("He")))
+			await commitOnServer((tx) => tx.set("messages", reply("Xe")))
 			const [beforePull] = pokes.take()
-			await commitOnServer((tx) => tx.set("messages", reply("Hel")))
+			await commitOnServer((tx) => tx.set("messages", reply("Yel")))
 			await (
 				await client1.pullFromRemote()
 			).result
-			await commitOnServer((tx) => tx.set("messages", reply("Hell")))
-			await commitOnServer((tx) => tx.set("messages", reply("Hello")))
+			await commitOnServer((tx) => tx.set("messages", reply("Zell")))
+			await commitOnServer((tx) => tx.set("messages", reply("Qello")))
 			const [older, newest] = pokes.take().slice(-2)
 
 			// A poke the latest pull already reflects does not move the record back.
 			void beforePull!()
-			expect(client1.query({ collection: "messages" })).toEqual([reply("Hel")])
+			expect(client1.query({ collection: "messages" })).toEqual([reply("Yel")])
 
 			// Nor does one older than the live record shown.
 			void newest!()
 			void older!()
 			expect(client1.query({ collection: "messages" })).toEqual([
-				reply("Hello"),
+				reply("Qello"),
 			])
 		},
 	)
@@ -508,12 +516,8 @@ describe("live pokes", () => {
 			).result
 			pokes.drop()
 
-			await commitOnServer((tx) =>
-				tx.append("messages", "reply", { text: "lo" }),
-			)
-			await commitOnServer((tx) =>
-				tx.append("messages", "reply", { text: "!" }),
-			)
+			await commitOnServer((tx) => appendServer(tx, "lo"))
+			await commitOnServer((tx) => appendServer(tx, "!"))
 			const pulled = pokes.deliver()
 
 			expect(client1.query({ collection: "messages" })).toEqual([
@@ -549,18 +553,14 @@ describe("live pokes", () => {
 			// Before its response arrives, the client shows the reply's poke and
 			// then an append to it.
 			void replyPoke!()
-			await commitOnServer((tx) =>
-				tx.append("messages", "reply", { text: "lo" }),
-			)
+			await commitOnServer((tx) => appendServer(tx, "lo"))
 			void pokes.deliver()
 			expect(client1.query({ collection: "messages" })).toEqual([
 				reply("Hello"),
 			])
 
 			await harness.deactivateGatesAndSettle()
-			await commitOnServer((tx) =>
-				tx.append("messages", "reply", { text: "!" }),
-			)
+			await commitOnServer((tx) => appendServer(tx, "!"))
 			void pokes.deliver()
 			expect(client1.query({ collection: "messages" })).toEqual([
 				{ ...reply("Other"), id: "other" },
@@ -582,9 +582,7 @@ describe("live pokes", () => {
 
 			// A reconnecting client can get the same pokes over two connections,
 			// so an older payload can arrive after a newer one.
-			await commitOnServer((tx) =>
-				tx.append("messages", "reply", { text: "c" }),
-			)
+			await commitOnServer((tx) => appendServer(tx, "c"))
 			await commitOnServer((tx) => tx.set("messages", reply("zz")))
 			const [older, newer] = pokes.take()
 			void newer!()
@@ -606,9 +604,7 @@ describe("live pokes", () => {
 			pokes.drop()
 
 			// A custom remote sends an append whose offset is past the client's text.
-			await commitOnServer((tx) =>
-				tx.append("messages", "reply", { text: "lo" }),
-			)
+			await commitOnServer((tx) => appendServer(tx, "lo"))
 			const [payload] = pokes.takePayloads()
 			const pulled = pokes.connections[0]!.poke({
 				...payload!,
@@ -638,13 +634,9 @@ describe("live pokes", () => {
 			pokes.drop()
 
 			// A lost append leaves the client's text short.
-			await commitOnServer((tx) =>
-				tx.append("messages", "reply", { text: "lo" }),
-			)
+			await commitOnServer((tx) => appendServer(tx, "lo"))
 			pokes.drop()
-			await commitOnServer((tx) =>
-				tx.append("messages", "reply", { text: "!" }),
-			)
+			await commitOnServer((tx) => appendServer(tx, "!"))
 			const recovered = pokes.deliver()
 			expect(client1.query({ collection: "messages" })).toEqual([reply("Hel")])
 			await recovered
@@ -656,9 +648,7 @@ describe("live pokes", () => {
 			// text the server never had.
 			await commitOnServer((tx) => tx.set("messages", reply("Bye!!!")))
 			pokes.drop()
-			await commitOnServer((tx) =>
-				tx.append("messages", "reply", { text: "?" }),
-			)
+			await commitOnServer((tx) => appendServer(tx, "?"))
 			const rewritten = pokes.deliver()
 			expect(client1.query({ collection: "messages" })).toEqual([
 				reply("Hello!"),
@@ -685,9 +675,7 @@ describe("live pokes", () => {
 			const localTx = client1.transact()
 			localTx.update("messages", "reply", { threadId: "thread-2" })
 			const commit = await client1.commit(localTx)
-			await commitOnServer((tx) =>
-				tx.append("messages", "reply", { text: "lo" }),
-			)
+			await commitOnServer((tx) => appendServer(tx, "lo"))
 			void pokes.deliver()
 
 			expect(client1.query({ collection: "messages" })).toEqual([
@@ -755,7 +743,7 @@ describe("live pokes", () => {
 		await vi.waitFor(() => expect(pokes.connections).toHaveLength(2))
 		pokes.drop()
 		const appendTx = chat.transact()
-		appendTx.append("messages", "reply", { text: "lo" })
+		await appendServer(appendTx, "lo")
 		await chat.commit(appendTx)
 		const [, restartedPoke] = pokes.takePayloads()
 		const pulled = pokes.connections[1]!.poke(restartedPoke)
@@ -831,13 +819,9 @@ describe("confirming pulls during a live stream", () => {
 			pokes.drop()
 			const pulls = pokes.pulls
 
-			await commitOnServer((tx) =>
-				tx.append("messages", "reply", { text: "lo" }),
-			)
+			await commitOnServer((tx) => appendServer(tx, "lo"))
 			const first = pokes.deliver()
-			await commitOnServer((tx) =>
-				tx.append("messages", "reply", { text: "!" }),
-			)
+			await commitOnServer((tx) => appendServer(tx, "!"))
 			const second = pokes.deliver()
 
 			// Another payload arrived during this interval, so the pull waits.
@@ -869,7 +853,7 @@ describe("confirming pulls during a live stream", () => {
 			// Every interval sees a new payload.
 			const delivered: Promise<void[]>[] = []
 			for (const text of ["e", "l", "l", "o"]) {
-				await commitOnServer((tx) => tx.append("messages", "reply", { text }))
+				await commitOnServer((tx) => appendServer(tx, text))
 				delivered.push(pokes.deliver())
 				if (text !== "e") await quiet.tick()
 			}
@@ -894,9 +878,7 @@ describe("confirming pulls during a live stream", () => {
 				await client1.pullFromRemote()
 			).result
 			pokes.drop()
-			await commitOnServer((tx) =>
-				tx.append("messages", "reply", { text: "lo" }),
-			)
+			await commitOnServer((tx) => appendServer(tx, "lo"))
 			const streamed = pokes.deliver()
 			const pulls = pokes.pulls
 

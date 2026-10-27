@@ -1,338 +1,184 @@
-# Agent chat
+# Stream chat with shared mutations
 
-This guide builds a streaming agent chat on Tandem. There is no separate stream and no version field. The server appends each text delta to the reply as the model generates it, and every client subscribed to the thread sees the text grow through an ordinary `useTandemQuery` or `client.subscribe`.
+A shared append mutation can receive text from a browser client, from a server-hosted client SDK, or directly from server code. In every case, the server commits the final record and subscribed clients receive live pokes followed by a confirming pull.
 
-This works because [`TandemServer`](server.md#connect-clients) sends each commit's changes to the clients that can see them, and clients show them at once ([live records](sync.md#live-records)). An [`append`](server.md#append-text) sends only the new text. The server merges a burst of commits into one payload per client every 50 ms (`livePokeInterval` on the server), and a client confirms what it was shown with one pull once payloads stop for 200 ms, and at least once a second while they keep coming ([`livePullDelay` and `livePullMaxDelay`](sync.md#poke) on the client). So the reply loop can commit every delta with no timer of its own.
+The runnable [agent chat test](../examples/agent-chat/apps/server/test/AgentChatMutators.e2e.spec.ts) uses the server process to generate a reply. It covers a lost push response, a stop request, authorization, and the final text.
 
-## Rules
+## Shared append definition
 
-1. One writer per record. Clients write user messages. Only the server writes assistant messages and their parts, under reply IDs the push handler keeps clients from writing.
-2. The server appends each text delta to the reply's text part and replaces a tool part whenever it changes. When the model loop ends it saves a final status: `"complete"` on a normal end, `"stopped"` on abort, `"error"` on a throw.
-3. Anything the client says about a reply goes in a record the client owns. The stop button sets `stopRequested` on a `runs` record, and the server aborts the model.
-4. A crash can leave a reply `"streaming"` forever. The server marks those as `"error"` on startup, and clients treat a reply whose `updatedAt` stopped advancing as failed. A heartbeat keeps `updatedAt` fresh while the model runs, including during long tool calls.
-
-## Data model
-
-Store each message as a record, and each of its parts as a record of its own. With the [Vercel AI SDK](https://ai-sdk.dev), a part record holds one `UIMessage` part. Text and reasoning parts keep their text in a top-level `text` field, because `append` extends top-level string fields.
+Import this definition on both client and server. It reads the current message and writes the extended record. `args` validates the text before either side runs it.
 
 ```ts
-import { collection, defineRelations, defineSchema } from "@tanishqkancharla/tandem-core"
-import type { UIMessage } from "ai"
-
-type Message = {
-	id: string
-	threadId: string
-	role: "user" | "assistant"
-	status: "streaming" | "complete" | "stopped" | "error"
-	/** Orders the thread. A reply sorts right after its user message. */
-	createdAt: number
-	/** When the server last saved the message. */
-	updatedAt: number
-}
-
-type UIPart = UIMessage["parts"][number]
-
-type Part = {
-	id: string
-	threadId: string
-	messageId: string
-	/** The part's position in the message. */
-	index: number
-	/** A text or reasoning part's text. The server appends to it. */
-	text: string
-	/** The rest of the part, with `text` left empty. */
-	part: UIPart
-}
-
-/** Written by the client to control one reply. */
-type Run = { id: string; stopRequested: boolean }
-
-type ChatSchema = { messages: Message; parts: Part; runs: Run }
-
-const schema = defineSchema({
-	messages: collection<Message>({
-		fields: ["id", "threadId", "role", "status", "createdAt", "updatedAt"],
-	}),
-	parts: collection<Part>({
-		fields: ["id", "threadId", "messageId", "index", "text", "part"],
-	}),
-	runs: collection<Run>({ fields: ["id", "stopRequested"] }),
+const appendArgs = z.object({ id: z.string(), text: z.string() })
+const appendReply = defineMutator(schema, {
+  args: appendArgs,
+  run: async (tx, { id, text }) => {
+    const message = await tx.get("messages", id)
+    if (!message) return
+    tx.set("messages", { ...message, text: message.text + text })
+  },
 })
-
-const relations = defineRelations(schema, ({ many }) => ({
-	messages: { parts: many("parts", { from: "id", to: "messageId" }) },
-}))
-
-const partId = (messageId: string, index: number) => `${messageId}:${index}`
-
-function toPartRecord(message: Pick<Message, "id" | "threadId">, index: number, part: UIPart): Part {
-	const hasText = "text" in part
-	return {
-		id: partId(message.id, index),
-		threadId: message.threadId,
-		messageId: message.id,
-		index,
-		text: hasText ? part.text : "",
-		part: hasText ? { ...part, text: "" } : part,
-	}
-}
-
-function fromPartRecord({ text, part }: Part): UIPart {
-	return "text" in part ? { ...part, text } : part
-}
-```
-
-`fields` lists the record's fields without per-field codecs, so `part` holds any JSON value. Keeping each part in its own record keeps every write small: a delta sends a few characters, and a tool update sends only that tool's part.
-
-## Server
-
-The server is an ordinary [`TandemServer`](server.md) with the relations. `model` is any AI SDK language model; tests can use `MockLanguageModelV4` from `ai/test`.
-
-```ts
-import type { MutationOp, RemoteApi } from "@tanishqkancharla/tandem-core"
-import {
-	TandemServer,
-	TandemServerJsonFileStorage,
-	type TandemServerTransaction,
-} from "@tanishqkancharla/tandem-server"
-
-const server = new TandemServer({
-	schema,
-	relations,
-	storage: new TandemServerJsonFileStorage<ChatSchema>({ filePath: "./data/chat.json" }),
+const sendMessage = defineMutator(schema, {
+  args: z.object({ messageId: z.string(), threadId: z.string(), text: z.string().min(1) }),
+  run: (tx, { messageId, threadId, text }) => {
+    const updatedAt = Date.now()
+    tx.set("messages", { id: messageId, threadId, role: "user", text,
+      status: "complete", updatedAt })
+    tx.set("messages", { id: `${messageId}:reply`, threadId, role: "assistant",
+      text: "", status: "streaming", updatedAt })
+  },
+})
+const finishReply = defineMutator(schema, {
+  args: z.object({ id: z.string(), status: z.enum(["complete", "error"]) }),
+  run: async (tx, { id, status }) => {
+    const reply = await tx.get("messages", id)
+    if (reply) tx.set("messages", { ...reply, status, updatedAt: Date.now() })
+  },
 })
 ```
 
-Wrap it in the transport the client calls ([Custom remotes](custom-remote.md#wrapping-tandemserver)). Drop operations a client may not make instead of returning an error: the mutation is still acknowledged, and the client's next pull shows the server's record again. An error would leave the mutation pending, and every later push from that client would fail with it. The commit still resolves and the dropped write shows locally until that pull, so validate in the UI too.
+The server serializes named mutations, so concurrent calls read the latest committed text. Its sync path derives compact append pokes when the final record differs only by string growth and the field codec can represent the suffix. Other changes send the full record. A pending client call replays its recorded set during rebase, so its optimistic text can briefly cover newer live text until the confirming pull.
 
-Reply IDs are reserved for the server, so the check needs no lookup: a client cannot overwrite a reply, or one of its parts, by calling it a user message. This only protects replies; who may write which thread is up to your authorization.
+## Register the server once
 
-```ts
-const replyId = (messageId: string) => `${messageId}:reply`
-const isReplyId = (id: string) => id.endsWith(":reply")
-
-function isClientWrite(op: MutationOp<ChatSchema>) {
-	if (op.collection === "runs") return op.type !== "remove"
-	if (op.type !== "set") return false
-	if (op.collection === "messages") return op.value.role === "user" && !isReplyId(op.value.id)
-	return !isReplyId(op.value.messageId) && op.value.id === partId(op.value.messageId, op.value.index)
-}
-
-const replies = new Set<Promise<void>>()
-
-// What your HTTP or WebSocket handlers call for this client.
-const remote: RemoteApi<ChatSchema> = {
-	connect: (client) => server.connect(client),
-	pull: (args) => server.pull(args),
-	async push(args) {
-		const mutations = args.mutations.map((mutation) => ({
-			...mutation,
-			ops: mutation.ops.filter(isClientWrite),
-		}))
-		const response = await server.push({ ...args, mutations })
-		if ("error" in response) return response
-		for (const { ops } of mutations) {
-			for (const op of ops) {
-				if (op.type !== "set" || op.collection !== "messages") continue
-				const reply = streamReply(op.value)
-				replies.add(reply)
-				void reply.finally(() => replies.delete(reply))
-			}
-		}
-		return response
-	},
-}
-
-async function shutdown() {
-	await Promise.all(replies)
-	await server.close()
-}
-```
-
-The reply loop uses the AI SDK on the server only: `streamText`, then `toUIMessageStream`, then `readUIMessageStream`. Each snapshot of the message is compared with the one before it. Text that grew is appended; any other change sets that part whole. Commit every snapshot; Tandem batches them for clients. Do not use `useChat` on the client; the client reads the records.
+The constructor retains the shared registry's names and argument types. A hooks factory receives the session supplied by the authenticated push transport. It runs for each named call, and an asynchronous `afterCommit` closes over that call's session. The server sets `ctx.source`; clients cannot choose it.
 
 ```ts
-import { convertToModelMessages, readUIMessageStream, streamText, toUIMessageStream } from "ai"
-
-/** Writes what changed between two snapshots of a reply's parts. */
-function saveParts(
-	tx: TandemServerTransaction<ChatSchema, typeof relations>,
-	reply: Message,
-	previous: UIPart[],
-	parts: UIPart[],
+const mutators = { appendReply, sendMessage, finishReply }
+function createChatServer(
+  generation: "client" | "server",
+  streamReply: (id: string, threadId: string) => Promise<void>,
 ) {
-	parts.forEach((part, index) => {
-		const next = toPartRecord(reply, index, part)
-		const saved = previous[index] && toPartRecord(reply, index, previous[index])
-		const grew =
-			saved &&
-			JSON.stringify(saved.part) === JSON.stringify(next.part) &&
-			next.text.startsWith(saved.text)
-		if (!grew) return tx.set("parts", next)
-		const delta = next.text.slice(saved.text.length)
-		if (delta) tx.append("parts", next.id, { text: delta })
-	})
-}
-
-async function streamReply(userMessage: Message) {
-	const id = replyId(userMessage.id)
-	const claimTx = server.transact()
-	// A retried push must not start a second reply.
-	if (await claimTx.get("messages", id)) return claimTx.cancel()
-	const reply: Message = {
-		id,
-		threadId: userMessage.threadId,
-		role: "assistant",
-		status: "streaming",
-		// Follow the user message even if the sender's clock is off.
-		createdAt: userMessage.createdAt + 1,
-		updatedAt: Date.now(),
-	}
-	claimTx.set("messages", reply)
-	await server.commit(claimTx)
-
-	// The server is the reply record's only writer, so each save sets it whole.
-	const saveStatus = (status: Message["status"]) => {
-		const tx = server.transact()
-		tx.set("messages", { ...reply, status, updatedAt: Date.now() })
-		return server.commit(tx)
-	}
-	// Clients treat a reply that stops saving for 15 seconds as failed.
-	const heartbeat = setInterval(() => void saveStatus("streaming").catch(console.error), 5_000)
-
-	// The stop button sets stopRequested on this reply's run.
-	const controller = new AbortController()
-	const runs = await server.subscribe({ collection: "runs", where: { id } }, ([run]) => {
-		if (run?.stopRequested) controller.abort()
-	})
-	if (runs.result[0]?.stopRequested) controller.abort()
-
-	const thread = await server.query({
-		collection: "messages",
-		where: { threadId: userMessage.threadId },
-		orderBy: { createdAt: "asc" },
-		with: { parts: { orderBy: { index: "asc" } } },
-	})
-	const result = streamText({
-		model,
-		messages: await convertToModelMessages(
-			thread
-				.filter((message) => message.id !== id)
-				.map(({ id, role, parts }) => ({ id, role, parts: parts.map(fromPartRecord) })),
-		),
-		abortSignal: controller.signal,
-	})
-
-	const streamed = await (async () => {
-		const messages = readUIMessageStream({
-			stream: toUIMessageStream({ stream: result.stream }),
-			terminateOnError: true,
-		})
-		let saved: UIPart[] = []
-		for await (const message of messages) {
-			const tx = server.transact()
-			saveParts(tx, reply, saved, message.parts)
-			saved = message.parts
-			await server.commit(tx)
-		}
-	})().catch((cause) => new Error(`Reply ${id} failed`, { cause }))
-
-	clearInterval(heartbeat)
-	runs.destroy()
-	if (streamed instanceof Error) await saveStatus("error")
-	else await saveStatus(controller.signal.aborted ? "stopped" : "complete")
-}
-```
-
-Pass `tools` to `streamText` as usual: a tool part is set again each time its call streams, resolves, or fails. `saveParts` never removes a part, because a `UIMessage` stream only adds parts or changes them in place.
-
-An abort ends the loop without throwing, so the signal decides between `"complete"` and `"stopped"`. A model error throws because of `terminateOnError`; snapshots still queued at that moment are dropped, so the saved text can end a few tokens before the error.
-
-Before serving requests, mark replies a crash left behind:
-
-```ts
-const interrupted = await server.query({
-	collection: "messages",
-	where: { status: "streaming" },
+return new TandemServer({
+  schema,
+  relations: {},
+  storage,
+  mutators,
+  hooks: (session: Session | undefined) => ({
+    appendReply: {
+      authorize: async (tx, { id }, ctx) => {
+        const message = await tx.get("messages", id)
+        if (!message || !id.endsWith(":reply") || message.status !== "streaming")
+          throw new Error("No streaming reply")
+        if (generation === "server" ? ctx.source !== "server" :
+            ctx.source !== "client" || !session?.threads.includes(message.threadId))
+          throw new Error("No access")
+      },
+    },
+    sendMessage: {
+      authorize: async (tx, { messageId, threadId }, ctx) => {
+        if (ctx.source !== "client" || !session?.threads.includes(threadId))
+          throw new Error("No access")
+        if (await tx.get("messages", messageId) ||
+            await tx.get("messages", `${messageId}:reply`))
+          throw new Error("Message exists")
+      },
+      afterCommit: generation === "server" ?
+        ({ messageId, threadId }) => streamReply(`${messageId}:reply`, threadId) :
+        undefined,
+    },
+    finishReply: {
+      authorize: async (tx, { id }, ctx) => {
+        const reply = await tx.get("messages", id)
+        if (generation !== "client" || ctx.source !== "client" ||
+            !reply || !session?.threads.includes(reply.threadId))
+          throw new Error("No access")
+      },
+    },
+  }),
 })
-const tx = server.transact()
-for (const message of interrupted) {
-	tx.set("messages", { ...message, status: "error", updatedAt: Date.now() })
 }
-await server.commit(tx)
+
+const server = createChatServer("client", async () => {}) // use "server" for direct calls
+
+const remote: RemoteApi<ChatSchema> = {
+  push: (request) => server.push(request, { context: authenticatedSession }),
+  pull: (request) => server.pull(request),
+  connect: (client) => server.connect(client),
+}
 ```
 
-Run one `TandemServer` process for the chat. Live records come from the process that committed, so a client whose pokes and pulls reach different processes falls back to a poke and a pull per batch.
+`sendMessage` is a separate shared mutation that creates the user message and one empty reply. `finishReply` sets the reply's terminal status through a shared mutation. Only server mode installs the `sendMessage.afterCommit` generation hook; append calls do not retrigger it. A retried push keeps the same mutation ID and does not start a second response. The [runnable test](../examples/agent-chat/apps/server/test/AgentChatMutators.e2e.spec.ts) shows the complete definitions, both streaming paths, and stop behavior.
 
-## Client
+## Receive updates in a client
 
-The client needs the same schema and relations as the server, because it reads parts through the `parts` relation:
+Subscribe to the thread before expecting another writer's records. The subscription builds the client's scan window; the remote connection then receives live pokes and confirming pulls.
 
 ```ts
-import { TandemClient } from "@tanishqkancharla/tandem-core"
-
-const client = new TandemClient({ schema, relations, remote })
-```
-
-Here `remote` is the client's transport to the server's handlers ([Custom remotes](custom-remote.md)). In a single process, such as a test, it can be the server-side `remote` above.
-
-Send a message and its text part in one commit:
-
-```ts
-const message: Message = {
-	id: messageId,
-	threadId,
-	role: "user",
-	status: "complete",
-	createdAt: Date.now(),
-	updatedAt: Date.now(),
-}
-const tx = client.transact()
-tx.set("messages", message)
-tx.set("parts", toPartRecord(message, 0, { type: "text", text }))
-await client.commit(tx)
-```
-
-Read the thread with a plain query ordered by `createdAt`, including each message's parts by `index`, and branch on `status`. Without `orderBy`, the order is unspecified. A `"streaming"` reply that the server has not saved for a while belongs to a crashed process:
-
-```tsx
-const messages = useTandemQuery({
-	collection: "messages",
-	where: { threadId },
-	orderBy: { createdAt: "asc" },
-	with: { parts: { orderBy: { index: "asc" } } },
-})
-
-const stale = (message: Message) =>
-	message.status === "streaming" && Date.now() - message.updatedAt > 15_000
-
-return messages?.map((message) =>
-	message.status === "error" || stale(message) ? (
-		<Failed key={message.id} message={message} />
-	) : (
-		<Bubble
-			key={message.id}
-			parts={message.parts.map(fromPartRecord)}
-			streaming={message.status === "streaming"}
-		/>
-	),
+const client = new TandemClient({ schema, mutators, remote })
+await client.ready
+const subscription = client.subscribe(
+  { collection: "messages", where: { threadId } },
+  (messages) => render(messages.map(({ text, status }) => ({ text, status }))),
 )
+// Later: subscription.destroy()
 ```
 
-Re-check staleness on a timer if no other render would happen. A stopped reply keeps the text generated so far.
+A client outside the scan window can call `pullFromRemote()` to fetch a new view after changing its subscriptions.
 
-The stop button writes the run record the server watches:
+## Option 1: the client reads the model stream
+
+A browser or other client starts generation and consumes its own model stream. Construct the server with `createChatServer("client", async () => {})`, so `sendMessage` creates an empty reply without a server generation hook. The append hook permits a client with access to the reply's thread. Each append is optimistic locally and syncs to other subscribed clients.
 
 ```ts
-const tx = client.transact()
-tx.set("runs", { id: replyId(messageId), stopRequested: true })
-await client.commit(tx)
+await client.mutate.sendMessage({ messageId, threadId, text: prompt })
+const replyId = `${messageId}:reply`
+const stream = await startModelStream({ threadId, prompt })
+for await (const delta of stream.textStream) {
+  await client.mutate.appendReply({ id: replyId, text: delta })
+}
+await client.mutate.finishReply({ id: replyId, status: "complete" })
 ```
 
-## Notes
+The client owns the generation in this option. On a stream error, call `finishReply` with `status: "error"`. Keep model credentials in a trusted service when the provider requires them; `startModelStream` can read an authenticated response stream from that service.
 
-- Subscribe to the open thread only. Each viewer still pulls its whole scan window about once a second while a reply streams.
-- Every viewer of the thread sees the reply grow, not only the sender.
-- A text part is resent whole only when something other than its text changes, such as its `state` at the end.
+## Option 2: server code streams through a TandemClient
 
-The end-to-end test in [`examples/agent-chat/apps/server/test/AgentChat.e2e.spec.ts`](https://github.com/tanishqkancharla/tandem/blob/main/examples/agent-chat/apps/server/test/AgentChat.e2e.spec.ts) implements this guide with the AI SDK's mock model, and shows a test setup (a silent logger, `syncInterval: 0`, and a JSON transport): two viewers with slow pulls and a long reply, a tool call, the stop button, a model error, send order, and startup cleanup.
+Construct the server with `createChatServer("client", async () => {})`. A server process creates a headless `TandemClient` with in-memory state and `tabs: false`. Its authenticated remote routes calls through client sync, so `ctx.source` is `"client"` and the session must have access to the thread. The server process consumes the model stream; its client SDK performs optimistic appends and sync. Other subscribed clients receive the committed text and terminal status.
+
+```ts
+const headlessRemote: RemoteApi<ChatSchema> = {
+  push: (request) => server.push(request, { context: serviceSession }),
+  pull: (request) => server.pull(request),
+  connect: (client) => server.connect(client),
+}
+const headless = new TandemClient({
+  schema, mutators, remote: headlessRemote, tabs: false,
+}) // no clientStorage: in-memory client state
+await headless.ready
+const thread = headless.subscribe({ collection: "messages", where: { threadId } })
+await headless.pullFromRemote()
+await headless.mutate.sendMessage({ messageId, threadId, text: prompt })
+const id = `${messageId}:reply`
+try {
+  const stream = streamText({ model, messages: await threadContext(threadId) })
+  for await (const delta of stream.textStream)
+    await headless.mutate.appendReply({ id, text: delta })
+  await headless.mutate.finishReply({ id, status: "complete" })
+} catch (error) {
+  await headless.mutate.finishReply({ id, status: "error" })
+  throw error
+} finally {
+  thread.destroy()
+  await headless.disconnect()
+}
+```
+
+This path is useful when the stream reader lives on a server but should use the same client mutation and sync behavior as a browser. Use a session issued by the server transport for the service's allowed threads.
+
+## Option 3: server code mutates TandemServer directly
+
+Construct the server with `createChatServer("server", streamReply)`. A client calls `sendMessage` once. Its `afterCommit` returns the stream promise, which the server observes without holding the mutation queue. The server code consumes the model stream and calls typed `server.mutate.appendReply` for each chunk. These calls have `ctx.source === "server"`; the server controls this value. Subscribed clients receive the committed text and terminal status.
+
+```ts
+async function streamReply(id: string, threadId: string) {
+  const stream = streamText({ model, messages: await threadContext(threadId) })
+  for await (const delta of stream.textStream)
+    await server.mutate.appendReply({ id, text: delta })
+  const tx = server.transact()
+  await tx.update("messages", id, { status: "complete" })
+  await server.commit(tx)
+}
+```
+
+The runnable test uses this direct path and records `"error"` or `"stopped"` status if generation fails or is aborted. The `afterCommit` hook is best effort and in memory; persist and recover work separately if a response must survive a server crash.

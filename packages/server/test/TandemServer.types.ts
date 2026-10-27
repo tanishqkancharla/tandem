@@ -1,9 +1,15 @@
 import {
 	collection,
+	defineMutators,
 	defineRelations,
 	defineSchema,
+	TandemClient,
 } from "@tanishqkancharla/tandem-core"
-import type { RemoteApi, UpdateMutationOp } from "@tanishqkancharla/tandem-core"
+import type {
+	MutateApi,
+	RemoteApi,
+	UpdateMutationOp,
+} from "@tanishqkancharla/tandem-core"
 import { expectTypeOf } from "vitest"
 import type { TandemServerStorageApi } from "../src/index.js"
 import { TandemServer } from "../src/index.js"
@@ -221,3 +227,90 @@ void server.query({
 
 // @ts-expect-error Transaction queries use the server's collection names.
 void transaction.query({ collection: "unknown" })
+
+const shared = defineMutators(schema, {
+	appendBody: {
+		args: (input: unknown) => input as { id: string; text: string },
+		run: async (tx, { id, text }) => {
+			const message = await tx.get("messages", id)
+			if (message) tx.set("messages", { ...message, body: message.body + text })
+		},
+	},
+})
+const registered = new TandemServer({
+	schema,
+	relations,
+	storage,
+	mutators: shared,
+	hooks: (session: { user: string } | undefined) => ({
+		appendBody: {
+			authorize: async (tx, args, ctx) => {
+				expectTypeOf(args).toEqualTypeOf<{ id: string; text: string }>()
+				expectTypeOf(session).toEqualTypeOf<{ user: string } | undefined>()
+				expectTypeOf(ctx.source).toEqualTypeOf<"client" | "server">()
+				expectTypeOf(await tx.get("threads", "thread-1")).toEqualTypeOf<
+					Readonly<Thread> | undefined
+				>()
+				// @ts-expect-error Hook transaction uses the registered schema.
+				void tx.get("missing", "id")
+				// @ts-expect-error Hook args come from appendBody.
+				void args.missing
+			},
+		},
+	}),
+})
+const namedClient = new TandemClient({ schema, relations, mutators: shared })
+expectTypeOf(registered.mutate).toEqualTypeOf<MutateApi<typeof shared>>()
+expectTypeOf(namedClient.mutate).toEqualTypeOf<typeof registered.mutate>()
+void registered.mutate.appendBody({ id: "message-1", text: "!" })
+void registered.mutate["appendBody"]({ id: "message-1", text: "!" })
+const appendBody = registered.mutate.appendBody
+expectTypeOf(appendBody).toEqualTypeOf<
+	(args: { id: string; text: string }) => Promise<void>
+>()
+void registered.push(
+	{ clientId: "client-1" as never, mutations: [] },
+	{ context: { user: "ada" } },
+)
+void registered.push(
+	{ clientId: "client-1" as never, mutations: [] },
+	{
+		context: {
+			// @ts-expect-error Request context must match the hooks factory's session.
+			user: 42,
+		},
+	},
+)
+// @ts-expect-error Unknown direct mutation names are excluded.
+void registered.mutate.missing({ id: "message-1" })
+// @ts-expect-error appendBody requires text.
+void registered.mutate.appendBody({ id: "message-1" })
+// @ts-expect-error appendBody text is a string.
+void registered.mutate.appendBody({ id: "message-1", text: 42 })
+// @ts-expect-error The callable name-and-args API was removed.
+void registered.mutate("appendBody", { id: "message-1", text: "!" })
+// @ts-expect-error A server with no registry cannot call an arbitrary mutator.
+void server.mutate.appendBody({ id: "message-1", text: "!" })
+
+// The documented mode-dependent hook retains contextual argument inference.
+function createGuideServer(mode: "client" | "server") {
+	return new TandemServer({
+		schema,
+		relations,
+		storage,
+		mutators: shared,
+		hooks: () => ({
+			appendBody: {
+				afterCommit:
+					mode === "server"
+						? ({ id, text }) => {
+								expectTypeOf(id).toEqualTypeOf<string>()
+								expectTypeOf(text).toEqualTypeOf<string>()
+								return Promise.resolve()
+							}
+						: undefined,
+			},
+		}),
+	})
+}
+void createGuideServer

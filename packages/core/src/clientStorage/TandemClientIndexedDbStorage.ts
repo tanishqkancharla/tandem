@@ -78,6 +78,7 @@ function createTupleCodec<Schema extends AnySchema>(
 				}
 			}
 			case "replica":
+			case "mutator":
 			case "session":
 			case "tab-write":
 				return tuple.value

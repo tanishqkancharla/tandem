@@ -32,7 +32,7 @@ await db.commit(tx)
 - `remove` - Delete record by id, recorded even when the record isn't local
 - `update` - Assign supplied top-level payload fields on an existing record; missing records remain absent
 
-`TandemServerTransaction.append` is server-only and never becomes a client mutation; see the sync engine's live appends.
+Shared named mutators can extend strings with `get` and `set`. The server derives compact live append pokes from the committed before and after records.
 
 Ops store only the new value, id, or partial payload, never the previous value. Replay reapplies each op in order. `tx.update(collection, id, payload)` accepts explicit partial assignments, copies their supplied fields, and records an `update` operation. Omitted fields remain untouched; nested values replace their top-level field. Equal assignments still record intent. Missing records and empty payloads add no operation. Reject payload identity changes; field deletion is not supported.
 

@@ -19,7 +19,8 @@ import { collectionIdToTuple } from "../schema/Schema.js"
 import type { EncodedQuery, ScanWindow } from "../query/Query.js"
 import type { Tagged } from "../utils/typeUtils.js"
 import { codec as createCodec, type Codec } from "../utils/Codec.js"
-import { isObject } from "../utils/objectUtils.js"
+import { isObject, isString } from "../utils/objectUtils.js"
+import type { MutatorCall } from "../mutator/Mutator.js"
 
 // Namespace-wide reconciliation handles records from any collection in Schema.
 // Public collection methods below retain collection-specific record and ID types.
@@ -36,6 +37,12 @@ export type TupleClientBase<Schema extends AnySchema> = {
 export type TupleClientOutbox<Schema extends AnySchema> = {
 	key: [MutationId]
 	value: MutationOp<Schema>[]
+}
+
+/** The mutator call behind a pending mutation, kept beside its recorded operations. */
+export type TupleClientMutator = {
+	key: [MutationId]
+	value: MutatorCall
 }
 
 type CollectionTupleKey<
@@ -119,9 +126,14 @@ export type MutationId = Tagged<"MutationId", number>
 export type Mutation<Schema extends AnySchema> = {
 	ops: MutationOp<Schema>[]
 	id: MutationId
+	/**
+	 * Set for a named mutation. The server runs the mutator with these
+	 * arguments and ignores `ops`, which the client sends empty.
+	 */
+	mutator?: MutatorCall
 }
 
-/** Fields `append` can extend: those whose value is a string, never `id`. */
+/** String fields that a compact live poke can extend, excluding identity. */
 export type AppendableField<Record> = {
 	[Field in keyof Record]-?: Field extends "id"
 		? never
@@ -132,31 +144,6 @@ export type AppendableField<Record> = {
 			: never
 }[keyof Record] &
 	string
-
-/** Text to add to the end of each named string field. */
-export type AppendPayload<Record> = {
-	[Field in AppendableField<Record>]?: string
-}
-
-/** @internal */
-export class AppendPayloadError extends errore.createTaggedError({
-	name: "AppendPayloadError",
-	message: "$detail",
-}) {}
-
-/** @internal */
-export function validateAppendPayload(payload: unknown) {
-	if (!isObject(payload) || Array.isArray(payload))
-		return new AppendPayloadError({
-			detail: "Append payload must be an object",
-		})
-	if (Object.hasOwn(payload, "id"))
-		return new AppendPayloadError({
-			detail: "An append cannot change record identity",
-		})
-	if (Object.values(payload).some((text) => typeof text !== "string"))
-		return new AppendPayloadError({ detail: "Appended text must be a string" })
-}
 
 /** @internal */
 export class UpdatePayloadError extends errore.createTaggedError({
@@ -195,6 +182,14 @@ export namespace MutationApi {
 			) {
 				return new MutationCodecInputError({
 					detail: "expected an id and operations",
+				})
+			}
+			if (
+				input.mutator !== undefined &&
+				(!isObject(input.mutator) || !isString(input.mutator.name))
+			) {
+				return new MutationCodecInputError({
+					detail: "expected a mutator name",
 				})
 			}
 			const ops: Record<string, unknown>[] = []
@@ -373,6 +368,13 @@ export class Transaction<Schema extends AnySchema> {
 		return this.tupleDbTx.subspace(["base"]) as unknown as TupleTransactionApi<
 			TupleClientBase<Schema>
 		>
+	}
+
+	/** @internal */
+	get mutators() {
+		return this.tupleDbTx.subspace([
+			"mutator",
+		]) as unknown as TupleTransactionApi<TupleClientMutator>
 	}
 
 	/** @internal */

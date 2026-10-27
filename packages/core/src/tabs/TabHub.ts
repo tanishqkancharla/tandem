@@ -1,4 +1,5 @@
 import * as errore from "errore"
+import { MutationRejectedError } from "../mutator/Mutator.js"
 import type { Database } from "../Database.js"
 import type { ScanWindow } from "../query/Query.js"
 import type { AnyRelations, AnySchema } from "../schema/Schema.js"
@@ -410,7 +411,7 @@ export class TabHub<
 						unreachable(op)
 				}
 			}
-			committed = this.syncEngine.commit(tx, {
+			committed = this.syncEngine.commit(tx, mutation.mutator, {
 				clientId: sessionId,
 				mutationId: mutation.id,
 			})
@@ -441,9 +442,32 @@ export class TabHub<
 			(cause: unknown) =>
 				new TabServerError({ detail: errorMessage(cause), cause }),
 		)
+		if (
+			result instanceof TabServerError &&
+			result.cause instanceof MutationRejectedError
+		)
+			return {
+				error: "rejected",
+				mutationId: mutation.id,
+				message: String(result.cause.reason),
+			}
 		if (result instanceof Error) return unavailable(result)
 		const pushed = await this.awaitServer(receipt.mutationId, attempt)
 		if (pushed instanceof Error) return unavailable(pushed)
+		if (attempt?.response) {
+			const response = await attempt.response.catch(() => undefined)
+			if (response && "ok" in response) {
+				const rejection = response.rejected?.find(
+					({ id }) => id === receipt.mutationId,
+				)
+				if (rejection)
+					return {
+						error: "rejected",
+						mutationId: mutation.id,
+						message: rejection.message,
+					}
+			}
+		}
 		if (receipt.clientId !== this.db.replica.clientId)
 			return unavailable("Forwarded write was cleared")
 		return { ok: true }

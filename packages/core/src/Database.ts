@@ -39,6 +39,7 @@ import {
 	type SetMutationOp,
 	type RemoveMutationOp,
 	type TupleClientBase,
+	type TupleClientMutator,
 	type TupleClientOutbox,
 	type TupleClientRecord,
 	Transaction,
@@ -52,6 +53,7 @@ import type {
 	PullResponse,
 	Revision,
 } from "./sync/SyncEngine.js"
+import type { MutatorCall } from "./mutator/Mutator.js"
 import type { LoggerApi } from "./utils/Logger.js"
 import type { RngApi } from "./utils/randomId.js"
 import { isEqual } from "./utils/objectUtils.js"
@@ -248,6 +250,12 @@ export class Database<
 		>
 	}
 
+	get mutators() {
+		return this.tupleDb.subspace([
+			"mutator",
+		]) as unknown as TupleDatabaseClient<TupleClientMutator>
+	}
+
 	private get sessions() {
 		return this.tupleDb.subspace([
 			"session",
@@ -429,15 +437,12 @@ export class Database<
 		transaction.tupleDbTx.commit()
 	}
 
-	/**
-	 * Commits a pending mutation. A leader forwarding a tab's mutation records
-	 * that tab's mutation ID in the same transaction, so the forwarded write and
-	 * its deduplication marker persist together.
-	 */
+	/** Commit a pending mutation and optional tab forwarding receipt atomically. */
 	commitMutation(
 		transaction: Transaction<Schema>,
+		mutator?: MutatorCall,
 		forwarded?: { clientId: ClientId; mutationId: MutationId },
-	): void {
+	): MutationId {
 		const tx = transaction.tupleDbTx
 		const replica = this.replica
 		const id = tag<MutationId>(replica.lastIssuedMutationId + 1)
@@ -455,6 +460,7 @@ export class Database<
 			})
 		}
 		transaction.outbox.set([id], [...transaction.ops])
+		if (mutator) transaction.mutators.set([id], mutator)
 		tx.set(["replica"], { ...replica, lastIssuedMutationId: id })
 		if (forwarded) {
 			tx.set(["tab-write", forwarded.clientId, forwarded.mutationId], {
@@ -467,6 +473,7 @@ export class Database<
 			})
 		}
 		tx.commit()
+		return id
 	}
 
 	/** The last mutation this replica committed for a forwarding tab session. */
@@ -567,7 +574,7 @@ export class Database<
 	): void {
 		const transaction = this.transact()
 		const tx = transaction.tupleDbTx
-		const { records, bases, outbox } = transaction
+		const { records, bases, outbox, mutators } = transaction
 		if (patch.reset) {
 			for (const { key } of records.scan()) records.remove(key)
 			for (const { key, value } of bases.scan()) {
@@ -580,6 +587,8 @@ export class Database<
 			this.applyServerOp(transaction, { type: "remove", ...op })
 		for (const { key } of outbox.scan({ lte: [lastMutationId] }))
 			outbox.remove(key)
+		for (const { key } of mutators.scan({ lte: [lastMutationId] }))
+			mutators.remove(key)
 		// The pull reflects the server at its revision, so it replaces every live
 		// record from that commit or earlier: updates, deletes, and records that
 		// left the view alike. A newer live record stays over the rebuilt base.

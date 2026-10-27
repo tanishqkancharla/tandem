@@ -9,6 +9,7 @@ import type { ScanWindow } from "../query/Query.js"
 import type { CollectionCodecs } from "../schema/collectionCodecs.js"
 import type { ClientId, Cookie } from "../sync/SyncEngine.js"
 import type { Mutation, MutationId } from "../transaction/Transaction.js"
+import type { MutatorCall } from "../mutator/Mutator.js"
 import { isEqual } from "../utils/objectUtils.js"
 
 export type TandemClientBase<Record> = {
@@ -40,6 +41,10 @@ export type TandemClientTuple<Schema extends AnySchema> =
 	| {
 			key: ["outbox", MutationId]
 			value: Mutation<Schema>["ops"]
+	  }
+	| {
+			key: ["mutator", MutationId]
+			value: MutatorCall
 	  }
 	| {
 			/** A forwarded write's server identity, retained until its tab receives completion. */

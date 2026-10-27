@@ -1,6 +1,4 @@
 import { describe, expect, it } from "vitest"
-import fs from "node:fs"
-import { parseArtifact, replay } from "./DstReplay.js"
 import { expectedView, subscriptionQuery } from "./DstSubscriptions.js"
 import { DstWorld, type DstInventory } from "./DstWorld.js"
 
@@ -314,23 +312,7 @@ describe("DST isolated server-relative page", () => {
 		})
 	})
 
-	it("replays the minimal sole-offset defect with the expected nonempty page", async () => {
-		const artifact = parseArtifact(
-			fs.readFileSync(
-				new URL("./known-failures/sole-offset.jsonl", import.meta.url),
-				"utf8",
-			),
-		)
-		const result = await replay(artifact)
-		expect(result.divergence).toBeUndefined()
-		expect(result.violation).toEqual(artifact.outcome?.violation)
-		expect(result.violation).toMatchObject({
-			expected: [{ id: "b", text: "Second" }],
-			actual: [],
-		})
-	})
-
-	it("detects the known sole-offset page defect without warming the reader cache", async () => {
+	it("loads a sole offset page without warming the reader cache", async () => {
 		await using world = await DstWorld.start({
 			seed: 51,
 			clientCount: 2,
@@ -375,20 +357,12 @@ describe("DST isolated server-relative page", () => {
 		const outcome = await world.finish()
 		expect(outcome.states.server.tasks).toHaveLength(7)
 		expect([...world.subscriptions("client2").keys()]).toEqual(["sole-page"])
-		// This checks the DST's defect detection, not pagination correctness.
-		// Remove the known-failure assertion once Tandem returns the requested row.
-		expect(outcome.violation).toEqual({
-			kind: "subscriptionView",
-			checkpoint: "quiescence",
-			client: "client2",
-			subscriptionId: "sole-page",
-			spec,
-			expected: [{ id: "a", text: "Earlier tied ID" }],
-			actual: [],
-		})
+		expect(outcome.violation).toBeUndefined()
 		expect(
 			world.query({ client: "client2", query: subscriptionQuery(spec) }),
-		).toEqual([])
-		expect(world.subscriptions("client2").get("sole-page")?.latest).toEqual([])
+		).toEqual([{ id: "a", text: "Earlier tied ID" }])
+		expect(world.subscriptions("client2").get("sole-page")?.latest).toEqual([
+			{ id: "a", text: "Earlier tied ID" },
+		])
 	})
 })

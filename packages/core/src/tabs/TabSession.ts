@@ -1,4 +1,6 @@
 import * as errore from "errore"
+import { MutationRejectedError } from "../mutator/Mutator.js"
+import type { MutatorCall } from "../mutator/Mutator.js"
 import type { Database } from "../Database.js"
 import type { EncodedQuery, ScanWindow } from "../query/Query.js"
 import type { AnyRelations, AnySchema } from "../schema/Schema.js"
@@ -124,14 +126,15 @@ export class TabSession<
 			})
 	}
 
-	commit(transaction: Transaction<Schema>) {
+	commit(transaction: Transaction<Schema>, mutator?: MutatorCall) {
 		// The leader accepts each tab's mutations in order, so older unsaved ones go first.
 		this.retryWrites()
-		this.db.commitMutation(transaction)
+		this.db.commitMutation(transaction, mutator)
 		const call = this.submit(
 			this.db.replica.lastIssuedMutationId,
 			transaction.ops,
 			this.wantsRemote,
+			mutator,
 		)
 		return call.result.promise.then((result) => this.resultError(result))
 	}
@@ -233,6 +236,11 @@ export class TabSession<
 	}
 
 	private resultError(result: TabResult<Schema>) {
+		if ("error" in result && result.error === "rejected")
+			return new MutationRejectedError({
+				mutationId: result.mutationId,
+				reason: result.message,
+			})
 		if ("error" in result)
 			return new TabRequestError({ detail: result.message, cause: result })
 	}
@@ -242,11 +250,16 @@ export class TabSession<
 		mutationId: MutationId,
 		ops: Mutation<Schema>["ops"],
 		waitForServer: boolean,
+		mutator?: MutatorCall,
 	) {
 		const sessionId = this.db.replica.clientId
 		const call = this.request({
 			method: "commit",
-			mutation: TabCodec.encodeMutation(this.codecs, { id: mutationId, ops }),
+			mutation: TabCodec.encodeMutation(this.codecs, {
+				id: mutationId,
+				ops,
+				mutator,
+			}),
 			waitForServer,
 		})
 		void call.saved.promise.then((saved) => {
@@ -273,7 +286,8 @@ export class TabSession<
 		for (const { key, value } of this.db.outbox.scan({
 			gt: [this.savedThrough],
 		}))
-			if (!active.has(key[0])) this.submit(key[0], value, false)
+			if (!active.has(key[0]))
+				this.submit(key[0], value, false, this.db.mutators.get(key))
 	}
 
 	private request(

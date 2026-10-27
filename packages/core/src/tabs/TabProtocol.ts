@@ -34,6 +34,7 @@ export type TabRequest<Schema extends AnySchema> =
 export type TabResult<Schema extends AnySchema = AnySchema> =
 	| { ok: true; view?: TabView<Schema> }
 	| { error: "unavailable"; message: string }
+	| { error: "rejected"; message: string; mutationId: Mutation<Schema>["id"] }
 
 export type TabMessage<Schema extends AnySchema = AnySchema> =
 	| { type: "hello" }
@@ -74,11 +75,12 @@ function transformValue<Schema extends AnySchema>(
 
 function transformMutation<Schema extends AnySchema>(
 	codecs: CollectionCodecs<Schema>,
-	{ id, ops }: Mutation<Schema>,
+	{ id, ops, mutator }: Mutation<Schema>,
 	direction: "encode" | "decode",
 ): Mutation<Schema> {
 	return {
 		id,
+		mutator,
 		ops: ops.map((op): MutationOp<Schema> => {
 			switch (op.type) {
 				case "set":

@@ -5,6 +5,7 @@ export type {
 	ClientApi,
 	ClientId,
 	Cookie,
+	MutationRejection,
 	Patch,
 	PatchRemoveOp,
 	PatchSetOp,
@@ -26,7 +27,6 @@ export type { TandemEventSourceArgs } from "./sync/TandemEventSource.js"
 export { Transaction } from "./transaction/Transaction.js"
 export type {
 	AppendableField,
-	AppendPayload,
 	Mutation,
 	MutationId,
 	MutationOp,
@@ -35,6 +35,22 @@ export type {
 	UpdateMutationOp,
 } from "./transaction/Transaction.js"
 export { MutationApi } from "./transaction/Transaction.js"
+export {
+	defineMutator,
+	defineMutators,
+	MutationRejectedError,
+} from "./mutator/Mutator.js"
+export type {
+	AnyMutators,
+	MutateApi,
+	MutatorArgs,
+	MutatorArgsOf,
+	MutatorCall,
+	MutatorContext,
+	MutatorDefinition,
+	MutatorTransaction,
+	StandardSchemaV1,
+} from "./mutator/Mutator.js"
 export { TandemClientStorage } from "./clientStorage/TandemClientStorage.js"
 export type {
 	TandemClientStorageApi,

@@ -1,6 +1,6 @@
 # Known failures
 
-These recordings retain unresolved Tandem behavior. The sole-offset recording reproduces on the current stack; the crash-removal recording is historical and its schedule no longer applies, as described below. Fixed recordings and fixture-specific tests are removed; ordinary public-API delivery, persistence, and recovery tests remain. A passing known-defect detection test does not mean Tandem satisfies the contract.
+This directory retains historical Tandem failures. The crash-removal recording has an incompatible schedule on the current stack, as described below. Fixed recordings are removed; ordinary public-API delivery, persistence, and recovery tests remain. A passing known-defect detection test does not mean Tandem satisfies the contract.
 
 Each JSONL artifact preserves resolved configuration, scheduled events, explicit recovery checkpoints, and final inventories. Replay checks event boundaries, checkpoint observations, and the complete final outcome. Boundary divergence requires investigation; it does not establish that a defect is fixed. A seed alone cannot reproduce an older generator's schedule.
 
@@ -10,7 +10,7 @@ The server is authoritative. At healthy checkpoints, DST reads its records throu
 
 Random runs first heal transport, restart crashed clients, reconnect explicitly offline clients, and fairly deliver healthy work within `--recovery-events`. This ordinary stage does not force a pull on connected clients. A separate repair stage reconnects everyone and explicitly pulls. Ordinary mismatches and budget exhaustion remain failures even when repair succeeds. Only active subscriptions are checked; scoped readers receive no hidden full-inventory subscriptions.
 
-Both stored recordings have explicit repair checkpoints but no ordinary stage (`ordinary: "notRun"`). They make no ordinary-recovery claim.
+The stored recording has an explicit repair checkpoint but no ordinary stage (`ordinary: "notRun"`). They make no ordinary-recovery claim.
 
 ```tsx
 // Pseudocode: reproducibility is distinct from correctness.
@@ -33,21 +33,11 @@ pnpm dst:run --replay dst/known-failures/crash-removal.jsonl
 
 With append batching integrated, replay stops at step 32 because `client1.poke#1` reaches a different recorded boundary. The original 1,000 workload events and expected ghost remain intact for investigation; the test verifies that replay reports the incompatible schedule, not successful recovery. This is no longer an executable reproduction of the ghost on the current stack. Neither a different event schedule nor replay divergence proves the defect is fixed.
 
-## Unresolved: a sole offset subscription returns an empty page
-
-`sole-offset.jsonl` contains two workload events: create three tasks, then install the reader's sole task subscription. Client2 requests offset 1, limit 1, ordered by descending priority and ascending ID, projected to ID/text. The expected result is `[{ id: "b", text: "Second" }]`; both the local query and latest callback return `[]` after forced repair.
-
-```sh
-pnpm dst:run --replay dst/known-failures/sole-offset.jsonl
-```
-
-The reader caches the requested server row, but local pagination applies the offset again. An overlapping full subscription can mask this behavior. Keep the sole-reader subscription and nonempty expected page intact when investigating it.
-
 ## Ordinary recovery limitation: a lost poke can leave no scheduled pull
 
 `recovery.spec.ts` drops a server poke, heals transport, and verifies that ordinary recovery reports a view mismatch while forced repair succeeds. Healing must not silently schedule an application pull. The configured sync timer debounces queued work; it is not periodic polling and does not by itself reacquire a lost notification.
 
-The generator exposes an ordinary stale project view at seed 3, 300 steps, five clients, and one outstanding mutation. Client2 retains project `item-1` at revision 208 while the server has revision 90; explicit repair succeeds. Append batching changed the prior seed 6 schedule. The detection test verifies the exact mismatch and trace replay. This is separate from the historical crash ghost and does not diagnose its cause. Both current ordinary-recovery scenarios remain explicit detection tests without a third stored artifact.
+The current fault profile exposes ordinary stale project views at seeds 15 and 19 over 300 steps with five clients. Both pass explicit repair. The CLI continuation test verifies that the first violation does not stop later seeds and retains artifacts for each mismatch. A separate focused test deliberately loses a poke and checks ordinary recovery against forced repair. These scenarios are distinct from the historical crash ghost.
 
 Randomized sweeps do not exempt equivalent known failures. CI passes `--fail-on-violation`, fails on incomplete recovery or missing required coverage, and uploads failing artifacts with replay commands.
 

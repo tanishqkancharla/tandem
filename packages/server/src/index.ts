@@ -1,7 +1,10 @@
 export type { RemoteApi } from "@tanishqkancharla/tandem-core"
 export { TandemServer } from "./TandemServer.js"
 export type {
+	ServerMutatorContext,
+	ServerMutatorHooks,
 	TandemServerArgs,
+	TandemServerPushOptions,
 	TandemServerSubscription,
 	TandemServerSubscriptionOptions,
 } from "./TandemServer.js"

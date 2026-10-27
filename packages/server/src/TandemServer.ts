@@ -1,12 +1,21 @@
 import type {
 	AnySchema,
+	AnyMutators,
 	ClientApi,
 	ClientId,
 	CollectionName,
 	Cookie,
+	Json,
 	Mutation,
 	MutationId,
 	MutationOp,
+	MutationRejection,
+	MutatorArgs,
+	MutatorArgsOf,
+	MutateApi,
+	MutatorCall,
+	MutatorContext,
+	MutatorTransaction,
 	PatchRemoveOp,
 	PatchSetOp,
 	PokePayload,
@@ -32,6 +41,7 @@ import {
 	scanWindowOffsetCollections,
 	selectScanWindowRecordsAsync,
 	UpdatePayloadError,
+	validateMutatorArgs,
 } from "@tanishqkancharla/tandem-core/internal"
 import type { ScanWindowRecord } from "@tanishqkancharla/tandem-core/internal"
 import * as errore from "errore"
@@ -48,10 +58,7 @@ import type {
 } from "tuple-database"
 import { LivePayloadBuffer } from "./LivePayloadBuffer.js"
 import { TandemServerError } from "./TandemServerError.js"
-import {
-	type AppliedAppend,
-	TandemServerTransaction,
-} from "./TandemServerTransaction.js"
+import { TandemServerTransaction } from "./TandemServerTransaction.js"
 import type {
 	TandemClientTuple,
 	TandemTuple,
@@ -61,10 +68,16 @@ import type {
 export type TandemServerArgs<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema>,
+	Mutators extends AnyMutators<Schema> = {},
+	RequestContext = unknown,
 > = {
 	schema: RuntimeSchemaDefinition<Schema>
 	relations: Relations
 	storage: TandemServerStorageApi<NoInfer<Schema>>
+	mutators?: Mutators
+	hooks?: (
+		request: RequestContext | undefined,
+	) => ServerMutatorHooks<Schema, Relations, Mutators>
 	rng?: RngApi
 	/**
 	 * Milliseconds, or a host-provided timer, during which a client's live
@@ -109,6 +122,73 @@ type SyncClientState<Schema extends AnySchema> = {
 	throttled: boolean
 }
 
+/** Request identity available to authorization and post-commit work. */
+export type ServerMutatorContext = {
+	location: "server"
+	clientId: ClientId
+	mutationId: MutationId
+} & { source: "client" | "server" }
+
+type ServerMutator<
+	Schema extends AnySchema,
+	Relations extends AnyRelations<Schema>,
+	Args = Json,
+> = {
+	args: MutatorArgs<Json, Args>
+	run: (
+		tx: MutatorTransaction<Schema>,
+		args: Args,
+		ctx: MutatorContext,
+	) => unknown
+	authorize?: (
+		tx: TandemServerTransaction<Schema, Relations>,
+		args: Args,
+		ctx: ServerMutatorContext,
+	) => unknown
+	afterCommit?: (args: Args, ctx: ServerMutatorContext) => unknown
+}
+
+type ServerMutators<
+	Schema extends AnySchema,
+	Relations extends AnyRelations<Schema>,
+> = {
+	// oxlint-disable-next-line typescript/no-explicit-any
+	[name: string]: ServerMutator<Schema, Relations, any>
+}
+
+/** Contextually types the hooks for a registry of shared definitions. */
+export type ServerMutatorHooks<
+	Schema extends AnySchema,
+	Relations extends AnyRelations<Schema>,
+	Shared extends AnyMutators<Schema>,
+> = {
+	[Name in keyof Shared]?: {
+		authorize?: (
+			tx: TandemServerTransaction<Schema, Relations>,
+			args: MutatorArgsOf<Shared[Name]>,
+			ctx: ServerMutatorContext,
+		) => unknown
+		afterCommit?: (
+			args: MutatorArgsOf<Shared[Name]>,
+			ctx: ServerMutatorContext,
+		) => unknown
+	}
+}
+
+export type TandemServerPushOptions<RequestContext = unknown> = {
+	context?: RequestContext
+	/** Raw operation pushes are refused by default when mutators are registered. */
+	allowOps?: boolean
+}
+
+class MutatorRunError extends errore.createTaggedError({
+	name: "MutatorRunError",
+	message: "Mutator $mutator threw",
+}) {}
+
+function rejectionMessage(error: unknown) {
+	return error instanceof Error ? error.message : String(error)
+}
 /** How many recently written records keep their exact last write. */
 const trackedWrites = 10_000
 
@@ -123,9 +203,91 @@ type CommitChanges<Schema extends AnySchema> = {
 	set: PatchSetOp<Schema>[]
 	remove: PatchRemoveOp<Schema>[]
 	/** Records the commit changed only by appending, by record ID. */
-	append: Map<string, AppliedAppend<Schema> & { after: Revision }>
+	append: Map<string, DerivedAppend<Schema> & { after: Revision }>
 	/** The client whose push made the commit. It pulls to acknowledge it. */
 	pusher?: ClientId
+}
+
+type DerivedAppend<Schema extends AnySchema> = {
+	collection: CollectionName<Schema>
+	id: Schema[CollectionName<Schema>]["id"]
+	fields: { field: string; offset: number; text: string }[]
+}
+
+/** Compare only plain data whose equality we can prove without serialization. */
+function safelyEqual(
+	before: unknown,
+	after: unknown,
+	seen = new WeakSet<object>(),
+): boolean {
+	if (Object.is(before, after)) return true
+	if (
+		before === null ||
+		after === null ||
+		typeof before !== "object" ||
+		typeof after !== "object"
+	)
+		return false
+	if (seen.has(before) || seen.has(after)) return false
+	seen.add(before)
+	seen.add(after)
+	if (Array.isArray(before) !== Array.isArray(after)) return false
+	if (
+		Object.getPrototypeOf(before) !==
+			(Array.isArray(before) ? Array.prototype : Object.prototype) ||
+		Object.getPrototypeOf(after) !==
+			(Array.isArray(after) ? Array.prototype : Object.prototype)
+	)
+		return false
+	const beforeKeys = Reflect.ownKeys(before)
+	const afterKeys = Reflect.ownKeys(after)
+	if (beforeKeys.length !== afterKeys.length) return false
+	const beforeFields = Object.getOwnPropertyDescriptors(before)
+	const afterFields = Object.getOwnPropertyDescriptors(after)
+	return beforeKeys.every((key) => {
+		const left = beforeFields[key as keyof typeof beforeFields]
+		const right = afterFields[key as keyof typeof afterFields]
+		return (
+			left &&
+			right &&
+			"value" in left &&
+			"value" in right &&
+			safelyEqual(left.value, right.value, seen)
+		)
+	})
+}
+
+function appendedFields(
+	previous: Record<string, unknown> | undefined,
+	next: Record<string, unknown>,
+): DerivedAppend<AnySchema>["fields"] | undefined {
+	if (!previous) return
+	const fields: DerivedAppend<AnySchema>["fields"] = []
+	for (const field of new Set([
+		...Object.keys(previous),
+		...Object.keys(next),
+	])) {
+		const before = previous[field]
+		const after = next[field]
+		const existed = Object.hasOwn(previous, field)
+		const exists = Object.hasOwn(next, field)
+		if (existed && exists && safelyEqual(before, after)) continue
+		const prefix = before ?? ""
+		if (
+			field === "id" ||
+			typeof prefix !== "string" ||
+			typeof after !== "string" ||
+			!after.startsWith(prefix) ||
+			after.length === prefix.length
+		)
+			return
+		fields.push({
+			field,
+			offset: prefix.length,
+			text: after.slice(prefix.length),
+		})
+	}
+	return fields.length ? fields : undefined
 }
 
 function scanWindowRecordToKey<
@@ -187,12 +349,34 @@ async function applyMutationOperation<
 	}
 }
 
+/**
+ * Errors storage adapters threw. A server mutator that hits one has not refused
+ * its mutation, so the mutation stays pending instead of being rejected. Marked
+ * rather than wrapped, so callers still see the adapter's error as the cause.
+ */
+const storageFailures = new WeakSet<object>()
+
+function isStorageFailure(error: unknown): boolean {
+	const seen = new Set<unknown>()
+	for (let current = error; current instanceof Error; current = current.cause) {
+		if (seen.has(current)) return false
+		seen.add(current)
+		if (storageFailures.has(current)) return true
+	}
+	return false
+}
+
 function tandemStorageToTupleDatabaseStorage<Schema extends AnySchema>(
 	storage: TandemServerStorageApi<Schema>,
 ): AsyncTupleStorageApi {
+	const mark = (cause: unknown) => {
+		if (typeof cause === "object" && cause !== null) storageFailures.add(cause)
+		throw cause
+	}
 	return {
-		scan: (args) => storage.scan(args),
-		commit: (writes) => storage.commit(writes as WriteOps<TandemTuple<Schema>>),
+		scan: (args) => storage.scan(args).catch(mark),
+		commit: (writes) =>
+			storage.commit(writes as WriteOps<TandemTuple<Schema>>).catch(mark),
 		close: () => storage.close(),
 	}
 }
@@ -200,16 +384,29 @@ function tandemStorageToTupleDatabaseStorage<Schema extends AnySchema>(
 export class TandemServer<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema>,
+	Mutators extends AnyMutators<Schema> = {},
+	RequestContext = unknown,
 > implements RemoteApi<Schema> {
 	private readonly relations: Relations
+	private readonly mutators?: Mutators
+	/** Server-owned named calls, bound to this instance at registration. */
+	readonly mutate: MutateApi<Mutators>
+	private readonly hooks?: TandemServerArgs<
+		Schema,
+		Relations,
+		Mutators,
+		RequestContext
+	>["hooks"]
 	private readonly subscriptions = new Set<() => void>()
 	private readonly syncClients = new Map<ClientId, SyncClientState<Schema>>()
+	private readonly schema: RuntimeSchemaDefinition<Schema>
 	private readonly tupleDb: AsyncTupleDatabaseClient<TandemTuple<Schema>>
 	private readonly rng?: RngApi
 	private readonly livePokeTimer?: TimerApi
 	private readonly unsubscribeStorage?: () => void
 	// Revisions are per instance, like cookies; a restart starts a new sequence.
 	private readonly instanceId: string
+	private directMutationId = 0
 	private commitCount = 0
 	// The commit that last wrote each recently written record, oldest first.
 	// An append extends the value a record has had since then.
@@ -223,8 +420,19 @@ export class TandemServer<
 	// asynchronous storage commits. Order sync reads and commits here.
 	private queue: Promise<void> = Promise.resolve()
 
-	constructor(args: TandemServerArgs<Schema, Relations>) {
+	constructor(
+		args: TandemServerArgs<Schema, Relations, Mutators, RequestContext>,
+	) {
+		this.schema = args.schema
 		this.relations = args.relations
+		this.mutators = args.mutators
+		this.hooks = args.hooks
+		this.mutate = Object.fromEntries(
+			Object.keys(args.mutators ?? {}).map((name) => [
+				name,
+				(input: Json) => this.runNamedMutator(name, input),
+			]),
+		) as unknown as MutateApi<Mutators>
 		this.rng = args.rng
 		const livePokeInterval = args.livePokeInterval ?? 50
 		this.livePokeTimer =
@@ -273,6 +481,64 @@ export class TandemServer<
 		)
 	}
 
+	private registered(
+		name: string,
+		request?: RequestContext,
+	): ServerMutators<Schema, Relations>[string] | Error | undefined {
+		if (!this.mutators || !Object.hasOwn(this.mutators, name)) return
+		const hooks = errore.try({
+			try: () => this.hooks?.(request)?.[name as keyof Mutators],
+			catch: (cause) => new MutatorRunError({ mutator: name, cause }),
+		})
+		if (hooks instanceof Error) return hooks
+		return {
+			...this.mutators[name as keyof Mutators],
+			...(hooks?.authorize && { authorize: hooks.authorize }),
+			...(hooks?.afterCommit && { afterCommit: hooks.afterCommit }),
+		} as ServerMutators<Schema, Relations>[string]
+	}
+
+	/** Run a registered named mutator for server-owned work such as a stream chunk. */
+	private runNamedMutator(name: string, input: Json): Promise<void> {
+		return this.run(async () => {
+			const definition = this.registered(name)
+			if (definition instanceof Error) return definition
+			if (!definition) return new Error(`Unknown mutator ${name}`)
+			const args = await validateMutatorArgs(name, definition.args, input)
+			if (args instanceof Error) return args
+			const transaction = this.transact()
+			const context: ServerMutatorContext = {
+				location: "server",
+				source: "server",
+				clientId: this.instanceId as unknown as ClientId,
+				mutationId: tag<MutationId>(++this.directMutationId),
+			}
+			const ran = await Promise.resolve()
+				.then(async () => {
+					const authorized = await definition.authorize?.(
+						transaction,
+						args,
+						context,
+					)
+					if (authorized instanceof Error) return authorized
+					return definition.run(transaction, args, context)
+				})
+				.catch(
+					(cause: unknown) => new MutatorRunError({ mutator: name, cause }),
+				)
+			if (ran instanceof Error) {
+				await transaction.cancel()
+				return ran
+			}
+			const committed = await this.commitTransaction(transaction, {
+				operation: "commit",
+			})
+			if (committed instanceof Error) return committed
+			if (definition.afterCommit)
+				this.runEffect(() => definition.afterCommit!(args, context))
+		}).then(() => undefined)
+	}
+
 	connect = ({ clientId, poke }: ClientApi<Schema>) => {
 		// Wrap so each connection unregisters only itself, even if callers reuse a callback.
 		const connection: ClientApi<Schema>["poke"] = (payload) => poke(payload)
@@ -288,13 +554,16 @@ export class TandemServer<
 		})
 	}
 
-	push: RemoteApi<Schema>["push"] = ({ clientId, mutations }) =>
+	push = (
+		{ clientId, mutations }: Parameters<RemoteApi<Schema>["push"]>[0],
+		options: TandemServerPushOptions<RequestContext> = {},
+	): ReturnType<RemoteApi<Schema>["push"]> =>
 		this.run(async () => {
-			const result = await this.applyPush(clientId, mutations)
+			const result = await this.applyPush(clientId, mutations, options)
 			if (result instanceof Error) {
 				return { error: "unavailable", message: result.message } as const
 			}
-			return result ?? ({ ok: true } as const)
+			return result
 		})
 
 	pull: RemoteApi<Schema>["pull"] = (args) =>
@@ -408,12 +677,22 @@ export class TandemServer<
 	private async applyPush(
 		clientId: ClientId,
 		mutations: Mutation<Schema>[],
+		{
+			context,
+			allowOps = this.mutators === undefined,
+		}: TandemServerPushOptions<RequestContext>,
 	): Promise<
 		| TandemServerError
 		| RemoteInvalidRequestError
 		| RemoteMutationGapError
-		| undefined
+		| { ok: true; rejected?: MutationRejection[] }
 	> {
+		const rejected: MutationRejection[] = []
+		const accepted = () =>
+			({
+				ok: true,
+				...(rejected.length ? { rejected } : {}),
+			}) as const
 		for (const mutation of mutations) {
 			const lastMutationId = await this.readLastMutationId(clientId, "push")
 			if (lastMutationId instanceof Error) return lastMutationId
@@ -425,14 +704,29 @@ export class TandemServer<
 					receivedMutationId: mutation.id,
 				}
 			}
+			if (mutation.mutator) {
+				const outcome = await this.applyMutator(
+					clientId,
+					mutation.id,
+					mutation.mutator,
+					context,
+				)
+				if (outcome instanceof Error) return outcome
+				if (outcome) rejected.push(outcome)
+				continue
+			}
+			if (!allowOps) {
+				const outcome = await this.reject(
+					clientId,
+					mutation.id,
+					"This server accepts only named mutations",
+				)
+				if (outcome instanceof Error) return outcome
+				rejected.push(outcome)
+				continue
+			}
 
-			const tupleTx = this.tupleDb.transact(this.rng?.randomId())
-			const transaction = new TandemServerTransaction(tupleTx, this.relations)
-			// Narrow before selecting the namespace: tuple-database cannot resolve
-			// subspace types through the generic application-record union.
-			const clientTx = (
-				tupleTx as unknown as AsyncTupleRootTransactionApi<TandemClientTuple>
-			).subspace(["client"])
+			const { transaction, acknowledge } = this.pushTransaction(clientId)
 			for (const operation of mutation.ops) {
 				const staged = await applyMutationOperation(transaction, operation)
 				if (staged !== undefined) {
@@ -440,12 +734,10 @@ export class TandemServer<
 					return staged
 				}
 			}
-			const staged = errore.try(() =>
-				clientTx.set([clientId], { lastMutationId: mutation.id }),
-			)
-			if (staged instanceof Error) {
+			const acknowledged = acknowledge(mutation.id)
+			if (acknowledged instanceof Error) {
 				await transaction.cancel()
-				return new TandemServerError({ operation: "push", cause: staged })
+				return acknowledged
 			}
 
 			const committed = await this.commitTransaction(transaction, {
@@ -454,6 +746,126 @@ export class TandemServer<
 			})
 			if (committed instanceof Error) return committed
 		}
+		return accepted()
+	}
+
+	/**
+	 * Runs a named mutation and commits its writes with the client's
+	 * acknowledgement. A refusal is acknowledged with no effect and returned;
+	 * a storage failure is returned as an error so the client retries.
+	 */
+	private async applyMutator(
+		clientId: ClientId,
+		mutationId: MutationId,
+		call: MutatorCall,
+		request: RequestContext | undefined,
+	): Promise<TandemServerError | MutationRejection | undefined> {
+		const definition = this.registered(call.name, request)
+		if (definition instanceof Error)
+			return this.reject(clientId, mutationId, definition.message)
+		if (!definition)
+			return this.reject(clientId, mutationId, `Unknown mutator ${call.name}`)
+		const args = await validateMutatorArgs(
+			call.name,
+			definition.args,
+			call.args,
+		)
+		if (args instanceof Error)
+			return this.reject(clientId, mutationId, args.message)
+
+		const { transaction, acknowledge } = this.pushTransaction(clientId)
+		const context: ServerMutatorContext = {
+			location: "server",
+			source: "client",
+			clientId,
+			mutationId,
+		}
+		// Authorization reads the same transaction before any shared writes commit.
+		const ran = await Promise.resolve()
+			.then(async () => {
+				const authorized = await definition.authorize?.(
+					transaction,
+					args,
+					context,
+				)
+				if (authorized instanceof Error) return authorized
+				return definition.run(transaction, args, context)
+			})
+			.catch(
+				(cause: unknown) => new MutatorRunError({ mutator: call.name, cause }),
+			)
+		if (ran instanceof Error) {
+			const cancelled = await transaction
+				.cancel()
+				.catch((cause) => new TandemServerError({ operation: "push", cause }))
+			if (cancelled instanceof Error) return cancelled
+			// A storage failure is not a refusal; leave the mutation pending.
+			const cause = ran instanceof MutatorRunError ? ran.cause : ran
+			if (isStorageFailure(cause))
+				return new TandemServerError({ operation: "push", cause })
+			return this.reject(clientId, mutationId, rejectionMessage(cause))
+		}
+		const acknowledged = acknowledge(mutationId)
+		if (acknowledged instanceof Error) {
+			await transaction.cancel()
+			return acknowledged
+		}
+		const committed = await this.commitTransaction(transaction, {
+			operation: "push",
+			clientId,
+		})
+		if (committed instanceof Error) return committed
+		if (definition.afterCommit)
+			this.runEffect(() => definition.afterCommit!(args, context))
+	}
+
+	/** Acknowledges a mutation without applying it, so it never blocks the client. */
+	private async reject(
+		clientId: ClientId,
+		mutationId: MutationId,
+		message: string,
+	): Promise<TandemServerError | MutationRejection> {
+		const { transaction, acknowledge } = this.pushTransaction(clientId)
+		const acknowledged = acknowledge(mutationId)
+		if (acknowledged instanceof Error) {
+			await transaction.cancel()
+			return acknowledged
+		}
+		// The pusher is poked even without record changes, so it pulls the rollback.
+		const committed = await this.commitTransaction(transaction, {
+			operation: "push",
+			clientId,
+		})
+		if (committed instanceof Error) return committed
+		return { id: mutationId, message }
+	}
+
+	private pushTransaction(clientId: ClientId) {
+		const tupleTx = this.tupleDb.transact(this.rng?.randomId())
+		const transaction = new TandemServerTransaction(tupleTx, this.relations)
+		// Narrow before selecting the namespace: tuple-database cannot resolve
+		// subspace types through the generic application-record union.
+		const clientTx = (
+			tupleTx as unknown as AsyncTupleRootTransactionApi<TandemClientTuple>
+		).subspace(["client"])
+		const acknowledge = (mutationId: MutationId) => {
+			const staged = errore.try(() =>
+				clientTx.set([clientId], { lastMutationId: mutationId }),
+			)
+			return staged instanceof Error
+				? new TandemServerError({ operation: "push", cause: staged })
+				: undefined
+		}
+		return { transaction, acknowledge }
+	}
+
+	private runEffect(effect: () => unknown) {
+		const report = (cause: unknown) =>
+			console.error(new TandemServerError({ operation: "after", cause }))
+		// Effects are consumer code; their failures cannot undo the commit.
+		const result = errore.try(effect)
+		if (result instanceof Error) return report(result)
+		if (result instanceof Promise) void result.catch(report)
 	}
 
 	private async readLastMutationId(
@@ -538,12 +950,15 @@ export class TandemServer<
 		transaction: TandemServerTransaction<Schema, Relations>,
 		options: CommitOptions,
 	): Promise<TandemServerError | undefined> {
-		const appended = await transaction.applyAppends()
-		if (appended instanceof Error) {
-			await transaction.cancel()
-			return appended
-		}
 		const writes = transaction.recordWrites()
+		const previous = await Promise.all(
+			writes.set.map(({ key }) =>
+				this.recordDb.get(key as SchemaToTupleSchema<Schema>["key"]),
+			),
+		).catch(
+			(cause) => new TandemServerError({ operation: options.operation, cause }),
+		)
+		if (previous instanceof Error) return previous
 		// Removals carry the client's identity form, which only the old record has.
 		const removed = await Promise.all(
 			writes.remove.map(
@@ -570,15 +985,61 @@ export class TandemServer<
 		if (!hasWrites) return
 
 		this.commitCount += 1
-		// An append extends what the record has held since its previous write.
-		const extended = (append: AppliedAppend<Schema>) => ({
-			...append,
-			after: {
-				server: this.instanceId,
-				commit:
-					this.lastWrites.get(recordId(append)) ?? this.forgottenWritesThrough,
-			},
-		})
+		// Compare the committed before-image with the final transaction write.
+		const appended = new Map<
+			string,
+			DerivedAppend<Schema> & { after: Revision }
+		>()
+		for (const [index, { key, value }] of writes.set.entries()) {
+			const fields = errore.try({
+				try: () =>
+					appendedFields(
+						previous[index] as Record<string, unknown> | undefined,
+						value as Record<string, unknown>,
+					),
+				catch: () => new Error("Append fields cannot be compared"),
+			})
+			if (!fields || fields instanceof Error) continue
+			const valueCodec = this.schema.collections[key[1]].codec
+			const suffixSupported = errore.try({
+				try: () =>
+					!valueCodec ||
+					fields.every(({ field, text }) => {
+						const encoded = errore.try({
+							try: () => valueCodec.encode({ [field]: text }),
+							catch: () => new Error("Append suffix cannot be encoded"),
+						})
+						if (
+							encoded instanceof Error ||
+							typeof (encoded as Record<string, unknown>)[field] !== "string"
+						)
+							return false
+						const decoded = errore.try({
+							try: () => valueCodec.decode(encoded),
+							catch: () => new Error("Append suffix cannot be decoded"),
+						})
+						return (
+							!(decoded instanceof Error) &&
+							(decoded as Record<string, unknown>)[field] === text
+						)
+					}),
+				catch: () => new Error("Append suffix cannot be represented"),
+			})
+			if (suffixSupported !== true) continue
+			const append = {
+				collection: key[1],
+				id: (value as Schema[CollectionName<Schema>]).id,
+				fields,
+			} as DerivedAppend<Schema>
+			const id = recordId(append)
+			appended.set(id, {
+				...append,
+				after: {
+					server: this.instanceId,
+					commit: this.lastWrites.get(id) ?? this.forgottenWritesThrough,
+				},
+			})
+		}
 		const changes: CommitChanges<Schema> = {
 			revision: this.revision,
 			set: writes.set.map(({ key, value }) => ({
@@ -590,9 +1051,7 @@ export class TandemServer<
 					? []
 					: [{ collection: writes.remove[index]![1], id: record.id }],
 			) as PatchRemoveOp<Schema>[],
-			append: new Map(
-				appended.map((append) => [recordId(append), extended(append)]),
-			),
+			append: appended,
 			pusher: options.operation === "push" ? options.clientId : undefined,
 		}
 		this.recordLastWrites([
@@ -653,10 +1112,14 @@ export class TandemServer<
 			// The pusher pulls its acknowledgement now, not when live payloads go
 			// quiet. An offset shifts which records are in view when one before it
 			// changes, even one the client never saw, so let the client pull.
-			if (
-				clientId === changes.pusher ||
-				this.touchesOffsetWindow(client.scanWindow, changes)
-			) {
+			if (this.touchesOffsetWindow(client.scanWindow, changes)) {
+				// Prefix rows are cached for local pagination, but page shifts
+				// need a pull before detailed changes can be interpreted.
+				client.buffer.clear()
+				this.pokeClient(client)
+				continue
+			}
+			if (clientId === changes.pusher) {
 				this.flushLivePayload(client)
 				this.pokeClient(client)
 				continue

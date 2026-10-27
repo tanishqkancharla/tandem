@@ -39,6 +39,14 @@ class IntervalTimer implements TimerApi {
 	}
 }
 
+async function appendText(
+	tx: ReturnType<ChatServer["transact"]>,
+	text: string,
+) {
+	const current = await tx.get("messages", "reply")
+	if (current) tx.set("messages", { ...current, text: current.text + text })
+}
+
 const test = baseTest.extend<{
 	interval: IntervalTimer
 	server: ChatServer
@@ -79,7 +87,7 @@ const test = baseTest.extend<{
 	commit: async ({ server }, use) => {
 		await use(async (write) => {
 			const tx = server.transact()
-			write(tx)
+			await write(tx)
 			await server.commit(tx)
 		})
 	},
@@ -95,13 +103,13 @@ test("a burst of commits reaches a viewer as one payload per interval, with appe
 	const pokes = await viewer("viewer")
 
 	// The first commit after a quiet interval goes out at once.
-	await commit((tx) => tx.append("messages", "reply", { text: "l" }))
+	await commit((tx) => appendText(tx, "l"))
 	expect(pokes).toHaveLength(1)
 
 	// Later commits wait for the interval to end, then go out together.
-	await commit((tx) => tx.append("messages", "reply", { text: "o" }))
+	await commit((tx) => appendText(tx, "o"))
 	await commit((tx) => tx.set("messages", message("note")))
-	await commit((tx) => tx.append("messages", "reply", { text: "!" }))
+	await commit((tx) => appendText(tx, "!"))
 	expect(pokes).toHaveLength(1)
 	await interval.end()
 	const pulled = await server.pull({
@@ -130,7 +138,7 @@ test("a burst of commits reaches a viewer as one payload per interval, with appe
 
 	// An interval without commits ends the batching, so the next commit goes out at once.
 	await interval.end()
-	await commit((tx) => tx.append("messages", "reply", { text: "?" }))
+	await commit((tx) => appendText(tx, "?"))
 	expect(pokes).toHaveLength(3)
 })
 
@@ -145,11 +153,11 @@ test("a set in a burst sends the record whole, and a pull drops the changes it r
 	await commit((tx) => tx.set("messages", message("first")))
 
 	// Appends around a set merge into the set.
-	await commit((tx) => tx.append("messages", "reply", { text: "lo" }))
+	await commit((tx) => appendText(tx, "lo"))
 	await commit((tx) =>
 		tx.set("messages", message("reply", { text: "Hello", status: "done" })),
 	)
-	await commit((tx) => tx.append("messages", "reply", { text: "!" }))
+	await commit((tx) => appendText(tx, "!"))
 	await interval.end()
 	expect(pokes.at(-1)).toEqual({
 		revision: expect.any(Object),

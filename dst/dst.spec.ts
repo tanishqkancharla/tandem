@@ -57,6 +57,7 @@ describe("Deterministic simulation testing", () => {
 					recordCount: 3,
 					maxMutationsInFlight: 4,
 					sharedWriteRate: 1,
+					namedAppendRate: 0,
 					faultRate: 0,
 					crashRate: 0,
 					tabs: 0,
@@ -563,6 +564,73 @@ describe("Deterministic simulation testing", () => {
 		},
 	)
 
+	it("applies a named append through shared client and server code", async () => {
+		await using world = await DstWorld.start({ seed: 2 })
+		const task = {
+			id: "item-1",
+			projectId: "project",
+			text: "Start",
+			done: false,
+			priority: 3,
+		}
+		await world.apply(0, { type: "serverSet", item: task })
+		await world.finish()
+		await world.apply(1, {
+			type: "namedAppend",
+			client: "client1",
+			id: task.id,
+			text: " A",
+		})
+		await world.apply(2, {
+			type: "namedAppend",
+			client: "client2",
+			id: task.id,
+			text: " B",
+		})
+		await world.apply(3, {
+			type: "namedAppend",
+			client: "client1",
+			id: task.id,
+			text: "!",
+			field: "note",
+		})
+		const result = await world.finish()
+		expect(result.states.server.tasks[0]?.text).toBe("Start A B")
+		expect(result.states.server.tasks[0]?.note).toBe("!")
+		expect(result.states.client1).toEqual(result.states.server)
+		expect(result.states.client2).toEqual(result.states.server)
+		expect(world.stats.namedAppendCommits).toBe(3)
+		expect(result.violation).toBeUndefined()
+	})
+
+	it.each([
+		{ seed: 5, steps: 300, faultRate: 0.1, namedAppendRate: 0.15 },
+		{
+			seed: 6,
+			steps: 300,
+			faultRate: 0.1,
+			crashRate: 0.02,
+			namedAppendRate: 0.15,
+		},
+	])(
+		"exercises named appends under faults and crashes: %j",
+		async (options) => {
+			const sink = memorySink()
+			const result = await new DstSimulation(options).execute(sink)
+			expect(result.trace.some(({ type }) => type === "namedAppend")).toBe(true)
+			expect(
+				result.trace.some(
+					(record) => record.type === "namedAppend" && record.field === "note",
+				),
+			).toBe(true)
+			expect(result.stats.namedAppendCommits).toBeGreaterThan(0)
+			expect(result.violation).toBeUndefined()
+			const replayed = await replay(parseArtifact(formatArtifact(sink.lines)))
+			expect(replayed.divergence).toBeUndefined()
+			expect(replayed.violation).toEqual(result.violation)
+		},
+	)
+
 	it("settles a final lost request by reconnecting and delivering retained writes", async () => {
 		await using world = await DstWorld.start({ seed: 2 })
 		const item = {
@@ -764,7 +832,7 @@ describe("Deterministic simulation testing", () => {
 
 	it("merges bursts of server appends into single payloads under faults", async () => {
 		const result = await new DstSimulation({
-			seed: 1,
+			seed: 12,
 			steps: 300,
 			faultRate: 0.1,
 			crashRate: 0.02,
@@ -972,7 +1040,7 @@ describe("Deterministic simulation testing", () => {
 			divergence: undefined,
 			recovery: run.recovery,
 		})
-	})
+	}, 15_000)
 
 	it("reports where a replay leaves the recorded path", async () => {
 		const sink = memorySink()

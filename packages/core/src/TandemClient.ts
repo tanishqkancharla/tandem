@@ -1,3 +1,6 @@
+import * as errore from "errore"
+// tuple-database does not re-export its conflict error from the package root.
+import { ReadWriteConflictError } from "tuple-database/database/ConcurrencyLog.js"
 import { Database } from "./Database.js"
 import {
 	_encodeRelationalQuery,
@@ -13,6 +16,26 @@ import type { TandemClientStorageApi } from "./clientStorage/TandemClientStorage
 import { getSchemaCodecs } from "./schema/collectionCodecs.js"
 import { SyncEngine, type ClientId, type RemoteApi } from "./sync/SyncEngine.js"
 import {
+	type AnyMutators,
+	clientMutatorTransaction,
+	type MutateApi,
+	validateMutatorArgs,
+} from "./mutator/Mutator.js"
+
+class MutatorRunError extends errore.createTaggedError({
+	name: "MutatorRunError",
+	message: "Mutator $mutator threw",
+}) {}
+
+class MutatorCommitError extends errore.createTaggedError({
+	name: "MutatorCommitError",
+	message: "Mutator $mutator could not commit",
+}) {}
+
+/** Runs of one call before a read-write conflict rejects it. */
+const maxMutatorAttempts = 3
+
+import {
 	browserTabEnvironment,
 	tabLifetimeLock,
 	type TabEnvironmentApi,
@@ -23,7 +46,7 @@ import { Transaction } from "./transaction/Transaction.js"
 import { ConsoleLoggerSink, Logger, type LoggerApi } from "./utils/Logger.js"
 import { randomId, type RngApi } from "./utils/randomId.js"
 import { VisibilityAwareTimer, type TimerApi } from "./utils/Timer.js"
-import { tag, type AsyncUnsubscribe } from "./utils/typeUtils.js"
+import { tag, type AsyncUnsubscribe, type Json } from "./utils/typeUtils.js"
 
 export type TandemTabsOptions = {
 	/**
@@ -41,9 +64,12 @@ export type TandemTabsOptions = {
 export type TandemClientArgs<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema>,
+	Mutators extends AnyMutators<Schema> = {},
 > = {
 	schema?: RuntimeSchemaDefinition<Schema>
 	relations?: Relations
+	/** Named mutators from `defineMutators`, called through `client.mutate`. */
+	mutators?: Mutators
 	/**
 	 * Optional replica cache (IndexedDB tuples). Not the backend
 	 * persistence adapter used by the server.
@@ -114,8 +140,16 @@ function resolveTabs<Schema extends AnySchema>(
 export class TandemClient<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema> = AnyRelations<Schema>,
+	Mutators extends AnyMutators<Schema> = {},
 > {
 	private readonly db: Database<Schema, Relations>
+	/**
+	 * Runs a mutator optimistically, then pushes its name and arguments for the
+	 * server to run. Resolves after that push; rejects with the mutator's error,
+	 * or with `MutationRejectedError` when the server refused it. A refused
+	 * mutation is rolled back by the next pull.
+	 */
+	readonly mutate: MutateApi<Mutators>
 	/**
 	 * Resolves after restoring the checkpoint and initializing replica metadata.
 	 * With client storage configured, await this before creating transactions
@@ -149,6 +183,7 @@ export class TandemClient<
 	constructor({
 		schema,
 		relations,
+		mutators,
 		clientStorage,
 		clientStorageWriteInterval = 120,
 		remote,
@@ -159,7 +194,14 @@ export class TandemClient<
 		livePullDelay = 200,
 		livePullMaxDelay = 1000,
 		tabs,
-	}: TandemClientArgs<Schema, Relations>) {
+	}: TandemClientArgs<Schema, Relations, Mutators>) {
+		// Object.fromEntries loses the per-name argument types MutateApi restores.
+		this.mutate = Object.fromEntries(
+			Object.entries(mutators ?? {}).map(([name, definition]) => [
+				name,
+				(args: Json) => this.runMutator(name, definition, args),
+			]),
+		) as unknown as MutateApi<Mutators>
 		this.rng = rng ?? { randomId }
 		this.initialClientId = this.rng.randomId() as ClientId
 		this.logger = logger ?? new Logger({ sinks: new ConsoleLoggerSink() })
@@ -244,6 +286,71 @@ export class TandemClient<
 			: undefined
 
 		this.ready = this.db.ready
+	}
+
+	private async runMutator(
+		name: string,
+		definition: AnyMutators<Schema>[string],
+		input: Json,
+	): Promise<void> {
+		if (!this.isReady) {
+			throw new Error("Await client.ready before calling a mutator")
+		}
+		// Copy at call time: the caller may change its object, and args must be JSON.
+		const call = { name, args: JSON.parse(JSON.stringify(input)) as Json }
+		const args = await validateMutatorArgs(name, definition.args, call.args)
+		if (args instanceof Error) throw args
+
+		for (let attempt = 1; ; attempt++) {
+			const transaction = this.db.transact()
+			// The mutator is consumer code: a throw cancels its writes and rejects the call.
+			const ran = await Promise.resolve()
+				.then(() =>
+					definition.run(clientMutatorTransaction(transaction), args, {
+						location: "client",
+					}),
+				)
+				.catch(
+					(cause: unknown) => new MutatorRunError({ mutator: name, cause }),
+				)
+			if (ran instanceof Error) {
+				transaction.cancel()
+				throw ran instanceof MutatorRunError ? ran.cause : ran
+			}
+
+			this.logger.info({ message: "committing mutator", mutator: name })
+			const syncEngine = this.syncEngine
+			const committed = errore.try({
+				try: () => {
+					if (this.tabSession) {
+						const commitPromise = this.tabSession
+							.commit(transaction, call)
+							.then((result) => {
+								if (result instanceof Error) throw result
+							})
+						commitPromise.catch((error) =>
+							this.logger.error({ message: "error pushing mutation", error }),
+						)
+						return commitPromise
+					}
+					if (!syncEngine) return this.db.commit(transaction)
+					const commitPromise = syncEngine.commit(transaction, call)
+					commitPromise.catch((error) => {
+						this.logger.error({ message: "error pushing mutation", error })
+					})
+					return commitPromise
+				},
+				catch: (cause) => new MutatorCommitError({ mutator: name, cause }),
+			})
+			if (!(committed instanceof Error)) return committed
+			// A pull or another call wrote what this run read while it awaited.
+			// Nothing was pushed yet, so run it again on the new state.
+			if (
+				!(committed.cause instanceof ReadWriteConflictError) ||
+				attempt === maxMutatorAttempts
+			)
+				throw committed.cause
+		}
 	}
 
 	async pullFromRemote(): Promise<void> {

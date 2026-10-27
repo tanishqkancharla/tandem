@@ -74,7 +74,7 @@ A poke can carry the records a server commit changed in the client's view, tagge
 
 A live record stands in for the server value under any pending local writes, which replay on top of it. It is never pushed. Each pull reports the revision its read reflects and replaces every live record at or below it, so a pull that read the server before a newer commit keeps the newer live record. The client ignores a poke record that is no newer than the latest pull or the record's current live value.
 
-A poke can also carry text a server [`append`](server.md#append-text) added to a record. The client applies it to its server value for the record, as a new live record, only if that value is the one the append extends: one it has from the record's previous server write or later, with the expected length. Otherwise it ignores the append and relies on the pull the poke starts.
+A poke can also carry text the server inferred from a committed string extension to a record. The client applies it to its server value for the record, as a new live record, only if that value is the one the append extends: one it has from the record's previous server write or later, with the expected length. Otherwise it ignores the append and relies on the pull the poke starts.
 
 Live records are not saved as server state. After a restart the client shows its last pulled records with pending writes until it pulls again. Revisions number one server instance's commits. A pull from another instance replaces every live record, so a client whose pokes and pulls reach different processes gets live updates only until its next pull.
 

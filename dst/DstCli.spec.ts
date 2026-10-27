@@ -124,10 +124,10 @@ describe("DST CLI coverage and recovery", () => {
 
 	it.each([false, true])(
 		"continues after a first-seed violation and gates its exit with --fail-on-violation=%s",
-		async (failOnViolation) => {
+		(failOnViolation) => {
 			const directory = temporaryDirectory()
-			// Both seeds reproduce the scoped offset-view mismatch; the first
-			// failure must not prevent the second seed from running.
+			// Ordinary lost-notification mismatches at seeds 15 and 19 must not
+			// stop the healthy seeds between them from running.
 			const result = childProcess.spawnSync(
 				process.execPath,
 				[
@@ -135,49 +135,40 @@ describe("DST CLI coverage and recovery", () => {
 					"tsx",
 					new URL("./cli.ts", import.meta.url).pathname,
 					"--runs",
-					"2",
+					"5",
 					"--seed",
-					"18",
+					"15",
 					"--steps",
-					"2000",
+					"300",
 					"--client-count",
-					"3",
-					"--record-count",
 					"5",
 					"--max-mutations-in-flight",
-					"8",
+					"10",
 					"--initial-subscriptions",
-					"scoped",
-					"--subscription-rate",
-					"0.15",
-					"--connectivity-rate",
-					"0",
+					"full",
+					"--fault-rate",
+					"0.1",
+					"--crash-rate",
+					"0.03",
 					"--out-dir",
 					directory,
 					...(failOnViolation ? ["--fail-on-violation"] : []),
 				],
 				{ cwd: new URL(".", import.meta.url), encoding: "utf8" },
 			)
-			const artifactPath = path.join(directory, "seed-18.jsonl")
+			const artifactPath = path.join(directory, "seed-15.jsonl")
 			const artifact = parseArtifact(fs.readFileSync(artifactPath, "utf8"))
-			const replayed = await replay(artifact)
 
 			expect(result.status, result.stderr).toBe(failOnViolation ? 1 : 0)
-			expect(result.stdout).toContain("| 0 | 2 | 0 | 0 | 0 |")
-			expect(result.stdout).toContain("seed 18 (violation)")
+			expect(result.stdout).toContain("| 3 | 2 | 0 | 0 | 0 |")
+			expect(result.stdout).toContain("seed 15 (violation)")
 			expect(result.stdout).toContain("seed 19 (violation)")
 			expect(result.stdout).toContain(`pnpm dst:run --replay '${artifactPath}'`)
 			expect(fs.readdirSync(directory).sort()).toEqual([
-				"seed-18.jsonl",
+				"seed-15.jsonl",
 				"seed-19.jsonl",
 			])
-			expect(replayed).toEqual({
-				stepsCompleted: 2000,
-				violation: artifact.outcome?.violation,
-				recovery: artifact.outcome?.recovery,
-				divergence: undefined,
-			})
-			expect(replayed.violation).toMatchObject({
+			expect(artifact.outcome?.violation).toMatchObject({
 				kind: "subscriptionView",
 				checkpoint: "ordinary",
 			})

@@ -12,6 +12,7 @@ import type {
 	MutationId,
 	Transaction,
 } from "../transaction/Transaction.js"
+import { MutationRejectedError, type MutatorCall } from "../mutator/Mutator.js"
 import { codec as createCodec, type Codec } from "../utils/Codec.js"
 import type { LoggerApi } from "../utils/Logger.js"
 import { isObject } from "../utils/objectUtils.js"
@@ -42,8 +43,13 @@ export type RemoteMutationGapError = {
 export type RemoteRequestError =
 	| RemoteUnavailableError
 	| RemoteInvalidRequestError
+/**
+ * A mutation the server acknowledged with no effect because it refused it.
+ * The client's next pull rolls back its optimistic writes.
+ */
+export type MutationRejection = { id: MutationId; message: string }
 export type PushResponse =
-	| { ok: true }
+	| { ok: true; rejected?: MutationRejection[] }
 	| RemoteRequestError
 	| RemoteMutationGapError
 export type PullResponse<Schema extends AnySchema> = {
@@ -332,6 +338,11 @@ export class SyncEngine<Schema extends AnySchema> {
 	private deferredPull?: DeferredPull
 
 	private disconnectFromRemote?: AsyncUnsubscribe
+	/**
+	 * Commits waiting on the push that carries them, with any rejection it
+	 * reported. Keyed by client and mutation, since clear() restarts mutation IDs.
+	 */
+	private readonly rejections = new Map<string, MutationRejection | undefined>()
 	// Advances on disconnect so a connect still in flight unregisters when it resolves.
 	private connectionGeneration = 0
 	private scanWindow: ScanWindow<Schema> = []
@@ -543,20 +554,40 @@ export class SyncEngine<Schema extends AnySchema> {
 		return this.db.persistClientStorage()
 	}
 
+	/** Resolves after the push that carries the mutation; rejects on refusal. */
 	commit(
 		transaction: Transaction<Schema>,
+		mutator?: MutatorCall,
 		forwarded?: { clientId: ClientId; mutationId: MutationId },
 	): Promise<void> {
 		const clientId = this.clientId
-		this.db.commitMutation(transaction, forwarded)
+		const id = this.db.commitMutation(transaction, mutator, forwarded)
+		const waiting = JSON.stringify([clientId, id])
+		this.rejections.set(waiting, undefined)
 		const pendingCheckpoint = this.db.persistClientStorage()
-		if (!pendingCheckpoint) return this.syncQueue.enqueue("push")
-		return pendingCheckpoint.then((checkpoint) => {
-			if (checkpoint instanceof Error) throw checkpoint
-			if (clientId !== this.clientId) return
-			this.logger.info({ message: "queueing push" })
-			return this.syncQueue.enqueue("push")
-		})
+		const pushed = pendingCheckpoint
+			? pendingCheckpoint.then((checkpoint) => {
+					if (checkpoint instanceof Error) throw checkpoint
+					if (clientId !== this.clientId) return
+					this.logger.info({ message: "queueing push" })
+					return this.syncQueue.enqueue("push")
+				})
+			: this.syncQueue.enqueue("push")
+		return pushed.then(
+			() => {
+				const rejection = this.rejections.get(waiting)
+				this.rejections.delete(waiting)
+				if (rejection)
+					throw new MutationRejectedError({
+						mutationId: id,
+						reason: rejection.message,
+					})
+			},
+			(error: unknown) => {
+				this.rejections.delete(waiting)
+				throw error
+			},
+		)
 	}
 
 	/** Push pending mutations without waiting for another commit. */
@@ -566,10 +597,13 @@ export class SyncEngine<Schema extends AnySchema> {
 
 	private async push() {
 		const clientId = this.clientId
-		const mutations = this.db.outbox.scan().map(({ key, value }) => ({
-			id: key[0],
-			ops: value,
-		}))
+		const mutations = this.db.outbox.scan().map(({ key, value }) => {
+			const mutator = this.db.mutators.get(key)
+			// The server computes a named mutation's writes; the recorded ones replay locally.
+			return mutator
+				? { id: key[0], ops: [], mutator }
+				: { id: key[0], ops: value }
+		})
 		if (!mutations.length) return
 
 		// A queued push can capture mutations newer than the commit that requested it.
@@ -587,6 +621,11 @@ export class SyncEngine<Schema extends AnySchema> {
 		})
 		if ("error" in response) {
 			return new RemoteResponseError({ operation: "push", cause: response })
+		}
+		for (const rejection of response.rejected ?? []) {
+			this.logger.warn({ message: "server rejected mutation", rejection })
+			const waiting = JSON.stringify([clientId, rejection.id])
+			if (this.rejections.has(waiting)) this.rejections.set(waiting, rejection)
 		}
 	}
 

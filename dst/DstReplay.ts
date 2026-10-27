@@ -195,6 +195,7 @@ function cannotApply(
 				? undefined
 				: `${record.call} is not held at a boundary`
 		case "mutate":
+		case "namedAppend":
 		case "subscribe":
 		case "unsubscribe":
 		case "disconnect":
@@ -244,6 +245,10 @@ function intentOf(record: DstTraceRecord): DstIntent {
 		case "serverRemove":
 			return { type: "serverRemove", id: record.id }
 		case "mutate": {
+			const { step: _step, mutationId: _mutationId, ...intent } = record
+			return intent
+		}
+		case "namedAppend": {
 			const { step: _step, mutationId: _mutationId, ...intent } = record
 			return intent
 		}

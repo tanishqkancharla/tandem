@@ -10,11 +10,13 @@ import {
 	type ClientApi,
 	type PokePayload,
 	collection,
+	defineMutators,
 	type CollectionId,
 	defineRelations,
 	defineSchema,
 	Logger,
 	matchBy,
+	MutationRejectedError,
 	type MutationOp,
 	type RelationalQuery,
 	type RemoteApi,
@@ -28,6 +30,7 @@ import {
 } from "@tanishqkancharla/tandem-core"
 import {
 	TandemServer,
+	type ServerMutatorHooks,
 	type TandemServerStorageApi,
 	type TandemTuple,
 } from "@tanishqkancharla/tandem-server"
@@ -59,6 +62,7 @@ export type DstSchema = {
 		id: string
 		projectId: string
 		text: string
+		note?: string
 		done: boolean
 		priority: number
 	}
@@ -72,7 +76,7 @@ export type DstSchema = {
 export const dstSchemaDefinition = defineSchema({
 	projects: collection<DstSchema["projects"]>({ fields: ["id", "name"] }),
 	tasks: collection<DstSchema["tasks"]>({
-		fields: ["id", "projectId", "text", "done", "priority"],
+		fields: ["id", "projectId", "text", "note", "done", "priority"],
 	}),
 	comments: collection<DstSchema["comments"]>({
 		fields: ["id", "taskId", "body"],
@@ -82,6 +86,52 @@ export const dstSchemaDefinition = defineSchema({
 
 /** Records only the server writes, as an agent's reply would be. */
 export const serverOwnedIds = ["reply-1", "reply-2"]
+
+export const dstMutators = defineMutators(dstSchemaDefinition, {
+	appendTask: {
+		args: (input: unknown) =>
+			input as { id: string; text: string; field?: "text" | "note" },
+		run: async (tx, { id, text, field }) => {
+			const task = await tx.get("tasks", id)
+			if (!task) return
+			tx.set(
+				"tasks",
+				field === "note"
+					? { ...task, note: (task.note ?? "") + text }
+					: { ...task, text: task.text + text },
+			)
+		},
+	},
+})
+
+type DstServer = TandemServer<
+	DstSchema,
+	typeof dstRelations,
+	typeof dstMutators
+>
+
+function dstServerMutators(
+	stats: DstStats,
+): ServerMutatorHooks<DstSchema, typeof dstRelations, typeof dstMutators> {
+	const effectKeys = new Set<string>()
+	return {
+		appendTask: {
+			authorize: async (tx, { id }, ctx) => {
+				if (ctx.source === "client" && serverOwnedIds.includes(id))
+					throw new Error(`Only the server writes ${id}`)
+				if (ctx.source === "client" && !(await tx.get("tasks", id)))
+					throw new Error(`No task ${id}`)
+			},
+			afterCommit: (_args, ctx) => {
+				if (ctx.source === "server") return
+				const key = JSON.stringify([ctx.clientId, ctx.mutationId])
+				if (effectKeys.has(key)) stats.effectRepeated = key
+				effectKeys.add(key)
+				stats.namedAppendCommits++
+			},
+		},
+	}
+}
 
 export const dstRelations = defineRelations(
 	dstSchemaDefinition,
@@ -138,7 +188,7 @@ class InMemoryServerStorage implements TandemServerStorageApi<DstSchema> {
  * event owned by that client, so the run can deliver, delay, or drop it.
  */
 function remoteWithPokeEvents(
-	server: RemoteApi<DstSchema>,
+	server: Pick<DstServer, "connect" | "push" | "pull">,
 	events: GatekeeperEvents,
 	stats: DstStats,
 ): RemoteApi<DstSchema> {
@@ -165,7 +215,7 @@ function remoteWithPokeEvents(
 				},
 			})
 		},
-		push: (args) => server.push(args),
+		push: (args) => server.push(args, { allowOps: true }),
 		pull: (args) => server.pull(args),
 	}
 }
@@ -301,6 +351,7 @@ export type DstViolation =
 			previous: DstSchema["tasks"] | null
 	  }
 	| DstTabViolation
+	| { kind: "effectRepeated"; detail: string }
 
 /** Where a dropped handoff was lost, which decides what its sender can know. */
 export type DstFaultKind =
@@ -345,7 +396,14 @@ export type DstObservation = {
 }
 
 /** Gatekeeper requires an async root for subscription-triggered remote work. */
-class DstClient extends TandemClient<DstSchema, typeof dstRelations> {
+class DstClient extends TandemClient<
+	DstSchema,
+	typeof dstRelations,
+	typeof dstMutators
+> {
+	appendTask(id: string, text: string, field?: "text" | "note") {
+		return this.mutate.appendTask({ id, text, ...(field && { field }) })
+	}
 	async observe(
 		install: (client: TandemClient<DstSchema, typeof dstRelations>) => void,
 	): Promise<void> {
@@ -397,6 +455,15 @@ function installObservation(
 
 export type DstTraceRecord =
 	| {
+			type: "namedAppend"
+			step: number
+			client: DstClientName
+			id: string
+			text: string
+			field?: "text" | "note"
+			mutationId: number
+	  }
+	| {
 			type: "mutate"
 			ops: MutationOp<DstSchema>[]
 			step: number
@@ -440,6 +507,13 @@ function settle(): Promise<void> {
 
 /** A change the run applies in one step; its trace record adds what it observed. */
 export type DstIntent =
+	| {
+			type: "namedAppend"
+			client: DstClientName
+			id: string
+			text: string
+			field?: "text" | "note"
+	  }
 	/** The server writes on its own, as an agent saving its reply would. */
 	| { type: "serverSet"; item: DstSchema["tasks"] }
 	| { type: "serverAppend"; id: string; text: string }
@@ -461,6 +535,8 @@ export type DstIntent =
 
 /** Counts that show a run exercised a behavior, not just converged. */
 export type DstStats = {
+	namedAppendCommits: number
+	effectRepeated?: string
 	/** Poke payloads with appended text that reached a client. */
 	appendPayloadsDelivered: number
 	/** Of those, appends that merged text from several commits. */
@@ -531,7 +607,7 @@ export class DstWorld implements AsyncDisposable {
 
 	readonly clientNames: readonly DstClientName[]
 	readonly coverage: DstCoverage
-	private readonly server: TandemServer<DstSchema, typeof dstRelations>
+	private readonly server: DstServer
 	private readonly harness: DstHarness
 	private readonly serverTimer: DstServerTimer
 	private readonly storage: InMemoryServerStorage
@@ -548,7 +624,7 @@ export class DstWorld implements AsyncDisposable {
 		stats,
 	}: {
 		serverTimer: DstServerTimer
-		server: TandemServer<DstSchema, typeof dstRelations>
+		server: DstServer
 		harness: DstHarness
 		clientNames: readonly DstClientName[]
 		storage: InMemoryServerStorage
@@ -586,10 +662,22 @@ export class DstWorld implements AsyncDisposable {
 		)
 		const storage = new InMemoryServerStorage()
 		const serverTimer = new DstServerTimer()
-		const server = new TandemServer<DstSchema, typeof dstRelations>({
+		const stats: DstStats = {
+			namedAppendCommits: 0,
+			appendPayloadsDelivered: 0,
+			mergedAppendsDelivered: 0,
+		}
+		const hooks = dstServerMutators(stats)
+		const server = new TandemServer<
+			DstSchema,
+			typeof dstRelations,
+			typeof dstMutators
+		>({
 			schema: dstSchemaDefinition,
 			relations: dstRelations,
 			storage,
+			mutators: dstMutators,
+			hooks: () => hooks,
 			rng: SimPrng.idSource(seed, "server"),
 			livePokeInterval: serverTimer,
 		})
@@ -616,10 +704,6 @@ export class DstWorld implements AsyncDisposable {
 			observations.set(name, new Map())
 		}
 		let world: DstWorld | undefined
-		const stats: DstStats = {
-			appendPayloadsDelivered: 0,
-			mergedAppendsDelivered: 0,
-		}
 		const harness = buildHarness({
 			server,
 			stats,
@@ -753,6 +837,8 @@ export class DstWorld implements AsyncDisposable {
 				return { ...intent, step }
 			case "mutate":
 				return this.write(step, intent)
+			case "namedAppend":
+				return this.writeNamedAppend(step, intent)
 			case "openTab":
 				return { type: "openTab", step, tab: this.tabs!.open() }
 			case "toggleTab":
@@ -1047,7 +1133,9 @@ export class DstWorld implements AsyncDisposable {
 			this.crashed.has(name) ? null : this.harness[name].clientId,
 		)
 		return {
-			violation: this.orderViolation ?? violations[0] ?? this.tabs?.violation,
+			violation: this.stats.effectRepeated
+				? { kind: "effectRepeated", detail: this.stats.effectRepeated }
+				: (this.orderViolation ?? violations[0] ?? this.tabs?.violation),
 			states,
 			clientIds,
 			coverage: structuredClone(this.coverage),
@@ -1219,6 +1307,40 @@ export class DstWorld implements AsyncDisposable {
 		return { ...intent, step, mutationId }
 	}
 
+	private writeNamedAppend(
+		step: number,
+		intent: Extract<DstIntent, { type: "namedAppend" }>,
+	): DstTraceRecord {
+		const mutationId = (this.writeCounts.get(intent.client) ?? 0) + 1
+		this.writeCounts.set(intent.client, mutationId)
+		const generation = this.generations[intent.client]
+		this.activeMutations += 1
+		this.inFlight.push(
+			this.harness[intent.client]
+				.appendTask(intent.id, intent.text, intent.field)
+				.then(async (handle) => {
+					const result = await handle.result.catch(
+						(cause: unknown) =>
+							new DstCommitError({ client: intent.client, cause }),
+					)
+					this.activeMutations -= 1
+					if (result instanceof Error) {
+						if (
+							this.crashed.has(intent.client) ||
+							this.generations[intent.client] !== generation
+						)
+							return
+						if (result.cause instanceof DstFaultError) return
+						// Concurrent removal can make an optimistic append a server refusal.
+						if (result.cause instanceof MutationRejectedError) return
+						return result
+					}
+					this.coverage.mutationsByClient[intent.client]!++
+				}),
+		)
+		return { ...intent, step, mutationId }
+	}
+
 	private writeOnServer(
 		step: number,
 		intent: Extract<
@@ -1232,7 +1354,6 @@ export class DstWorld implements AsyncDisposable {
 				tx.set("tasks", intent.item)
 				break
 			case "serverAppend":
-				tx.append("tasks", intent.id, { text: intent.text })
 				break
 			case "serverRemove":
 				tx.remove("tasks", intent.id)
@@ -1246,8 +1367,15 @@ export class DstWorld implements AsyncDisposable {
 			this.maxMutationsInFlight,
 			this.mutationsInFlight,
 		)
+		const committed =
+			intent.type === "serverAppend"
+				? this.harness.server.appendTask({
+						id: intent.id,
+						text: intent.text,
+					})
+				: this.harness.server.commit(tx)
 		this.inFlight.push(
-			this.harness.server.commit(tx).then(async (handle) => {
+			committed.then(async (handle) => {
 				await handle.result
 				this.activeMutations -= 1
 			}),
@@ -1429,7 +1557,7 @@ function buildHarness({
 	withTabs,
 	tabs,
 }: {
-	server: TandemServer<DstSchema, typeof dstRelations>
+	server: DstServer
 	clientNames: readonly DstClientName[]
 	stats: DstStats
 	idSource: (label: DstClientName) => RngApi
@@ -1449,6 +1577,7 @@ function buildHarness({
 			clientStorage: storage,
 			schema: dstSchemaDefinition,
 			relations: dstRelations,
+			mutators: dstMutators,
 			logger,
 			rng: idSource(label),
 			autoConnect: false,
@@ -1464,7 +1593,7 @@ function buildHarness({
 	}
 
 	let builder = new Gatekeeper().add("server", () =>
-		withTabs ? observedServer(server, tabs) : server,
+		observedServer(server, tabs, withTabs),
 	)
 	// Register dependencies before any client, preserving stable construction order.
 	for (const name of clientNames) {
@@ -1498,14 +1627,14 @@ function buildHarness({
 
 type DstHarness = Harness<
 	{
-		server: TandemServer<DstSchema, typeof dstRelations>
+		server: ReturnType<typeof observedServer>
 		tabsRemote: ReturnType<typeof tabsRemote>
 	} & Record<DstClientName, DstClient>
 >
 
 /** Tab leader calls cross the same network gate as standalone clients. */
 function tabsRemote(
-	server: RemoteApi<DstSchema>,
+	server: Pick<DstServer, "connect" | "push" | "pull">,
 	tabs: () => DstTabGroup | undefined,
 ) {
 	return {
@@ -1527,25 +1656,34 @@ function tabsRemote(
 			return connected
 		},
 		push: (args: Parameters<RemoteApi<DstSchema>["push"]>[0]) =>
-			server.push(args),
+			server.push(args, { allowOps: true }),
 		pull: (args: Parameters<RemoteApi<DstSchema>["pull"]>[0]) =>
 			server.pull(args),
 	}
 }
 
 function observedServer(
-	server: TandemServer<DstSchema, typeof dstRelations>,
+	server: DstServer,
 	tabs: () => DstTabGroup | undefined,
+	withTabs: boolean,
 ) {
 	return {
 		transact: () => server.transact(),
 		commit: (tx: Parameters<typeof server.commit>[0]) => server.commit(tx),
+		// Gatekeeper wraps top-level methods; invoke the server's public named method inside it.
+		appendTask: (args: { id: string; text: string }) =>
+			server.mutate.appendTask(args),
 		connect: (api: Parameters<typeof server.connect>[0]) => server.connect(api),
 		pull: (args: Parameters<typeof server.pull>[0]) => server.pull(args),
-		push: async (args: Parameters<typeof server.push>[0]) => {
-			const response = await server.push(args)
-			if (!("error" in response)) tabs()?.accepted(args)
-			return response
-		},
+		push: withTabs
+			? async (
+					args: Parameters<typeof server.push>[0],
+					options?: Parameters<typeof server.push>[1],
+				) => {
+					const response = await server.push(args, options)
+					if (!("error" in response)) tabs()?.accepted(args)
+					return response
+				}
+			: server.push,
 	}
 }

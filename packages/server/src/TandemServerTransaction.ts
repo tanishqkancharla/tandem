@@ -1,7 +1,5 @@
 import type {
 	AnySchema,
-	AppendableField,
-	AppendPayload,
 	CollectionIdTuple,
 	CollectionName,
 	CollectionScanArgs,
@@ -13,7 +11,6 @@ import type {
 import {
 	collectionIdToTuple,
 	executeQueryAsync,
-	validateAppendPayload,
 	validateUpdatePayload,
 } from "@tanishqkancharla/tandem-core/internal"
 import * as errore from "errore"
@@ -64,7 +61,7 @@ function getCollectionTransaction<
 }
 
 function stageTransactionWrite(
-	operation: "append" | "remove" | "set" | "update",
+	operation: "remove" | "set" | "update",
 	write: () => void,
 ): TandemServerError | undefined {
 	const result = errore.try(write)
@@ -73,45 +70,10 @@ function stageTransactionWrite(
 		: undefined
 }
 
-/** Text staged for one record, appended at commit. */
-type PendingAppend<Schema extends AnySchema> = {
-	collection: CollectionName<Schema>
-	id: Schema[CollectionName<Schema>]["id"]
-	/** Text per field, in the order the fields were first appended. */
-	fields: Map<string, string>
-}
-
-/** What one commit appended to a record it did not otherwise write. */
-export type AppliedAppend<Schema extends AnySchema> = {
-	[Collection in CollectionName<Schema>]: {
-		collection: Collection
-		id: Schema[Collection]["id"]
-		fields: {
-			field: AppendableField<Schema[Collection]>
-			/** The field's length before the append. */
-			offset: number
-			text: string
-		}[]
-	}
-}[CollectionName<Schema>]
-
-class AppendFieldError extends errore.createTaggedError({
-	name: "AppendFieldError",
-	message: "Cannot append to $collection.$field: its value is not a string",
-}) {}
-
-function appendKey(collection: string, id: unknown) {
-	return JSON.stringify([collection, ...collectionIdToTuple(id as string)])
-}
-
 export class TandemServerTransaction<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema>,
 > {
-	// Appends read the record at commit, inside the server's run queue, so
-	// concurrent appends to one field never lose text.
-	private readonly appends = new Map<string, PendingAppend<Schema>>()
-
 	constructor(
 		private readonly tupleDbTx: AsyncTupleRootTransactionApi<
 			TandemTuple<Schema>
@@ -191,8 +153,6 @@ export class TandemServerTransaction<
 		})
 
 		if (result instanceof Error) throw result
-		// The record is replaced after the earlier appends.
-		this.appends.delete(appendKey(collection, record.id))
 		return this
 	}
 
@@ -222,37 +182,6 @@ export class TandemServerTransaction<
 			transaction.set(key, { ...existing, ...assignments })
 		})
 		if (result instanceof Error) throw result
-		// Assigned fields replace text appended before them.
-		const pendingKey = appendKey(collection, id)
-		const pending = this.appends.get(pendingKey)
-		for (const field of Object.keys(assignments)) pending?.fields.delete(field)
-		if (pending?.fields.size === 0) this.appends.delete(pendingKey)
-		return this
-	}
-
-	/**
-	 * Adds text to the end of string fields when the transaction commits, to
-	 * whatever the fields hold then. A missing record is left absent. Clients
-	 * that already have the record receive only the appended text.
-	 */
-	append<Collection extends CollectionName<Schema>>(
-		collection: Collection,
-		id: Schema[Collection]["id"],
-		payload: AppendPayload<Schema[Collection]>,
-	): this {
-		const invalid = validateAppendPayload(payload)
-		if (invalid instanceof Error) throw invalid
-		const key = appendKey(collection, id)
-		const pending: PendingAppend<Schema> = this.appends.get(key) ?? {
-			collection,
-			id,
-			fields: new Map(),
-		}
-		for (const [field, text] of Object.entries(payload) as [string, string][]) {
-			if (text)
-				pending.fields.set(field, (pending.fields.get(field) ?? "") + text)
-		}
-		if (pending.fields.size) this.appends.set(key, pending)
 		return this
 	}
 
@@ -270,7 +199,6 @@ export class TandemServerTransaction<
 		})
 
 		if (result instanceof Error) throw result
-		this.appends.delete(appendKey(collection, id))
 		return this
 	}
 
@@ -279,64 +207,6 @@ export class TandemServerTransaction<
 			.cancel()
 			.catch((cause) => new TandemServerError({ operation: "cancel", cause }))
 		if (result instanceof Error) throw result
-	}
-
-	/**
-	 * @internal
-	 * Stages pending appends over the current records. Call inside the run
-	 * queue, right before `commit`. Returns the appends to records this
-	 * transaction did not otherwise write.
-	 */
-	async applyAppends(): Promise<TandemServerError | AppliedAppend<Schema>[]> {
-		const applied: AppliedAppend<Schema>[] = []
-		// A record this transaction set or updated reaches clients whole.
-		const rewritten = new Set(
-			this.recordWrites().set.map(({ key }) => JSON.stringify(key.slice(1))),
-		)
-		for (const [id, pending] of this.appends) {
-			const transaction = getCollectionTransaction(
-				this.tupleDbTx,
-				pending.collection,
-			)
-			const key = collectionIdToTuple(pending.id) as CollectionTupleKey<
-				Schema,
-				typeof pending.collection
-			>
-			const existing = await transaction
-				.get(key)
-				.catch((cause) => new TandemServerError({ operation: "append", cause }))
-			if (existing instanceof Error) return existing
-			if (existing === undefined) continue
-
-			const fields: { field: string; offset: number; text: string }[] = []
-			let value: Record<string, unknown> = existing
-			for (const [field, text] of pending.fields) {
-				const current = value[field] ?? ""
-				if (typeof current !== "string") {
-					return new TandemServerError({
-						operation: "append",
-						cause: new AppendFieldError({
-							collection: pending.collection,
-							field,
-						}),
-					})
-				}
-				fields.push({ field, offset: current.length, text })
-				value = { ...value, [field]: current + text }
-			}
-			const staged = stageTransactionWrite("append", () => {
-				transaction.set(key, value as Schema[typeof pending.collection])
-			})
-			if (staged instanceof Error) return staged
-			if (!rewritten.has(id))
-				applied.push({
-					collection: pending.collection,
-					id: existing.id,
-					fields,
-				} as AppliedAppend<Schema>)
-		}
-		this.appends.clear()
-		return applied
 	}
 
 	/**

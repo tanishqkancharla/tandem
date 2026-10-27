@@ -131,7 +131,7 @@ test("server-sent pokes show codec-backed records and appends before any pull re
 
 	// An append carries only its text, decoded by the field's codec.
 	const appendTx = server.transact()
-	appendTx.append("events", 42, { title: " party" })
+	appendTx.set("events", { ...event, title: event.title + " party" })
 	await server.commit(appendTx)
 	await vi.waitFor(
 		() =>
