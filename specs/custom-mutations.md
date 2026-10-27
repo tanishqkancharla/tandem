@@ -212,6 +212,29 @@ Pull scan windows include the matching prefix through `offset + limit`; the clie
 +└── pokeClient # ask the client to pull when an offset page shifts
 ```
 
+## ✅ Phase 6: Optional-string named append parity
+
+**Today**
+
+The server treats an absent optional string as empty when appending, but the client adapter rejects it before the named mutation can be pushed.
+
+**Implemented**
+
+The client adapter uses the shared payload validator before record lookup, skips empty text, and treats `null` or `undefined` current values as empty strings. Other current values still reject. A public `client.mutate.appendNote` test holds the push to verify the optimistic value before checking the server result and malformed numeric-text rejection. DST generates optional-field named appends and replays their traces under network faults and crashes.
+
+```changes
+be69e2e
+```
+
+```callstack
+ TandemClient.mutate.appendNote [[be69e2e:packages/server/test/Mutators.spec.ts#L222-L258]]
++└── clientMutatorTransaction.append [[be69e2e:packages/core/src/mutator/Mutator.ts#L180-L216]]
++    ├── validateAppendPayload # reject malformed text before record lookup
++    └── Transaction.update # record the optimistic optional-string value
+ DstSimulation.choose [[be69e2e:dst/DstSimulation.ts#L279-L301]]
++└── DstWorld.writeNamedAppend [[be69e2e:dst/DstWorld.ts#L1300-L1334]] # exercise note appends through the public client API
+```
+
 ## References
 
 - [Agent chat guide](../docs/agent-chat.md)
