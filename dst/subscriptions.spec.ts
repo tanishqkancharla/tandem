@@ -18,10 +18,16 @@ describe("DST subscription workflows", () => {
 		await world.apply(1, {
 			type: "subscribe",
 			client: "client1",
+			id: "writer-stats",
+			spec: { kind: "taskStats" },
+		})
+		await world.apply(2, {
+			type: "subscribe",
+			client: "client1",
 			id: "editor",
 			spec: { kind: "inventory", collection: "tasks" },
 		})
-		await world.apply(2, {
+		await world.apply(3, {
 			type: "mutate",
 			client: "client1",
 			ops: [
@@ -53,8 +59,11 @@ describe("DST subscription workflows", () => {
 		expect(world.subscriptions("client2").get("stats")?.latest).toEqual([
 			{ projectId: "alpha", count: 2, averagePriority: 3 },
 		])
+		expect(world.subscriptions("client1").get("writer-stats")?.latest).toEqual([
+			{ projectId: "alpha", count: 2, averagePriority: 3 },
+		])
 
-		await world.apply(3, {
+		await world.apply(4, {
 			type: "mutate",
 			client: "client1",
 			ops: [
@@ -72,7 +81,7 @@ describe("DST subscription workflows", () => {
 			{ projectId: "beta", count: 1, averagePriority: 2 },
 		])
 
-		await world.apply(4, {
+		await world.apply(5, {
 			type: "mutate",
 			client: "client1",
 			ops: [{ type: "remove", collection: "tasks", id: "b" }],
@@ -82,7 +91,7 @@ describe("DST subscription workflows", () => {
 			{ projectId: "beta", count: 1, averagePriority: 2 },
 		])
 
-		await world.apply(5, {
+		await world.apply(6, {
 			type: "mutate",
 			client: "client1",
 			ops: [
