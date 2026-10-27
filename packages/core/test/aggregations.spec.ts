@@ -20,6 +20,36 @@ function thread(
 }
 
 describe("callback aggregations", () => {
+	test("tracks compound source IDs independently", async () => {
+		type CompoundSchema = {
+			items: { id: readonly [string, string]; bucket: string; value: number }
+		}
+		const client = new TandemClient<CompoundSchema>({})
+		await client.ready
+		const observed: unknown[] = []
+		const subscription = client.subscribe(
+			{
+				collection: "items",
+				groupBy: ["bucket"],
+				aggregate: (rows) => ({
+					total: rows.reduce((sum, row) => sum + row.value, 0),
+				}),
+			},
+			(value) => observed.push(value),
+		)
+		const tx = client.transact()
+		tx.set("items", { id: ["one", "a"], bucket: "shared", value: 2 })
+		tx.set("items", { id: ["one", "b"], bucket: "shared", value: 3 })
+		await client.commit(tx)
+		expect(observed.at(-1)).toEqual([{ bucket: "shared", total: 5 }])
+		const removeTx = client.transact()
+		removeTx.remove("items", ["one", "a"])
+		await client.commit(removeTx)
+		expect(observed.at(-1)).toEqual([{ bucket: "shared", total: 3 }])
+		subscription.destroy()
+		await client.close()
+	})
+
 	test("returns scalar and object results, including empty inputs", async () => {
 		const client = new TandemClient<Schema>({})
 		await client.ready
