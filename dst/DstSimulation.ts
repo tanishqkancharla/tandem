@@ -52,6 +52,7 @@ export interface DstRunOptions {
 	sharedWriteRate?: number
 	initialSubscriptions?: DstSubscriptionMode
 	subscriptionRate?: number
+	aggregateSubscriptionRate?: number
 	connectivityRate?: number
 	recoveryEvents?: number
 }
@@ -71,6 +72,7 @@ export function resolveRunOptions(
 		sharedWriteRate: options.sharedWriteRate ?? 1,
 		initialSubscriptions: options.initialSubscriptions ?? "full",
 		subscriptionRate: options.subscriptionRate ?? 0.08,
+		aggregateSubscriptionRate: options.aggregateSubscriptionRate ?? 0,
 		connectivityRate: options.connectivityRate ?? 0.02,
 		recoveryEvents: options.recoveryEvents ?? (options.clientCount ?? 2) * 500,
 	}
@@ -219,25 +221,29 @@ export class DstSimulation {
 				inventory.tasks.length > 0
 					? rng.pick(inventory.tasks).id
 					: `item-${rng.int(1, this.options.recordCount)}`
-			const spec: DstSubscriptionSpec = rng.pick([
-				{
-					kind: "tasks",
-					...(rng.boolean(0.5) ? { projectId } : {}),
-					...(rng.boolean(0.7) ? { done: rng.boolean(0.5) } : {}),
-					minPriority: rng.int(1, 4),
-					limit: rng.int(1, 4),
-					offset: rng.int(0, 2),
-					projection: rng.boolean(0.5),
-				},
-				{ kind: "taskComments", taskId, limit: rng.int(1, 3) },
-				{
-					kind: "projectTasks",
-					projectId,
-					limit: rng.int(1, 3),
-					commentLimit: rng.int(1, 3),
-				},
-				{ kind: "inventory", collection: "memberships" },
-			])
+			const spec: DstSubscriptionSpec =
+				this.options.aggregateSubscriptionRate > 0 &&
+				rng.boolean(this.options.aggregateSubscriptionRate)
+					? { kind: "taskStats" }
+					: rng.pick([
+							{
+								kind: "tasks",
+								...(rng.boolean(0.5) ? { projectId } : {}),
+								...(rng.boolean(0.7) ? { done: rng.boolean(0.5) } : {}),
+								minPriority: rng.int(1, 4),
+								limit: rng.int(1, 4),
+								offset: rng.int(0, 2),
+								projection: rng.boolean(0.5),
+							},
+							{ kind: "taskComments", taskId, limit: rng.int(1, 3) },
+							{
+								kind: "projectTasks",
+								projectId,
+								limit: rng.int(1, 3),
+								commentLimit: rng.int(1, 3),
+							},
+							{ kind: "inventory", collection: "memberships" },
+						])
 			return { type: "subscribe", client, id, spec }
 		}
 		if (
