@@ -89,7 +89,7 @@ c8baf07..2691fd7
  └── TandemClient.subscribe [[3d7c238:packages/core/src/TandemClient.ts#L312-L328]]
 ```
 
-### Phase 3: Simulation and integration
+### ✅ Phase 3: Simulation and integration
 
 **Today**
 
@@ -99,9 +99,13 @@ DST checks subscribed record views, but has no independent aggregate oracle.
 
 Exercise aggregate subscriptions through the public client API with fault and crash seeds; compare each result with an independently computed statistic.
 
+```changes
+4f2861c
+```
+
 ```callstack
- DstSimulation [[dst/DstSimulation.ts]]
-+└── check aggregate view # compare against independent source calculation
+ DstSimulation [[4f2861c:dst/DstSimulation.ts#L91-L145]]
++└── expectedView # compare against independent source calculation [[4f2861c:dst/DstSubscriptions.ts#L145-L185]]
 ```
 
 ## References
