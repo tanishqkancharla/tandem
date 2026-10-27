@@ -41,7 +41,7 @@ const tandem = new TandemServer({
   }),
 })
 await tandem.push(request, { context: authenticatedSession })
-await tandem.mutate("appendReply", { id: replyId, text: delta })
+await tandem.mutate.appendReply({ id: replyId, text: delta })
 
 // client
 const client = new TandemClient({ schema, mutators, remote })
@@ -189,14 +189,14 @@ The chat example starts one response from `sendMessage.afterCommit` and invokes 
 ```callstack
  ChatServer.startReply [[4847cd4:examples/agent-chat/apps/server/test/AgentChatMutators.e2e.spec.ts#L176-L184]]
 +└── ChatServer.streamReply [[4847cd4:examples/agent-chat/apps/server/test/AgentChatMutators.e2e.spec.ts#L185-L232]]
-+    └── TandemServer.mutate(appendReply) # one named append per delta
++    └── TandemServer.mutate.appendReply # one named append per delta
  DstSimulation.choose [[4847cd4:dst/DstSimulation.ts#L154-L284]]
 +└── DstWorld.writeNamedAppend [[4847cd4:dst/DstWorld.ts#L1288-L1321]] # exercise the public client call
 ```
 
 ```ts
 for await (const delta of result.textStream)
-  await tandem.mutate("appendReply", { id, text: delta })
+  await tandem.mutate.appendReply({ id, text: delta })
 ```
 
 ## ✅ Phase 5: Offset page scan-window repair
@@ -272,7 +272,7 @@ Each push supplies a server mutator registry, and direct mutation requires the r
 
 **Implemented**
 
-The server constructor registers shared definitions once. Its hooks factory receives the trusted context supplied with each push, and `ServerMutatorHooks` infers args and transaction schema from the shared registry. Direct `mutate(name, args)` retains name and argument types. The server assigns client or server origin internally. The guide shows browser client streaming, server-hosted client streaming through sync, and direct server mutation.
+The server constructor registers shared definitions once. Its hooks factory receives the trusted context supplied with each push, and `ServerMutatorHooks` infers args and transaction schema from the shared registry. Direct calls retain name and argument types. The server assigns client or server origin internally. The guide shows browser client streaming, server-hosted client streaming through sync, and direct server mutation.
 
 ```changes
 0321658
@@ -293,7 +293,35 @@ const server = new TandemServer({ schema, relations, storage, mutators,
   }),
 })
 await server.push(request, { context: authenticatedSession })
-await server.mutate("appendReply", { id, text: delta })
+await server.mutate.appendReply({ id, text: delta })
+```
+
+## ✅ Phase 9: Matching client and server mutation calls
+
+**Today**
+
+Client calls use `client.mutate.appendReply(args)`, while direct server calls use a callable `server.mutate(name, args)`.
+
+**Implemented**
+
+Both APIs expose the same `MutateApi` property shape. The server binds one function per registered name in its constructor and sends every call through its existing serialized execution and hook path. There is no callable overload. DST keeps server append calls inside Gatekeeper through a test adapter that invokes the public property method.
+
+```changes
+ce27f4d
+```
+
+```callstack
+ TandemServer.mutate.appendReply [[ce27f4d:packages/server/src/TandemServer.ts#L430-L435]]
++└── runNamedMutator [[ce27f4d:packages/server/src/TandemServer.ts#L502-L540]] # validate, authorize, commit, start effect
+ DstWorld.writeOnServer [[ce27f4d:dst/DstWorld.ts#L1350-L1382]]
++└── observedServer.appendTask [[ce27f4d:dst/DstWorld.ts#L1665-L1682]] # keep the Gatekeeper call while using the public method
+```
+
+```ts
+await client.mutate.appendReply({ id, text: delta })
+await server.mutate.appendReply({ id, text: delta })
+const append = server.mutate.appendReply
+await append({ id, text: nextDelta })
 ```
 
 ## References
