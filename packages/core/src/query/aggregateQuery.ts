@@ -19,6 +19,10 @@ type Row = Record<string, unknown> & {
 }
 type Group = { keys: Record<string, unknown>; rows: Map<string, Row> }
 
+function compareSerializedKeys(left: string, right: string): number {
+	return left < right ? -1 : left > right ? 1 : 0
+}
+
 export function aggregateSource<Schema extends AnySchema>(query: {
 	collection: CollectionName<Schema>
 	where?: unknown
@@ -117,7 +121,7 @@ export function subscribeAggregate<
 				continue
 			}
 			const rows = [...group.rows.values()].sort((a, b) =>
-				rowId(a).localeCompare(rowId(b)),
+				compareSerializedKeys(rowId(a), rowId(b)),
 			)
 			const value = query.aggregate(rows as never)
 			if (groupBy) {
@@ -139,7 +143,7 @@ export function subscribeAggregate<
 		}
 		return groupBy
 			? [...values]
-					.sort(([left], [right]) => left.localeCompare(right))
+					.sort(([left], [right]) => compareSerializedKeys(left, right))
 					.map(([, value]) => value)
 			: values.get(ungroupedId)
 	}
