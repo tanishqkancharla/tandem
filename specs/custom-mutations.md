@@ -82,11 +82,15 @@ Clients can commit raw operations without a named business action.
 
 A shared definition validates JSON arguments, runs against typed collection operations, and records the call beside the optimistic operations.
 
+```changes
+4847cd4
+```
+
 ```callstack
- TandemClient.mutate.name [[packages/core/src/TandemClient.ts#TandemClient.runMutator]]
-+├── validateMutatorArgs [[packages/core/src/mutator/Mutator.ts#validateMutatorArgs]] # validate the copied arguments
-+├── clientMutatorTransaction [[packages/core/src/mutator/Mutator.ts#clientMutatorTransaction]] # adapt synchronous reads and append
-+└── SyncEngine.commit [[packages/core/src/sync/SyncEngine.ts#SyncEngine.commit]] # persist name, arguments, and recorded writes
+ TandemClient.mutate.name [[4847cd4:packages/core/src/TandemClient.ts#L291-L353]]
++├── validateMutatorArgs [[4847cd4:packages/core/src/mutator/Mutator.ts#L149-L174]] # validate the copied arguments
++├── clientMutatorTransaction [[4847cd4:packages/core/src/mutator/Mutator.ts#L176-L204]] # adapt synchronous reads and append
++└── SyncEngine.commit [[4847cd4:packages/core/src/sync/SyncEngine.ts#L558-L592]] # persist name, arguments, and recorded writes
 ```
 
 ```ts
@@ -106,14 +110,18 @@ A push of raw writes cannot authorize a business action or start work after it c
 
 The server validates and authorizes the named call, always runs the shared function, commits it with the acknowledgement, then starts the registered effect. Direct server calls use the same execution and hooks.
 
+```changes
+4847cd4
+```
+
 ```callstack
- TandemServer.push [[packages/server/src/TandemServer.ts#TandemServer.push]]
-+└── applyMutator [[packages/server/src/TandemServer.ts#TandemServer.applyMutator]]
+ TandemServer.push [[4847cd4:packages/server/src/TandemServer.ts#L433-L447]]
++└── applyMutator [[4847cd4:packages/server/src/TandemServer.ts#L635-L691]]
 +    ├── authorize # read the transaction and request session
 +    ├── run # execute shared database logic
 +    ├── commitTransaction # commit writes and acknowledgement together
 +    └── runEffect # start best effort work after commit
- TandemServer.mutate [[packages/server/src/TandemServer.ts#TandemServer.mutate]]
+ TandemServer.mutate [[4847cd4:packages/server/src/TandemServer.ts#L373-L414]]
 +└── run shared definition and hooks # server owned streaming call
 ```
 
@@ -137,12 +145,16 @@ A tab leader forwards operations, and a server append is available only on a ser
 
 The tab protocol retains name and arguments across encoding, outbox persistence, handoff, and leader receipts. Shared `tx.append` uses the server's staged append and live delta path; the client shows an optimistic full field update.
 
+```changes
+4847cd4
+```
+
 ```callstack
- TabSession.commit [[packages/core/src/tabs/TabSession.ts#TabSession.commit]]
-+├── TabCodec.encodeMutation [[packages/core/src/tabs/TabProtocol.ts#TabCodec.encodeMutation]] # keep the named call
-+└── TabHub.commit [[packages/core/src/tabs/TabHub.ts#TabHub.commit]] # forward it to SyncEngine
- TandemServerTransaction.append [[packages/server/src/TandemServerTransaction.ts#TandemServerTransaction.append]]
-+└── TandemServer.commitTransaction [[packages/server/src/TandemServer.ts#TandemServer.commitTransaction]] # emit append delta pokes
+ TabSession.commit [[4847cd4:packages/core/src/tabs/TabSession.ts#L129-L144]]
++├── TabCodec.encodeMutation [[4847cd4:packages/core/src/tabs/TabProtocol.ts#L76-L105]] # keep the named call
++└── TabHub.commit [[4847cd4:packages/core/src/tabs/TabHub.ts#L385-L457]] # forward it to SyncEngine
+ TandemServerTransaction.append [[4847cd4:packages/server/src/TandemServerTransaction.ts#L238-L260]]
++└── TandemServer.commitTransaction [[4847cd4:packages/server/src/TandemServer.ts#L816-L870]] # emit append delta pokes
 ```
 
 ```ts
@@ -160,12 +172,16 @@ The exploratory agent chat manually filters operations and writes full reply sna
 
 The chat example starts one response from `sendMessage.afterCommit` and invokes `appendReply` for every text delta. DST generates named appends, traces and replays them, and checks final server/client text and effect repetition under network faults and crashes.
 
+```changes
+4847cd4
+```
+
 ```callstack
- ChatServer.startReply [[examples/agent-chat/apps/server/test/AgentChatMutators.e2e.spec.ts#ChatServer.startReply]]
-+└── ChatServer.streamReply [[examples/agent-chat/apps/server/test/AgentChatMutators.e2e.spec.ts#ChatServer.streamReply]]
+ ChatServer.startReply [[4847cd4:examples/agent-chat/apps/server/test/AgentChatMutators.e2e.spec.ts#L176-L184]]
++└── ChatServer.streamReply [[4847cd4:examples/agent-chat/apps/server/test/AgentChatMutators.e2e.spec.ts#L185-L232]]
 +    └── TandemServer.mutate(appendReply) # one named append per delta
- DstSimulation.choose [[dst/DstSimulation.ts#DstSimulation.choose]]
-+└── DstWorld.writeNamedAppend [[dst/DstWorld.ts#DstWorld.writeNamedAppend]] # exercise the public client call
+ DstSimulation.choose [[4847cd4:dst/DstSimulation.ts#L154-L284]]
++└── DstWorld.writeNamedAppend [[4847cd4:dst/DstWorld.ts#L1288-L1321]] # exercise the public client call
 ```
 
 ```ts
