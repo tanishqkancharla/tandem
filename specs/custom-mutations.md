@@ -22,18 +22,26 @@ export const appendReply = defineMutator(schema, {
 
 export const mutators = { appendReply }
 
-// server, for one authenticated request
-const registered = {
-  appendReply: {
-    ...appendReply,
-    authorize: (_tx, _args) => {
-      if (!serverOwned) throw new Error("Only the server appends replies")
+// server constructor
+const tandem = new TandemServer({
+  schema,
+  relations: {},
+  storage,
+  mutators,
+  hooks: (session: Session | undefined) => ({
+    appendReply: {
+      authorize: async (tx, { id }, ctx) => {
+        const reply = await tx.get("messages", id)
+        if (ctx.source === "client" &&
+            !session?.threads.includes(reply?.threadId ?? ""))
+          throw new Error("No access")
+      },
+      afterCommit: ({ id }) => notifyReply(id),
     },
-    afterCommit: ({ id }) => notifyReply(id),
-  },
-} satisfies ServerMutatorsFor<ChatSchema, {}, typeof mutators>
-await tandem.push(request, { mutators: registered })
-await tandem.mutate("appendReply", { id: replyId, text: delta }, { mutators: registered })
+  }),
+})
+await tandem.push(request, { context: authenticatedSession })
+await tandem.mutate("appendReply", { id: replyId, text: delta })
 
 // client
 const client = new TandemClient({ schema, mutators, remote })
@@ -41,7 +49,7 @@ await client.ready
 await client.mutate.appendReply({ id: replyId, text: "Hello" })
 ```
 
-`defineMutators(schema, { name: { args, run } })` remains the compact form for a module with several definitions. `defineMutator` gives a separate file the same inferred transaction and argument types. Both definitions reject `authorize` and `afterCommit`, including hooks supplied by a spread. The server registration is an ordinary object; it does not replace `run`.
+`defineMutators(schema, { name: { args, run } })` remains the compact form for a module with several definitions. `defineMutator` gives a separate file the same inferred transaction and argument types. Both definitions reject `authorize` and `afterCommit`, including hooks supplied by a spread. The constructor retains the shared registry type and copies only `authorize` and `afterCommit` from the hook map; hooks cannot replace `run`.
 
 ```mermaid
 sequenceDiagram
@@ -188,7 +196,7 @@ The chat example starts one response from `sendMessage.afterCommit` and invokes 
 
 ```ts
 for await (const delta of result.textStream)
-  await tandem.mutate("appendReply", { id, text: delta }, { mutators: serverMutators })
+  await tandem.mutate("appendReply", { id, text: delta })
 ```
 
 ## ✅ Phase 5: Offset page scan-window repair
@@ -235,12 +243,61 @@ be69e2e
 +└── DstWorld.writeNamedAppend [[be69e2e:dst/DstWorld.ts#L1300-L1334]] # exercise note appends through the public client API
 ```
 
+## ✅ Phase 7: App-defined append and derived live deltas
+
+**Today**
+
+The built-in append method stages changes separately from ordinary transaction writes.
+
+**Implemented**
+
+The built-in transaction append method and staging are removed. Shared named mutators append with `get` and `set`; the server reads each before image inside its commit queue and compares it with the final write. It emits compact deltas only when every changed field is a string extension and the suffix round trips through the collection codec. It sends a full set for new records, replacements, metadata changes, uncertain object equality, and codecs that cannot encode a suffix. Existing revision guards, visibility checks, and batching remain in the live-poke path.
+
+```changes
+2e27e75
+```
+
+```callstack
+ TandemServer.commitTransaction [[2e27e75:packages/server/src/TandemServer.ts#L908-L1044]]
++├── read committed before images # compare against final transaction writes
++├── appendedFields # retain only lossless string extensions
++└── emitLivePokes # send a guarded append or full set
+```
+
+## ✅ Phase 8: Typed constructor registration and streaming paths
+
+**Today**
+
+Each push supplies a server mutator registry, and direct mutation requires the registry again. Hook args need an explicit `ServerMutatorsFor` assertion.
+
+**Implemented**
+
+The server constructor registers shared definitions once. Its hooks factory receives the trusted context supplied with each push, and `ServerMutatorHooks` infers args and transaction schema from the shared registry. Direct `mutate(name, args)` retains name and argument types. The server assigns client or server origin internally. The guide shows browser client streaming, server-hosted client streaming through sync, and direct server mutation.
+
+```changes
+0321658
+```
+
+```callstack
+ TandemServer.push [[0321658:packages/server/src/TandemServer.ts#L551-L573]]
++└── registered # combine the shared definition with request-local hooks
+    └── applyMutator # validate, authorize, commit, and start effect
+ TandemServer.mutate [[0321658:packages/server/src/TandemServer.ts#L493-L540]]
++└── registered # direct call uses the constructor registry and server origin
+```
+
+```ts
+const server = new TandemServer({ schema, relations, storage, mutators,
+  hooks: (session: Session | undefined) => ({
+    appendReply: { authorize: (tx, args, ctx) => checkAccess(tx, args, ctx, session) },
+  }),
+})
+await server.push(request, { context: authenticatedSession })
+await server.mutate("appendReply", { id, text: delta })
+```
+
 ## References
 
 - [Agent chat guide](../docs/agent-chat.md)
 - [Append and batching](append-and-batching.md)
 - [Deterministic simulation testing](deterministic-simulation-testing.md)
-
-## ✅ Phase 7: App-defined append and derived live deltas
-
-The built-in transaction append method and staging are removed. Shared named mutators append with `get` and `set`; the server reads each before image inside its commit queue and compares it with the final write. It emits compact deltas only when every changed field is a string extension and the suffix round trips through the collection codec. It sends a full set for new records, replacements, metadata changes, uncertain object equality, and codecs that cannot encode a suffix. Existing revision guards, visibility checks, and batching remain in the live-poke path.
