@@ -264,15 +264,33 @@ test("encoded scan windows collect complete deduplicated records", async ({
 		{
 			collection: "threads",
 			value: {
-				id: "thread-1",
+				id: "thread-3",
 				ownerId: "user-1",
-				title: "Alpha",
+				title: "Charlie",
 				status: "active",
 			},
 		},
 		{
 			collection: "users",
 			value: { id: "user-1", name: "Ada" },
+		},
+		{
+			collection: "threads",
+			value: {
+				id: "thread-4",
+				ownerId: "user-1",
+				title: "Bravo",
+				status: "active",
+			},
+		},
+		{
+			collection: "threads",
+			value: {
+				id: "thread-1",
+				ownerId: "user-1",
+				title: "Alpha",
+				status: "active",
+			},
 		},
 		{
 			collection: "messages",

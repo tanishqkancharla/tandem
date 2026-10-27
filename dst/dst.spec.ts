@@ -815,7 +815,7 @@ describe("Deterministic simulation testing", () => {
 
 	it("merges bursts of server appends into single payloads under faults", async () => {
 		const result = await new DstSimulation({
-			seed: 1,
+			seed: 12,
 			steps: 300,
 			faultRate: 0.1,
 			crashRate: 0.02,

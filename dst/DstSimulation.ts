@@ -222,7 +222,7 @@ export class DstSimulation {
 				inventory.tasks.length > 0
 					? rng.pick(inventory.tasks).id
 					: `item-${rng.int(1, this.options.recordCount)}`
-			const spec: DstSubscriptionSpec = rng.pick([
+			const choices: DstSubscriptionSpec[] = [
 				{
 					kind: "tasks",
 					...(rng.boolean(0.5) ? { projectId } : {}),
@@ -240,7 +240,16 @@ export class DstSimulation {
 					commentLimit: rng.int(1, 3),
 				},
 				{ kind: "inventory", collection: "memberships" },
-			])
+			]
+			if (this.options.initialSubscriptions === "scoped")
+				choices.push({
+					kind: "tasks",
+					minPriority: 1,
+					limit: 2,
+					offset: 1,
+					projection: true,
+				})
+			const spec = rng.pick(choices)
 			return { type: "subscribe", client, id, spec }
 		}
 		if (

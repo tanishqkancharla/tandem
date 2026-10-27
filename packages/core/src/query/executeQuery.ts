@@ -547,6 +547,7 @@ function collectScanWindow<Schema extends AnySchema>(
 	queries: readonly QueryNode<Schema>[],
 	relations: AnyRelations<Schema>,
 	recordsByCollection: RecordsByCollection<Schema>,
+	includePrefix = true,
 ): ScanWindowRecord<Schema>[] {
 	const result: ScanWindowRecord<Schema>[] = []
 	const seen = new Map<CollectionName<Schema>, Set<string>>()
@@ -562,7 +563,7 @@ function collectScanWindow<Schema extends AnySchema>(
 
 	for (const query of queries) {
 		executeLoadedQuery(
-			query,
+			includePrefix ? windowQueryPrefix(query) : query,
 			relations,
 			recordsByCollection,
 			undefined,
@@ -571,6 +572,33 @@ function collectScanWindow<Schema extends AnySchema>(
 	}
 
 	return result
+}
+
+/** Keep rows before an offset so the client can apply its own page offset. */
+function windowQueryPrefix<Schema extends AnySchema>(
+	query: QueryNode<Schema>,
+): QueryNode<Schema> {
+	return {
+		...query,
+		...(query.offset === undefined
+			? {}
+			: {
+					offset: 0,
+					...(query.limit === undefined
+						? {}
+						: { limit: query.offset + query.limit }),
+				}),
+		...(query.with === undefined
+			? {}
+			: {
+					with: Object.fromEntries(
+						Object.entries(query.with).map(([name, child]) => [
+							name,
+							windowQueryPrefix(child),
+						]),
+					),
+				}),
+	}
 }
 
 export async function executeScanWindowAsync<
@@ -640,8 +668,15 @@ export async function selectScanWindowRecordsAsync<
 		)
 	}
 
-	const records = await executeScanWindowAsync(db, relations, scanWindow)
-	if (records instanceof Error) return records
+	// A live poke is only allowed to name records inside the requested page.
+	// The pull includes the prefix so the client can apply its own offset.
+	const recordsByCollection = await loadRecordsAsync(db, collections)
+	const records = collectScanWindow(
+		queries,
+		relations,
+		recordsByCollection,
+		false,
+	)
 	const inWindow = new Set(records.map(scanWindowRecordId))
 	return relevant.filter((record) => inWindow.has(scanWindowRecordId(record)))
 }

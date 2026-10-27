@@ -943,10 +943,14 @@ export class TandemServer<
 			// The pusher pulls its acknowledgement now, not when live payloads go
 			// quiet. An offset shifts which records are in view when one before it
 			// changes, even one the client never saw, so let the client pull.
-			if (
-				clientId === changes.pusher ||
-				this.touchesOffsetWindow(client.scanWindow, changes)
-			) {
+			if (this.touchesOffsetWindow(client.scanWindow, changes)) {
+				// Prefix rows are cached for local pagination, but page shifts
+				// need a pull before detailed changes can be interpreted.
+				client.buffer.clear()
+				this.pokeClient(client)
+				continue
+			}
+			if (clientId === changes.pusher) {
 				this.flushLivePayload(client)
 				this.pokeClient(client)
 				continue
