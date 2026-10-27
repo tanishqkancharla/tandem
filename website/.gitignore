@@ -1,0 +1,5 @@
+dist/
+.tanstack/
+.vercel/
+test-results/
+playwright-report/

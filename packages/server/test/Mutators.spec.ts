@@ -11,9 +11,14 @@ import {
 } from "@tanishqkancharla/tandem-core"
 import * as errore from "errore"
 import { InMemoryTupleStorage } from "tuple-database"
+import { InMemoryTabs } from "@tanishqkancharla/tandem-core/internal"
 import type { ScanStorageArgs, WriteOps } from "tuple-database"
 import { expect, test as baseTest, vi } from "vitest"
-import { TandemServer, type TandemServerPushOptions } from "../src/index.js"
+import {
+	TandemServer,
+	type ServerMutatorsFor,
+	type TandemServerPushOptions,
+} from "../src/index.js"
 import { TestTandemServerStorage } from "./TandemServerStorage.fixture.js"
 
 type Todo = { id: string; text: string; done: boolean; author: string }
@@ -75,20 +80,25 @@ class TodoBackend {
 	loseNextResponse = false
 
 	private pushOptions(): TandemServerPushOptions<TodoSchema, {}> {
-		const user = this.user
-		const mutators = this.tandem.serverMutators(todoMutators, {
-			addTodo: async (tx, { id, text }, ctx) => {
-				if (!user) throw new Error("Sign in to add todos")
-				if (this.queryBug)
-					await tx.query({
-						collection: "todos",
-						where: { done: { $bogus: true } } as never,
-					})
-				if (await tx.get("todos", id)) throw new Error(`Todo ${id} exists`)
-				tx.set("todos", { id, text, done: false, author: user })
-				ctx.after(() => this.announced.push(id))
+		const mutators = {
+			addTodo: {
+				...todoMutators.addTodo,
+				authorize: async (tx, { id }) => {
+					if (!this.user) throw new Error("Sign in to add todos")
+					if (this.queryBug)
+						await tx.query({
+							collection: "todos",
+							where: { done: { $bogus: true } } as never,
+						})
+					if (await tx.get("todos", id)) throw new Error(`Todo ${id} exists`)
+				},
+				afterCommit: ({ id }) => {
+					this.announced.push(id)
+				},
 			},
-		})
+			toggleTodo: todoMutators.toggleTodo,
+		} satisfies ServerMutatorsFor<TodoSchema, {}, typeof todoMutators>
+
 		for (const name of this.missing) delete mutators[name]
 		return { mutators, allowOps: this.allowOps }
 	}
@@ -177,7 +187,7 @@ const test = baseTest.extend<{
 	},
 })
 
-test("a mutator shows its optimistic result until the server's run replaces it", async ({
+test("a shared mutator runs optimistically and on the server", async ({
 	backend,
 	connect,
 }) => {
@@ -188,14 +198,11 @@ test("a mutator shows its optimistic result until the server's run replaces it",
 	const todo = { id: "todo-1", text: "Buy milk", done: false }
 	await vi.waitFor(() =>
 		expect(client.query({ collection: "todos" })).toEqual([
-			{ ...todo, author: "ada" },
+			{ ...todo, author: "you" },
 		]),
 	)
-	expect(seen).toEqual([
-		[{ ...todo, author: "you" }],
-		[{ ...todo, author: "ada" }],
-	])
-	expect(await backend.todos()).toEqual([{ ...todo, author: "ada" }])
+	expect(seen).toEqual([[{ ...todo, author: "you" }]])
+	expect(await backend.todos()).toEqual([{ ...todo, author: "you" }])
 })
 
 test("a mutator that throws on the client writes nothing and is never pushed", async ({
@@ -234,7 +241,7 @@ test("a refused mutation rejects its call, rolls back, and does not block later 
 	await client.mutate.addTodo({ id: "todo-2", text: "Signed in" })
 	await vi.waitFor(() =>
 		expect(client.query({ collection: "todos" })).toEqual([
-			{ id: "todo-2", text: "Signed in", done: false, author: "ada" },
+			{ id: "todo-2", text: "Signed in", done: false, author: "you" },
 		]),
 	)
 	expect(backend.announced).toEqual(["todo-2"])
@@ -301,7 +308,7 @@ test("a server with mutators refuses operations unless allowed, without blocking
 		id: "todo-3",
 		text: "Raw",
 		done: false,
-		author: "ada",
+		author: "you",
 	})
 	await client.commit(allowedTx)
 	expect((await backend.todos()).map(({ id }) => id)).toEqual([
@@ -339,7 +346,7 @@ test("concurrent calls that read the same record each apply on the latest state"
 	])
 
 	expect(await backend.todos()).toEqual([
-		{ id: "todo-1", text: "Flip twice", done: false, author: "ada" },
+		{ id: "todo-1", text: "Flip twice", done: false, author: "you" },
 	])
 })
 
@@ -370,7 +377,7 @@ test("a mutator the server does not have is rejected, as for a client newer than
 	)
 	await vi.waitFor(() =>
 		expect(client.query({ collection: "todos" })).toEqual([
-			{ id: "todo-1", text: "Buy milk", done: false, author: "ada" },
+			{ id: "todo-1", text: "Buy milk", done: false, author: "you" },
 		]),
 	)
 })
@@ -399,8 +406,69 @@ test("a named mutation made offline survives a restart and runs on the server af
 
 	await vi.waitFor(() =>
 		expect(client.query({ collection: "todos" })).toEqual([
-			{ id: "todo-1", text: "Written offline", done: false, author: "ada" },
+			{ id: "todo-1", text: "Written offline", done: false, author: "you" },
 		]),
 	)
-	expect(backend.announced).toEqual(["todo-1"])
+	await vi.waitFor(() => expect(backend.announced).toEqual(["todo-1"]))
+})
+
+test("coordinated tabs forward named calls, refusals, and retried pushes", async ({
+	backend,
+}) => {
+	const browser = new InMemoryTabs()
+	const storage = new MemoryClientStorage()
+	const opened = [] as {
+		client: TandemClient<TodoSchema, {}, typeof todoMutators>
+		tab: ReturnType<typeof browser.openTab>
+	}[]
+	for (let index = 0; index < 2; index++) {
+		const tab = browser.openTab()
+		const client = new TandemClient({
+			schema,
+			mutators: todoMutators,
+			remote: backend.remote(),
+			clientStorage: storage,
+			clientStorageWriteInterval: 0,
+			syncInterval: 0,
+			logger: new Logger({ sinks: [] }),
+			tabs: {
+				name: "named-todos",
+				environment: {
+					locks: tab.locks,
+					openChannel: (name) => tab.openChannel(name),
+				},
+			},
+		})
+		opened.push({ client, tab })
+		await client.ready
+	}
+	const follower = opened[1]!.client
+	backend.user = undefined
+	await expect(
+		follower.mutate.addTodo({ id: "refused", text: "No" }),
+	).rejects.toBeInstanceOf(MutationRejectedError)
+	backend.user = "ada"
+	backend.loseNextResponse = true
+	await expect(
+		follower.mutate.addTodo({ id: "first", text: "First" }),
+	).rejects.toThrow()
+	await follower.mutate.addTodo({ id: "second", text: "Second" })
+	await vi.waitFor(() => expect(backend.announced).toEqual(["first", "second"]))
+	backend.loseNextResponse = true
+	await expect(
+		follower.mutate.addTodo({ id: "third", text: "Third" }),
+	).rejects.toThrow()
+	opened[0]!.tab.close()
+	await follower.mutate.addTodo({ id: "fourth", text: "Fourth" })
+	await vi.waitFor(() =>
+		expect(backend.announced).toEqual(["first", "second", "third", "fourth"]),
+	)
+	expect((await backend.todos()).map(({ id }) => id).sort()).toEqual([
+		"first",
+		"fourth",
+		"second",
+		"third",
+	])
+	await follower.disconnect()
+	opened[1]!.tab.close()
 })

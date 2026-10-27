@@ -1,0 +1,23 @@
+{
+	"name": "@tandem/docs",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "vite --host 0.0.0.0 --port 3100 --strictPort",
+		"build": "vite build",
+		"start": "node dist/rsc/index.js",
+		"type-check": "tsc --noEmit",
+		"lint": "oxlint vite.config.ts",
+		"format": "oxfmt vite.config.ts docs.json package.json tsconfig.json"
+	},
+	"dependencies": {
+		"@holocron.so/vite": "0.38.0",
+		"react": "^19.3.0",
+		"react-dom": "^19.3.0"
+	},
+	"devDependencies": {
+		"@types/node": "^26.6.4",
+		"typescript": "^7.0.2",
+		"vite": "^8.3.5"
+	}
+}

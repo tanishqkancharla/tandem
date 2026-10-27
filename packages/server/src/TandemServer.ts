@@ -1,6 +1,6 @@
 import type {
-	AnyMutators,
 	AnySchema,
+	AnyMutators,
 	ClientApi,
 	ClientId,
 	CollectionName,
@@ -14,6 +14,7 @@ import type {
 	MutatorArgsOf,
 	MutatorCall,
 	MutatorContext,
+	MutatorTransaction,
 	PatchRemoveOp,
 	PatchSetOp,
 	PokePayload,
@@ -28,6 +29,7 @@ import type {
 	RuntimeSchemaDefinition,
 	ScanWindow,
 	SchemaToTupleSchema,
+	TimerApi,
 } from "@tanishqkancharla/tandem-core"
 import { tag, unreachable } from "@tanishqkancharla/tandem-core"
 import {
@@ -53,8 +55,12 @@ import type {
 	ReadOnlyAsyncTupleDatabaseClientApi,
 	WriteOps,
 } from "tuple-database"
+import { LivePayloadBuffer } from "./LivePayloadBuffer.js"
 import { TandemServerError } from "./TandemServerError.js"
-import { TandemServerTransaction } from "./TandemServerTransaction.js"
+import {
+	type AppliedAppend,
+	TandemServerTransaction,
+} from "./TandemServerTransaction.js"
 import type {
 	TandemClientTuple,
 	TandemTuple,
@@ -69,6 +75,12 @@ export type TandemServerArgs<
 	relations: Relations
 	storage: TandemServerStorageApi<NoInfer<Schema>>
 	rng?: RngApi
+	/**
+	 * Milliseconds, or a host-provided timer, during which a client's live
+	 * payloads merge after one is sent. `0` sends every commit's payload.
+	 * @default 50
+	 */
+	livePokeInterval?: number | TimerApi
 }
 
 export type TandemServerSubscription<Result> = {
@@ -100,19 +112,17 @@ type SyncClientState<Schema extends AnySchema> = {
 	scanWindow?: ScanWindow<Schema>
 	/** Record IDs sent in poke payloads since the latest pull. */
 	liveRecordIds: Set<string>
+	/** Changes for the client's next live payload. */
+	buffer: LivePayloadBuffer<Schema>
+	/** Whether a payload went out this interval, so changes wait for its end. */
+	throttled: boolean
 }
 
-/** What a server mutator knows beyond a shared one. */
-export type ServerMutatorContext = MutatorContext & {
+/** Request identity available to authorization and post-commit work. */
+export type ServerMutatorContext = {
 	location: "server"
 	clientId: ClientId
 	mutationId: MutationId
-	/**
-	 * Runs `effect` once the mutation commits, after its pokes. A retried push
-	 * skips the mutation, so the effect runs at most once. It is not awaited and
-	 * does not survive a crash: write a record for work that must finish.
-	 */
-	after(effect: () => unknown): void
 }
 
 export type ServerMutator<
@@ -122,33 +132,45 @@ export type ServerMutator<
 > = {
 	args: MutatorArgs<Json, Args>
 	run: (
+		tx: MutatorTransaction<Schema>,
+		args: Args,
+		ctx: MutatorContext,
+	) => unknown
+	authorize?: (
 		tx: TandemServerTransaction<Schema, Relations>,
 		args: Args,
 		ctx: ServerMutatorContext,
 	) => unknown
+	afterCommit?: (args: Args, ctx: ServerMutatorContext) => unknown
 }
 
 export type ServerMutators<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema>,
 > = {
-	// Args is contravariant in run, so only any admits every concrete mutator.
 	// oxlint-disable-next-line typescript/no-explicit-any
 	[name: string]: ServerMutator<Schema, Relations, any>
+}
+
+/** Contextually types the hooks for a registry of shared definitions. */
+export type ServerMutatorsFor<
+	Schema extends AnySchema,
+	Relations extends AnyRelations<Schema>,
+	Shared extends AnyMutators<Schema>,
+> = {
+	[Name in keyof Shared]: ServerMutator<
+		Schema,
+		Relations,
+		MutatorArgsOf<Shared[Name]>
+	>
 }
 
 export type TandemServerPushOptions<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema>,
 > = {
-	/** The mutators this push may run, usually built for the request's session. */
 	mutators?: ServerMutators<Schema, Relations>
-	/**
-	 * Whether to apply mutations made of `set`, `update`, and `remove`
-	 * operations. When false they are acknowledged with no effect and reported
-	 * as rejected, like a failed mutator. Defaults to false when `mutators` is
-	 * given, so moving authorization into mutators cannot leave raw writes open.
-	 */
+	/** Raw operation pushes are refused by default when mutators are registered. */
 	allowOps?: boolean
 }
 
@@ -160,6 +182,8 @@ class MutatorRunError extends errore.createTaggedError({
 function rejectionMessage(error: unknown) {
 	return error instanceof Error ? error.message : String(error)
 }
+/** How many recently written records keep their exact last write. */
+const trackedWrites = 10_000
 
 type CommitOptions =
 	| { operation: "commit" }
@@ -168,8 +192,11 @@ type CommitOptions =
 /** Records one commit changed, read in the run queue right after it. */
 type CommitChanges<Schema extends AnySchema> = {
 	revision: Revision
+	/** Full records after the commit, including appended ones. */
 	set: PatchSetOp<Schema>[]
 	remove: PatchRemoveOp<Schema>[]
+	/** Records the commit changed only by appending, by record ID. */
+	append: Map<string, AppliedAppend<Schema> & { after: Revision }>
 	/** The client whose push made the commit. It pulls to acknowledge it. */
 	pusher?: ClientId
 }
@@ -274,10 +301,19 @@ export class TandemServer<
 	private readonly syncClients = new Map<ClientId, SyncClientState<Schema>>()
 	private readonly tupleDb: AsyncTupleDatabaseClient<TandemTuple<Schema>>
 	private readonly rng?: RngApi
+	private readonly livePokeTimer?: TimerApi
 	private readonly unsubscribeStorage?: () => void
 	// Revisions are per instance, like cookies; a restart starts a new sequence.
 	private readonly instanceId: string
+	private directMutationId = 0
 	private commitCount = 0
+	// The commit that last wrote each recently written record, oldest first.
+	// An append extends the value a record has had since then.
+	private readonly lastWrites = new Map<string, number>()
+	// Records missing from lastWrites last changed at or before this commit.
+	private forgottenWritesThrough = 0
+	// Set while this instance commits, to tell its own writes from others'.
+	private committing = false
 	private closed = false
 	// Tuple transactions batch writes but do not snapshot reads or serialize
 	// asynchronous storage commits. Order sync reads and commits here.
@@ -286,6 +322,16 @@ export class TandemServer<
 	constructor(args: TandemServerArgs<Schema, Relations>) {
 		this.relations = args.relations
 		this.rng = args.rng
+		const livePokeInterval = args.livePokeInterval ?? 50
+		this.livePokeTimer =
+			typeof livePokeInterval !== "number"
+				? livePokeInterval
+				: livePokeInterval > 0
+					? {
+							waitForNextTick: () =>
+								new Promise((resolve) => setTimeout(resolve, livePokeInterval)),
+						}
+					: undefined
 		this.instanceId = args.rng?.randomId() ?? crypto.randomUUID()
 		const database = new AsyncTupleDatabase(
 			tandemStorageToTupleDatabaseStorage(args.storage),
@@ -293,7 +339,9 @@ export class TandemServer<
 		)
 		this.tupleDb = new AsyncTupleDatabaseClient<TandemTuple<Schema>>(database)
 		this.unsubscribeStorage = args.storage.subscribe?.(() => {
-			if (this.closed) return
+			// This instance's own commits poke clients themselves.
+			if (this.closed || this.committing) return
+			this.forgetLastWrites()
 			this.emitPokes()
 		})
 	}
@@ -321,6 +369,54 @@ export class TandemServer<
 		)
 	}
 
+	/** Run a registered named mutator for server-owned work such as a stream chunk. */
+	mutate<
+		Mutators extends ServerMutators<Schema, Relations>,
+		Name extends keyof Mutators & string,
+	>(
+		name: Name,
+		input: MutatorArgsOf<Mutators[Name]>,
+		{ mutators }: { mutators: Mutators },
+	): Promise<void> {
+		return this.run(async () => {
+			const definition = Object.hasOwn(mutators, name)
+				? mutators[name]
+				: undefined
+			if (!definition) return new Error(`Unknown mutator ${name}`)
+			const args = await validateMutatorArgs(name, definition.args, input)
+			if (args instanceof Error) return args
+			const transaction = this.transact()
+			const context: ServerMutatorContext = {
+				location: "server",
+				clientId: this.instanceId as unknown as ClientId,
+				mutationId: tag<MutationId>(++this.directMutationId),
+			}
+			const ran = await Promise.resolve()
+				.then(async () => {
+					const authorized = await definition.authorize?.(
+						transaction,
+						args,
+						context,
+					)
+					if (authorized instanceof Error) return authorized
+					return definition.run(transaction, args, context)
+				})
+				.catch(
+					(cause: unknown) => new MutatorRunError({ mutator: name, cause }),
+				)
+			if (ran instanceof Error) {
+				await transaction.cancel()
+				return ran
+			}
+			const committed = await this.commitTransaction(transaction, {
+				operation: "commit",
+			})
+			if (committed instanceof Error) return committed
+			if (definition.afterCommit)
+				this.runEffect(() => definition.afterCommit!(args, context))
+		}).then(() => undefined)
+	}
+
 	connect = ({ clientId, poke }: ClientApi<Schema>) => {
 		// Wrap so each connection unregisters only itself, even if callers reuse a callback.
 		const connection: ClientApi<Schema>["poke"] = (payload) => poke(payload)
@@ -334,28 +430,6 @@ export class TandemServer<
 			if (client?.pokes.size === 0) this.syncClients.delete(clientId)
 			return Promise.resolve()
 		})
-	}
-
-	/**
-	 * Server mutators built from shared ones. An override replaces a shared
-	 * mutator's server run, for authorization and `ctx.after` effects.
-	 */
-	serverMutators<Shared extends AnyMutators<Schema>>(
-		shared: Shared,
-		overrides: {
-			[Name in keyof Shared]?: (
-				tx: TandemServerTransaction<Schema, Relations>,
-				args: MutatorArgsOf<Shared[Name]>,
-				ctx: ServerMutatorContext,
-			) => unknown
-		} = {},
-	): ServerMutators<Schema, Relations> {
-		return Object.fromEntries(
-			Object.entries(shared).map(([name, definition]) => [
-				name,
-				{ args: definition.args, run: overrides[name] ?? definition.run },
-			]),
-		)
 	}
 
 	push = (
@@ -471,6 +545,8 @@ export class TandemServer<
 		const created: SyncClientState<Schema> = {
 			pokes: new Set(),
 			liveRecordIds: new Set(),
+			buffer: new LivePayloadBuffer(),
+			throttled: false,
 		}
 		this.syncClients.set(clientId, created)
 		return created
@@ -577,19 +653,22 @@ export class TandemServer<
 			return this.reject(clientId, mutationId, args.message)
 
 		const { transaction, acknowledge } = this.pushTransaction(clientId)
-		const effects: (() => unknown)[] = []
-		// The mutator is consumer code: whatever it throws is its verdict.
+		const context: ServerMutatorContext = {
+			location: "server",
+			clientId,
+			mutationId,
+		}
+		// Authorization reads the same transaction before any shared writes commit.
 		const ran = await Promise.resolve()
-			.then(() =>
-				definition.run(transaction, args, {
-					location: "server",
-					clientId,
-					mutationId,
-					after: (effect) => {
-						effects.push(effect)
-					},
-				}),
-			)
+			.then(async () => {
+				const authorized = await definition.authorize?.(
+					transaction,
+					args,
+					context,
+				)
+				if (authorized instanceof Error) return authorized
+				return definition.run(transaction, args, context)
+			})
 			.catch(
 				(cause: unknown) => new MutatorRunError({ mutator: call.name, cause }),
 			)
@@ -599,9 +678,10 @@ export class TandemServer<
 				.catch((cause) => new TandemServerError({ operation: "push", cause }))
 			if (cancelled instanceof Error) return cancelled
 			// A storage failure is not a refusal; leave the mutation pending.
-			if (isStorageFailure(ran))
-				return new TandemServerError({ operation: "push", cause: ran.cause })
-			return this.reject(clientId, mutationId, rejectionMessage(ran.cause))
+			const cause = ran instanceof MutatorRunError ? ran.cause : ran
+			if (isStorageFailure(cause))
+				return new TandemServerError({ operation: "push", cause })
+			return this.reject(clientId, mutationId, rejectionMessage(cause))
 		}
 		const acknowledged = acknowledge(mutationId)
 		if (acknowledged instanceof Error) {
@@ -613,7 +693,8 @@ export class TandemServer<
 			clientId,
 		})
 		if (committed instanceof Error) return committed
-		for (const effect of effects) this.runEffect(effect)
+		if (definition.afterCommit)
+			this.runEffect(() => definition.afterCommit!(args, context))
 	}
 
 	/** Acknowledges a mutation without applying it, so it never blocks the client. */
@@ -727,6 +808,8 @@ export class TandemServer<
 			? (JSON.parse(serialized) as ScanWindow<Schema>)
 			: undefined
 		client.liveRecordIds = new Set()
+		// The pull returns every buffered change.
+		client.buffer.clear()
 
 		return {
 			cookie: nextCookie,
@@ -745,6 +828,11 @@ export class TandemServer<
 		transaction: TandemServerTransaction<Schema, Relations>,
 		options: CommitOptions,
 	): Promise<TandemServerError | undefined> {
+		const appended = await transaction.applyAppends()
+		if (appended instanceof Error) {
+			await transaction.cancel()
+			return appended
+		}
 		const writes = transaction.recordWrites()
 		// Removals carry the client's identity form, which only the old record has.
 		const removed = await Promise.all(
@@ -758,8 +846,12 @@ export class TandemServer<
 			(cause) => new TandemServerError({ operation: options.operation, cause }),
 		)
 		if (removed instanceof Error) return removed
+		this.committing = true
 		const hasWrites = await transaction
 			.commit()
+			.finally(() => {
+				this.committing = false
+			})
 			.catch(
 				(cause) =>
 					new TandemServerError({ operation: options.operation, cause }),
@@ -768,6 +860,15 @@ export class TandemServer<
 		if (!hasWrites) return
 
 		this.commitCount += 1
+		// An append extends what the record has held since its previous write.
+		const extended = (append: AppliedAppend<Schema>) => ({
+			...append,
+			after: {
+				server: this.instanceId,
+				commit:
+					this.lastWrites.get(recordId(append)) ?? this.forgottenWritesThrough,
+			},
+		})
 		const changes: CommitChanges<Schema> = {
 			revision: this.revision,
 			set: writes.set.map(({ key, value }) => ({
@@ -779,12 +880,46 @@ export class TandemServer<
 					? []
 					: [{ collection: writes.remove[index]![1], id: record.id }],
 			) as PatchRemoveOp<Schema>[],
+			append: new Map(
+				appended.map((append) => [recordId(append), extended(append)]),
+			),
 			pusher: options.operation === "push" ? options.clientId : undefined,
 		}
+		this.recordLastWrites([
+			...writes.set.map(({ key }) => key),
+			...writes.remove,
+		])
 		await this.emitLivePokes(changes)
 	}
 
-	/** Pokes each client with the changed records inside its view. */
+	/**
+	 * Another process wrote storage, so any record may have changed since its
+	 * last write here. Appends then wait for a pull read after this point.
+	 */
+	private forgetLastWrites() {
+		this.commitCount += 1
+		this.lastWrites.clear()
+		this.forgottenWritesThrough = this.commitCount
+	}
+
+	/** Remembers this commit as the last write of each record it wrote. */
+	private recordLastWrites(keys: readonly (readonly unknown[])[]) {
+		for (const key of keys) {
+			const id = JSON.stringify(key.slice(1))
+			this.lastWrites.delete(id)
+			this.lastWrites.set(id, this.commitCount)
+		}
+		for (const [id, commit] of this.lastWrites) {
+			if (this.lastWrites.size <= trackedWrites) break
+			this.lastWrites.delete(id)
+			this.forgottenWritesThrough = commit
+		}
+	}
+
+	/**
+	 * Buffers the changed records inside each client's view, and pokes clients
+	 * that must pull now.
+	 */
 	private async emitLivePokes(changes: CommitChanges<Schema>) {
 		for (const [clientId, client] of this.syncClients) {
 			if (!client.pokes.size) continue
@@ -793,35 +928,39 @@ export class TandemServer<
 				this.pokeClient(client)
 				continue
 			}
-			const payload = await this.readLivePayload(
+			const buffered = await this.bufferLiveChanges(
 				client,
 				client.scanWindow,
 				changes,
 			)
-			if (payload instanceof Error) {
+			if (buffered instanceof Error) {
 				// The client still pulls, so only the live update is lost.
-				console.error(payload)
+				console.error(buffered)
+				this.flushLivePayload(client)
 				this.pokeClient(client)
 				continue
 			}
-			if (payload) this.pokeClient(client, payload)
-			// An offset shifts which records are in view when one before it changes,
-			// even one the client never saw, so let the client pull.
-			else if (
+			// The pusher pulls its acknowledgement now, not when live payloads go
+			// quiet. An offset shifts which records are in view when one before it
+			// changes, even one the client never saw, so let the client pull.
+			if (
 				clientId === changes.pusher ||
 				this.touchesOffsetWindow(client.scanWindow, changes)
-			)
+			) {
+				this.flushLivePayload(client)
 				this.pokeClient(client)
+				continue
+			}
+			if (buffered) this.scheduleLivePayload(client)
 		}
 	}
 
-	private async readLivePayload(
+	/** Merges a commit's changes inside the client's view into its next payload. */
+	private async bufferLiveChanges(
 		client: SyncClientState<Schema>,
 		scanWindow: ScanWindow<Schema>,
 		changes: CommitChanges<Schema>,
-	): Promise<
-		TandemServerError | InvalidScanWindowError | PokePayload<Schema> | undefined
-	> {
+	): Promise<TandemServerError | InvalidScanWindowError | boolean> {
 		const inView = await selectScanWindowRecordsAsync<Schema, Relations>(
 			this.recordDb,
 			this.relations,
@@ -830,25 +969,74 @@ export class TandemServer<
 		).catch((cause) => new TandemServerError({ operation: "poke", cause }))
 		if (inView instanceof Error) return inView
 
-		const set = inView.map(({ collection, value }) => ({ collection, value }))
-		const setIds = new Set(set.map((op) => recordId(scanWindowRecordToKey(op))))
+		// Only name records the client has, or will have from its next payload;
+		// others must stay invisible.
+		const sent = (id: string) =>
+			client.syncedRecords?.has(id) || client.liveRecordIds.has(id)
+		const known = (id: string) => sent(id) || client.buffer.carries(id)
+		const inViewIds = new Set<string>()
+		for (const { collection, value } of inView) {
+			const id = recordId({ collection, id: value.id })
+			inViewIds.add(id)
+			const op = { collection, value } as PatchSetOp<Schema>
+			const appended = changes.append.get(id)
+			client.buffer.add(
+				changes.revision,
+				id,
+				appended && known(id)
+					? {
+							type: "append",
+							op,
+							fields: appended.fields,
+							after: appended.after,
+						}
+					: { type: "set", op },
+			)
+		}
 		const leftView = changes.set
 			.map(scanWindowRecordToKey)
-			.filter((key) => !setIds.has(recordId(key)))
-		// Only name records the client already has; others must stay invisible.
-		const known = (key: SyncedRecordKey<Schema>) =>
-			client.syncedRecords?.has(recordId(key)) ||
-			client.liveRecordIds.has(recordId(key))
-		const remove = [...changes.remove, ...leftView].filter(known)
-		if (!set.length && !remove.length) return
+			.filter((key) => !inViewIds.has(recordId(key)))
+		const remove = [...changes.remove, ...leftView].filter((key) =>
+			known(recordId(key)),
+		)
+		for (const op of remove) {
+			const id = recordId(op)
+			// A record the client never received leaves without a trace.
+			if (sent(id))
+				client.buffer.add(changes.revision, id, { type: "remove", op })
+			else client.buffer.forget(id)
+		}
+		return inViewIds.size > 0 || remove.length > 0
+	}
 
-		for (const key of remove) client.liveRecordIds.delete(recordId(key))
-		for (const id of setIds) client.liveRecordIds.add(id)
-		return {
-			revision: changes.revision,
-			...(set.length ? { set } : {}),
-			...(remove.length ? { remove } : {}),
-		} as PokePayload<Schema>
+	/**
+	 * Sends a client's buffered changes at once if it has had no payload this
+	 * interval, and otherwise when the interval ends.
+	 */
+	private scheduleLivePayload(client: SyncClientState<Schema>) {
+		if (client.throttled) return
+		this.flushLivePayload(client)
+		if (!this.livePokeTimer) return
+		client.throttled = true
+		const timer = this.livePokeTimer
+		const endInterval = () => {
+			if (this.closed) return
+			if (client.buffer.isEmpty) {
+				client.throttled = false
+				return
+			}
+			this.flushLivePayload(client)
+			void timer.waitForNextTick().then(endInterval)
+		}
+		void timer.waitForNextTick().then(endInterval)
+	}
+
+	private flushLivePayload(client: SyncClientState<Schema>) {
+		const live = client.buffer.take()
+		if (!live) return
+		for (const id of live.removed) client.liveRecordIds.delete(id)
+		for (const id of live.carried) client.liveRecordIds.add(id)
+		this.pokeClient(client, live.payload)
 	}
 
 	private touchesOffsetWindow(
@@ -862,7 +1050,10 @@ export class TandemServer<
 	}
 
 	private emitPokes() {
-		for (const client of this.syncClients.values()) this.pokeClient(client)
+		for (const client of this.syncClients.values()) {
+			this.flushLivePayload(client)
+			this.pokeClient(client)
+		}
 	}
 
 	private pokeClient(

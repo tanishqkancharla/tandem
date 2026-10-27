@@ -1,6 +1,7 @@
-name: DST nightly
+name: DST
 
 on:
+  pull_request:
   schedule:
     - cron: "0 7 * * *"
   workflow_dispatch:
@@ -21,14 +22,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: no-faults
-            args: ""
-          - name: faults
-            args: "--fault-rate 0.1"
-          - name: crashes
-            args: "--crash-rate 0.02"
-          - name: faults-and-crashes
-            args: "--fault-rate 0.1 --crash-rate 0.02"
+          - name: single-client
+            args: "--client-count 1 --initial-subscriptions full --connectivity-rate 0 --subscription-rate 0 --require-coverage writes"
+          - name: scoped-views
+            args: "--client-count 3 --record-count 5 --max-mutations-in-flight 8 --initial-subscriptions scoped --connectivity-rate 0 --subscription-rate 0.15 --require-coverage subscriptions"
+          - name: recovery
+            args: "--client-count 5 --max-mutations-in-flight 10 --initial-subscriptions full --fault-rate 0.1 --crash-rate 0.03 --connectivity-rate 0.03 --require-coverage all"
     steps:
       - uses: actions/checkout@v6
 
@@ -46,20 +45,43 @@ jobs:
         id: seed
         env:
           SEED_INPUT: ${{ inputs.seed }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           SEED="$SEED_INPUT"
+          if [ "$EVENT_NAME" = "pull_request" ]; then SEED=1; fi
           if [ -z "$SEED" ]; then SEED="$(date -u +%Y%m%d)000"; fi
           echo "base seed: $SEED"
           echo "value=$SEED" >> "$GITHUB_OUTPUT"
 
-      # Violations are reported in the job summary and uploaded, but do not fail
-      # the job while the known sync bugs are open. The job fails when the harness
-      # itself breaks: a run throws, or a failing run does not replay. Add
-      # --fail-on-violation once the known bugs are fixed.
-      - name: Sweep
+      # Known defects are not exempt: view mismatches, incomplete recovery,
+      # replay divergence and missing executed coverage must remain red.
+      - name: PR regression sweep
+        if: github.event_name == 'pull_request'
         run: >-
-          pnpm dst:run --runs 200 --steps 500 ${{ matrix.args }}
-          --seed ${{ steps.seed.outputs.value }} --out-dir tmp/dst
+          pnpm dst:run --runs 12 --steps 2000 ${{ matrix.args }}
+          --seed 1 --out-dir tmp/dst --fail-on-violation
+
+      - name: Extended nightly sweep
+        if: github.event_name != 'pull_request'
+        run: >-
+          pnpm dst:run --runs 100 --steps 4000 ${{ matrix.args }}
+          --seed ${{ steps.seed.outputs.value }} --out-dir tmp/dst --fail-on-violation
+
+      - name: Nightly two-client hot pool
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && matrix.name == 'recovery' }}
+        run: >-
+          pnpm dst:run --runs 100 --steps 4000 --client-count 2 --record-count 3
+          --max-mutations-in-flight 8 --shared-write-rate 1 --initial-subscriptions full
+          --fault-rate 0.1 --crash-rate 0.02 --connectivity-rate 0.02 --require-coverage all
+          --seed ${{ steps.seed.outputs.value }} --out-dir tmp/dst/two-client --fail-on-violation
+
+      - name: Nightly ten-client larger inventory
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && matrix.name == 'recovery' }}
+        run: >-
+          pnpm dst:run --runs 100 --steps 4000 --client-count 10 --record-count 20
+          --max-mutations-in-flight 16 --shared-write-rate 0.5 --initial-subscriptions scoped
+          --fault-rate 0.1 --crash-rate 0.02 --connectivity-rate 0.02 --require-coverage all
+          --seed ${{ steps.seed.outputs.value }} --out-dir tmp/dst/ten-client --fail-on-violation
 
       - name: Upload failing runs
         if: always()

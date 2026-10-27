@@ -22,6 +22,8 @@ import { TestTandemServerStorage } from "./TandemServerStorage.fixture.js"
 type Event = { id: number; title: string; startAt: Date }
 type EventSchema = { events: Event }
 
+const reverse = (text: unknown) => [...string.decode(text)].reverse().join("")
+
 const schema = defineSchema({
 	events: collection<Event>({
 		codec: partialObject({
@@ -30,13 +32,15 @@ const schema = defineSchema({
 				(id) => `event-${id}`,
 				(id) => Number((id as string).slice(6)),
 			),
-			title: string,
+			// Reversing does not map concatenation to concatenation, so an
+			// appended fragment must go through the codec on its own.
+			title: codec<string, string>("reversed", reverse, reverse),
 			startAt: date,
 		}),
 	}),
 })
 
-test("server-sent pokes show codec-backed records before any pull returns them", async () => {
+test("server-sent pokes show codec-backed records and appends before any pull returns them", async () => {
 	await using cleanup = new errore.AsyncDisposableStack()
 	const server = new TandemServer({
 		schema,
@@ -123,5 +127,17 @@ test("server-sent pokes show codec-backed records before any pull returns them",
 	)
 	expect(client.query({ collection: "events" })[0]!.startAt).toBeInstanceOf(
 		Date,
+	)
+
+	// An append carries only its text, decoded by the field's codec.
+	const appendTx = server.transact()
+	appendTx.append("events", 42, { title: " party" })
+	await server.commit(appendTx)
+	await vi.waitFor(
+		() =>
+			expect(client.query({ collection: "events" })).toEqual([
+				{ ...event, title: "Launch party" },
+			]),
+		waitOptions,
 	)
 })

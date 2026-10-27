@@ -21,7 +21,7 @@ const db = new TandemClient({ schema, clientStorage: storage })
 ## How it works
 
 - **IndexedDB**: Browser persistent storage
-- **Tuple Model**: `TandemClientTuple<Schema>` includes `["record", collection, ...id]` records, `["base", collection, ...id]` sparse server values and `lastWrittenBy`, `["replica"]` metadata (`clientId`, `lastIssuedMutationId`, optional `cookie`), and `["outbox", mutationId]` ordered mutation operations. All use the same `scan` and `commit` methods.
+- **Tuple Model**: `TandemClientTuple<Schema>` includes `["record", collection, ...id]` records, `["base", collection, ...id]` sparse server values and `lastWrittenBy`, `["replica"]` metadata (`clientId`, `lastIssuedMutationId`, optional `cookie`), `["outbox", mutationId]` ordered mutation operations, `["session", clientId]` markers recording the last mutation a tab session forwarded to the leader, and `["tab-write", clientId, mutationId]` receipts mapping a forwarded tab mutation to the leader mutation that carries it until the tab hears it was saved. All use the same `scan` and `commit` methods.
 - **Caching**: In-memory cache with write-through
 - **Batching**: Groups writes for better performance
 
@@ -34,6 +34,8 @@ const db = new TandemClient({ schema, clientStorage: storage })
 - Storage failure rejects the waiting public operation; there is no automatic backoff or in-memory fallback
 
 IndexedDB applies the same collection codec to record values, nested `set` values in bases and outbox operations, and partial outbox `update` payloads. Metadata and `remove` markers pass through unchanged. Encoding completes before opening the write transaction, so a codec failure cannot persist a prefix of the batch.
+
+The adapter exposes its effective collection codecs through `codecs`, with explicit overrides taking precedence over schema codecs. Shared tab replication uses this same metadata to preserve runtime values across channels. Custom adapters can expose it through the optional `TandemClientStorageApi.codecs` field.
 
 `Database` commits records, bases, outbox entries, and replica metadata together in memory, then persists root tuple writes through the same storage API. Pushes wait for their complete mutation snapshot to reach storage. Pull checkpoints include the patch, acknowledgement pruning, and cookie. Clear runs after active saves and supersedes queued old-session writes.
 

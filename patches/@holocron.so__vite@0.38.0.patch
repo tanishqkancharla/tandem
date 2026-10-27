@@ -1,0 +1,277 @@
+diff --git a/dist/components/markdown/mermaid.js b/dist/components/markdown/mermaid.js
+index a18626a8e452ad4d18ece89ca5d0dec6b8e9b1ab..2fc6bc2c03ed7ada146ad9dbe9923047b8ad9499 100644
+--- a/dist/components/markdown/mermaid.js
++++ b/dist/components/markdown/mermaid.js
+@@ -1,70 +1,45 @@
+-'use client';
+-import { jsx as _jsx } from "react/jsx-runtime";
+-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
++"use client";
++import { jsx } from "react/jsx-runtime";
++import { renderMermaidSVG } from "beautiful-mermaid";
++import * as errore from "errore";
++import { useMemo } from "react";
+ import { CodeBlock } from "./code-block.js";
+-/**
+- * Mermaid diagram renderer — detects dark mode from <html class="dark">
+- * and re-renders when the theme toggles. The mermaid library is re-initialized
+- * on every theme change because it bakes the theme into the rendered SVG.
+- *
+- * Theme detection uses useSyncExternalStore with module-level stable callbacks
+- * to avoid hydration mismatches and re-subscription loops (see AGENTS.md
+- * useSyncExternalStore rules).
+- */
+-// Module-level stable callbacks for useSyncExternalStore
+-function getIsDark() {
+-    return document.documentElement.classList.contains('dark');
++class DiagramRenderError extends errore.createTaggedError({
++  name: "DiagramRenderError",
++  message: "Unable to render Mermaid diagram"
++}) {
+ }
+-const getServerIsDark = () => false;
+-function subscribeTheme(cb) {
+-    const observer = new MutationObserver(cb);
+-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+-    return () => observer.disconnect();
+-}
+-export function Mermaid({ chart }) {
+-    const [svg, setSvg] = useState(null);
+-    const [failed, setFailed] = useState(false);
+-    const renderIdRef = useRef(null);
+-    const isDark = useSyncExternalStore(subscribeTheme, getIsDark, getServerIsDark);
+-    if (!renderIdRef.current) {
+-        renderIdRef.current = `mermaid-${Math.random().toString(36).slice(2, 10)}`;
+-    }
+-    useEffect(() => {
+-        let cancelled = false;
+-        const renderId = renderIdRef.current;
+-        async function renderDiagram() {
+-            try {
+-                const { default: mermaid } = await import('#mermaid');
+-                // Re-initialize every time because theme is baked into the SVG output
+-                mermaid.initialize({
+-                    startOnLoad: false,
+-                    securityLevel: 'strict',
+-                    theme: isDark ? 'dark' : 'neutral',
+-                });
+-                const { svg } = await mermaid.render(renderId, chart);
+-                if (!cancelled) {
+-                    setSvg(svg);
+-                    setFailed(false);
+-                }
+-            }
+-            catch {
+-                if (!cancelled) {
+-                    setFailed(true);
+-                }
+-            }
+-        }
+-        setSvg(null);
+-        setFailed(false);
+-        void renderDiagram();
+-        return () => {
+-            cancelled = true;
+-        };
+-    }, [chart, isDark]);
+-    if (!svg) {
+-        if (failed) {
+-            return (_jsx("div", { className: 'no-bleed', children: _jsx(CodeBlock, { lang: 'diagram', lineHeight: '1.5', showLineNumbers: false, children: chart }) }));
+-        }
+-        return (_jsx("div", { className: 'no-bleed rounded-lg border border-border-subtle bg-card px-4 py-3 text-sm text-muted-foreground', children: "Rendering diagram..." }));
++function Mermaid({ chart }) {
++  const svg = useMemo(() => errore.try({
++    try: () => renderMermaidSVG(chart, {
++      // Inherit Holocron's palette so theme changes need no SVG re-render.
++      bg: "var(--background)",
++      fg: "var(--foreground)",
++      line: "color-mix(in srgb, var(--foreground) 65%, var(--background))",
++      accent: "var(--foreground)",
++      muted: "var(--foreground)",
++      surface: "color-mix(in srgb, var(--foreground) 3%, var(--background))",
++      border: "var(--border-subtle)",
++      transparent: true
++    }),
++    catch: (cause) => new DiagramRenderError({ cause })
++  }), [chart]);
++  if (svg instanceof Error) {
++    console.warn(svg);
++    return /* @__PURE__ */ jsx("div", { className: "no-bleed", children: /* @__PURE__ */ jsx(CodeBlock, { lang: "diagram", lineHeight: "1.5", showLineNumbers: false, children: chart }) });
++  }
++  return /* @__PURE__ */ jsx("div", { className: "no-bleed rounded-lg border border-border-subtle bg-card p-3", children: /* @__PURE__ */ jsx(
++    "div",
++    {
++      "data-mermaid-diagram": true,
++      role: "region",
++      "aria-label": "Mermaid diagram",
++      tabIndex: 0,
++      className: "overflow-x-auto [&_svg]:h-auto [&_svg]:max-w-[max(640px,100%)]",
++      dangerouslySetInnerHTML: { __html: svg }
+     }
+-    return (_jsx("div", { className: 'no-bleed rounded-lg border border-border-subtle bg-card p-3', children: _jsx("div", { "data-mermaid-diagram": true, className: 'overflow-x-auto [&_svg]:h-auto [&_svg]:max-w-full', dangerouslySetInnerHTML: { __html: svg } }) }));
++  ) });
+ }
++export {
++  Mermaid
++};
+diff --git a/dist/vite-plugin.js b/dist/vite-plugin.js
+index 00ef4e777856b7c23ecac5e1cac2b31a881fe6d9..06d9122fc04c5d06fb92a2c075dbcbdf716f80fa 100644
+--- a/dist/vite-plugin.js
++++ b/dist/vite-plugin.js
+@@ -1042,7 +1042,7 @@ export function holocron(options = {}) {
+                     '@holocron.so/vite > @orama/orama',
+                     '@holocron.so/vite > spiceflow > @vitejs/plugin-rsc/vendor/react-server-dom/client.browser',
+                     '@holocron.so/vite > cookie',
+-                    '@holocron.so/vite > mermaid',
++                    '@holocron.so/vite > beautiful-mermaid',
+                     '@holocron.so/vite > clsx',
+                     '@holocron.so/vite > react-medium-image-zoom',
+                     '@holocron.so/vite > zustand',
+diff --git a/src/components/markdown/mermaid.tsx b/src/components/markdown/mermaid.tsx
+index 3e03bff8f804598938f3e5e539d25684d8b617bd..e0a314d23f5fe124df1c53760ae74e8b458359c4 100644
+--- a/src/components/markdown/mermaid.tsx
++++ b/src/components/markdown/mermaid.tsx
+@@ -1,90 +1,38 @@
+ 'use client'
+ 
+-import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react'
++import { renderMermaidSVG } from 'beautiful-mermaid'
++import * as errore from 'errore'
++import React, { useMemo } from 'react'
+ import { CodeBlock } from './code-block.tsx'
+ 
+-/**
+- * Mermaid diagram renderer — detects dark mode from <html class="dark">
+- * and re-renders when the theme toggles. The mermaid library is re-initialized
+- * on every theme change because it bakes the theme into the rendered SVG.
+- *
+- * Theme detection uses useSyncExternalStore with module-level stable callbacks
+- * to avoid hydration mismatches and re-subscription loops (see AGENTS.md
+- * useSyncExternalStore rules).
+- */
+-
+-// Module-level stable callbacks for useSyncExternalStore
+-function getIsDark(): boolean {
+-  return document.documentElement.classList.contains('dark')
+-}
+-
+-const getServerIsDark = () => false
+-
+-function subscribeTheme(cb: () => void) {
+-  const observer = new MutationObserver(cb)
+-  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+-  return () => observer.disconnect()
+-}
++class DiagramRenderError extends errore.createTaggedError({
++  name: 'DiagramRenderError',
++  message: 'Unable to render Mermaid diagram',
++}) {}
+ 
+ export function Mermaid({ chart }: { chart: string; placement?: string; actions?: boolean }) {
+-  const [svg, setSvg] = useState<string | null>(null)
+-  const [failed, setFailed] = useState(false)
+-  const renderIdRef = useRef<string | null>(null)
+-  const isDark = useSyncExternalStore(subscribeTheme, getIsDark, getServerIsDark)
+-
+-  if (!renderIdRef.current) {
+-    renderIdRef.current = `mermaid-${Math.random().toString(36).slice(2, 10)}`
+-  }
+-
+-  useEffect(() => {
+-    let cancelled = false
+-    const renderId = renderIdRef.current!
+-
+-    async function renderDiagram() {
+-      try {
+-        const { default: mermaid } = await import('#mermaid')
+-        // Re-initialize every time because theme is baked into the SVG output
+-        mermaid.initialize({
+-          startOnLoad: false,
+-          securityLevel: 'strict',
+-          theme: isDark ? 'dark' : 'neutral',
+-        })
+-
+-        const { svg } = await mermaid.render(renderId, chart)
+-        if (!cancelled) {
+-          setSvg(svg)
+-          setFailed(false)
+-        }
+-      } catch {
+-        if (!cancelled) {
+-          setFailed(true)
+-        }
+-      }
+-    }
+-
+-    setSvg(null)
+-    setFailed(false)
+-    void renderDiagram()
+-
+-    return () => {
+-      cancelled = true
+-    }
+-  }, [chart, isDark])
+-
+-  if (!svg) {
+-    if (failed) {
+-      return (
+-        <div className='no-bleed'>
+-          <CodeBlock lang='diagram' lineHeight='1.5' showLineNumbers={false}>
+-            {chart}
+-          </CodeBlock>
+-        </div>
+-      )
+-    }
+-
++  const svg = useMemo(() => errore.try({
++    try: () => renderMermaidSVG(chart, {
++      // Inherit Holocron's palette so theme changes need no SVG re-render.
++      bg: 'var(--background)',
++      fg: 'var(--foreground)',
++      line: 'color-mix(in srgb, var(--foreground) 65%, var(--background))',
++      accent: 'var(--foreground)',
++      muted: 'var(--foreground)',
++      surface: 'color-mix(in srgb, var(--foreground) 3%, var(--background))',
++      border: 'var(--border-subtle)',
++      transparent: true,
++    }),
++    catch: (cause) => new DiagramRenderError({ cause }),
++  }), [chart])
++
++  if (svg instanceof Error) {
++    console.warn(svg)
+     return (
+-      <div className='no-bleed rounded-lg border border-border-subtle bg-card px-4 py-3 text-sm text-muted-foreground'>
+-        Rendering diagram...
++      <div className='no-bleed'>
++        <CodeBlock lang='diagram' lineHeight='1.5' showLineNumbers={false}>
++          {chart}
++        </CodeBlock>
+       </div>
+     )
+   }
+@@ -93,7 +41,10 @@ export function Mermaid({ chart }: { chart: string; placement?: string; actions?
+     <div className='no-bleed rounded-lg border border-border-subtle bg-card p-3'>
+       <div
+         data-mermaid-diagram
+-        className='overflow-x-auto [&_svg]:h-auto [&_svg]:max-w-full'
++        role='region'
++        aria-label='Mermaid diagram'
++        tabIndex={0}
++        className='overflow-x-auto [&_svg]:h-auto [&_svg]:max-w-[max(640px,100%)]'
+         dangerouslySetInnerHTML={{ __html: svg }}
+       />
+     </div>
+diff --git a/src/vite-plugin.ts b/src/vite-plugin.ts
+index f0f0b299fe823146ff3611dc989c780839c12cd4..4f8b180e97a42fb298c2d383a4e9fc12e2a12800 100644
+--- a/src/vite-plugin.ts
++++ b/src/vite-plugin.ts
+@@ -1233,7 +1233,7 @@ export function holocron(options: HolocronPluginOptions = {}): PluginOption {
+             '@holocron.so/vite > @orama/orama',
+             '@holocron.so/vite > spiceflow > @vitejs/plugin-rsc/vendor/react-server-dom/client.browser',
+             '@holocron.so/vite > cookie',
+-            '@holocron.so/vite > mermaid',
++            '@holocron.so/vite > beautiful-mermaid',
+             '@holocron.so/vite > clsx',
+             '@holocron.so/vite > react-medium-image-zoom',
+             '@holocron.so/vite > zustand',

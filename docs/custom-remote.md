@@ -41,6 +41,14 @@ type PokePayload<Schema> = {
 	revision: Revision
 	set?: { collection: string; value: Record }[]
 	remove?: { collection: string; id: Id }[]
+	append?: {
+		collection: string
+		id: Id
+		field: string
+		offset: number
+		text: string
+		after: Revision
+	}[]
 }
 ```
 
@@ -54,7 +62,7 @@ Any signal works: a WebSocket message, an SSE event, or a polling timer. A bare 
 
 Authorize `connect` like `pull`, for the session that owns `clientId`, because payloads carry records.
 
-A poke can also carry a payload: full records a commit wrote, and records it removed, tagged with the commit's revision. The client shows them at once, then still pulls. Only send records a pull with the client's current scan window would return; the payload bypasses the pull's filtering. A revision orders one source's commits: `server` names the source, and `commit` increases with every commit. The client ignores a payload record no newer than the record's last payload or the last pull from the same `server`. For SSE, return `connectTandemEventSource` from `connect` on the client, and serve the stream with `createTandemEventStreamResponse` (see [Server](server.md#connect-clients)). It accepts any object with `connect`, including the wrapper below.
+A poke can also carry a payload: full records a commit wrote, and records it removed, tagged with the commit's revision. The client shows them at once, then still pulls, once payloads stop arriving for a moment (see [Poke](sync.md#poke)). Send a bare `poke()` when the client must pull now, such as after its own push, so it receives the acknowledgement. Only send records a pull with the client's current scan window would return; the payload bypasses the pull's filtering. A revision orders one source's commits: `server` names the source, and `commit` increases with every commit. The client ignores a payload record no newer than the record's last payload or the last pull from the same `server`. An `append` adds `text` to a string field the client already has: `offset` is the field's length before it, and `after` is a revision from which the record held the value the append extends, such as the commit that last wrote it. The client applies it only when its value for the record is from `after` or later, from the same `server`, and has that length. For SSE, return `connectTandemEventSource` from `connect` on the client, and serve the stream with `createTandemEventStreamResponse` (see [Server](server.md#connect-clients)). It accepts any object with `connect`, including the wrapper below.
 
 ## `push`
 
@@ -82,7 +90,7 @@ await server.push({ clientId: request.clientId, mutations: decoded })
 
 Decode the request's mutations before applying any of them. Return `invalid-request` if decoding fails; do not acknowledge or apply a prefix of an undecodable request. `TandemServer` does not repeat collection encoding or decoding when applying runtime operations.
 
-Collection codecs are optional; collections without them pass their values through and require JSON-native values or transport-owned validation. This codec handles push mutations only, not pull response records, authentication, or authorization. `PokeApi.codec(schema)` does the same for poke payloads; the SSE helpers apply it when given `schema`. The [todo HTTP transport](../examples/todo/apps/server/src/app.ts) shows the complete request path.
+Collection codecs are optional; collections without them pass their values through and require JSON-native values or transport-owned validation. This codec handles push mutations only, not pull response records, authentication, or authorization. `PokeApi.codec(schema)` does the same for poke payloads; the SSE helpers apply it when given `schema`. The [todo HTTP transport](https://github.com/tanishqkancharla/tandem/blob/main/examples/todo/apps/server/src/app.ts) shows the complete request path.
 
 ## `pull`
 
@@ -125,4 +133,4 @@ function authorizedRemote(
 
 ## Testing
 
-The Tandem test suites exercise remotes through real clients. [`packages/server/test`](../packages/server/test) and [`packages/core/test/sync`](../packages/core/test/sync) show how to wire two clients to one remote. [Gatekeeper](../packages/gatekeeper/README.md) can reorder calls and inject faults between them.
+The Tandem test suites exercise remotes through real clients. [`packages/server/test`](https://github.com/tanishqkancharla/tandem/tree/main/packages/server/test) and [`packages/core/test/sync`](https://github.com/tanishqkancharla/tandem/tree/main/packages/core/test/sync) show how to wire two clients to one remote. [Gatekeeper](https://github.com/tanishqkancharla/tandem/blob/main/packages/gatekeeper/README.md) can reorder calls and inject faults between them.

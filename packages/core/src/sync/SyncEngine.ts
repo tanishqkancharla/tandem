@@ -7,6 +7,7 @@ import type {
 	RuntimeSchemaDefinition,
 } from "../schema/Schema.js"
 import type {
+	AppendableField,
 	Mutation,
 	MutationId,
 	Transaction,
@@ -77,7 +78,30 @@ export type PokePayload<Schema extends AnySchema = AnySchema> = {
 	set?: PatchSetOp<Schema>[]
 	/** Records the client knew that the commit deleted or moved out of its view. */
 	remove?: PatchRemoveOp<Schema>[]
+	/** Text appended to records the client already has. */
+	append?: PokeAppendOp<Schema>[]
 }
+
+/**
+ * Text a commit appended to one string field of a record the client has. The
+ * client applies it only to the exact value it extends, and otherwise waits
+ * for the pull the poke starts.
+ */
+export type PokeAppendOp<Schema extends AnySchema = AnySchema> = {
+	[Collection in CollectionName<Schema>]: {
+		collection: Collection
+		id: Schema[Collection]["id"]
+		field: AppendableField<Schema[Collection]>
+		/** The field's length before the append. */
+		offset: number
+		text: string
+		/**
+		 * The commit that last wrote the record before this append, or an
+		 * earlier one. The record held the value the append extends from then on.
+		 */
+		after: Revision
+	}
+}[CollectionName<Schema>]
 
 class RemoteResponseError extends errore.createTaggedError({
 	name: "RemoteResponseError",
@@ -87,8 +111,9 @@ class RemoteResponseError extends errore.createTaggedError({
 export type ClientApi<Schema extends AnySchema = AnySchema> = {
 	clientId: ClientId
 	/**
-	 * Asks the client to pull. A payload is shown immediately, before that pull.
-	 * Settles when the pull the poke started has finished. Never rejects.
+	 * Asks the client to pull. A payload is shown immediately, and its pull
+	 * waits until payloads stop arriving, up to a maximum delay. Settles when a
+	 * pull that confirms the poke has finished. Never rejects.
 	 */
 	poke: (payload?: PokePayload<Schema>) => Promise<void>
 }
@@ -149,6 +174,14 @@ class PokeCodecInputError extends errore.createTaggedError({
 	message: "Invalid poke payload: $detail",
 }) {}
 
+function isRevision(value: unknown): value is Revision {
+	return (
+		isObject(value) &&
+		typeof value.server === "string" &&
+		Number.isSafeInteger(value.commit)
+	)
+}
+
 export namespace PokeApi {
 	/**
 	 * Serialize poke payloads at transport boundaries, as `MutationApi.codec`
@@ -197,23 +230,62 @@ export namespace PokeApi {
 			return transformed
 		}
 
+		// The field's codec sees the appended text alone, as a partial record,
+		// the way update payloads are encoded.
+		function transformAppends(ops: unknown, direction: "encode" | "decode") {
+			const identified = transformOps(ops, "id", direction)
+			if (identified === undefined || identified instanceof Error)
+				return identified
+			const transformed: Record<string, unknown>[] = []
+			for (const op of identified) {
+				if (
+					typeof op.field !== "string" ||
+					op.field === "id" ||
+					!Number.isSafeInteger(op.offset) ||
+					(op.offset as number) < 0 ||
+					typeof op.text !== "string" ||
+					!isRevision(op.after)
+				) {
+					return new PokeCodecInputError({ detail: "invalid append" })
+				}
+				const { field, text } = op
+				const valueCodec = schema.collections[op.collection as string].codec
+				const output = errore.try({
+					try: () =>
+						valueCodec
+							? valueCodec[direction]({ [field]: text })
+							: { [field]: text },
+					catch: (cause) =>
+						new PokeCodecInputError({
+							detail: "collection codec rejected input",
+							cause,
+						}),
+				})
+				if (output instanceof Error) return output
+				if (!isObject(output) || typeof output[field] !== "string")
+					return new PokeCodecInputError({
+						detail: "appended text must stay a string",
+					})
+				transformed.push({ ...op, text: output[field] })
+			}
+			return transformed
+		}
+
 		function transform(input: unknown, direction: "encode" | "decode") {
-			if (
-				!isObject(input) ||
-				!isObject(input.revision) ||
-				typeof input.revision.server !== "string" ||
-				!Number.isSafeInteger(input.revision.commit)
-			) {
+			if (!isObject(input) || !isRevision(input.revision)) {
 				return new PokeCodecInputError({ detail: "expected a revision" })
 			}
 			const set = transformOps(input.set, "value", direction)
 			if (set instanceof Error) return set
 			const remove = transformOps(input.remove, "id", direction)
 			if (remove instanceof Error) return remove
+			const append = transformAppends(input.append, direction)
+			if (append instanceof Error) return append
 			return {
 				revision: input.revision,
 				...(set ? { set } : {}),
 				...(remove ? { remove } : {}),
+				...(append ? { append } : {}),
 			}
 		}
 
@@ -239,7 +311,20 @@ export type SyncEngineArgs<Schema extends AnySchema> = {
 	autoConnect?: boolean
 	logger: SyncEngine<Schema>["logger"]
 	syncInterval: number | TimerApi
+	livePullDelay: number | TimerApi
+	livePullMaxDelay: number | TimerApi
 	rng?: RngApi
+}
+
+/** Live payloads whose confirming pull waits for the stream to go quiet. */
+type DeferredPull = {
+	confirmed: PromiseWithResolvers<void>
+	/** Whether a payload arrived since the last quiet check. */
+	busy: boolean
+}
+
+function toTimer(interval: number | TimerApi): TimerApi {
+	return typeof interval === "number" ? new Timer({ interval }) : interval
 }
 
 export class SyncEngine<Schema extends AnySchema> {
@@ -248,6 +333,9 @@ export class SyncEngine<Schema extends AnySchema> {
 	private readonly remote: RemoteApi<Schema>
 	private readonly logger: LoggerApi
 	private readonly rng: RngApi
+	private readonly livePullDelay: TimerApi
+	private readonly livePullMaxDelay: TimerApi
+	private deferredPull?: DeferredPull
 
 	private disconnectFromRemote?: AsyncUnsubscribe
 	/**
@@ -268,10 +356,9 @@ export class SyncEngine<Schema extends AnySchema> {
 		this.remote = args.remote
 		this.db = args.db
 		this.rng = args.rng ?? { randomId }
-		const timer =
-			typeof args.syncInterval === "number"
-				? new Timer({ interval: args.syncInterval })
-				: args.syncInterval
+		const timer = toTimer(args.syncInterval)
+		this.livePullDelay = toTimer(args.livePullDelay)
+		this.livePullMaxDelay = toTimer(args.livePullMaxDelay)
 
 		this.syncQueue = new TaskQueue(
 			{
@@ -323,9 +410,14 @@ export class SyncEngine<Schema extends AnySchema> {
 					// Like pulls, live records only apply while connected.
 					const live = payload && this.disconnectFromRemote
 					if (live) this.db.applyPoke(payload)
-					const pulled = this.queuePull().catch((error) => {
-						this.logger.error({ message: "error pulling from remote", error })
-					})
+					const pulled = live
+						? this.deferPull()
+						: this.queuePull().catch((error) => {
+								this.logger.error({
+									message: "error pulling from remote",
+									error,
+								})
+							})
 					if (!live) return pulled
 					// The pull can fail before saving, so wait for the live checkpoint
 					// too. The storage subscriber already logs a failed save.
@@ -386,7 +478,50 @@ export class SyncEngine<Schema extends AnySchema> {
 		})
 	}
 
+	/**
+	 * Pulls once live payloads stop arriving for `livePullDelay`, or once
+	 * `livePullMaxDelay` has passed since the first of them. Any pull that
+	 * starts sooner confirms them instead.
+	 */
+	private deferPull(): Promise<void> {
+		if (this.deferredPull) {
+			this.deferredPull.busy = true
+			return this.deferredPull.confirmed.promise
+		}
+		const deferred: DeferredPull = {
+			confirmed: Promise.withResolvers(),
+			busy: false,
+		}
+		this.deferredPull = deferred
+		const pull = () => {
+			if (this.deferredPull !== deferred) return
+			// pull() settles the deferral whatever the outcome.
+			this.queuePull().catch((error) => {
+				this.logger.error({ message: "error pulling from remote", error })
+			})
+		}
+		const waitForQuiet = () => {
+			void this.livePullDelay.waitForNextTick().then(() => {
+				if (!deferred.busy) return pull()
+				deferred.busy = false
+				waitForQuiet()
+			})
+		}
+		waitForQuiet()
+		void this.livePullMaxDelay.waitForNextTick().then(pull)
+		return deferred.confirmed.promise
+	}
+
 	private async pull() {
+		// The request reads every commit whose payload already arrived.
+		const deferred = this.deferredPull
+		this.deferredPull = undefined
+		using settle = new errore.DisposableStack()
+		settle.defer(() => deferred?.confirmed.resolve())
+		return await this.pullFromRemote()
+	}
+
+	private async pullFromRemote() {
 		if (!this.disconnectFromRemote) {
 			return
 		}
@@ -401,6 +536,8 @@ export class SyncEngine<Schema extends AnySchema> {
 		})
 		// A response from before clear() must not acknowledge the new session.
 		if (clientId !== this.clientId) return
+		// A response that arrives after disconnect is dropped; the next connect pulls again.
+		if (!this.disconnectFromRemote) return
 		if ("error" in response) {
 			return new RemoteResponseError({ operation: "pull", cause: response })
 		}
@@ -417,13 +554,14 @@ export class SyncEngine<Schema extends AnySchema> {
 		return this.db.persistClientStorage()
 	}
 
-	/** Resolves after the push that carries the mutation; rejects if the server refused it. */
+	/** Resolves after the push that carries the mutation; rejects on refusal. */
 	commit(
 		transaction: Transaction<Schema>,
 		mutator?: MutatorCall,
+		forwarded?: { clientId: ClientId; mutationId: MutationId },
 	): Promise<void> {
 		const clientId = this.clientId
-		const id = this.db.commitMutation(transaction, mutator)
+		const id = this.db.commitMutation(transaction, mutator, forwarded)
 		const waiting = JSON.stringify([clientId, id])
 		this.rejections.set(waiting, undefined)
 		const pendingCheckpoint = this.db.persistClientStorage()
@@ -450,6 +588,11 @@ export class SyncEngine<Schema extends AnySchema> {
 				throw error
 			},
 		)
+	}
+
+	/** Push pending mutations without waiting for another commit. */
+	queuePush(): Promise<void> {
+		return this.syncQueue.enqueue("push")
 	}
 
 	private async push() {

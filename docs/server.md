@@ -32,14 +32,17 @@ Call `server.close()` on shutdown to close storage.
 const client = new TandemClient({ schema, remote: server })
 ```
 
-Across a network, the client's `remote` is a transport that forwards `push` and `pull` to the server and calls `poke` when there may be new data. The [Quickstart](quickstart.md#5-add-a-server) shows a minimal HTTP transport, and [`examples/todo`](../examples/todo) has a complete Hono server.
+Across a network, the client's `remote` is a transport that forwards `push` and `pull` to the server and calls `poke` when there may be new data. The [Quickstart](quickstart.md#5-add-a-server) shows a minimal HTTP transport, and [`examples/todo`](https://github.com/tanishqkancharla/tandem/tree/main/examples/todo) has a complete Hono server.
 
 After every commit that writes data, the server pokes each connected client whose view the commit changed. A client's view is the scan window of its latest pull made while connected, so the first view comes from the pull an event stream's `ready` starts. The poke carries the commit's revision and the changed records inside that view, so the client shows them before it pulls:
 
 - `set` holds each changed record in the view, in full, even after a partial `update`.
 - `remove` holds records the client already has that the commit deleted or moved out of its view.
+- `append` holds the text an [`append`](#append-text) added to a record the client already has, instead of the whole record.
 
-Pokes never carry a record, or name a record ID, that a pull with the same window would not return. Relation includes, limits, and offsets are evaluated the way a pull evaluates them. A record that enters the view without changing, such as the next record under a `limit`, arrives with the pull that every poke still starts. A client that has not pulled yet gets a bare poke, and the client whose push made the commit always gets one, so it pulls the acknowledgement.
+A client's first payload goes out at once. Payloads from further commits within `livePokeInterval` (50 ms by default) merge into one sent when the interval ends: each record appears once, at its latest value, and consecutive appends to a field join into one. A burst of commits, such as a reply streamed token by token, therefore costs each viewer at most one payload per interval. Pass `livePokeInterval: 0` to send each commit's payload on its own.
+
+Pokes never carry a record, or name a record ID, that a pull with the same window would not return. Relation includes, limits, and offsets are evaluated the way a pull evaluates them. A record that enters the view without changing, such as the next record under a `limit`, arrives with the pull that every poke still starts. A client that has not pulled yet gets a bare poke, and the client whose push made the commit always gets one, so it pulls the acknowledgement at once instead of waiting for a stream of payloads to go quiet. Bare pokes are never delayed; a client's merged payload goes out right before one.
 
 Every pull reports the revision its read reflects. Revisions count this instance's commits and start over in a new instance, like cookies.
 
@@ -78,7 +81,7 @@ if (!existing) {
 await server.commit(tx)
 ```
 
-A transaction also has `list`, `scan`, `update`, `remove`, `query`, and `cancel`.
+A transaction also has `list`, `scan`, `update`, `append`, `remove`, `query`, and `cancel`.
 
 `update` accepts partial assignments and awaits the current record. Reads in the same transaction see those assignments; missing records and empty payloads are no-ops. Supplied nested objects and arrays replace their entire field. Use `set` for complete replacements; updates cannot change identity or delete fields.
 
@@ -87,6 +90,20 @@ const tx = server.transact()
 await tx.update("todos", "welcome", { complete: true })
 await server.commit(tx)
 ```
+
+### Append text
+
+`append` adds text to the end of string fields. It suits text that grows in many small steps, such as a streamed reply.
+
+```ts
+const tx = server.transact()
+tx.append("messages", replyId, { text: delta })
+await server.commit(tx)
+```
+
+The server reads the record when the transaction commits, in commit order, so appends from concurrent transactions all land. A missing record stays missing, and a missing field starts empty. Within a transaction, a later `set` or `remove` of the record replaces earlier appends, and a later `update` replaces the appends to the fields it assigns. Storage, queries, and pulls see the whole record.
+
+A client that already has the record receives only the appended text, with the field's previous length and the commit that last wrote the record before it. The client applies it only to a value it has from that commit or later, which is the value the append extends; otherwise it waits for the pull the poke starts, so a lost poke never shows text the server did not have. The server remembers the last write of the 10,000 most recently written records; an append to an older one names a later commit, so clients that have not pulled since then wait for their pull. Collection codecs see the appended text on its own, as a partial record. Only server transactions can append.
 
 ## Compound IDs
 
@@ -128,5 +145,6 @@ interface TandemServerStorageApi<Schema> {
 
 - Records are durable when storage is durable. Sync metadata (revisions, acknowledged mutation IDs, client scan windows) lives in the server process and resets on restart.
 - Pokes come from the `TandemServer` instance that committed the write, or from storage `subscribe` notifications. Writes made by other processes or directly to the database do not poke clients unless storage reports them. Event streams connected to another process miss those pokes and rely on the client's fallback pull. Storage notifications are bare pokes, without records.
+- Appends assume the server knows every write to a record. When storage reports another process's write through `subscribe`, the server makes appends wait for a pull read after it. A write that storage does not report can let a client extend text that another process replaced, until its next pull.
 - Revisions are per instance. If a client's pokes and pulls reach different instances, live records shown from one instance's pokes are dropped by the next pull from another.
 - The server does no authentication or authorization. Check requests in your transport before calling `push` or `pull`, and authorize `connect` (including the event stream route) the same way: pokes carry the records of the client's latest pulled view to whoever holds its connection. A view lasts until the client's next pull or until its last connection closes, so when a user loses access, close that client's connections: pokes then carry no records until a pull your transport authorizes.

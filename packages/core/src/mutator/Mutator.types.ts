@@ -1,6 +1,7 @@
 import {
 	type Assert,
 	collection,
+	defineMutator,
 	defineMutators,
 	defineSchema,
 	type MutateApi,
@@ -50,5 +51,28 @@ defineMutators(schema, {
 		args: (input: unknown) => input as { id: string },
 		// @ts-expect-error Mutators write the schema's collections.
 		run: (tx, { id }) => tx.set("users", { id }),
+	},
+})
+
+const standalone = defineMutator(schema, {
+	args: sendArgs,
+	run: (tx, args) => tx.set("messages", args),
+})
+void standalone
+
+const serverOnly = { afterCommit: () => undefined }
+// @ts-expect-error Server hooks are excluded even when supplied through a spread.
+defineMutator(schema, {
+	...serverOnly,
+	args: sendArgs,
+	run: (tx, args) => tx.set("messages", args),
+})
+
+defineMutators(schema, {
+	// @ts-expect-error Registry entries cannot inherit server hooks either.
+	bad: {
+		...serverOnly,
+		args: sendArgs,
+		run: (tx, args) => tx.set("messages", args),
 	},
 })

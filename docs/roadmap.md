@@ -1,6 +1,6 @@
 # Roadmap
 
-Short-term cleanup tasks live in [`TODO.md`](../TODO.md).
+Short-term cleanup tasks live in [`TODO.md`](https://github.com/tanishqkancharla/tandem/blob/main/TODO.md).
 
 ## In progress
 

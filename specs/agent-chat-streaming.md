@@ -248,3 +248,4 @@ Rejecting a forbidden write with `invalid-request` turned out to leave the clien
 - `docs/agent-chat.md`, `docs/sync.md#live-records`, `docs/server.md#connect-clients`, `docs/custom-remote.md`
 - `packages/server/test/LivePokes.spec.ts`, `packages/server/test/LiveEventStream.spec.ts`, `packages/core/test/sync/live.spec.ts`
 - Superseded: Mochael/tandem#5 and #6
+- Follow-up: [append-and-batching.md](append-and-batching.md) adds `append`, poke batching, and pull deferral, and moves the guide's reply loop from a save timer to appends

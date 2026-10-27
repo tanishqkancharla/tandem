@@ -4,6 +4,7 @@ export type {
 	ServerMutator,
 	ServerMutatorContext,
 	ServerMutators,
+	ServerMutatorsFor,
 	TandemServerArgs,
 	TandemServerPushOptions,
 	TandemServerSubscription,

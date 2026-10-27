@@ -1,5 +1,5 @@
 export { TandemClient } from "./TandemClient.js"
-export type { TandemClientArgs } from "./TandemClient.js"
+export type { TandemClientArgs, TandemTabsOptions } from "./TandemClient.js"
 export { SyncEngine } from "./sync/SyncEngine.js"
 export type {
 	ClientApi,
@@ -14,6 +14,7 @@ export type {
 	RemoteInvalidRequestError,
 	RemoteMutationGapError,
 	RemoteRequestError,
+	PokeAppendOp,
 	PokePayload,
 	PushResponse,
 	PullResponse,
@@ -25,6 +26,8 @@ export { connectTandemEventSource } from "./sync/TandemEventSource.js"
 export type { TandemEventSourceArgs } from "./sync/TandemEventSource.js"
 export { Transaction } from "./transaction/Transaction.js"
 export type {
+	AppendableField,
+	AppendPayload,
 	Mutation,
 	MutationId,
 	MutationOp,
@@ -33,7 +36,11 @@ export type {
 	UpdateMutationOp,
 } from "./transaction/Transaction.js"
 export { MutationApi } from "./transaction/Transaction.js"
-export { defineMutators, MutationRejectedError } from "./mutator/Mutator.js"
+export {
+	defineMutator,
+	defineMutators,
+	MutationRejectedError,
+} from "./mutator/Mutator.js"
 export type {
 	AnyMutators,
 	MutateApi,
@@ -52,6 +59,7 @@ export type {
 } from "./clientStorage/TandemClientStorage.js"
 export { WriteOpsApi } from "./clientStorage/TandemClientStorage.js"
 export { TandemClientIndexedDbStorage } from "./clientStorage/TandemClientIndexedDbStorage.js"
+export type { CollectionCodecs } from "./schema/collectionCodecs.js"
 export type {
 	AnyStorageSchema,
 	TandemClientIndexedDbStorageArgs,

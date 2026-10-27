@@ -13,15 +13,9 @@ import {
 import {
 	TandemServer,
 	TandemServerJsonFileStorage,
+	type ServerMutatorsFor,
 } from "@tanishqkancharla/tandem-server"
-import {
-	convertToModelMessages,
-	type LanguageModel,
-	readUIMessageStream,
-	streamText,
-	toUIMessageStream,
-	type UIMessage,
-} from "ai"
+import { convertToModelMessages, type LanguageModel, streamText } from "ai"
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test"
 import * as errore from "errore"
 import { expect, test as baseTest, vi } from "vitest"
@@ -35,7 +29,7 @@ type Message = {
 	id: string
 	threadId: string
 	role: "user" | "assistant"
-	parts: UIMessage["parts"]
+	text: string
 	status: "streaming" | "complete" | "stopped" | "error"
 	updatedAt: number
 }
@@ -44,7 +38,7 @@ type ChatSchema = { messages: Message }
 
 const schema = defineSchema({
 	messages: collection<Message>({
-		fields: ["id", "threadId", "role", "parts", "status", "updatedAt"],
+		fields: ["id", "threadId", "role", "text", "status", "updatedAt"],
 	}),
 })
 
@@ -65,7 +59,7 @@ const chatMutators = defineMutators(schema, {
 				id: messageId,
 				threadId,
 				role: "user",
-				parts: [{ type: "text", text }],
+				text,
 				status: "complete",
 				updatedAt,
 			})
@@ -73,11 +67,15 @@ const chatMutators = defineMutators(schema, {
 				id: replyId(messageId),
 				threadId,
 				role: "assistant",
-				parts: [],
+				text: "",
 				status: "streaming",
 				updatedAt,
 			})
 		},
+	},
+	appendReply: {
+		args: z.object({ id: z.string(), text: z.string() }),
+		run: (tx, { id, text }) => tx.append("messages", id, { text }),
 	},
 	/** The server aborts the model; the reply's final save says "stopped". */
 	stopReply: {
@@ -107,28 +105,41 @@ class ChatServer {
 		})
 	}
 
-	/** Server mutators for one request. They close over its session. */
-	private mutators(session: Session) {
-		return this.tandem.serverMutators(chatMutators, {
-			sendMessage: async (tx, args, ctx) => {
-				if (!session.threads.includes(args.threadId))
-					throw new Error(`No access to ${args.threadId}`)
-				// Neither record may exist, or a client could overwrite history.
-				if (
-					(await tx.get("messages", args.messageId)) ||
-					(await tx.get("messages", replyId(args.messageId)))
-				)
-					throw new Error(`Message ${args.messageId} exists`)
-				await chatMutators.sendMessage.run(tx, args, ctx)
-				ctx.after(() => this.startReply(replyId(args.messageId), args.threadId))
+	/** Server hooks stay beside their shared mutators and capture the request session. */
+	private mutators(session: Session, serverOwned = false) {
+		return {
+			sendMessage: {
+				...chatMutators.sendMessage,
+				authorize: async (tx, args) => {
+					if (!session.threads.includes(args.threadId))
+						throw new Error(`No access to ${args.threadId}`)
+					if (
+						(await tx.get("messages", args.messageId)) ||
+						(await tx.get("messages", replyId(args.messageId)))
+					)
+						throw new Error(`Message ${args.messageId} exists`)
+				},
+				afterCommit: (args) =>
+					this.startReply(replyId(args.messageId), args.threadId),
 			},
-			stopReply: async (tx, { messageId }, ctx) => {
-				const reply = await tx.get("messages", replyId(messageId))
-				if (!reply || !session.threads.includes(reply.threadId))
-					throw new Error(`No reply to ${messageId}`)
-				ctx.after(() => this.controllers.get(reply.id)?.abort())
+			appendReply: {
+				...chatMutators.appendReply,
+				authorize: (_tx, args) => {
+					if (!serverOwned || !args.id.endsWith(":reply"))
+						throw new Error("Only the server appends replies")
+				},
 			},
-		})
+			stopReply: {
+				...chatMutators.stopReply,
+				authorize: async (tx, { messageId }) => {
+					const reply = await tx.get("messages", replyId(messageId))
+					if (!reply || !session.threads.includes(reply.threadId))
+						throw new Error(`No reply to ${messageId}`)
+				},
+				afterCommit: ({ messageId }) =>
+					this.controllers.get(replyId(messageId))?.abort(),
+			},
+		} satisfies ServerMutatorsFor<ChatSchema, {}, typeof chatMutators>
 	}
 
 	/** The JSON transport a browser would use. */
@@ -186,43 +197,38 @@ class ChatServer {
 		const result = streamText({
 			model: this.model,
 			messages: await convertToModelMessages(
-				thread.filter((message) => message.id !== id),
+				thread
+					.filter((message) => message.id !== id)
+					.map((message) => ({
+						id: message.id,
+						role: message.role,
+						parts: [{ type: "text" as const, text: message.text }],
+					})),
 			),
 			abortSignal: controller.signal,
 		})
-
-		let parts: Message["parts"] = []
-		let saving: Promise<void> = Promise.resolve()
-		const save = (status: Message["status"]) => {
-			const message: Message = {
-				id,
-				threadId,
-				role: "assistant",
-				parts,
-				status,
-				updatedAt: Date.now(),
-			}
-			saving = saving.then(async () => {
-				const tx = this.tandem.transact()
-				tx.set("messages", message)
-				await this.tandem.commit(tx)
-			})
-			return saving
-		}
-		const timer = setInterval(() => void save("streaming"), 10)
 		const streamed = await (async () => {
-			const messages = readUIMessageStream({
-				stream: toUIMessageStream({ stream: result.stream }),
-				terminateOnError: true,
-			})
-			for await (const message of messages) parts = message.parts
+			for await (const delta of result.textStream)
+				await this.tandem.mutate(
+					"appendReply",
+					{ id, text: delta },
+					{
+						mutators: this.mutators({ threads: [threadId] }, true),
+					},
+				)
 		})().catch((cause) => new Error(`Reply ${id} failed`, { cause }))
-		clearInterval(timer)
-		if (streamed instanceof Error) {
-			await save("error")
-			return streamed
-		}
-		await save(controller.signal.aborted ? "stopped" : "complete")
+		const tx = this.tandem.transact()
+		await tx.update("messages", id, {
+			status:
+				streamed instanceof Error
+					? "error"
+					: controller.signal.aborted
+						? "stopped"
+						: "complete",
+			updatedAt: Date.now(),
+		})
+		await this.tandem.commit(tx)
+		if (streamed instanceof Error) return streamed
 	}
 }
 
@@ -264,8 +270,7 @@ function textModel(tokens: string[], chunkDelayInMs = 2) {
 	})
 }
 
-const textOf = (message: Message | undefined) =>
-	message?.parts.map((part) => (part.type === "text" ? part.text : "")).join("")
+const textOf = (message: Message | undefined) => message?.text
 
 const test = baseTest.extend<{
 	filePath: string
@@ -405,7 +410,7 @@ test("the server refuses forged and unauthorized writes without blocking later m
 		id: replyId("message-0"),
 		threadId: "thread-1",
 		role: "assistant",
-		parts: [{ type: "text", text: "Forged" }],
+		text: "Forged",
 		status: "complete",
 		updatedAt: 0,
 	})

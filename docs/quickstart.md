@@ -1,6 +1,6 @@
 # Quickstart
 
-This guide builds a todo app where a React client syncs through a `TandemServer`. The complete version is in [`examples/todo`](../examples/todo).
+This guide builds a todo app where a React client syncs through a `TandemServer`. The complete version is in [`examples/todo`](https://github.com/tanishqkancharla/tandem/tree/main/examples/todo).
 
 ## Install
 

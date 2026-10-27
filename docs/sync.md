@@ -66,13 +66,15 @@ const { cookie, patch, lastMutationId } = await remote.pull({
 
 ### Poke
 
-`connect` gives the remote a `poke` function. Calling it makes the client pull. The remote decides when to poke, for example over a WebSocket, SSE, or a polling timer. Missing a poke delays a pull rather than losing changes. `connectTandemEventSource` pulls on every stream (re)connection, and fallback pulls check for missed updates every 60 seconds by default.
+`connect` gives the remote a `poke` function. Calling it makes the client pull. A poke with a [payload](#live-records) lets that pull wait while payloads keep arriving: the client pulls once `livePullDelay` (200 ms by default) passes without a new payload, or `livePullMaxDelay` (1 s) after the first of them. Any pull that starts sooner confirms them too, such as one a bare poke, `pullFromRemote`, or a new subscription starts. The remote decides when to poke, for example over a WebSocket, SSE, or a polling timer. Missing a poke delays a pull rather than losing changes. `connectTandemEventSource` pulls on every stream (re)connection, and fallback pulls check for missed updates every 60 seconds by default.
 
 ### Live records
 
-A poke can carry the records a server commit changed in the client's view, tagged with the commit's revision. [`TandemServer`](server.md#connect-clients) sends them after every commit. The client shows them at once, in the same tick, and still pulls. Queries and subscriptions need nothing special: a server that saves a record repeatedly, such as a streaming [agent reply](agent-chat.md), shows each save on every subscribed client. Like a pull, a live record can make an open transaction that read the record fail to commit.
+A poke can carry the records a server commit changed in the client's view, tagged with the commit's revision. [`TandemServer`](server.md#connect-clients) sends them after every commit. The client shows them at once, in the same tick, and still pulls once the payloads go quiet. Queries and subscriptions need nothing special: a server that saves a record repeatedly, such as a streaming [agent reply](agent-chat.md), shows each save on every subscribed client. Like a pull, a live record can make an open transaction that read the record fail to commit.
 
 A live record stands in for the server value under any pending local writes, which replay on top of it. It is never pushed. Each pull reports the revision its read reflects and replaces every live record at or below it, so a pull that read the server before a newer commit keeps the newer live record. The client ignores a poke record that is no newer than the latest pull or the record's current live value.
+
+A poke can also carry text a server [`append`](server.md#append-text) added to a record. The client applies it to its server value for the record, as a new live record, only if that value is the one the append extends: one it has from the record's previous server write or later, with the expected length. Otherwise it ignores the append and relies on the pull the poke starts.
 
 Live records are not saved as server state. After a restart the client shows its last pulled records with pending writes until it pulls again. Revisions number one server instance's commits. A pull from another instance replaces every live record, so a client whose pokes and pulls reach different processes gets live updates only until its next pull.
 
@@ -114,6 +116,21 @@ A's `complete: true` is lost because B's `set` replaced the whole record. Until 
 ## Client storage
 
 With `clientStorage`, the client loads from storage on startup (`client.ready`) and writes changes back in batches (`clientStorageWriteInterval`, 120 ms by default). `flushClientStorage()` writes immediately.
+
+## Multiple tabs
+
+Tabs of one origin share IndexedDB. Two clients writing the same store would reuse one client ID and mutation counter, so the remote would skip one tab's writes as duplicates. Clients that share named `clientStorage` therefore elect a leader instead. In a browser document this happens automatically when the client has a `remote`.
+
+- The leader tab holds a [Web Lock](https://developer.mozilla.org/en-US/docs/Web/API/Web_Locks_API) named after the storage. It owns the persisted replica, its client ID, and the connection to the remote.
+- Every tab, the leader included, keeps an in-memory replica with its own client ID, so queries, transactions, and local edits stay synchronous. Tabs talk to the leader over a `BroadcastChannel` with direct commands, not a second sync engine.
+- `commit` applies the edit to the tab's replica at once and sends the mutation to the leader. The leader commits it to its replica and records the tab's mutation ID in the same transaction, skipping a mutation it already holds. While the tab wants the remote, `commit` resolves when the remote has accepted the write, as in a single tab; while it does not, `commit` resolves once the leader has saved it. `flushClientStorage` resolves once the leader has saved the tab's writes and does not wait for the remote.
+- After each change the leader publishes the records each tab subscribes to, and every tab replays its own unacknowledged edits over that view. Writes in one tab reach the others without a remote round trip, so tabs stay in step while offline.
+- If the leader cannot save a write, `commit` rejects and the tab keeps the edit. It sends it again before its next commit, on `flushClientStorage`, on `connect`, and to the next leader.
+- Browsers delay timers in hidden tabs. While its tab is hidden, the leader skips its `syncInterval` and `clientStorageWriteInterval` waits and runs on the next task instead, so a background leader does not slow the tab in use.
+- A tab's first view holds the leader's whole replica, so `ready` restores persisted data as a single tab does, and transactions still throw before it resolves.
+- When the leader closes or crashes, its lock is released and a waiting tab loads the replica from storage and takes over. It keeps syncing every tab's saved queries, and tabs resend their unanswered writes to it in order.
+
+The leader stays connected to the remote while any tab wants it: `connect` and `disconnect` change only this tab's wish, and `autoConnect` sets it initially. `pullFromRemote`, `flushClientStorage`, and `clear` act on the leader's replica. `close()` hands leadership on after saving. Pass `tabs: false` to give one client the storage to itself, or `tabs: { environment }` to coordinate somewhere other than a browser document, such as a worker or a test with `InMemoryTabs` from `@tanishqkancharla/tandem-core/internal`.
 
 ## Next steps
 
