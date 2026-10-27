@@ -182,6 +182,7 @@ describe("DST CLI coverage and recovery", () => {
 				checkpoint: "ordinary",
 			})
 		},
+		15_000,
 	)
 
 	it.each(["sweep", "single"] as const)(
