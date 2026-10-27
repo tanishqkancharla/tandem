@@ -19,6 +19,18 @@ type Row = Record<string, unknown> & {
 }
 type Group = { keys: Record<string, unknown>; rows: Map<string, Row> }
 
+function sameAggregateResult(left: unknown, right: unknown): boolean {
+	if (Object.is(left, right)) return true
+	if (
+		left === null ||
+		right === null ||
+		typeof left !== "object" ||
+		typeof right !== "object"
+	)
+		return false
+	return isEqual(left, right)
+}
+
 function compareSerializedKeys(left: string, right: string): number {
 	return left < right ? -1 : left > right ? 1 : 0
 }
@@ -172,7 +184,7 @@ export function subscribeAggregate<
 			}
 			if (dirty.size === 0) return
 			const next = evaluate(dirty)
-			if (!isEqual(result, next)) {
+			if (!sameAggregateResult(result, next)) {
 				result = next
 				callback(next)
 			}
@@ -180,7 +192,7 @@ export function subscribeAggregate<
 	)
 	const refresh = () => {
 		const next = evaluate(new Set(groups.keys()))
-		if (!isEqual(result, next)) {
+		if (!sameAggregateResult(result, next)) {
 			result = next
 			callback(next)
 		}

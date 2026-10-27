@@ -20,6 +20,37 @@ function thread(
 }
 
 describe("callback aggregations", () => {
+	test("publishes changes between distinct scalar results", async () => {
+		const client = new TandemClient<Schema>({})
+		await client.ready
+		const numeric: (number | undefined)[] = []
+		const nullable: (null | undefined)[] = []
+		const numberSubscription = client.subscribe(
+			{ collection: "threads", aggregate: (rows) => rows[0]?.replyCount },
+			(value) => numeric.push(value),
+		)
+		const nullSubscription = client.subscribe(
+			{
+				collection: "threads",
+				aggregate: (rows) => (rows.length ? null : undefined),
+			},
+			(value) => nullable.push(value),
+		)
+		const tx = client.transact()
+		tx.set("threads", thread("a", "one", 0))
+		await client.commit(tx)
+		expect(numeric).toEqual([0])
+		expect(nullable).toEqual([null])
+		const removeTx = client.transact()
+		removeTx.remove("threads", "a")
+		await client.commit(removeTx)
+		expect(numeric).toEqual([0, undefined])
+		expect(nullable).toEqual([null, undefined])
+		numberSubscription.destroy()
+		nullSubscription.destroy()
+		await client.close()
+	})
+
 	test("tracks compound source IDs independently", async () => {
 		type CompoundSchema = {
 			items: { id: readonly [string, string]; bucket: string; value: number }
