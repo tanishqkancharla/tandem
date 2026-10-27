@@ -52,8 +52,9 @@ export type RelationalWithOptions<
 	Relations extends AnyRelations<Schema>,
 	Collection extends CollectionName<Schema>,
 > = {
-	readonly [RelationName in keyof NonNullable<Relations[Collection]> &
-		string]?:
+	readonly [
+		RelationName in keyof NonNullable<Relations[Collection]> & string
+	]?:
 		| true
 		| RelationalQueryOptions<
 				Schema,
@@ -94,11 +95,13 @@ type SelectedScalarKeys<
 	Collection extends CollectionName<Schema>,
 	Select,
 > = keyof {
-	readonly [Field in keyof Schema[Collection] & string as Select extends {
-		readonly [Key in Field]?: true
-	}
-		? Field
-		: never]: true
+	readonly [
+		Field in keyof Schema[Collection] & string as Select extends {
+			readonly [Key in Field]?: true
+		}
+			? Field
+			: never
+	]: true
 }
 
 export type RelationalQueryRow<
@@ -129,9 +132,11 @@ type RelationalQueryIncludedRelations<
 	Options extends RelationalQueryOptions<Schema, Relations, Collection>,
 > = Options extends { readonly with: infer With }
 	? {
-			readonly [RelationName in keyof With &
-				keyof NonNullable<Relations[Collection]> &
-				string]: RelationalIncludedRelationResult<
+			readonly [
+				RelationName in keyof With &
+					keyof NonNullable<Relations[Collection]> &
+					string
+			]: RelationalIncludedRelationResult<
 				Schema,
 				Relations,
 				NonNullable<Relations[Collection]>[RelationName],
@@ -202,6 +207,37 @@ export type RelationalQueryResult<
 	Query["collection"] & CollectionName<Schema>,
 	Query
 >
+
+export type AggregateGroupKey = string | number | boolean | null | undefined
+
+export type AggregateGroupFields<Row> = {
+	[Key in keyof Row & string]: Row[Key] extends AggregateGroupKey ? Key : never
+}[keyof Row & string]
+
+export type AggregateQuery<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+	Result,
+	GroupKeys extends
+		| readonly AggregateGroupFields<Schema[Collection]>[]
+		| undefined = undefined,
+> = {
+	readonly collection: Collection
+	readonly where?: RelationalWhereOptions<Schema, Collection>
+	readonly groupBy?: GroupKeys
+	readonly aggregate: (rows: readonly Readonly<Schema[Collection]>[]) => Result
+	readonly select?: never
+	readonly with?: never
+	readonly orderBy?: never
+	readonly limit?: never
+	readonly offset?: never
+}
+
+export type GroupedAggregateRow<
+	Row,
+	Keys extends readonly (keyof Row)[],
+	Result,
+> = Pick<Row, Keys[number]> & Result
 
 export type Operator = "=" | ">" | "<" | ">=" | "<="
 

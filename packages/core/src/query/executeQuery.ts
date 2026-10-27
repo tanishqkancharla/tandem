@@ -362,7 +362,7 @@ function compareQueryValue(
 	return comparison <= 0
 }
 
-function matchesWhere(record: RuntimeRecord, clause: QueryWhereClause) {
+export function matchesWhere(record: RuntimeRecord, clause: QueryWhereClause) {
 	const [field, operator, comparisonValue] = clause
 	return compareQueryValue(record[field], operator, comparisonValue)
 }

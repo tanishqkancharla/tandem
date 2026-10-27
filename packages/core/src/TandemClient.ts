@@ -3,10 +3,15 @@ import {
 	_encodeRelationalQuery,
 	type RelationalQuery,
 	type RelationalQueryResult,
+	type AggregateQuery,
+	type AggregateGroupFields,
+	type GroupedAggregateRow,
 } from "./query/Query.js"
+import { aggregateSource } from "./query/aggregateQuery.js"
 import type {
 	AnySchema,
 	AnyRelations,
+	CollectionName,
 	RuntimeSchemaDefinition,
 } from "./schema/Schema.js"
 import type { TandemClientStorageApi } from "./clientStorage/TandemClientStorage.js"
@@ -257,12 +262,44 @@ export class TandemClient<
 		return this.syncEngine.queuePull()
 	}
 
+	query<
+		Collection extends CollectionName<Schema>,
+		const Keys extends readonly AggregateGroupFields<Schema[Collection]>[],
+		Result extends Record<string, unknown>,
+	>(
+		query: AggregateQuery<Schema, Collection, Result, Keys> & { groupBy: Keys },
+	): GroupedAggregateRow<Schema[Collection], Keys, Result>[]
+	query<Collection extends CollectionName<Schema>, Result>(
+		query: AggregateQuery<Schema, Collection, Result>,
+	): Result
 	query<Query extends RelationalQuery<Schema, Relations>>(
 		query: Query,
-	): RelationalQueryResult<Schema, Relations, Query> {
-		return this.db.query(query)
+	): RelationalQueryResult<Schema, Relations, Query>
+	query(
+		query:
+			| RelationalQuery<Schema, Relations>
+			| AggregateQuery<Schema, CollectionName<Schema>, unknown, any>,
+	): any {
+		return this.db.query(query as never)
 	}
 
+	subscribe<
+		Collection extends CollectionName<Schema>,
+		const Keys extends readonly AggregateGroupFields<Schema[Collection]>[],
+		Result extends Record<string, unknown>,
+	>(
+		query: AggregateQuery<Schema, Collection, Result, Keys> & { groupBy: Keys },
+		callback?: (
+			result: GroupedAggregateRow<Schema[Collection], Keys, Result>[],
+		) => void,
+	): {
+		result: GroupedAggregateRow<Schema[Collection], Keys, Result>[]
+		destroy: () => void
+	}
+	subscribe<Collection extends CollectionName<Schema>, Result>(
+		query: AggregateQuery<Schema, Collection, Result>,
+		callback?: (result: Result) => void,
+	): { result: Result; destroy: () => void }
 	subscribe<Query extends RelationalQuery<Schema, Relations>>(
 		query: Query,
 		callback?: (
@@ -271,19 +308,28 @@ export class TandemClient<
 	): {
 		result: RelationalQueryResult<Schema, Relations, Query>
 		destroy: () => void
-	} {
-		const { result, destroy } = this.db.subscribe(query, callback ?? (() => {}))
-		const encoded = _encodeRelationalQuery(
-			query.collection,
-			query,
-			this.db.relations,
-		)
+	}
+	subscribe(
+		query:
+			| RelationalQuery<Schema, Relations>
+			| AggregateQuery<Schema, CollectionName<Schema>, unknown, any>,
+		callback?: (result: any) => void,
+	): { result: any; destroy: () => void } {
+		const { result, destroy, ...aggregateControls } = this.db.subscribe(
+			query as never,
+			callback ?? (() => {}),
+		) as any
+		const encoded =
+			"aggregate" in query
+				? aggregateSource(query as never)
+				: _encodeRelationalQuery(query.collection, query, this.db.relations)
 		const unsubscribe = this.tabSession
 			? this.tabSession.subscribe(encoded)
 			: this.syncEngine?.subscribe(encoded)
 
 		return {
 			result,
+			...aggregateControls,
 			destroy: () => {
 				unsubscribe?.()
 				destroy()
