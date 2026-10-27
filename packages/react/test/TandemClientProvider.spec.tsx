@@ -6,7 +6,8 @@ import {
 	defineSchema,
 	t,
 } from "@tanishqkancharla/tandem-core"
-import { render, screen, waitFor } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { useState } from "react"
 import { describe, expect, test } from "vitest"
 import {
 	TandemClientProvider,
@@ -77,6 +78,60 @@ function TodoScreen() {
 }
 
 describe("TandemClientProvider", () => {
+	test("uses a new callback closure when state and a local write batch together", async () => {
+		const client = createClient()
+		await client.ready
+		const seedTx = client.transact()
+		seedTx.set("todos", {
+			id: "one",
+			text: "First",
+			complete: false,
+			createdAt: 1,
+		})
+		await client.commit(seedTx)
+		let renders = 0
+		function Stats() {
+			renders++
+			const [multiplier, setMultiplier] = useState(1)
+			const count = useQuery({
+				collection: "todos",
+				aggregate: (rows) => rows.length * multiplier,
+			})
+			return (
+				<>
+					<p>Count: {count}</p>
+					<button
+						type="button"
+						onClick={() => {
+							setMultiplier(3)
+							const tx = client.transact()
+							tx.set("todos", {
+								id: "two",
+								text: "Second",
+								complete: false,
+								createdAt: 2,
+							})
+							void client.commit(tx)
+						}}
+					>
+						Update both
+					</button>
+				</>
+			)
+		}
+		const view = render(
+			<TandemClientProvider client={client}>
+				<Stats />
+			</TandemClientProvider>,
+		)
+		await waitFor(() => expect(screen.getByText("Count: 1")).toBeTruthy())
+		fireEvent.click(screen.getByRole("button", { name: "Update both" }))
+		await waitFor(() => expect(screen.getByText("Count: 6")).toBeTruthy())
+		expect(renders).toBeLessThan(10)
+		view.unmount()
+		await client.close()
+	})
+
 	test("inline aggregate callbacks use changed closures without render loops", async () => {
 		const client = createClient()
 		let renders = 0

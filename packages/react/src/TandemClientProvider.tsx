@@ -195,7 +195,6 @@ export function useTandemQuery(
 	const subscriptionRef = useRef<{ refresh?: () => void } | undefined>(
 		undefined,
 	)
-	const ownUpdate = useRef(false)
 
 	useEffect(() => {
 		const currentQuery = queryRef.current
@@ -219,7 +218,6 @@ export function useTandemQuery(
 		const subscription = db.subscribe(
 			subscriptionQuery as never,
 			(nextValue) => {
-				ownUpdate.current = true
 				setValue((previous: unknown) =>
 					JSON.stringify(previous) === JSON.stringify(nextValue)
 						? previous
@@ -240,10 +238,6 @@ export function useTandemQuery(
 		}
 	}, [db, queryKey])
 	useEffect(() => {
-		if (ownUpdate.current) {
-			ownUpdate.current = false
-			return
-		}
 		if (query && "aggregate" in query) subscriptionRef.current?.refresh?.()
 	})
 
