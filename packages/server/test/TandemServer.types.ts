@@ -3,8 +3,13 @@ import {
 	defineMutators,
 	defineRelations,
 	defineSchema,
+	TandemClient,
 } from "@tanishqkancharla/tandem-core"
-import type { RemoteApi, UpdateMutationOp } from "@tanishqkancharla/tandem-core"
+import type {
+	MutateApi,
+	RemoteApi,
+	UpdateMutationOp,
+} from "@tanishqkancharla/tandem-core"
 import { expectTypeOf } from "vitest"
 import type { TandemServerStorageApi } from "../src/index.js"
 import { TandemServer } from "../src/index.js"
@@ -254,7 +259,15 @@ const registered = new TandemServer({
 		},
 	}),
 })
-void registered.mutate("appendBody", { id: "message-1", text: "!" })
+const namedClient = new TandemClient({ schema, relations, mutators: shared })
+expectTypeOf(registered.mutate).toEqualTypeOf<MutateApi<typeof shared>>()
+expectTypeOf(namedClient.mutate).toEqualTypeOf<typeof registered.mutate>()
+void registered.mutate.appendBody({ id: "message-1", text: "!" })
+void registered.mutate["appendBody"]({ id: "message-1", text: "!" })
+const appendBody = registered.mutate.appendBody
+expectTypeOf(appendBody).toEqualTypeOf<
+	(args: { id: string; text: string }) => Promise<void>
+>()
 void registered.push(
 	{ clientId: "client-1" as never, mutations: [] },
 	{ context: { user: "ada" } },
@@ -269,14 +282,18 @@ void registered.push(
 	},
 )
 // @ts-expect-error Unknown direct mutation names are excluded.
-void registered.mutate("missing", { id: "message-1" })
+void registered.mutate.missing({ id: "message-1" })
 // @ts-expect-error appendBody requires text.
-void registered.mutate("appendBody", { id: "message-1" })
+void registered.mutate.appendBody({ id: "message-1" })
 // @ts-expect-error appendBody text is a string.
-void registered.mutate("appendBody", { id: "message-1", text: 42 })
+void registered.mutate.appendBody({ id: "message-1", text: 42 })
+// @ts-expect-error The callable name-and-args API was removed.
+void registered.mutate("appendBody", { id: "message-1", text: "!" })
+// @ts-expect-error A server with no registry cannot call an arbitrary mutator.
+void server.mutate.appendBody({ id: "message-1", text: "!" })
 
 // The documented mode-dependent hook retains contextual argument inference.
-function createGuideServer(mode: "client" | "server" | "worker") {
+function createGuideServer(mode: "client" | "server") {
 	return new TandemServer({
 		schema,
 		relations,

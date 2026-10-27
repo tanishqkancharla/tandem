@@ -291,7 +291,7 @@ test("named direct appends retain deltas, concurrent text, and nested afterCommi
 		hooks: () => ({
 			appendMessage: {
 				afterCommit: ({ id, follow }) => {
-					if (follow) return server.mutate("appendMessage", { id, text: "!" })
+					if (follow) return server.mutate.appendMessage({ id, text: "!" })
 				},
 			},
 		}),
@@ -310,10 +310,10 @@ test("named direct appends retain deltas, concurrent text, and nested afterCommi
 	})
 	await server.pull({ clientId, scanWindow: [{ collection: "messages" }] })
 	await Promise.all([
-		server.mutate("appendMessage", { id: "reply", text: " A" }),
-		server.mutate("appendMessage", { id: "reply", text: " B" }),
+		server.mutate.appendMessage({ id: "reply", text: " A" }),
+		server.mutate.appendMessage({ id: "reply", text: " B" }),
 	])
-	await server.mutate("appendMessage", {
+	await server.mutate.appendMessage({
 		id: "reply",
 		text: " C",
 		follow: true,
@@ -349,7 +349,8 @@ test("a failing afterCommit is logged after the named append commits", async () 
 	tx.set("messages", message("reply"))
 	await server.commit(tx)
 	const logged = vi.spyOn(console, "error").mockImplementation(() => {})
-	await server.mutate("appendMessage", { id: "reply", text: "Saved" })
+	const append = server.mutate.appendMessage
+	await append({ id: "reply", text: "Saved" })
 	expect((await server.query({ collection: "messages" }))[0]?.text).toBe(
 		"Saved",
 	)

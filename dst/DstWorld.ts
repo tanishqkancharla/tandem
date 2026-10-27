@@ -1369,7 +1369,7 @@ export class DstWorld implements AsyncDisposable {
 		)
 		const committed =
 			intent.type === "serverAppend"
-				? this.harness.server.mutate("appendTask", {
+				? this.harness.server.appendTask({
 						id: intent.id,
 						text: intent.text,
 					})
@@ -1593,7 +1593,7 @@ function buildHarness({
 	}
 
 	let builder = new Gatekeeper().add("server", () =>
-		withTabs ? observedServer(server, tabs) : server,
+		observedServer(server, tabs, withTabs),
 	)
 	// Register dependencies before any client, preserving stable construction order.
 	for (const name of clientNames) {
@@ -1627,7 +1627,7 @@ function buildHarness({
 
 type DstHarness = Harness<
 	{
-		server: DstServer
+		server: ReturnType<typeof observedServer>
 		tabsRemote: ReturnType<typeof tabsRemote>
 	} & Record<DstClientName, DstClient>
 >
@@ -1665,21 +1665,25 @@ function tabsRemote(
 function observedServer(
 	server: DstServer,
 	tabs: () => DstTabGroup | undefined,
+	withTabs: boolean,
 ) {
 	return {
 		transact: () => server.transact(),
 		commit: (tx: Parameters<typeof server.commit>[0]) => server.commit(tx),
-		mutate: (name: "appendTask", args: { id: string; text: string }) =>
-			server.mutate(name, args),
+		// Gatekeeper wraps top-level methods; invoke the server's public named method inside it.
+		appendTask: (args: { id: string; text: string }) =>
+			server.mutate.appendTask(args),
 		connect: (api: Parameters<typeof server.connect>[0]) => server.connect(api),
 		pull: (args: Parameters<typeof server.pull>[0]) => server.pull(args),
-		push: async (
-			args: Parameters<typeof server.push>[0],
-			options?: Parameters<typeof server.push>[1],
-		) => {
-			const response = await server.push(args, options)
-			if (!("error" in response)) tabs()?.accepted(args)
-			return response
-		},
+		push: withTabs
+			? async (
+					args: Parameters<typeof server.push>[0],
+					options?: Parameters<typeof server.push>[1],
+				) => {
+					const response = await server.push(args, options)
+					if (!("error" in response)) tabs()?.accepted(args)
+					return response
+				}
+			: server.push,
 	}
 }

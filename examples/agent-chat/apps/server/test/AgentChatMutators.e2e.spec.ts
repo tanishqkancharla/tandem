@@ -249,7 +249,7 @@ class ChatServer {
 		})
 		const streamed = await (async () => {
 			for await (const delta of result.textStream)
-				await this.tandem.mutate("appendReply", { id, text: delta })
+				await this.tandem.mutate.appendReply({ id, text: delta })
 		})().catch((cause) => new Error(`Reply ${id} failed`, { cause }))
 		const tx = this.tandem.transact()
 		await tx.update("messages", id, {

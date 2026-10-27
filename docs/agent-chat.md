@@ -168,13 +168,13 @@ This path is useful when the stream reader lives on a server but should use the 
 
 ## Option 3: server code mutates TandemServer directly
 
-Construct the server with `createChatServer("server", streamReply)`. A client calls `sendMessage` once. Its `afterCommit` returns the stream promise, which the server observes without holding the mutation queue. The server code consumes the model stream and calls typed `server.mutate` for each chunk. These calls have `ctx.source === "server"`; the server controls this value. Subscribed clients receive the committed text and terminal status.
+Construct the server with `createChatServer("server", streamReply)`. A client calls `sendMessage` once. Its `afterCommit` returns the stream promise, which the server observes without holding the mutation queue. The server code consumes the model stream and calls typed `server.mutate.appendReply` for each chunk. These calls have `ctx.source === "server"`; the server controls this value. Subscribed clients receive the committed text and terminal status.
 
 ```ts
 async function streamReply(id: string, threadId: string) {
   const stream = streamText({ model, messages: await threadContext(threadId) })
   for await (const delta of stream.textStream)
-    await server.mutate("appendReply", { id, text: delta })
+    await server.mutate.appendReply({ id, text: delta })
   const tx = server.transact()
   await tx.update("messages", id, { status: "complete" })
   await server.commit(tx)

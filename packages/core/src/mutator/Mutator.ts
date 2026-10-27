@@ -95,7 +95,7 @@ export type MutatorArgsOf<Definition> = Definition extends {
 	? Args
 	: never
 
-/** `client.mutate`: one function per mutator, resolving after the push that carried it. */
+/** Named mutation methods shared by client and server APIs. */
 export type MutateApi<Mutators> = {
 	readonly [Name in keyof Mutators]: (
 		args: MutatorArgsOf<Mutators[Name]>,

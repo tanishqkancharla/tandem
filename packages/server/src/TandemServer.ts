@@ -12,6 +12,7 @@ import type {
 	MutationRejection,
 	MutatorArgs,
 	MutatorArgsOf,
+	MutateApi,
 	MutatorCall,
 	MutatorContext,
 	MutatorTransaction,
@@ -388,6 +389,8 @@ export class TandemServer<
 > implements RemoteApi<Schema> {
 	private readonly relations: Relations
 	private readonly mutators?: Mutators
+	/** Server-owned named calls, bound to this instance at registration. */
+	readonly mutate: MutateApi<Mutators>
 	private readonly hooks?: TandemServerArgs<
 		Schema,
 		Relations,
@@ -424,6 +427,12 @@ export class TandemServer<
 		this.relations = args.relations
 		this.mutators = args.mutators
 		this.hooks = args.hooks
+		this.mutate = Object.fromEntries(
+			Object.keys(args.mutators ?? {}).map((name) => [
+				name,
+				(input: Json) => this.runNamedMutator(name, input),
+			]),
+		) as unknown as MutateApi<Mutators>
 		this.rng = args.rng
 		const livePokeInterval = args.livePokeInterval ?? 50
 		this.livePokeTimer =
@@ -490,10 +499,7 @@ export class TandemServer<
 	}
 
 	/** Run a registered named mutator for server-owned work such as a stream chunk. */
-	mutate<Name extends keyof Mutators & string>(
-		name: Name,
-		input: MutatorArgsOf<Mutators[Name]>,
-	): Promise<void> {
+	private runNamedMutator(name: string, input: Json): Promise<void> {
 		return this.run(async () => {
 			const definition = this.registered(name)
 			if (definition instanceof Error) return definition
