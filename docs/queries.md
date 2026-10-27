@@ -1,6 +1,6 @@
 # Queries
 
-A query is a plain, JSON-serializable object. `TandemClient`, `TandemServer`, and `useTandemQuery` all accept it.
+A row query is a plain, JSON-serializable object. `TandemClient`, `TandemServer`, and `useTandemQuery` all accept it. Client aggregate queries also accept a local callback.
 
 ```ts
 const tasks = client.query({
@@ -42,6 +42,37 @@ const { result, destroy } = client.subscribe(
 A subscription also adds the query to the client's scan window, which tells the remote which data to send. See [How sync works](sync.md#scan-windows).
 
 In React, `useTandemQuery(query)` subscribes for the component's lifetime. It re-subscribes when the serialized query changes and returns `undefined` when `query` is `undefined`.
+
+## Client aggregations
+
+Add a pure synchronous `aggregate` callback to a client query. The callback receives all local rows matching `where`; its return value is the query result. It may return a scalar or an object. The same shape works with `client.query`, `client.subscribe`, and `useTandemQuery`.
+
+```ts
+const stats = client.query({
+	collection: "threads",
+	where: { active: true },
+	aggregate: (threads) => ({
+		count: threads.length,
+		averageReplies: threads.length
+			? threads.reduce((total, thread) => total + thread.replyCount, 0) /
+				threads.length
+			: undefined,
+	}),
+})
+```
+
+Without `groupBy`, the callback runs once even when no rows match. Grouped callbacks return an object; each group produces one row containing the group keys and callback fields. Empty groups disappear. A callback field that duplicates a group key throws. Group keys must have primitive values (`string`, finite `number`, `boolean`, `null`, or `undefined`). Source rows are passed in ID order, and result groups are ordered by their key values. Callback input arrays and rows are read-only in TypeScript; callbacks should not mutate their input or depend on external side effects.
+
+```ts
+const byWorkspace = client.subscribe({
+	collection: "threads",
+	groupBy: ["workspaceId"],
+	aggregate: (threads) => ({ count: threads.length }),
+})
+// byWorkspace.result: { workspaceId: string; count: number }[]
+```
+
+Aggregate queries accept `collection`, `where`, `groupBy`, and `aggregate` only. `select`, `with`, `orderBy`, `limit`, and `offset` are rejected; an aggregate always sees every matching source row in the local replica. The callback never travels to the server or across tabs. A subscription registers the ordinary collection/where scan window and updates after local commits and incoming records, recomputing only affected groups. Callback exceptions propagate to the caller. Before the first pull or while offline, the result describes the local replica, which may be incomplete.
 
 ## Relations
 
