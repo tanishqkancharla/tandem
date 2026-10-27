@@ -38,7 +38,7 @@ Backend callback execution, aggregate wire protocol, built-in reducers, paginati
 
 ## Implementation
 
-### Phase 1: Core query and materialization
+### ✅ Phase 1: Core query and materialization
 
 **Today**
 
@@ -48,11 +48,15 @@ Backend callback execution, aggregate wire protocol, built-in reducers, paginati
 
 Add aggregate query types and a per-subscription member/group index. Re-read only changed record IDs after a transaction, then publish changed groups.
 
+```changes
+3d7c238
+```
+
 ```callstack
- TandemClient.subscribe [[packages/core/src/TandemClient.ts#TandemClient.subscribe]]
-+├── encode source collection and where # keep callback local
- └── Database.subscribe [[packages/core/src/Database.ts#Database.subscribe]]
-+    └── update affected groups # publish one result after a commit
+ TandemClient.subscribe [[3d7c238:packages/core/src/TandemClient.ts#L312-L328]]
++├── aggregateSource # keep callback local [[3d7c238:packages/core/src/query/aggregateQuery.ts#L22-L48]]
+ └── Database.subscribe [[3d7c238:packages/core/src/Database.ts#L772-L809]]
++    └── subscribeAggregate # publish changed groups after a commit [[3d7c238:packages/core/src/query/aggregateQuery.ts#L50-L157]]
 ```
 
 ```ts
