@@ -1,0 +1,52 @@
+{
+	"name": "@tanishqkancharla/tandem-postgres",
+	"version": "0.3.1",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"source": "./src/index.ts",
+	"author": "Tanishq Kancharla <tanishqkancharla3@gmail.com>",
+	"description": "Postgres storage for the Tandem server",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/tanishqkancharla/tandem.git",
+		"directory": "packages/postgres"
+	},
+	"files": [
+		"dist",
+		"!dist/**/*.map"
+	],
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js",
+			"default": "./dist/index.js"
+		}
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"build": "rm -rf dist tsconfig.tsbuildinfo && tsc",
+		"prepublishOnly": "pnpm run build",
+		"type-check": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit",
+		"format": "oxfmt \"src/**/*.ts\" \"test/**/*.ts\"",
+		"lint": "oxlint src --fix && tsc --noEmit",
+		"test": "vitest run --config ../../vitest.config.js"
+	},
+	"dependencies": {
+		"@tanishqkancharla/tandem-core": "workspace:*",
+		"@tanishqkancharla/tandem-server": "workspace:*",
+		"drizzle-orm": "^0.45.4",
+		"errore": "^0.14.1",
+		"pg": "^8.23.1",
+		"tuple-database": "github:tanishqkancharla/tuple-database#ebe6b84edbc1371d0eb611cf5ca28d2f76be38db"
+	},
+	"devDependencies": {
+		"@types/node": "^26.6.4",
+		"@types/pg": "^8.23.1",
+		"typescript": "^7.0.2",
+		"vitest": "^5.0.3"
+	}
+}
