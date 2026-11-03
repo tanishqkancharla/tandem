@@ -12,7 +12,7 @@ import {
 import {
 	createTandemEventStreamResponse,
 	TandemServer,
-	TandemServerJsonFileStorage,
+	type TandemServerStorageApi,
 } from "@tanishqkancharla/tandem-server"
 import * as errore from "errore"
 import { Hono } from "hono"
@@ -106,12 +106,10 @@ async function seedIfEmpty(server: TodoServer) {
 		)
 }
 
-async function createTodoServer({ filePath }: { filePath: string }) {
-	const server = new TandemServer({
-		schema,
-		relations: {},
-		storage: new TandemServerJsonFileStorage<TodoSchema>({ filePath }),
-	})
+type TodoStorage = TandemServerStorageApi<TodoSchema>
+
+async function createTodoServer({ storage }: { storage: TodoStorage }) {
+	const server = new TandemServer({ schema, relations: {}, storage })
 	const seeded = await seedIfEmpty(server)
 	if (!(seeded instanceof Error)) return server
 
@@ -122,8 +120,8 @@ async function createTodoServer({ filePath }: { filePath: string }) {
 	return seeded
 }
 
-export async function createTodoApp({ filePath }: { filePath: string }) {
-	const server = await createTodoServer({ filePath })
+export async function createTodoApp({ storage }: { storage: TodoStorage }) {
+	const server = await createTodoServer({ storage })
 	if (server instanceof Error) return server
 
 	// Long-lived streams would otherwise keep the HTTP server from closing.

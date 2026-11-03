@@ -71,7 +71,7 @@ Tandem is a pnpm (`pnpm@12.10.1`) + Turborepo monorepo of four publishable **lib
 
 - The default `pnpm test` runs fully in-process: `@tanishqkancharla/tandem-core` uses `fake-indexeddb`, and `@tanishqkancharla/tandem-server` covers `TandemServer` with memory and JSON-file storage.
 - `@tanishqkancharla/tandem-postgres` tests skip unless `TANDEM_POSTGRES_TEST_URL` points at a Postgres server whose user can create databases, for example `docker run -d -e POSTGRES_PASSWORD=tandem -p 5432:5432 postgres:17` and `TANDEM_POSTGRES_TEST_URL=postgres://postgres:tandem@localhost:5432/postgres pnpm test`. Each test creates and drops its own database.
-- The todo example has Hono and Vite development servers. Run its consumer-level tests with `pnpm --filter @tandem/example-todo-web test:e2e`.
+- The todo example has Hono and Vite development servers. Run its consumer-level tests with `pnpm --filter @tandem/example-todo-web test:e2e`. The server uses a JSON file, or Postgres when `DATABASE_URL` is set; point it at an empty database to run the tests on Postgres.
 - Sync gotcha when writing demos/tests: the sync engine only propagates data for scan windows a client is subscribed to. A client must `subscribe(...)` (or call `pullFromRemote()`) before committed records from another client sharing the same remote will appear locally.
 
 <!-- BEGIN:turborepo-agent-rules -->

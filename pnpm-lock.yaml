@@ -294,6 +294,9 @@ importers:
       '@tanishqkancharla/tandem-core':
         specifier: workspace:*
         version: link:../../../../packages/core
+      '@tanishqkancharla/tandem-postgres':
+        specifier: workspace:*
+        version: link:../../../../packages/postgres
       '@tanishqkancharla/tandem-server':
         specifier: workspace:*
         version: link:../../../../packages/server
@@ -303,10 +306,16 @@ importers:
       hono:
         specifier: ^4.13.13
         version: 4.13.13
+      pg:
+        specifier: ^8.23.1
+        version: 8.23.1
     devDependencies:
       '@types/node':
         specifier: ^26.6.4
         version: 26.6.4
+      '@types/pg':
+        specifier: ^8.23.1
+        version: 8.23.1
       tsx:
         specifier: ^4.23.15
         version: 4.23.15

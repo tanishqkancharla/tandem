@@ -1,6 +1,13 @@
 import { serve } from "@hono/node-server"
+import type { TodoSchema } from "@tandem/example-todo-shared"
+import {
+	TandemServerPostgresStorage,
+	tandemPostgresTuplesSql,
+} from "@tanishqkancharla/tandem-postgres"
+import { TandemServerJsonFileStorage } from "@tanishqkancharla/tandem-server"
 import * as errore from "errore"
 import { fileURLToPath } from "node:url"
+import pg from "pg"
 import { createTodoApp } from "./app.js"
 
 class TodoServerStartupError extends errore.createTaggedError({
@@ -14,14 +21,38 @@ function getPort() {
 	return new TodoServerStartupError({ operation: "read PORT" })
 }
 
+// Postgres when DATABASE_URL is set, otherwise a JSON file.
+async function openStorage() {
+	const databaseUrl = process.env.DATABASE_URL
+	if (!databaseUrl) {
+		const filePath =
+			process.env.TANDEM_TODO_DATA_FILE ??
+			fileURLToPath(new URL("../.data/tandem.json", import.meta.url))
+		return new TandemServerJsonFileStorage<TodoSchema>({ filePath })
+	}
+
+	const client = new pg.Client({ connectionString: databaseUrl })
+	const created = await client
+		.connect()
+		.then(() => client.query(tandemPostgresTuplesSql))
+		.finally(() => client.end())
+		.catch(
+			(cause) =>
+				new TodoServerStartupError({ operation: "create tables", cause }),
+		)
+	if (created instanceof Error) return created
+	return new TandemServerPostgresStorage<TodoSchema>({
+		connectionString: databaseUrl,
+	})
+}
+
 async function start() {
 	const port = getPort()
 	if (port instanceof Error) return port
 
-	const filePath =
-		process.env.TANDEM_TODO_DATA_FILE ??
-		fileURLToPath(new URL("../.data/tandem.json", import.meta.url))
-	const service = await createTodoApp({ filePath })
+	const storage = await openStorage()
+	if (storage instanceof Error) return storage
+	const service = await createTodoApp({ storage })
 	if (service instanceof Error) {
 		return new TodoServerStartupError({
 			operation: "open TandemServer",
