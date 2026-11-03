@@ -21,6 +21,9 @@ test("copy the setup prompt from the home page", async ({
 	await expect(
 		navigation.getByRole("link", { name: "GitHub", exact: true }),
 	).toHaveAttribute("href", "https://github.com/tanishqkancharla/tandem")
+	await expect(
+		page.getByRole("main").getByRole("link", { name: "Read the docs" }),
+	).toHaveAttribute("href", "https://docs.tandemsync.dev")
 	await page.getByRole("button", { name: "Add Tandem to my app" }).click()
 	await expect(page.getByRole("status")).toHaveText(
 		"Copied. Paste it into your coding agent.",

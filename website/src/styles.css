@@ -127,12 +127,29 @@ button {
 	color: var(--home-muted);
 	text-wrap: pretty;
 }
+.home-start {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 12px 24px;
+	margin-top: 40px;
+}
+.home-docs-link {
+	font-size: 15px;
+	font-weight: 500;
+	color: var(--home-link);
+	text-decoration: none;
+}
+.home-docs-link:hover {
+	color: inherit;
+	text-decoration: underline;
+	text-underline-offset: 4px;
+}
 .home-prompt {
 	display: inline-flex;
 	align-items: center;
 	gap: 10px;
 	height: 42px;
-	margin-top: 40px;
 	padding: 0 14px 0 16px;
 	border: 1px solid var(--home-border);
 	border-radius: 10px;
@@ -343,7 +360,7 @@ button {
 		margin-top: 24px;
 		font-size: 17px;
 	}
-	.home-prompt {
+	.home-start {
 		margin-top: 32px;
 	}
 }

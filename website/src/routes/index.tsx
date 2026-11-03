@@ -87,42 +87,47 @@ function Home() {
 					instantly, sync in the background, and your server stays the source of
 					truth.
 				</p>
-				<button
-					type="button"
-					className="home-prompt"
-					title={setupPrompt}
-					onClick={() => void copyPrompt()}
-				>
-					Add Tandem to my app
-					<span className="home-prompt-icon" aria-hidden="true">
-						{copy === "copied" ? (
-							<svg
-								width="15"
-								height="15"
-								viewBox="0 0 16 16"
-								fill="none"
-								stroke="currentColor"
-								strokeWidth="1.6"
-								strokeLinecap="round"
-								strokeLinejoin="round"
-							>
-								<path d="M3 8.5l3.2 3L13 4.5" />
-							</svg>
-						) : (
-							<svg
-								width="15"
-								height="15"
-								viewBox="0 0 16 16"
-								fill="none"
-								stroke="currentColor"
-								strokeWidth="1.4"
-							>
-								<rect x="5" y="5" width="8.5" height="8.5" rx="1.8" />
-								<path d="M10.5 5V3.8A1.8 1.8 0 0 0 8.7 2H3.8A1.8 1.8 0 0 0 2 3.8v4.9a1.8 1.8 0 0 0 1.8 1.8H5" />
-							</svg>
-						)}
-					</span>
-				</button>
+				<div className="home-start">
+					<button
+						type="button"
+						className="home-prompt"
+						title={setupPrompt}
+						onClick={() => void copyPrompt()}
+					>
+						Add Tandem to my app
+						<span className="home-prompt-icon" aria-hidden="true">
+							{copy === "copied" ? (
+								<svg
+									width="15"
+									height="15"
+									viewBox="0 0 16 16"
+									fill="none"
+									stroke="currentColor"
+									strokeWidth="1.6"
+									strokeLinecap="round"
+									strokeLinejoin="round"
+								>
+									<path d="M3 8.5l3.2 3L13 4.5" />
+								</svg>
+							) : (
+								<svg
+									width="15"
+									height="15"
+									viewBox="0 0 16 16"
+									fill="none"
+									stroke="currentColor"
+									strokeWidth="1.4"
+								>
+									<rect x="5" y="5" width="8.5" height="8.5" rx="1.8" />
+									<path d="M10.5 5V3.8A1.8 1.8 0 0 0 8.7 2H3.8A1.8 1.8 0 0 0 2 3.8v4.9a1.8 1.8 0 0 0 1.8 1.8H5" />
+								</svg>
+							)}
+						</span>
+					</button>
+					<a className="home-docs-link" href="https://docs.tandemsync.dev">
+						Read the docs <span aria-hidden="true">→</span>
+					</a>
+				</div>
 				<p className="home-prompt-status" role="status">
 					{copy === "copied"
 						? "Copied. Paste it into your coding agent."
