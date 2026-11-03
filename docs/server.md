@@ -143,11 +143,72 @@ Storage adapters implement `TandemServerStorageApi`:
 interface TandemServerStorageApi<Schema> {
 	scan(args?: ScanStorageArgs): Promise<TandemTuple<Schema>[]>
 	commit(writes: WriteOps<TandemTuple<Schema>>): Promise<void>
+	subscribe?(onChange: () => void): () => void
 	close(): Promise<void>
 }
 ```
 
-`TandemServerJsonFileStorage` keeps tuples in memory and writes the whole file on each commit. It suits development and examples, not production.
+`scan` returns the tuples in a key range, in tuple order. `commit` applies sets and removes together. `subscribe`, when present, reports changes written by others, so the server can poke its clients.
+
+`TandemServerJsonFileStorage` reads and parses the whole file on every scan and commit, and rewrites it on every commit. It suits development and examples, not production.
+
+### Postgres
+
+`TandemServerPostgresStorage` from `@tanishqkancharla/tandem-postgres` keeps tuples in one Postgres table. A scan reads only the rows in its range, through the table's primary key.
+
+```sh
+pnpm add @tanishqkancharla/tandem-postgres
+```
+
+Create the `tandem_tuples` table before the server starts. With drizzle-kit, export `tandemPostgresTuples` from your Drizzle schema and generate a migration as usual:
+
+```ts
+// db/schema.ts
+export { tandemPostgresTuples } from "@tanishqkancharla/tandem-postgres"
+```
+
+Without drizzle-kit, run `tandemPostgresTuplesSql`, which creates the table if it does not exist:
+
+```ts
+import pg from "pg"
+import { tandemPostgresTuplesSql } from "@tanishqkancharla/tandem-postgres"
+
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL })
+await pool.query(tandemPostgresTuplesSql)
+```
+
+Pass a connection string, and the storage opens a pool and ends it on close:
+
+```ts
+import { TandemServer } from "@tanishqkancharla/tandem-server"
+import { TandemServerPostgresStorage } from "@tanishqkancharla/tandem-postgres"
+
+const server = new TandemServer({
+	schema,
+	relations: {},
+	storage: new TandemServerPostgresStorage<TodoSchema>({
+		connectionString: process.env.DATABASE_URL!,
+	}),
+})
+```
+
+Or pass your app's `pg` pool, which the storage leaves open on close. A Drizzle node-postgres database exposes its pool as `db.$client`:
+
+```ts
+const storage = new TandemServerPostgresStorage<TodoSchema>({
+	pool: db.$client,
+})
+```
+
+Several server processes can share one database. Each commit sends a Postgres notification once it commits, and every other `TandemServerPostgresStorage` on that database passes it to its server, which pokes its clients. A storage ignores its own notifications, since its server pokes for its own commits. The storage holds one pool connection to listen while its server is open. If that connection drops, it listens again after a second and pokes clients once, since it may have missed commits in between.
+
+Limits:
+
+- One Tandem schema per database (or per `search_path`): the table and notification channel are both named `tandem_tuples`.
+- Postgres caps index entries at about 2.7 kB, so a commit with a longer encoded key fails. Record IDs are far shorter in practice.
+- Keys `-0` and `0` are different keys, and `NaN` keys have no stable order.
+- Notifications name no records, so other servers send bare pokes and their clients pull. Writes made to the table outside `TandemServerPostgresStorage` do not notify.
+- Values are stored as `json`, as written. Do not query or change the table directly; its keys are encoded.
 
 ## Limitations
 

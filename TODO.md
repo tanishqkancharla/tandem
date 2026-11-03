@@ -14,7 +14,6 @@
 - Decide whether the next protocol keeps the current `remote` terminology.
 - Specify reset versus incremental pull behavior.
 - Specify retry and idempotency semantics for pushes and pulls.
-- Build a production Drizzle `TandemServerStorageApi` adapter.
 
 ## Testing
 

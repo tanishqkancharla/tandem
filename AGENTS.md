@@ -6,6 +6,7 @@ Tandem is a sync engine and database for collaborative apps. Each client gets a 
 packages/
   core/        @tanishqkancharla/tandem-core: client database, schema, queries, sync engine
   server/      @tanishqkancharla/tandem-server: server database and storage adapters
+  postgres/    @tanishqkancharla/tandem-postgres: Postgres storage for the server
   react/       @tanishqkancharla/tandem-react: React provider and hooks
   gatekeeper/  @tanishqkancharla/gatekeeper: test harness that controls call order and faults
 dst/           deterministic simulation tests
@@ -66,9 +67,10 @@ This codebase uses the [errore.org](https://errore.org) convention. Always read 
 
 ## Cursor Cloud specific instructions
 
-Tandem is a pnpm (`pnpm@12.10.1`) + Turborepo monorepo of three publishable **libraries** (`@tanishqkancharla/tandem-core`, `@tanishqkancharla/tandem-server`, `@tanishqkancharla/tandem-react`) plus examples. Standard commands live in the root `package.json` and delegate to Turbo: `pnpm build`, `pnpm lint`, `pnpm type-check`, `pnpm format`, `pnpm test`.
+Tandem is a pnpm (`pnpm@12.10.1`) + Turborepo monorepo of four publishable **libraries** (`@tanishqkancharla/tandem-core`, `@tanishqkancharla/tandem-server`, `@tanishqkancharla/tandem-postgres`, `@tanishqkancharla/tandem-react`) plus examples. Standard commands live in the root `package.json` and delegate to Turbo: `pnpm build`, `pnpm lint`, `pnpm type-check`, `pnpm format`, `pnpm test`.
 
 - The default `pnpm test` runs fully in-process: `@tanishqkancharla/tandem-core` uses `fake-indexeddb`, and `@tanishqkancharla/tandem-server` covers `TandemServer` with memory and JSON-file storage.
+- `@tanishqkancharla/tandem-postgres` tests skip unless `TANDEM_POSTGRES_TEST_URL` points at a Postgres server whose user can create databases, for example `docker run -d -e POSTGRES_PASSWORD=tandem -p 5432:5432 postgres:17` and `TANDEM_POSTGRES_TEST_URL=postgres://postgres:tandem@localhost:5432/postgres pnpm test`. Each test creates and drops its own database.
 - The todo example has Hono and Vite development servers. Run its consumer-level tests with `pnpm --filter @tandem/example-todo-web test:e2e`.
 - Sync gotcha when writing demos/tests: the sync engine only propagates data for scan windows a client is subscribed to. A client must `subscribe(...)` (or call `pullFromRemote()`) before committed records from another client sharing the same remote will appear locally.
 

@@ -20,12 +20,13 @@ Tandem gives each client a local, queryable database. Writes apply locally first
 
 ## Packages
 
-| Package                                               | Description                                        |
-| ----------------------------------------------------- | -------------------------------------------------- |
-| [`@tanishqkancharla/tandem-core`](packages/core)      | Client database, schema, queries, and sync engine  |
-| [`@tanishqkancharla/tandem-server`](packages/server)  | Server database and storage adapters               |
-| [`@tanishqkancharla/tandem-react`](packages/react)    | React provider and hooks                           |
-| [`@tanishqkancharla/gatekeeper`](packages/gatekeeper) | Test harness for controlling call order and faults |
+| Package                                                  | Description                                        |
+| -------------------------------------------------------- | -------------------------------------------------- |
+| [`@tanishqkancharla/tandem-core`](packages/core)         | Client database, schema, queries, and sync engine  |
+| [`@tanishqkancharla/tandem-server`](packages/server)     | Server database and storage adapters               |
+| [`@tanishqkancharla/tandem-postgres`](packages/postgres) | Postgres storage for the server                    |
+| [`@tanishqkancharla/tandem-react`](packages/react)       | React provider and hooks                           |
+| [`@tanishqkancharla/gatekeeper`](packages/gatekeeper)    | Test harness for controlling call order and faults |
 
 ## Installation
 
@@ -33,6 +34,7 @@ Tandem gives each client a local, queryable database. Writes apply locally first
 pnpm add @tanishqkancharla/tandem-core
 pnpm add @tanishqkancharla/tandem-react # React bindings
 pnpm add @tanishqkancharla/tandem-server # Server
+pnpm add @tanishqkancharla/tandem-postgres # Postgres storage for the server
 ```
 
 ## Example

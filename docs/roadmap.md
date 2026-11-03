@@ -7,9 +7,9 @@ Short-term cleanup tasks live in [`TODO.md`](https://github.com/tanishqkancharla
 - Relational query examples
   - [ ] Thread detail query
 - Server
-  - [ ] Database-backed invalidation for server storage adapters. Pokes currently come only from the `TandemServer` instance that committed a write. Storage adapters should report database-originated changes, for example through Postgres `LISTEN`/`NOTIFY` and triggers, so multi-process servers and direct database writes can poke subscribed clients. Start with collection-level invalidation, then refine to query-aware matching.
+  - [ ] Database-backed invalidation for server storage adapters. `TandemServerPostgresStorage` reports writes from other server processes through Postgres `LISTEN`/`NOTIFY`, as bare pokes. Next: report direct database writes (for example with triggers), then name changed records so pokes can match queries.
   - [ ] Persist sync metadata: revisions, acknowledged mutation IDs, scan windows, and synced record keys
-  - [ ] Production Drizzle storage adapter
+  - [x] Production Postgres storage adapter, built on Drizzle
 
 ## Planned
 
