@@ -22,6 +22,8 @@ const server = new TandemServer({
 })
 ```
 
+`TandemServerJsonFileStorage` keeps every tuple in one JSON file. Use it for development and examples. For real data, write an adapter for your app's database; see [Storage adapters](storage-adapters.md).
+
 Call `server.close()` on shutdown to close storage.
 
 Register shared mutators once in the constructor with `mutators`; optional `hooks` add server-only authorization and post-commit work. `server.mutate.name(args)` retains each registered mutation's argument type. Pass authenticated request context to `server.push(request, { context })`; the hooks factory receives it for that request. See [Agent chat](agent-chat.md) for the full pattern.
@@ -147,11 +149,13 @@ interface TandemServerStorageApi<Schema> {
 }
 ```
 
-`TandemServerJsonFileStorage` keeps tuples in memory and writes the whole file on each commit. It suits development and examples, not production.
+The app supplies storage. Read [Storage adapters](storage-adapters.md) for the full contract, database integration, query execution, memory use, and adapter validation.
+
+`TandemServerJsonFileStorage` reads and parses the whole file on every scan and commit, then rewrites it on each commit. It suits development and examples, not production.
 
 ## Limitations
 
-- Records are durable when storage is durable. Sync metadata (revisions, acknowledged mutation IDs, client scan windows) lives in the server process and resets on restart.
+- Records and acknowledged mutation IDs are durable when storage is durable. Cookies, revisions, client scan windows, and previously sent record IDs live in the server process and reset on restart.
 - Pokes come from the `TandemServer` instance that committed the write, or from storage `subscribe` notifications. Writes made by other processes or directly to the database do not poke clients unless storage reports them. Event streams connected to another process miss those pokes and rely on the client's fallback pull. Storage notifications are bare pokes, without records.
 - Appends assume the server knows every write to a record. When storage reports another process's write through `subscribe`, the server makes appends wait for a pull read after it. A write that storage does not report can let a client extend text that another process replaced, until its next pull.
 - Revisions are per instance. If a client's pokes and pulls reach different instances, live records shown from one instance's pokes are dropped by the next pull from another.

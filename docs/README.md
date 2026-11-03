@@ -32,6 +32,7 @@ The workspace applies `patches/@holocron.so__vite@0.38.0.patch` to render Holocr
 - [Quickstart](quickstart.md): build a synced todo app with React
 - [Queries](queries.md): query options, relations, and subscriptions
 - [Server](server.md): run `TandemServer` and connect clients to it
+- [Storage adapters](storage-adapters.md): connect an app's database and understand query execution and memory use
 - [Agent chat](agent-chat.md): stream an agent's reply to every viewer with plain subscriptions
 
 ## Concepts

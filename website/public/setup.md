@@ -49,7 +49,7 @@ Create one `TandemServer` and add two routes next to the existing ones:
 - `POST /api/tandem` with body `{ action: "push" | "pull", args }`. Respond with `await server.push(args)` or `await server.pull(args)`.
 - `GET /api/tandem/events?clientId=...`. Return `createTandemEventStreamResponse({ remote: server, clientId, schema, signal })`.
 
-`TandemServerJsonFileStorage` is fine for development. It is not meant for production; tell the user and point them to [Server storage](https://docs.tandemsync.dev/server#storage) for writing an adapter over their database. Run a single `TandemServer` instance, and apply the project's existing authentication to both routes.
+Use `TandemServerJsonFileStorage` to get the project running. It keeps all data in one JSON file and is not meant for production. Tell the user that Tandem needs a storage adapter for their own database before it stores real data, and point them to [Storage adapters](https://docs.tandemsync.dev/storage-adapters). If the project already has a database, offer to write that adapter. Run a single `TandemServer` instance, and apply the project's existing authentication to both routes.
 
 ## 5. Create the client
 
