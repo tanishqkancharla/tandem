@@ -76,6 +76,7 @@ Visit [tandemsync.dev](https://tandemsync.dev) or read the guides at [docs.tande
 - [Quickstart](docs/quickstart.md): build a synced todo app
 - [Queries](docs/queries.md): query options and relations
 - [Server](docs/server.md): run `TandemServer` and connect clients to it
+- [Storage adapters](docs/storage-adapters.md): connect `TandemServer` to your app's database
 - [Agent chat](docs/agent-chat.md): stream an agent's reply to every viewer with plain subscriptions
 - [How sync works](docs/sync.md): mutations, push, pull, and rebase
 - [Custom remotes](docs/custom-remote.md): implement the `RemoteApi` contract yourself

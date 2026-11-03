@@ -198,6 +198,8 @@ const server = new TandemServer({
 // GET /api/tandem/events?clientId=... -> return the response below
 ```
 
+`TandemServerJsonFileStorage` keeps all data in one JSON file, which is enough for this guide. Before storing real data, connect Tandem to your app's database with a [storage adapter](storage-adapters.md).
+
 The events route streams pull hints to the browser as server-sent events. It returns a standard `Response`, so fetch-style frameworks such as Hono can return it directly:
 
 ```ts

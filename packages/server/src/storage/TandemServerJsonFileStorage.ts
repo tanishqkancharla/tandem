@@ -49,6 +49,11 @@ function isNotFoundError(value: unknown): boolean {
 	return isRecord(value) && value.code === "ENOENT"
 }
 
+/**
+ * Keeps every tuple in one JSON file. It reads the whole file on each scan and
+ * commit and rewrites it on each commit, so use it for development, tests, and
+ * examples. Apps that store real data supply an adapter for their own database.
+ */
 export class TandemServerJsonFileStorage<
 	Schema extends AnySchema = AnySchema,
 > implements TandemServerStorageApi<Schema> {
