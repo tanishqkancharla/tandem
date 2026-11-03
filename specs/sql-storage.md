@@ -322,9 +322,9 @@ Verification: the Cloudflare example passes lint, type checking, Wrangler deploy
 
 ```callstack
  Worker.fetch # route both HTTP and SSE to the same object [[cloudflare-worker:new:122-128]]
- └── SyncObject [[cloudflare-worker:new:47-120]]
-    ├── TandemServerSqlStorage # read and commit using the D1 binding [[cloudflare-worker:new:51-86]]
-    └── createTandemEventStreamResponse # reconnect through existing SSE [[cloudflare-worker:new:89-101]]
+ └── SyncObject [[cloudflare-worker:new:51-120]]
+    ├── TandemServerSqlStorage # read and commit using the D1 binding [[cloudflare-worker:new:58-88]]
+    └── createTandemEventStreamResponse # reconnect through existing SSE [[cloudflare-worker:new:94-102]]
 ```
 
 ```source-diff:cloudflare-worker:examples/cloudflare/apps/server/src/index.ts
