@@ -42,6 +42,18 @@ export type RuntimeFieldDefinition<Value = unknown> = {
 
 export type AnyRuntimeFieldDefinition = RuntimeFieldDefinition<any>
 
+/**
+ * Named secondary indexes, each a list of fields. Queries that filter on the
+ * leading fields, or order by the next one, read index entries instead of
+ * the whole collection.
+ */
+export type CollectionIndexes<Record> = {
+	readonly [name: string]: readonly [
+		keyof Record & string,
+		...(keyof Record & string)[],
+	]
+}
+
 export type CollectionDefinition<
 	CollectionRecord extends AnyCollectionSchema = AnyCollectionSchema,
 	CollectionCodec = unknown,
@@ -51,6 +63,8 @@ export type CollectionDefinition<
 	readonly codec?: CollectionCodec
 	readonly shape?: globalThis.Record<string, AnyRuntimeFieldDefinition>
 	readonly fields?: readonly (keyof CollectionRecord & string)[]
+	/** Checked against the record's fields where `collection` receives them. */
+	readonly indexes?: { readonly [name: string]: readonly string[] }
 	readonly [collectionRecord]?: CollectionRecord
 }
 
@@ -149,6 +163,7 @@ export type CollectionOptions<
 > = {
 	codec?: PartialObjectCodec<Record, StorageValue>
 	fields?: readonly (keyof Record & string)[]
+	indexes?: CollectionIndexes<Record>
 }
 
 export type CollectionShape = Record<string, AnyRuntimeFieldDefinition> & {
@@ -242,6 +257,7 @@ export function collection<
 >(options: {
 	codec: CollectionCodec
 	fields?: readonly (keyof Decoded<CollectionCodec> & string)[]
+	indexes?: CollectionIndexes<Decoded<CollectionCodec>>
 }): CollectionDefinition<
 	Decoded<CollectionCodec> & {
 		id: NonNullable<Decoded<CollectionCodec>["id"]>
@@ -255,6 +271,7 @@ export function collection<
 	shape: Shape,
 	options?: {
 		codec?: PartialObjectCodec<RecordFromShape<Shape>, StorageValue>
+		indexes?: CollectionIndexes<RecordFromShape<Shape>>
 	},
 ): CollectionDefinition<
 	RecordFromShape<Shape>,
@@ -273,7 +290,10 @@ export function collection<
 	shapeOrOptions:
 		| CollectionShape
 		| CollectionOptions<Record, StorageValue> = {},
-	options: { codec?: PartialObjectCodec<Record, StorageValue> } = {},
+	options: {
+		codec?: PartialObjectCodec<Record, StorageValue>
+		indexes?: CollectionIndexes<Record>
+	} = {},
 ): CollectionDefinition<Record, PartialObjectCodec<Record, StorageValue>> {
 	if (isCollectionShape(shapeOrOptions)) {
 		return {
@@ -281,6 +301,7 @@ export function collection<
 			codec: options.codec,
 			shape: shapeOrOptions,
 			fields: Object.keys(shapeOrOptions) as (keyof Record & string)[],
+			...(options.indexes && { indexes: options.indexes }),
 		}
 	}
 
@@ -288,6 +309,7 @@ export function collection<
 		kind: "collection",
 		codec: shapeOrOptions.codec,
 		fields: shapeOrOptions.fields,
+		...(shapeOrOptions.indexes && { indexes: shapeOrOptions.indexes }),
 	}
 }
 

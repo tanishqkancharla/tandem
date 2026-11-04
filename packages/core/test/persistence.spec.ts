@@ -1550,6 +1550,35 @@ describe("TandemClient persistence", () => {
 		subscription.destroy()
 	})
 
+	test("index entries stay in memory and never reach client storage", async ({
+		makeStorage,
+		logger,
+	}) => {
+		const indexedSchema = defineSchema({
+			todos: collection<TestsSchema["todos"]>({
+				fields: ["id", "text", "done", "priority"],
+				indexes: { byPriority: ["done", "priority"] },
+			}),
+		})
+		const storage = makeStorage<TestsSchema>({ schema: indexedSchema })
+		const client = new TandemClient<TestsSchema>({
+			schema: indexedSchema,
+			clientStorage: storage,
+			clientStorageWriteInterval: 0,
+			logger,
+		})
+		await client.ready
+		const tx = client.transact()
+		tx.set("todos", todo("todo-1"))
+		await client.commit(tx)
+		await client.flushClientStorage()
+
+		// The saved namespaces are those of the client tuple model, without index entries.
+		const namespaces: string[] = (await storage.scan()).map(({ key }) => key[0])
+		expect(namespaces).toContain("record")
+		expect(namespaces).not.toContain("index")
+	})
+
 	test("loads cached data before reconciling with a newer server", async ({
 		logger,
 		makeStorage,

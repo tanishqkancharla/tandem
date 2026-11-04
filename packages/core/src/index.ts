@@ -82,6 +82,7 @@ export type {
 	CollectionIdPrefix,
 	CollectionIdTuple,
 	CollectionName,
+	CollectionIndexes,
 	CollectionOptions,
 	CollectionScanArgs,
 	CollectionShape,

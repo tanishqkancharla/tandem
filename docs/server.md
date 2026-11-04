@@ -151,7 +151,18 @@ interface TandemServerStorageApi<Schema> {
 }
 ```
 
-`TandemServerJsonFileStorage` keeps tuples in memory and writes the whole file on each commit. It suits development and examples, not production.
+`TandemTuple<Schema>` covers every tuple Tandem stores, so an adapter stores keys and values as given and returns them from `scan` in tuple-database key order:
+
+- `["record", collection, ...id]` holds each record.
+- `["client", clientId]` holds the last mutation applied for each client.
+- `["index", collection, name, ...values, ...id]`, with a `null` value, is an index entry, written in the same commit as its record when the schema declares indexes. See [Indexes](queries.md#indexes).
+- `["indexes"]` records which index definitions the entries were built for.
+
+The adapter still receives only key and range reads, never queries. Narrow reads help an adapter that can read a key range without reading everything; `TandemServerJsonFileStorage` keeps tuples in memory and parses and rewrites the whole file on each commit, so it gains nothing from them. It suits development and examples, not production.
+
+### Writes outside Tandem
+
+Tandem writes index entries with records. A process that writes records to storage directly leaves the entries stale. If storage reports the write through `subscribe`, the server rebuilds every entry before its next read or write. Otherwise call `await server.rebuildIndexes()` after such writes. A server also rebuilds entries on its first operation when the stored definitions differ from the schema's. Schemas without indexes store no entries and need none of this.
 
 ## Limitations
 

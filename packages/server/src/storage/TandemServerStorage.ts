@@ -4,6 +4,10 @@ import type {
 	MutationId,
 	SchemaToTupleSchema,
 } from "@tanishqkancharla/tandem-core"
+import type {
+	TandemIndexMetadataTuple,
+	TandemIndexTuple,
+} from "@tanishqkancharla/tandem-core/internal"
 import type { ScanStorageArgs, WriteOps } from "tuple-database"
 
 export type TandemClientTuple = {
@@ -11,9 +15,17 @@ export type TandemClientTuple = {
 	value: { lastMutationId: MutationId }
 }
 
+export type { TandemIndexMetadataTuple, TandemIndexTuple }
+
+/**
+ * Every tuple Tandem stores: records, client acknowledgements, and, for
+ * schemas that declare indexes, index entries and their definitions.
+ */
 export type TandemTuple<Schema extends AnySchema> =
 	| SchemaToTupleSchema<Schema>
 	| TandemClientTuple
+	| TandemIndexTuple
+	| TandemIndexMetadataTuple
 
 export interface TandemServerStorageApi<Schema extends AnySchema> {
 	scan(args?: ScanStorageArgs): Promise<TandemTuple<Schema>[]>

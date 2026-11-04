@@ -201,12 +201,31 @@ Equality in `where` becomes strict: primitives compare with `===`, objects and a
 
 ### Phase 5: Index schema and write lifecycle
 
-Collections declare indexes. Tandem writes index tuples with record writes in the same tuple commit, on the server through the app's storage adapter and on the client in memory, rebuilt on hydration.
+Collections declare indexes. Tandem writes index entries with record writes in the same tuple commit, on the server through the app's storage adapter and on the client in memory, rebuilt on hydration.
 
-- [ ] `collection(..., { indexes })` and typing.
-- [ ] Index tuples `["index", collection, name, ...values, ...id]` maintained by a tuple-database wrapper around commit.
-- [ ] Server index metadata: rebuild on definition change, after storage notifications, and through `TandemServer.rebuildIndexes()` after unnotified outside writes.
-- [ ] Adapter typing and docs.
+```callstack
+ Database (client) [[packages/core/src/Database.ts]]
++└── TupleDatabaseClient(TupleDatabaseWithIndexes(TupleDatabase(memory)))
++    └── commit(writes): read each indexed record's old value, add entry removals and inserts
+ TandemServer [[packages/server/src/TandemServer.ts]]
++├── AsyncTupleDatabaseWithIndexes(AsyncTupleDatabase(storage))
++└── run(op): checkIndexes()   # first op: compare ["indexes"]; rebuild if different or stale
+```
+
+```
+entry key: ["index", collection, name, ...indexValue(field) for each field, ...id]  value: null
+indexValue: string | finite number (-0 → 0) | boolean; anything else → null (sorts first)
+server: ["indexes"] = { definitions }
+storage notification → stale → rebuild before the next operation
+TandemServer.rebuildIndexes() → rebuild now (unreported outside writes)
+```
+
+- [x] `collection(..., { indexes })` with typed field names and runtime validation.
+- [x] Entry maintenance in one wrapper around tuple-database commit, client and server.
+- [x] Client persistence drops entries; hydration rebuilds them.
+- [x] Server definitions check, rebuild on change, on notification, and through `rebuildIndexes()`.
+- [x] `TandemTuple` includes entry and definition tuples; storage docs describe them.
+- [x] Tests: entries after server transactions, updates, removes, pushes, and named mutators; rebuild on new and renamed definitions; rebuild after a reported outside write and through `rebuildIndexes()`; unknown index fields; client storage never holds entries.
 
 ### Phase 6: Indexed execution
 

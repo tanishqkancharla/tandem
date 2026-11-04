@@ -1,6 +1,7 @@
 import * as errore from "errore"
 import {
 	InMemoryTupleStorage,
+	type KeyValuePair,
 	type ReadOnlyTupleDatabaseClientApi,
 	subscribeQuery,
 	TupleDatabase,
@@ -57,6 +58,7 @@ import type { MutatorCall } from "./mutator/Mutator.js"
 import type { LoggerApi } from "./utils/Logger.js"
 import type { RngApi } from "./utils/randomId.js"
 import { isEqual } from "./utils/objectUtils.js"
+import { schemaIndexes, TupleDatabaseWithIndexes } from "./query/indexes.js"
 import { ThrottleQueue } from "./utils/ThrottleQueue.js"
 import { Timer, type TimerApi } from "./utils/Timer.js"
 import { tag, unreachable, type Unsubscribe } from "./utils/typeUtils.js"
@@ -101,6 +103,17 @@ function applyOp<Schema extends AnySchema>(
 		}
 		default:
 			return unreachable(op)
+	}
+}
+
+/** Index entries are rebuilt on hydration, so storage never holds them. */
+function withoutIndexEntries<Tuple extends KeyValuePair>(
+	writes: WriteOps<Tuple>,
+): WriteOps<Tuple> {
+	const isEntry = (key: readonly unknown[]) => key[0] === "index"
+	return {
+		set: writes.set?.filter(({ key }) => !isEntry(key)),
+		remove: writes.remove?.filter((key) => !isEntry(key)),
 	}
 }
 
@@ -303,8 +316,13 @@ export class Database<
 			: undefined
 
 		this.rng = rng
+		// Index entries live only in memory: every record write, hydration
+		// included, writes them in the same commit.
 		this.tupleDb = new TupleDatabaseClient(
-			new TupleDatabase(new InMemoryTupleStorage(), { rng }),
+			new TupleDatabaseWithIndexes({
+				database: new TupleDatabase(new InMemoryTupleStorage(), { rng }),
+				indexes: schemaIndexes(schema),
+			}),
 		)
 
 		const clientStorageWriteTimer =
@@ -321,7 +339,10 @@ export class Database<
 			// Hydration restores an existing checkpoint; do not enqueue it for saving again.
 			if (this.clientStorage)
 				this.tupleDb.subscribe({}, (writes) => {
-					this.storageWrites = WriteOpsApi.merge(this.storageWrites, writes)
+					this.storageWrites = WriteOpsApi.merge(
+						this.storageWrites,
+						withoutIndexEntries(writes),
+					)
 					void this.persistClientStorage()?.then(
 						(result) => {
 							if (result instanceof Error)

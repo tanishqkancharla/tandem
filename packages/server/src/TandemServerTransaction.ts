@@ -214,10 +214,18 @@ export class TandemServerTransaction<
 	 * Staged record writes. Set values are full records, including merged updates.
 	 */
 	recordWrites() {
-		const { set, remove } = this.tupleDbTx.writes
+		// The root spans every namespace; the record prefix fixes the shape.
+		const { set, remove } = this.tupleDbTx.writes as unknown as {
+			set: { key: readonly unknown[]; value: unknown }[]
+			remove: (readonly unknown[])[]
+		}
 		return {
-			set: set.filter(({ key }) => key[0] === "record"),
-			remove: remove.filter((key) => key[0] === "record"),
+			set: set.filter(
+				({ key }) => key[0] === "record",
+			) as SchemaToTupleSchema<Schema>[],
+			remove: remove.filter(
+				(key) => key[0] === "record",
+			) as SchemaToTupleSchema<Schema>["key"][],
 		}
 	}
 
