@@ -1481,6 +1481,75 @@ describe("TandemClient persistence", () => {
 		expect(persistedEvents[0]?.startAt).toBeInstanceOf(EventStart)
 	})
 
+	test("a reopened app's first pull restores records its saved replica lost", async ({
+		logger,
+		makeStorage,
+		rng,
+		server,
+	}) => {
+		const dbName = rng.next("diverged-cache")
+		const kept = todo("todo-1", { text: "Unchanged on the server" })
+
+		// The first app instance syncs the record and saves the pull's cookie.
+		// It stops without disconnecting, so the server keeps its view.
+		{
+			const firstStorage = makeStorage<TestsSchema>({ dbName })
+			const { clients, gatekeeper } = createPersistentSyncGatekeeper({
+				server,
+				logger,
+				rng,
+				client1Storage: firstStorage,
+			})
+			await using cleanup = new errore.AsyncDisposableStack()
+			await using harness = gatekeeper
+			for (const client of clients) {
+				await client.ready
+				await client.connect()
+			}
+			cleanup.defer(() => clients[1]?.disconnect())
+			const subscription = harness.client1.subscribe({ collection: "todos" })
+			const seedTx = harness.client2.transact()
+			seedTx.set("todos", kept)
+			await (
+				await harness.client2.commit(seedTx)
+			).result
+			await (
+				await harness.client1.pullFromRemote()
+			).result
+			await expectQuery(harness.client1, {
+				collection: "todos",
+			}).toResolveTo([kept])
+			await (
+				await harness.client1.flushClientStorage()
+			).result
+			subscription.destroy()
+			await firstStorage.close()
+		}
+
+		// The saved replica loses the record, as when an older save lands late.
+		const secondStorage = makeStorage<TestsSchema>({ dbName })
+		await secondStorage.commit({ remove: [["record", "todos", "todo-1"]] })
+		const { clients, gatekeeper } = createPersistentSyncGatekeeper({
+			server,
+			logger,
+			rng,
+			client1Storage: secondStorage,
+		})
+		await using cleanup = new errore.AsyncDisposableStack()
+		await using harness = gatekeeper
+		await Promise.all(clients.map((client) => client.ready))
+		expect(harness.client1.query({ collection: "todos" })).toEqual([])
+
+		// The server has not changed the record, yet the first pull sends it again.
+		const subscription = harness.client1.subscribe({ collection: "todos" })
+		await (
+			await harness.client1.connect()
+		).result
+		cleanup.defer(() => clients[0]?.disconnect())
+		expect(harness.client1.query({ collection: "todos" })).toEqual([kept])
+		subscription.destroy()
+	})
+
 	test("loads cached data before reconciling with a newer server", async ({
 		logger,
 		makeStorage,

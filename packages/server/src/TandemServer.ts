@@ -57,6 +57,10 @@ import type {
 	WriteOps,
 } from "tuple-database"
 import { LivePayloadBuffer } from "./LivePayloadBuffer.js"
+import {
+	recordFingerprint,
+	type RecordFingerprint,
+} from "./recordFingerprint.js"
 import { TandemServerError } from "./TandemServerError.js"
 import { TandemServerTransaction } from "./TandemServerTransaction.js"
 import type {
@@ -106,12 +110,22 @@ type SyncedRecordKey<
 	}
 }[Collection]
 
+type ViewRecord<Schema extends AnySchema> = {
+	key: SyncedRecordKey<Schema>
+	/** Undefined for values without a canonical form, which always resend. */
+	fingerprint: RecordFingerprint | undefined
+}
+
 type SyncClientState<Schema extends AnySchema> = {
 	// Reconnects and tabs sharing a client identity can overlap connections.
 	pokes: Set<ClientApi<Schema>["poke"]>
 	cookie?: Cookie
-	/** Records the latest pull returned, by record ID. */
-	syncedRecords?: Map<string, SyncedRecordKey<Schema>>
+	/**
+	 * Records the latest pull put in the client's view, by record ID, with a
+	 * fingerprint of the value it sent. A pull with this view's cookie sends
+	 * only records that are new or whose fingerprint changed.
+	 */
+	view?: Map<string, ViewRecord<Schema>>
 	/** A copy of the latest pull's window. Live pokes only carry records inside it. */
 	scanWindow?: ScanWindow<Schema>
 	/** Record IDs sent in poke payloads since the latest pull. */
@@ -898,7 +912,8 @@ export class TandemServer<
 		const lastMutationId = await this.readLastMutationId(clientId, "pull")
 		if (lastMutationId instanceof Error) return lastMutationId
 
-		const shouldReset = cookie === undefined || cookie !== client.cookie
+		const previous =
+			cookie !== undefined && cookie === client.cookie ? client.view : undefined
 		const records = await executeScanWindowAsync<Schema, Relations>(
 			this.recordDb,
 			this.relations,
@@ -908,20 +923,22 @@ export class TandemServer<
 			return { error: "invalid-request", message: records.message }
 		}
 		if (records instanceof Error) return records
-
-		const currentRecords = new Map(
-			records.map((record) => {
-				const key = scanWindowRecordToKey(record)
-				return [recordId(key), key]
-			}),
-		)
-		const remove: PatchRemoveOp<Schema>[] = shouldReset
-			? []
-			: [...(client.syncedRecords ?? [])]
-					.filter(([id]) => !currentRecords.has(id))
-					.map(([, key]) => key)
+		const view = new Map<string, ViewRecord<Schema>>()
+		const set: typeof records = []
+		for (const record of records) {
+			const key = scanWindowRecordToKey(record)
+			const id = recordId(key)
+			const fingerprint = recordFingerprint(record.value)
+			view.set(id, { key, fingerprint })
+			const sent = previous?.get(id)?.fingerprint
+			// A record the view lacked, or whose value changed, goes in the patch.
+			if (sent === undefined || sent !== fingerprint) set.push(record)
+		}
+		const remove: PatchRemoveOp<Schema>[] = previous
+			? [...previous].filter(([id]) => !view.has(id)).map(([, { key }]) => key)
+			: []
 		const nextCookie = tag<Cookie>(this.rng?.randomId() ?? crypto.randomUUID())
-		client.syncedRecords = currentRecords
+		client.view = view
 		client.cookie = nextCookie
 		// Only a connected client has a view. A pull that runs after the last
 		// connection closed must not record one for a later reconnect.
@@ -935,7 +952,7 @@ export class TandemServer<
 
 		return {
 			cookie: nextCookie,
-			patch: { ...(shouldReset ? { reset: true } : {}), set: records, remove },
+			patch: { ...(previous ? {} : { reset: true }), set, remove },
 			lastMutationId,
 			// The run queue orders pulls after every earlier commit.
 			revision: this.revision,
@@ -1145,7 +1162,7 @@ export class TandemServer<
 		// Only name records the client has, or will have from its next payload;
 		// others must stay invisible.
 		const sent = (id: string) =>
-			client.syncedRecords?.has(id) || client.liveRecordIds.has(id)
+			client.view?.has(id) || client.liveRecordIds.has(id)
 		const known = (id: string) => sent(id) || client.buffer.carries(id)
 		const inViewIds = new Set<string>()
 		for (const { collection, value } of inView) {

@@ -656,7 +656,7 @@ test("remote pushes preserve operation order and acknowledge the last mutation o
 		},
 	])
 
-	// Unchanged pulls resend current records and still carry the acknowledgement.
+	// An unchanged pull sends no records and still carries the acknowledgement.
 	const unchanged = await server.pull({
 		clientId,
 		cookie: acknowledged.cookie,
@@ -665,21 +665,7 @@ test("remote pushes preserve operation order and acknowledge the last mutation o
 	assert(!("error" in unchanged))
 	expect(unchanged.cookie).not.toBe(acknowledged.cookie)
 	expect(unchanged).toMatchObject({
-		patch: {
-			set: [
-				{
-					collection: "threads",
-					value: {
-						id: "thread-1",
-						ownerId: "user-1",
-						title: "Last write wins",
-						status: "open",
-						createdAt: 2,
-					},
-				},
-			],
-			remove: [],
-		},
+		patch: { set: [], remove: [] },
 		lastMutationId: 2,
 	})
 
@@ -1217,6 +1203,7 @@ test("pull diffs filtered, paginated, and nested client views", async () => {
 	})
 
 	// A filtered row leaving the page removes it and promotes the next row.
+	// The owner the client already has is unchanged, so it stays out.
 	const closeTopTx = server.transact()
 	await closeTopTx.update("threads", "thread-3", { status: "closed" })
 	await server.commit(closeTopTx)
@@ -1229,7 +1216,6 @@ test("pull diffs filtered, paginated, and nested client views", async () => {
 	expect(patchSetKeys(promoted.patch)).toEqual([
 		"messages.message-2",
 		"threads.thread-1",
-		"users.user-1",
 	])
 	expect(patchRemoveKeys(promoted.patch)).toEqual([
 		"messages.thread-3",
@@ -1249,10 +1235,7 @@ test("pull diffs filtered, paginated, and nested client views", async () => {
 		scanWindow: nestedPage,
 	})
 	assert(!("error" in displaced))
-	expect(patchSetKeys(displaced.patch)).toEqual([
-		"threads.thread-2",
-		"users.user-1",
-	])
+	expect(patchSetKeys(displaced.patch)).toEqual(["threads.thread-2"])
 	expect(patchRemoveKeys(displaced.patch)).toEqual([
 		"messages.message-2",
 		"threads.thread-1",
@@ -1273,18 +1256,17 @@ test("pull diffs filtered, paginated, and nested client views", async () => {
 		scanWindow: rootOnlyPage,
 	})
 	assert(!("error" in shrunk))
-	expect(patchSetKeys(shrunk.patch)).toEqual(["threads.thread-2"])
+	expect(patchSetKeys(shrunk.patch)).toEqual([])
 	expect(patchRemoveKeys(shrunk.patch)).toEqual(["users.user-1"])
 
-	// An unchanged cookie and scan window still read and resend the current page.
+	// An unchanged cookie and scan window read the page but send nothing.
 	const unchanged = await server.pull({
 		clientId,
 		cookie: shrunk.cookie,
 		scanWindow: rootOnlyPage,
 	})
 	assert(!("error" in unchanged))
-	expect(patchSetKeys(unchanged.patch)).toEqual(["threads.thread-2"])
-	expect(unchanged.patch.remove).toEqual([])
+	expect(unchanged.patch).toEqual({ set: [], remove: [] })
 	expect(unchanged.cookie).not.toBe(shrunk.cookie)
 
 	await server.close()
