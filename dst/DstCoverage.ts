@@ -30,6 +30,8 @@ export type DstCoverage = {
 	barePokes: number
 	/** Poke payloads that reached a client. */
 	payloadPokes: number
+	/** Server storage scans of index entries. */
+	indexScans: number
 	dropsByKind: Record<DstFaultKind, number>
 	partitionDrops: number
 	disconnects: number
@@ -78,6 +80,7 @@ const windowCounts = [
 	"unchangedPulls",
 	"barePokes",
 	"payloadPokes",
+	"indexScans",
 ] as const
 
 const faultChecks = ["partitionDrops", "disconnects", "reconnects"] as const
@@ -113,6 +116,7 @@ export function emptyCoverage(
 		unchangedPulls: 0,
 		barePokes: 0,
 		payloadPokes: 0,
+		indexScans: 0,
 		dropsByKind: {
 			requestLost: 0,
 			responseLost: 0,

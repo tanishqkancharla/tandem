@@ -36,6 +36,7 @@ function completeCoverage(): DstCoverage {
 		unchangedPulls: 1,
 		barePokes: 1,
 		payloadPokes: 1,
+		indexScans: 1,
 		dropsByKind: { requestLost: 1, responseLost: 1, pokeLost: 1 },
 		partitionDrops: 1,
 		disconnects: 1,
@@ -84,6 +85,7 @@ describe("DST executed coverage", () => {
 			unchangedPulls: 2,
 			barePokes: 2,
 			payloadPokes: 2,
+			indexScans: 2,
 			dropsByKind: {
 				requestLost: 2,
 				responseLost: 2,

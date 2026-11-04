@@ -77,11 +77,18 @@ export type DstSchema = {
 
 export const dstSchemaDefinition = defineSchema({
 	projects: collection<DstSchema["projects"]>({ fields: ["id", "name"] }),
+	// Views filter tasks by project and priority, and include comments by
+	// task, so every run reads and maintains index entries.
 	tasks: collection<DstSchema["tasks"]>({
 		fields: ["id", "projectId", "text", "note", "done", "priority"],
+		indexes: {
+			byProject: ["projectId", "done", "priority"],
+			byPriority: ["priority"],
+		},
 	}),
 	comments: collection<DstSchema["comments"]>({
 		fields: ["id", "taskId", "body"],
+		indexes: { byTask: ["taskId"] },
 	}),
 	memberships: collection<DstSchema["memberships"]>({ fields: ["id", "role"] }),
 }) satisfies RuntimeSchemaDefinition<DstSchema>
@@ -161,8 +168,12 @@ class InMemoryServerStorage implements TandemServerStorageApi<DstSchema> {
 
 	/** Every value each server-owned record has had, in commit order; null when absent. */
 	readonly history = new Map(serverOwnedIds.map((id) => [id, ["null"]]))
+	/** Scans of index entries, which show queries read through indexes. */
+	indexScans = 0
 
 	scan(args?: ScanStorageArgs): Promise<TandemTuple<DstSchema>[]> {
+		const start = args?.gte ?? args?.gt
+		if (start?.[0] === "index") this.indexScans++
 		return Promise.resolve(this.memory.scan(args) as TandemTuple<DstSchema>[])
 	}
 
@@ -1076,6 +1087,7 @@ export class DstWorld implements AsyncDisposable {
 
 	async checkpoint(checkpoint: DstCheckpoint): Promise<DstOutcome> {
 		this.observeOrder()
+		this.coverage.indexScans = this.storage.indexScans
 		const states: DstFinalStates = {
 			server: await this.serverInventory(),
 			...Object.fromEntries(

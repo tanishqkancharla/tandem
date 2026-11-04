@@ -45,9 +45,13 @@ const schema = defineSchema({
 
 Each index lists fields. Tandem keeps one entry per record and index, written in the same commit as the record: on the server in the app's storage, on the client in memory, rebuilt when the client loads its saved records. Index field names are checked against the collection's fields.
 
+A query uses the index whose leading fields its `where` fixes with equality on a string, finite number, or boolean. It can then use the next field for `gt`, `lt`, `gte`, or `lte` bounds, and for an `orderBy` on that field alone with a `limit`, which stops reading once the page and its last value's ties are found. `byThread` above serves `{ threadId: "t1" }`, `{ threadId: "t1", createdAt: { gt: 100 } }`, and the latest 50 messages of a thread. A one-to-many include whose target has an index starting with the join field reads entries for each of up to 64 distinct parents instead of the whole target collection.
+
+Results never change. Ranges and ordering use entries only when every value under the fixed fields is a string, or every one a number, because `orderBy` and comparisons treat other pairings as equal; otherwise the query reads the fixed fields' entries and sorts in memory, or scans. Ordering on several fields, or with an offset and no limit, reads the matching entries and sorts them. Queries inside a server transaction do not use indexes, because the transaction's own writes have no entries until it commits.
+
 ## Reads
 
-The client and the server run queries the same way. A query whose `where` names a full `id`, including a compound one, reads that one record. A many-to-one include reads its distinct targets by key, once for all parent rows. A one-to-many include reads its target collection once and groups it by the join field. Any other query reads the collections it names. On the server, these reads go through the storage adapter's `scan`.
+The client and the server run queries the same way. A query whose `where` names a full `id`, including a compound one, reads that one record. Otherwise a usable [index](#indexes) narrows the read. A many-to-one include reads its distinct targets by key, once for all parent rows. A one-to-many include uses an index on its join field, or reads its target collection once and groups it by that field. Any other query reads the collections it names. On the server, these reads go through the storage adapter's `scan`.
 
 ## Subscriptions
 

@@ -757,6 +757,8 @@ export class TandemServer<
 	): Promise<
 		TandemServerSubscription<RelationalQueryResult<Schema, Relations, Query>>
 	> {
+		if (this.indexState !== "current")
+			await this.run(() => Promise.resolve(undefined))
 		const subscription = await subscribeQueryAsync(
 			this.recordDb,
 			(db) => this.runQuery(db, query, "subscribe"),
@@ -811,6 +813,7 @@ export class TandemServer<
 			db,
 			this.relations,
 			query,
+			this.indexes,
 		).catch((cause) => new TandemServerError({ operation, cause }))
 	}
 
@@ -1059,6 +1062,7 @@ export class TandemServer<
 			this.recordDb,
 			this.relations,
 			scanWindow,
+			this.indexes,
 		).catch((cause) => new TandemServerError({ operation: "pull", cause }))
 		if (records instanceof InvalidScanWindowError) {
 			return { error: "invalid-request", message: records.message }
