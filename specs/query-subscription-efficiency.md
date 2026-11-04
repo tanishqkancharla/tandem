@@ -1,5 +1,7 @@
 # Query and subscription efficiency
 
+Status: all six phases are implemented, in PRs #94 (phase 1), #95 (2), #97 (3), #98 (4), #99 (5), and #100 (6). The problem section describes the code before them; removed functions are named without links.
+
 Tandem targets small apps: about ten simultaneous clients with around 500 records each. This spec makes sync cheaper at that size without changing the sync contract. Pulls still reconcile authoritative state, acknowledge mutations, update cookies and revisions, and rebase pending writes. Streaming text still shows at once.
 
 ## Problem overview
@@ -29,7 +31,7 @@ Every commit runs every client's queries. `emitLivePokes` calls `selectScanWindo
  TandemServer.commitTransaction [[packages/server/src/TandemServer.ts#TandemServer.commitTransaction]]
  └── emitLivePokes [[packages/server/src/TandemServer.ts#TandemServer.emitLivePokes]]
      └── for each client: bufferLiveChanges
-         └── selectScanWindowRecordsAsync [[packages/core/src/query/executeQuery.ts#selectScanWindowRecordsAsync]]   # full window read per client per commit
+         └── selectScanWindowRecordsAsync   # full window read per client per commit
 ```
 
 Every query scans whole collections. `executeQuerySync` and `executeQueryAsync` load each collection the query names once, then filter the loaded target collection again for every parent row of an include.
@@ -37,7 +39,7 @@ Every query scans whole collections. `executeQuerySync` and `executeQueryAsync` 
 ```callstack
  executeQueryAsync [[packages/core/src/query/executeQuery.ts#executeQueryAsync]]
  ├── loadRecordsAsync                 # scan ["record", collection] for each collection
- └── executeLoadedQuery [[packages/core/src/query/executeQuery.ts#executeLoadedQuery]]
+ └── executeLoadedQuery
      └── per parent row: filter the whole target collection
 ```
 
