@@ -37,7 +37,7 @@ const finishReply = defineMutator(schema, {
 })
 ```
 
-The server serializes named mutations, so concurrent calls read the latest committed text. Its sync path derives compact append pokes when the final record differs only by string growth and the field codec can represent the suffix. Other changes send the full record. A pending client call replays its recorded set during rebase, so its optimistic text can briefly cover newer live text until the confirming pull.
+The server serializes named mutations, so concurrent calls read the latest committed text. Its sync path derives compact append pokes when the final record differs only by string growth and the field codec can represent the suffix. Other changes, such as a new part or a status change, send a bare poke, and viewers pull the record. A pending client call replays its recorded set during rebase, so its optimistic text can briefly cover newer live text until the confirming pull.
 
 ## Register the server once
 

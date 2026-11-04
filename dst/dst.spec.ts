@@ -58,6 +58,8 @@ describe("Deterministic simulation testing", () => {
 					maxMutationsInFlight: 4,
 					sharedWriteRate: 1,
 					namedAppendRate: 0,
+					serverWriteRate: 0.4,
+					serverAppendRate: 0.6,
 					faultRate: 0,
 					crashRate: 0,
 					tabs: 0,
@@ -831,11 +833,14 @@ describe("Deterministic simulation testing", () => {
 	})
 
 	it("merges bursts of server appends into single payloads under faults", async () => {
+		// A streaming workload: the server writes most commits, mostly appends.
 		const result = await new DstSimulation({
-			seed: 12,
+			seed: 3,
 			steps: 300,
 			faultRate: 0.1,
 			crashRate: 0.02,
+			serverWriteRate: 0.9,
+			serverAppendRate: 0.95,
 		}).execute()
 
 		expect(result.trace.some(({ type }) => type === "serverTick")).toBe(true)
@@ -844,22 +849,47 @@ describe("Deterministic simulation testing", () => {
 		expect(result.violation).toBeUndefined()
 	})
 
-	it("delivers live task payloads before pulls and ignores an older held poke", async () => {
+	it("shows appended text before the pull and never applies a reordered append out of order", async () => {
 		await using world = await DstWorld.start({ seed: 7 })
-		const first = {
+		const reply = {
 			id: "reply-1",
 			projectId: "p",
 			text: "First chunk",
 			done: false,
 			priority: 2,
 		}
-		const second = { ...first, text: "Second chunk" }
-		await world.apply(0, { type: "serverSet", item: first })
+		let step = 0
+		// Runs client1's held work, such as a poke's pull, to completion.
+		const runClient1 = async () => {
+			for (;;) {
+				const call = world
+					.pending()
+					.find(({ label }) => label.startsWith("client1."))
+				if (!call) return
+				await world.apply(step++, { type: "advance", call: call.name })
+				await world.settle()
+			}
+		}
+		await world.apply(step++, { type: "serverSet", item: reply })
+		await world.settle()
+		await runClient1()
+		expect(world.inventoryOf("client1").tasks).toEqual([reply])
+
+		// Two appends in separate intervals send two payloads.
+		await world.apply(step++, {
+			type: "serverAppend",
+			id: reply.id,
+			text: " t1",
+		})
 		await world.settle()
 		const older = world.pending().find(({ label }) => label === "client1.poke")!
-		await world.apply(1, { type: "serverSet", item: second })
+		await world.apply(step++, {
+			type: "serverAppend",
+			id: reply.id,
+			text: " t2",
+		})
 		await world.settle()
-		await world.apply(2, { type: "serverTick" })
+		await world.apply(step++, { type: "serverTick" })
 		await world.settle()
 		const newer = world
 			.pending()
@@ -867,34 +897,31 @@ describe("Deterministic simulation testing", () => {
 				({ label, name }) => label === "client1.poke" && name !== older.name,
 			)!
 
-		await world.apply(3, { type: "advance", call: newer.name })
+		// The later payload does not extend the text the client has, so it waits.
+		await world.apply(step++, { type: "advance", call: newer.name })
 		await world.settle()
-		expect(world.inventoryOf("client1").tasks).toEqual([second])
-		expect(
-			world.subscriptions("client1").get("inventory-tasks")?.latest,
-		).toEqual([second])
-		// The confirming pull has not passed its local debounce timer yet.
-		expect(world.pending()).toContainEqual(
-			expect.objectContaining({ name: newer.name, sentBy: "client1Timer" }),
-		)
-		await world.apply(4, { type: "advance", call: older.name })
+		expect(world.inventoryOf("client1").tasks).toEqual([reply])
+
+		// The earlier one does, and shows before any pull.
+		await world.apply(step++, { type: "advance", call: older.name })
 		await world.settle()
-		expect(world.inventoryOf("client1").tasks).toEqual([second])
+		expect(world.inventoryOf("client1").tasks).toEqual([
+			{ ...reply, text: "First chunk t1" },
+		])
+		await runClient1()
+		expect(world.inventoryOf("client1").tasks).toEqual([
+			{ ...reply, text: "First chunk t1 t2" },
+		])
 		expect(
 			world.subscriptions("client1").get("inventory-tasks")?.snapshots,
-		).not.toContainEqual([first])
+		).not.toContainEqual([{ ...reply, text: "First chunk t2" }])
 
-		await world.apply(5, { type: "serverRemove", id: first.id })
+		// A delete is a bare poke; its pull removes the record.
+		await world.apply(step++, { type: "serverRemove", id: reply.id })
 		await world.settle()
-		await world.apply(6, { type: "serverTick" })
+		await world.apply(step++, { type: "serverTick" })
 		await world.settle()
-		const removal = world
-			.pending()
-			.find(
-				({ label, sentBy }) => label === "client1.poke" && sentBy === "server",
-			)!
-		await world.apply(7, { type: "advance", call: removal.name })
-		await world.settle()
+		await runClient1()
 		expect(world.inventoryOf("client1").tasks).toEqual([])
 		expect((await world.finish()).violation).toBeUndefined()
 	})
@@ -1093,12 +1120,13 @@ describe("Deterministic simulation testing", () => {
 		)
 		const result = await replay(artifact)
 
-		// Live-poke payloads changed the pending schedule. Keep the original
+		// Live-poke payloads, then collection pokes, changed the pending schedule. Keep the original
 		// artifact intact: rejecting its schedule is not proof the ghost is fixed.
 		expect(result.stepsCompleted).toBeLessThan(artifact.options.steps)
 		expect(result.divergence).toMatchObject({
-			expected: { type: "advance", call: "client1.poke#1" },
-			reason: "the event applied differently",
+			step: 435,
+			expected: { type: "advance", call: "client1.poke#5" },
+			reason: "client1.poke#5 is not held at a boundary",
 		})
 		expect(result.violation).toBeUndefined()
 		expect(result.recovery).toBeUndefined()

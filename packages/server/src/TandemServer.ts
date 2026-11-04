@@ -28,7 +28,6 @@ import type {
 	RngApi,
 	AnyRelations,
 	RuntimeSchemaDefinition,
-	ScanWindow,
 	SchemaToTupleSchema,
 	TimerApi,
 } from "@tanishqkancharla/tandem-core"
@@ -38,12 +37,14 @@ import {
 	executeQueryAsync,
 	executeScanWindowAsync,
 	InvalidScanWindowError,
-	scanWindowOffsetCollections,
-	selectScanWindowRecordsAsync,
+	scanWindowDependencies,
 	UpdatePayloadError,
 	validateMutatorArgs,
 } from "@tanishqkancharla/tandem-core/internal"
-import type { ScanWindowRecord } from "@tanishqkancharla/tandem-core/internal"
+import type {
+	ScanWindowDependencies,
+	ScanWindowRecord,
+} from "@tanishqkancharla/tandem-core/internal"
 import * as errore from "errore"
 import {
 	AsyncTupleDatabase,
@@ -126,11 +127,23 @@ type SyncClientState<Schema extends AnySchema> = {
 	 * only records that are new or whose fingerprint changed.
 	 */
 	view?: Map<string, ViewRecord<Schema>>
-	/** A copy of the latest pull's window. Live pokes only carry records inside it. */
-	scanWindow?: ScanWindow<Schema>
-	/** Record IDs sent in poke payloads since the latest pull. */
-	liveRecordIds: Set<string>
-	/** Changes for the client's next live payload. */
+	/**
+	 * What the latest pull's window reads. Commits outside its collections
+	 * do not poke the client; undefined before a pull made while connected.
+	 */
+	dependencies?: ScanWindowDependencies<Schema>
+	/**
+	 * Collections changed by commits the client was poked for since its latest
+	 * pull. Until it pulls, records whose membership they decide may have left
+	 * its view, so appends to those records wait for that pull too.
+	 */
+	invalidated: Set<CollectionName<Schema>>
+	/**
+	 * Fingerprints of the values live appends gave the client since its latest
+	 * pull, by record ID, including appends still in the buffer.
+	 */
+	live: Map<string, RecordFingerprint | undefined>
+	/** Appends for the client's next live payload. */
 	buffer: LivePayloadBuffer<Schema>
 	/** Whether a payload went out this interval, so changes wait for its end. */
 	throttled: boolean
@@ -210,14 +223,16 @@ type CommitOptions =
 	| { operation: "commit" }
 	| { operation: "push"; clientId: ClientId }
 
-/** Records one commit changed, read in the run queue right after it. */
+/** What one commit changed, read in the run queue right after it. */
 type CommitChanges<Schema extends AnySchema> = {
 	revision: Revision
-	/** Full records after the commit, including appended ones. */
-	set: PatchSetOp<Schema>[]
-	remove: PatchRemoveOp<Schema>[]
-	/** Records the commit changed only by appending, by record ID. */
-	append: Map<string, DerivedAppend<Schema> & { after: Revision }>
+	/** Collections of every record the commit wrote or removed. */
+	collections: Set<CollectionName<Schema>>
+	/**
+	 * Records the commit changed only by appending to string fields, by
+	 * record ID. Undefined when the commit made any other change.
+	 */
+	appends?: Map<string, CommitAppend<Schema>>
 	/** The client whose push made the commit. It pulls to acknowledge it. */
 	pusher?: ClientId
 }
@@ -226,6 +241,16 @@ type DerivedAppend<Schema extends AnySchema> = {
 	collection: CollectionName<Schema>
 	id: Schema[CollectionName<Schema>]["id"]
 	fields: { field: string; offset: number; text: string }[]
+}
+
+type CommitAppend<Schema extends AnySchema> = DerivedAppend<Schema> & {
+	/** A revision from which the record held the value the append extends. */
+	after: Revision
+	/** The full record after the commit. */
+	op: PatchSetOp<Schema>
+	/** Fingerprints of the record before and after the commit. */
+	before: RecordFingerprint | undefined
+	result: RecordFingerprint | undefined
 }
 
 /** Compare only plain data whose equality we can prove without serialization. */
@@ -680,7 +705,8 @@ export class TandemServer<
 
 		const created: SyncClientState<Schema> = {
 			pokes: new Set(),
-			liveRecordIds: new Set(),
+			invalidated: new Set(),
+			live: new Map(),
 			buffer: new LivePayloadBuffer(),
 			throttled: false,
 		}
@@ -903,8 +929,8 @@ export class TandemServer<
 	> {
 		const { clientId, cookie, scanWindow } = args
 		const client = this.getSyncClient(clientId)
-		const serialized = errore.try(() => JSON.stringify(scanWindow))
-		if (serialized instanceof Error)
+		const serializable = errore.try(() => JSON.stringify(scanWindow))
+		if (serializable instanceof Error)
 			return {
 				error: "invalid-request",
 				message: "Scan window must be serializable",
@@ -923,6 +949,13 @@ export class TandemServer<
 			return { error: "invalid-request", message: records.message }
 		}
 		if (records instanceof Error) return records
+		// Only a connected client has a view. A pull that runs after the last
+		// connection closed must not record one for a later reconnect.
+		const dependencies = client.pokes.size
+			? scanWindowDependencies(scanWindow, this.relations)
+			: undefined
+		if (dependencies instanceof Error)
+			return { error: "invalid-request", message: dependencies.message }
 		const view = new Map<string, ViewRecord<Schema>>()
 		const set: typeof records = []
 		for (const record of records) {
@@ -940,13 +973,9 @@ export class TandemServer<
 		const nextCookie = tag<Cookie>(this.rng?.randomId() ?? crypto.randomUUID())
 		client.view = view
 		client.cookie = nextCookie
-		// Only a connected client has a view. A pull that runs after the last
-		// connection closed must not record one for a later reconnect.
-		// In-process callers can keep mutating the array they passed, so copy it.
-		client.scanWindow = client.pokes.size
-			? (JSON.parse(serialized) as ScanWindow<Schema>)
-			: undefined
-		client.liveRecordIds = new Set()
+		client.dependencies = dependencies
+		client.invalidated = new Set()
+		client.live = new Map()
 		// The pull returns every buffered change.
 		client.buffer.clear()
 
@@ -976,18 +1005,6 @@ export class TandemServer<
 			(cause) => new TandemServerError({ operation: options.operation, cause }),
 		)
 		if (previous instanceof Error) return previous
-		// Removals carry the client's identity form, which only the old record has.
-		const removed = await Promise.all(
-			writes.remove.map(
-				(key) =>
-					this.recordDb.get(
-						key as SchemaToTupleSchema<Schema>["key"],
-					) as Promise<Schema[CollectionName<Schema>] | undefined>,
-			),
-		).catch(
-			(cause) => new TandemServerError({ operation: options.operation, cause }),
-		)
-		if (removed instanceof Error) return removed
 		this.committing = true
 		const hasWrites = await transaction
 			.commit()
@@ -1002,21 +1019,43 @@ export class TandemServer<
 		if (!hasWrites) return
 
 		this.commitCount += 1
-		// Compare the committed before-image with the final transaction write.
-		const appended = new Map<
-			string,
-			DerivedAppend<Schema> & { after: Revision }
-		>()
-		for (const [index, { key, value }] of writes.set.entries()) {
+		const changes: CommitChanges<Schema> = {
+			revision: this.revision,
+			collections: new Set([
+				...writes.set.map(({ key }) => key[1]),
+				...writes.remove.map((key) => key[1]),
+			]),
+			appends: writes.remove.length
+				? undefined
+				: this.deriveAppends(writes.set, previous),
+			pusher: options.operation === "push" ? options.clientId : undefined,
+		}
+		this.recordLastWrites([
+			...writes.set.map(({ key }) => key),
+			...writes.remove,
+		])
+		this.emitLivePokes(changes)
+	}
+
+	/**
+	 * Compares each record's committed before-image with its final write.
+	 * Returns undefined unless every write only appended text to string fields
+	 * in a form the collection's codec carries on its own.
+	 */
+	private deriveAppends(
+		writes: ReturnType<
+			TandemServerTransaction<Schema, Relations>["recordWrites"]
+		>["set"],
+		previous: readonly unknown[],
+	): Map<string, CommitAppend<Schema>> | undefined {
+		const appends = new Map<string, CommitAppend<Schema>>()
+		for (const [index, { key, value }] of writes.entries()) {
+			const before = previous[index] as Record<string, unknown> | undefined
 			const fields = errore.try({
-				try: () =>
-					appendedFields(
-						previous[index] as Record<string, unknown> | undefined,
-						value as Record<string, unknown>,
-					),
+				try: () => appendedFields(before, value as Record<string, unknown>),
 				catch: () => new Error("Append fields cannot be compared"),
 			})
-			if (!fields || fields instanceof Error) continue
+			if (!fields || fields instanceof Error) return
 			const valueCodec = this.schema.collections[key[1]].codec
 			const suffixSupported = errore.try({
 				try: () =>
@@ -1042,40 +1081,25 @@ export class TandemServer<
 					}),
 				catch: () => new Error("Append suffix cannot be represented"),
 			})
-			if (suffixSupported !== true) continue
+			if (suffixSupported !== true) return
 			const append = {
 				collection: key[1],
 				id: (value as Schema[CollectionName<Schema>]).id,
 				fields,
 			} as DerivedAppend<Schema>
 			const id = recordId(append)
-			appended.set(id, {
+			appends.set(id, {
 				...append,
 				after: {
 					server: this.instanceId,
 					commit: this.lastWrites.get(id) ?? this.forgottenWritesThrough,
 				},
+				op: { collection: key[1], value } as PatchSetOp<Schema>,
+				before: recordFingerprint(before),
+				result: recordFingerprint(value),
 			})
 		}
-		const changes: CommitChanges<Schema> = {
-			revision: this.revision,
-			set: writes.set.map(({ key, value }) => ({
-				collection: key[1],
-				value,
-			})) as PatchSetOp<Schema>[],
-			remove: removed.flatMap((record, index) =>
-				record === undefined
-					? []
-					: [{ collection: writes.remove[index]![1], id: record.id }],
-			) as PatchRemoveOp<Schema>[],
-			append: appended,
-			pusher: options.operation === "push" ? options.clientId : undefined,
-		}
-		this.recordLastWrites([
-			...writes.set.map(({ key }) => key),
-			...writes.remove,
-		])
-		await this.emitLivePokes(changes)
+		return appends
 	}
 
 	/**
@@ -1103,100 +1127,78 @@ export class TandemServer<
 	}
 
 	/**
-	 * Buffers the changed records inside each client's view, and pokes clients
-	 * that must pull now.
+	 * Pokes each client whose queries read a collection the commit changed.
+	 * No query runs: the pull the poke starts decides what changed in the view.
+	 * Appends that cannot change any query's records or order go out as live
+	 * payloads instead, so streamed text shows before that pull.
 	 */
-	private async emitLivePokes(changes: CommitChanges<Schema>) {
+	private emitLivePokes(changes: CommitChanges<Schema>) {
 		for (const [clientId, client] of this.syncClients) {
 			if (!client.pokes.size) continue
-			// Before its first pull the server does not know the client's view.
-			if (!client.scanWindow) {
-				this.pokeClient(client)
+			const pusher = clientId === changes.pusher
+			// Before its first pull the server does not know what the client reads.
+			const dependencies = client.dependencies
+			const affected =
+				!dependencies ||
+				[...changes.collections].some((collection) =>
+					dependencies.collections.has(collection),
+				)
+			if (!affected) {
+				// The pusher pulls its acknowledgement at once.
+				if (pusher) this.pokeNow(client)
 				continue
 			}
-			const buffered = await this.bufferLiveChanges(
-				client,
-				client.scanWindow,
-				changes,
-			)
-			if (buffered instanceof Error) {
-				// The client still pulls, so only the live update is lost.
-				console.error(buffered)
-				this.flushLivePayload(client)
-				this.pokeClient(client)
+			const appends = this.liveAppends(client, changes)
+			if (!appends) {
+				for (const collection of changes.collections)
+					client.invalidated.add(collection)
+				this.pokeNow(client)
 				continue
 			}
-			// The pusher pulls its acknowledgement now, not when live payloads go
-			// quiet. An offset shifts which records are in view when one before it
-			// changes, even one the client never saw, so let the client pull.
-			if (this.touchesOffsetWindow(client.scanWindow, changes)) {
-				// Prefix rows are cached for local pagination, but page shifts
-				// need a pull before detailed changes can be interpreted.
-				client.buffer.clear()
-				this.pokeClient(client)
-				continue
+			for (const [id, append] of appends) {
+				client.buffer.add(changes.revision, id, {
+					type: "append",
+					op: append.op,
+					fields: append.fields,
+					after: append.after,
+				})
+				client.live.set(id, append.result)
 			}
-			if (clientId === changes.pusher) {
-				this.flushLivePayload(client)
-				this.pokeClient(client)
-				continue
-			}
-			if (buffered) this.scheduleLivePayload(client)
+			if (pusher) this.pokeNow(client)
+			else if (appends.size) this.scheduleLivePayload(client)
 		}
 	}
 
-	/** Merges a commit's changes inside the client's view into its next payload. */
-	private async bufferLiveChanges(
+	/**
+	 * The commit's appends to records the client's queries read, if every
+	 * change the client can see is one it may show live: the client has the
+	 * record at its value before the commit, no appended field filters,
+	 * orders, or joins a query on the record's collection, and no change since
+	 * the client's pull can have moved the record out of its view.
+	 */
+	private liveAppends(
 		client: SyncClientState<Schema>,
-		scanWindow: ScanWindow<Schema>,
 		changes: CommitChanges<Schema>,
-	): Promise<TandemServerError | InvalidScanWindowError | boolean> {
-		const inView = await selectScanWindowRecordsAsync<Schema, Relations>(
-			this.recordDb,
-			this.relations,
-			scanWindow,
-			changes.set,
-		).catch((cause) => new TandemServerError({ operation: "poke", cause }))
-		if (inView instanceof Error) return inView
-
-		// Only name records the client has, or will have from its next payload;
-		// others must stay invisible.
-		const sent = (id: string) =>
-			client.view?.has(id) || client.liveRecordIds.has(id)
-		const known = (id: string) => sent(id) || client.buffer.carries(id)
-		const inViewIds = new Set<string>()
-		for (const { collection, value } of inView) {
-			const id = recordId({ collection, id: value.id })
-			inViewIds.add(id)
-			const op = { collection, value } as PatchSetOp<Schema>
-			const appended = changes.append.get(id)
-			client.buffer.add(
-				changes.revision,
-				id,
-				appended && known(id)
-					? {
-							type: "append",
-							op,
-							fields: appended.fields,
-							after: appended.after,
-						}
-					: { type: "set", op },
+	): Map<string, CommitAppend<Schema>> | undefined {
+		const dependencies = client.dependencies
+		if (!dependencies || !changes.appends) return
+		const live = new Map<string, CommitAppend<Schema>>()
+		for (const [id, append] of changes.appends) {
+			if (!dependencies.collections.has(append.collection)) continue
+			const known = client.live.has(id)
+				? client.live.get(id)
+				: client.view?.get(id)?.fingerprint
+			if (known === undefined || known !== append.before) return
+			const membership = dependencies.membershipFields.get(append.collection)
+			if (append.fields.some(({ field }) => membership?.has(field))) return
+			const shifted = dependencies.membershipCollections.get(append.collection)
+			if (
+				[...client.invalidated].some((collection) => shifted?.has(collection))
 			)
+				return
+			live.set(id, append)
 		}
-		const leftView = changes.set
-			.map(scanWindowRecordToKey)
-			.filter((key) => !inViewIds.has(recordId(key)))
-		const remove = [...changes.remove, ...leftView].filter((key) =>
-			known(recordId(key)),
-		)
-		for (const op of remove) {
-			const id = recordId(op)
-			// A record the client never received leaves without a trace.
-			if (sent(id))
-				client.buffer.add(changes.revision, id, { type: "remove", op })
-			else client.buffer.forget(id)
-		}
-		return inViewIds.size > 0 || remove.length > 0
+		return live
 	}
 
 	/**
@@ -1222,27 +1224,22 @@ export class TandemServer<
 	}
 
 	private flushLivePayload(client: SyncClientState<Schema>) {
-		const live = client.buffer.take()
-		if (!live) return
-		for (const id of live.removed) client.liveRecordIds.delete(id)
-		for (const id of live.carried) client.liveRecordIds.add(id)
-		this.pokeClient(client, live.payload)
+		const payload = client.buffer.take()
+		if (payload) this.pokeClient(client, payload)
 	}
 
-	private touchesOffsetWindow(
-		scanWindow: ScanWindow<Schema>,
-		changes: CommitChanges<Schema>,
-	) {
-		const collections = scanWindowOffsetCollections(scanWindow)
-		return [...changes.set, ...changes.remove].some(({ collection }) =>
-			collections.has(collection),
-		)
+	/** Sends buffered appends, then a bare poke; neither waits for the interval. */
+	private pokeNow(client: SyncClientState<Schema>) {
+		this.flushLivePayload(client)
+		this.pokeClient(client)
 	}
 
 	private emitPokes() {
 		for (const client of this.syncClients.values()) {
-			this.flushLivePayload(client)
-			this.pokeClient(client)
+			// Any record may have changed.
+			for (const collection of client.dependencies?.collections ?? [])
+				client.invalidated.add(collection)
+			this.pokeNow(client)
 		}
 	}
 

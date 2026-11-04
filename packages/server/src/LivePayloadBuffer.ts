@@ -1,6 +1,5 @@
 import type {
 	AnySchema,
-	PatchRemoveOp,
 	PatchSetOp,
 	PokeAppendOp,
 	PokePayload,
@@ -13,7 +12,6 @@ type AppendedField = { field: string; offset: number; text: string }
 /** What a client should learn about one record from the commits merged so far. */
 export type LiveChange<Schema extends AnySchema> =
 	| { type: "set"; op: PatchSetOp<Schema> }
-	| { type: "remove"; op: PatchRemoveOp<Schema> }
 	| {
 			type: "append"
 			/** The full record after the latest append, sent instead if the appends cannot chain. */
@@ -22,15 +20,6 @@ export type LiveChange<Schema extends AnySchema> =
 			/** A revision from which the record held the value the first append extends. */
 			after: Revision
 	  }
-
-/** A payload ready to send, and how it changes what the client has been sent. */
-export type LivePayload<Schema extends AnySchema> = {
-	payload: PokePayload<Schema>
-	/** Record IDs the payload carries a value for. */
-	carried: string[]
-	/** Record IDs the payload removes. */
-	removed: string[]
-}
 
 /**
  * Appends the later change's text to the earlier one's, or returns undefined
@@ -64,23 +53,10 @@ export class LivePayloadBuffer<Schema extends AnySchema> {
 		return this.changes.size === 0
 	}
 
-	/** Whether the next payload will carry a value for the record. */
-	carries(id: string) {
-		return (
-			this.changes.get(id)?.type === "set" ||
-			this.changes.get(id)?.type === "append"
-		)
-	}
-
 	/** Merges one commit's change to a record into the buffered changes. */
 	add(revision: Revision, id: string, change: LiveChange<Schema>) {
 		this.revision = revision
 		this.changes.set(id, this.merge(this.changes.get(id), change))
-	}
-
-	/** Forgets a record whose earlier changes the client should never see. */
-	forget(id: string) {
-		this.changes.delete(id)
 	}
 
 	clear() {
@@ -89,26 +65,17 @@ export class LivePayloadBuffer<Schema extends AnySchema> {
 	}
 
 	/** Builds the payload and empties the buffer. */
-	take(): LivePayload<Schema> | undefined {
+	take(): PokePayload<Schema> | undefined {
 		const revision = this.revision
 		if (!revision || this.isEmpty) return
 		const set: PatchSetOp<Schema>[] = []
-		const remove: PatchRemoveOp<Schema>[] = []
 		const append: PokeAppendOp<Schema>[] = []
-		const carried: string[] = []
-		const removed: string[] = []
-		for (const [id, change] of this.changes) {
+		for (const change of this.changes.values()) {
 			switch (change.type) {
 				case "set":
 					set.push(change.op)
-					carried.push(id)
-					break
-				case "remove":
-					remove.push(change.op)
-					removed.push(id)
 					break
 				case "append":
-					carried.push(id)
 					for (const field of change.fields)
 						append.push({
 							collection: change.op.collection,
@@ -123,14 +90,9 @@ export class LivePayloadBuffer<Schema extends AnySchema> {
 		}
 		this.clear()
 		return {
-			payload: {
-				revision,
-				...(set.length ? { set } : {}),
-				...(remove.length ? { remove } : {}),
-				...(append.length ? { append } : {}),
-			},
-			carried,
-			removed,
+			revision,
+			...(set.length ? { set } : {}),
+			...(append.length ? { append } : {}),
 		}
 	}
 

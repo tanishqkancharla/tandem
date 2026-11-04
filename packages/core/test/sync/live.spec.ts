@@ -1,5 +1,7 @@
 import {
 	type ClientApi,
+	type ClientId,
+	tag,
 	collection,
 	defineRelations,
 	defineSchema,
@@ -80,6 +82,25 @@ class HeldPokes {
 	/** Removes held pokes without delivering them, and returns their payloads. */
 	takePayloads(): (PokePayload<ChatSchema> | undefined)[] {
 		return this.held.splice(0).map(({ payload }) => payload)
+	}
+
+	/**
+	 * Replaces held pokes with a full-record payload at the server's current
+	 * revision, as a custom remote may send. TandemServer itself sends only
+	 * appends live; its other changes reach clients through pulls.
+	 */
+	async holdLive(
+		changes: Pick<PokePayload<ChatSchema>, "set" | "remove">,
+	): Promise<void> {
+		this.drop()
+		const read = await this.server.pull({
+			clientId: tag<ClientId>("revision-reader"),
+			scanWindow: [],
+		})
+		if ("error" in read || !read.revision) throw new Error("No revision")
+		const payload = { revision: read.revision, ...changes }
+		for (const client of this.connections)
+			this.held.push({ payload, deliver: () => client.poke(payload) })
 	}
 
 	/** Delivers held pokes in order. */
@@ -214,7 +235,7 @@ const liveTest = serverTest.extend<{ harness: ChatHarness }>({
 
 describe("live pokes", () => {
 	liveTest(
-		"a poke shows the server's records before the pull that confirms them",
+		"a full-record payload shows the server's records before the pull that confirms them",
 		async ({ harness, pokes, commitOnServer }) => {
 			const { client1 } = harness
 			const seen: Message[][] = []
@@ -226,6 +247,9 @@ describe("live pokes", () => {
 			).result
 
 			await commitOnServer((tx) => tx.set("messages", reply("Hel")))
+			await pokes.holdLive({
+				set: [{ collection: "messages", value: reply("Hel") }],
+			})
 			const pulled = pokes.deliver()
 
 			// Queries and subscriptions see the record in the same tick.
@@ -252,6 +276,9 @@ describe("live pokes", () => {
 			await stalePull.continueTo("server")
 			// The server saves more after it answered the pull.
 			await commitOnServer((tx) => tx.set("messages", reply("Hello")))
+			await pokes.holdLive({
+				set: [{ collection: "messages", value: reply("Hello") }],
+			})
 			void pokes.deliver()
 			expect(client1.query({ collection: "messages" })).toEqual([
 				reply("Hello"),
@@ -277,6 +304,9 @@ describe("live pokes", () => {
 			await harness.activateGates()
 			const pull = await client1.pullFromRemote()
 			await commitOnServer((tx) => tx.set("messages", reply("Hel")))
+			await pokes.holdLive({
+				set: [{ collection: "messages", value: reply("Hel") }],
+			})
 			void pokes.deliver()
 			expect(client1.query({ collection: "messages" })).toEqual([reply("Hel")])
 
@@ -301,14 +331,24 @@ describe("live pokes", () => {
 				await client1.pullFromRemote()
 			).result
 			await commitOnServer((tx) => tx.set("messages", reply("Xe")))
+			await pokes.holdLive({
+				set: [{ collection: "messages", value: reply("Xe") }],
+			})
 			const [beforePull] = pokes.take()
 			await commitOnServer((tx) => tx.set("messages", reply("Yel")))
 			await (
 				await client1.pullFromRemote()
 			).result
 			await commitOnServer((tx) => tx.set("messages", reply("Zell")))
+			await pokes.holdLive({
+				set: [{ collection: "messages", value: reply("Zell") }],
+			})
+			const [older] = pokes.take()
 			await commitOnServer((tx) => tx.set("messages", reply("Qello")))
-			const [older, newest] = pokes.take().slice(-2)
+			await pokes.holdLive({
+				set: [{ collection: "messages", value: reply("Qello") }],
+			})
+			const [newest] = pokes.take()
 
 			// A poke the latest pull already reflects does not move the record back.
 			void beforePull!()
@@ -324,7 +364,7 @@ describe("live pokes", () => {
 	)
 
 	liveTest(
-		"a poke delivers a delete before the pull",
+		"a payload delivers a delete before the pull",
 		async ({ harness, pokes, commitOnServer }) => {
 			const { client1 } = harness
 			client1.subscribe({ collection: "messages" })
@@ -335,6 +375,9 @@ describe("live pokes", () => {
 			pokes.drop()
 
 			await commitOnServer((tx) => tx.remove("messages", "reply"))
+			await pokes.holdLive({
+				remove: [{ collection: "messages", id: "reply" }],
+			})
 			void pokes.deliver()
 
 			expect(client1.query({ collection: "messages" })).toEqual([])
@@ -359,6 +402,9 @@ describe("live pokes", () => {
 			const resetPull = await client1.pullFromRemote()
 			await resetPull.continueTo("server")
 			await commitOnServer((tx) => tx.set("messages", reply("Hel")))
+			await pokes.holdLive({
+				set: [{ collection: "messages", value: reply("Hel") }],
+			})
 			void pokes.deliver()
 			await resetPull.continueToCompletion()
 
@@ -367,7 +413,7 @@ describe("live pokes", () => {
 	)
 
 	liveTest(
-		"records included through a relation arrive live",
+		"records included through a relation show from a payload",
 		async ({ harness, pokes, commitOnServer }) => {
 			const { client1 } = harness
 			const thread = {
@@ -385,6 +431,9 @@ describe("live pokes", () => {
 			pokes.drop()
 
 			await commitOnServer((tx) => tx.set("messages", reply("Hel")))
+			await pokes.holdLive({
+				set: [{ collection: "messages", value: reply("Hel") }],
+			})
 			void pokes.deliver()
 
 			expect(client1.query(thread)).toEqual([
@@ -413,6 +462,9 @@ describe("live pokes", () => {
 			// The push waits behind the held pull, so do not wait for its handle.
 			const commit = client1.commit(localTx)
 			await commitOnServer((tx) => tx.set("messages", reply("Hello")))
+			await pokes.holdLive({
+				set: [{ collection: "messages", value: reply("Hello") }],
+			})
 			void pokes.deliver()
 
 			// The live text shows under the pending update.
@@ -478,9 +530,17 @@ describe("live pokes", () => {
 		const tx = first.transact()
 		tx.update("messages", "other", { threadId: "thread-2" })
 		void first.commit(tx).catch(() => {})
-		pokes.drop()
 		await commitOnServer(reply("Hello"))
 		await commitOnServer({ ...reply("Other live"), id: "other" })
+		await pokes.holdLive({
+			set: [
+				{ collection: "messages", value: reply("Hello") },
+				{
+					collection: "messages",
+					value: { ...reply("Other live"), id: "other" },
+				},
+			],
+		})
 		void pokes.deliver()
 		expect(first.query({ collection: "messages" })).toEqual([
 			{ ...reply("Other live"), id: "other", threadId: "thread-2" },
@@ -542,6 +602,9 @@ describe("live pokes", () => {
 			// The server answers a pull after writing the reply and another record.
 			await harness.activateGates()
 			await commitOnServer((tx) => tx.set("messages", reply("Hel")))
+			await pokes.holdLive({
+				set: [{ collection: "messages", value: reply("Hel") }],
+			})
 			const [replyPoke] = pokes.take()
 			await commitOnServer((tx) =>
 				tx.set("messages", { ...reply("Other"), id: "other" }),
@@ -583,8 +646,12 @@ describe("live pokes", () => {
 			// A reconnecting client can get the same pokes over two connections,
 			// so an older payload can arrive after a newer one.
 			await commitOnServer((tx) => appendServer(tx, "c"))
+			const [older] = pokes.take()
 			await commitOnServer((tx) => tx.set("messages", reply("zz")))
-			const [older, newer] = pokes.take()
+			await pokes.holdLive({
+				set: [{ collection: "messages", value: reply("zz") }],
+			})
+			const [newer] = pokes.take()
 			void newer!()
 			void older!()
 

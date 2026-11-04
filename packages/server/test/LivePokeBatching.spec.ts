@@ -93,7 +93,7 @@ const test = baseTest.extend<{
 	},
 })
 
-test("a burst of commits reaches a viewer as one payload per interval, with appends merged", async ({
+test("a burst of appends reaches a viewer as one payload per interval, merged", async ({
 	server,
 	interval,
 	viewer,
@@ -102,13 +102,12 @@ test("a burst of commits reaches a viewer as one payload per interval, with appe
 	await commit((tx) => tx.set("messages", message("reply", { text: "Hel" })))
 	const pokes = await viewer("viewer")
 
-	// The first commit after a quiet interval goes out at once.
+	// The first append after a quiet interval goes out at once.
 	await commit((tx) => appendText(tx, "l"))
 	expect(pokes).toHaveLength(1)
 
-	// Later commits wait for the interval to end, then go out together.
+	// Later appends wait for the interval to end, then go out together.
 	await commit((tx) => appendText(tx, "o"))
-	await commit((tx) => tx.set("messages", message("note")))
 	await commit((tx) => appendText(tx, "!"))
 	expect(pokes).toHaveLength(1)
 	await interval.end()
@@ -122,7 +121,6 @@ test("a burst of commits reaches a viewer as one payload per interval, with appe
 		{
 			// The payload reflects the latest commit merged into it.
 			revision: pulled.revision,
-			set: [{ collection: "messages", value: message("note") }],
 			append: [
 				{
 					collection: "messages",
@@ -136,13 +134,13 @@ test("a burst of commits reaches a viewer as one payload per interval, with appe
 		},
 	])
 
-	// An interval without commits ends the batching, so the next commit goes out at once.
+	// An interval without commits ends the batching, so the next append goes out at once.
 	await interval.end()
 	await commit((tx) => appendText(tx, "?"))
 	expect(pokes).toHaveLength(3)
 })
 
-test("a set in a burst sends the record whole, and a pull drops the changes it returns", async ({
+test("an ordinary commit flushes buffered appends and pokes at once; appends a page shift could hide wait for the pull", async ({
 	server,
 	interval,
 	viewer,
@@ -150,50 +148,71 @@ test("a set in a burst sends the record whole, and a pull drops the changes it r
 }) => {
 	await commit((tx) => tx.set("messages", message("reply", { text: "Hel" })))
 	const pokes = await viewer("viewer")
-	await commit((tx) => tx.set("messages", message("first")))
+	const pagePokes: (PokePayload<ChatSchema> | undefined)[] = []
+	const page = [{ collection: "messages", limit: 10 }] as const
+	await server.connect({
+		clientId: tag<ClientId>("page"),
+		poke: (payload) => {
+			pagePokes.push(payload)
+			return Promise.resolve()
+		},
+	})
+	await server.pull({ clientId: tag<ClientId>("page"), scanWindow: [...page] })
+	await commit((tx) => appendText(tx, "l"))
+	await commit((tx) => appendText(tx, "o"))
+	expect(pokes).toHaveLength(1)
 
-	// Appends around a set merge into the set.
-	await commit((tx) => appendText(tx, "lo"))
-	await commit((tx) =>
-		tx.set("messages", message("reply", { text: "Hello", status: "done" })),
-	)
-	await commit((tx) => appendText(tx, "!"))
+	// A new record is not an append: the buffered text goes out, then a bare poke.
+	await commit((tx) => tx.set("messages", message("note")))
+	expect(pokes.slice(1)).toEqual([
+		{
+			revision: expect.any(Object),
+			append: [expect.objectContaining({ id: "reply", offset: 4, text: "o" })],
+		},
+		undefined,
+	])
+
+	// Another record cannot move the reply out of an unlimited view, so its
+	// text keeps streaming. Under a limit, the new record may have pushed the
+	// reply off the page, so that viewer pulls first.
 	await interval.end()
+	await commit((tx) => appendText(tx, "!"))
 	expect(pokes.at(-1)).toEqual({
 		revision: expect.any(Object),
-		set: [
-			{
-				collection: "messages",
-				value: message("reply", { text: "Hello!", status: "done" }),
-			},
-		],
+		append: [expect.objectContaining({ id: "reply", offset: 5, text: "!" })],
+	})
+	// The page viewer's last two pokes are the insert's and the append's.
+	expect(pagePokes.slice(-2)).toEqual([undefined, undefined])
+
+	// After its pull, the page viewer streams again.
+	await server.pull({ clientId: tag<ClientId>("page"), scanWindow: [...page] })
+	await interval.end()
+	await commit((tx) => appendText(tx, "?"))
+	expect(pagePokes.at(-1)).toEqual({
+		revision: expect.any(Object),
+		append: [expect.objectContaining({ id: "reply", offset: 6, text: "?" })],
 	})
 
-	// A record created and deleted within one interval never reaches the viewer.
-	await commit((tx) => tx.set("messages", message("brief")))
-	await commit((tx) => tx.remove("messages", "brief"))
-	await interval.end()
-	expect(pokes).toHaveLength(2)
-
-	// Changes buffered before a pull arrive with that pull instead.
-	await commit((tx) => tx.set("messages", message("second")))
-	await commit((tx) => tx.set("messages", message("third")))
+	// Appends buffered before a pull arrive with that pull instead.
+	await commit((tx) => appendText(tx, "?"))
+	const count = pokes.length
 	await server.pull({
 		clientId: tag<ClientId>("viewer"),
 		scanWindow: [{ collection: "messages" }],
 	})
 	await interval.end()
-	expect(pokes).toHaveLength(3)
+	expect(pokes).toHaveLength(count)
 })
 
-test("the pusher gets its buffered changes and a bare poke at once, so it pulls its acknowledgement", async ({
+test("the pusher gets its buffered appends and a bare poke at once, so it pulls its acknowledgement", async ({
 	server,
 	viewer,
 	commit,
 }) => {
+	await commit((tx) => tx.set("messages", message("reply", { text: "Hel" })))
 	const pokes = await viewer("pusher")
-	await commit((tx) => tx.set("messages", message("first")))
-	await commit((tx) => tx.set("messages", message("buffered")))
+	await commit((tx) => appendText(tx, "l"))
+	await commit((tx) => appendText(tx, "o"))
 	expect(pokes).toHaveLength(1)
 
 	await server.push({
@@ -209,10 +228,7 @@ test("the pusher gets its buffered changes and a bare poke at once, so it pulls 
 	expect(pokes.slice(1)).toEqual([
 		{
 			revision: expect.any(Object),
-			set: [
-				{ collection: "messages", value: message("buffered") },
-				{ collection: "messages", value: message("mine") },
-			],
+			append: [expect.objectContaining({ id: "reply", offset: 4, text: "o" })],
 		},
 		undefined,
 	])
