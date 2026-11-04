@@ -555,7 +555,8 @@ function* materializeRows(
 		result: query.select ? pick(row, query.select) : { ...row },
 		related: [],
 	}))
-	if (!query.with) return trees
+	// Without parent rows, includes have nothing to join, so they read nothing.
+	if (!query.with || !rows.length) return trees
 	if (!relations) {
 		throw new Error(
 			"Cannot execute relational query includes without relations",

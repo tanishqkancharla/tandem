@@ -138,6 +138,19 @@ test("a one-to-many include reads its target collection once for every parent", 
 	expect(storage.recordsRead).toBe(50 + 500)
 })
 
+test("an include under no parent rows reads nothing", async ({
+	server,
+	storage,
+}) => {
+	const authors = await server.query({
+		collection: "authors",
+		where: { id: "missing" },
+		with: { posts: true },
+	})
+	expect(authors).toEqual([])
+	expect(storage.recordsRead).toBe(0)
+})
+
 test("a pull runs the same plan, sharing a collection read between queries", async ({
 	server,
 	storage,
