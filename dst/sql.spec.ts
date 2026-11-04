@@ -12,15 +12,9 @@ import {
 	replay,
 } from "./DstReplay.js"
 import { DstSimulation } from "./DstSimulation.js"
-import type { DstSchema } from "./DstWorld.js"
+import { dstSchemaDefinition, type DstSchema } from "./DstWorld.js"
 
-const tables: TandemServerSqlStorageArgs<DstSchema>["tables"] = {
-	projects: {
-		table: "projects",
-		idColumns: ["id"],
-		encode: ({ name }) => ({ name }),
-		decode: (row) => row as DstSchema["projects"],
-	},
+const tables = {
 	tasks: {
 		table: "tasks",
 		idColumns: ["id"],
@@ -39,12 +33,6 @@ const tables: TandemServerSqlStorageArgs<DstSchema>["tables"] = {
 			} as DstSchema["tasks"]
 		},
 	},
-	comments: {
-		table: "comments",
-		idColumns: ["id"],
-		encode: ({ taskId, body }) => ({ taskId, body }),
-		decode: (row) => row as DstSchema["comments"],
-	},
 	memberships: {
 		table: "memberships",
 		idColumns: ["project_id", "member_id"],
@@ -54,7 +42,7 @@ const tables: TandemServerSqlStorageArgs<DstSchema>["tables"] = {
 			role: row.role as string,
 		}),
 	},
-}
+} satisfies NonNullable<TandemServerSqlStorageArgs<DstSchema>["tables"]>
 
 test.each([3, 7, 19, 42, 81])(
 	"SQL storage survives network faults and client crashes, seed %i",
@@ -69,6 +57,7 @@ test.each([3, 7, 19, 42, 81])(
 		const storage = () =>
 			new TandemServerSqlStorage<DstSchema>({
 				dialect: "postgres",
+				schema: dstSchemaDefinition,
 				tables,
 				query: async ({ sql, parameters }) =>
 					(await db.query<TandemSqlRow>(sql, [...parameters])).rows,

@@ -24,9 +24,9 @@
 			"default": "./dist/index.js"
 		},
 		"./sql": {
-			"types": "./dist/storage/TandemServerSqlStorage.d.ts",
-			"import": "./dist/storage/TandemServerSqlStorage.js",
-			"default": "./dist/storage/TandemServerSqlStorage.js"
+			"types": "./dist/sql.d.ts",
+			"import": "./dist/sql.js",
+			"default": "./dist/sql.js"
 		}
 	},
 	"publishConfig": {
@@ -50,8 +50,10 @@
 	"devDependencies": {
 		"@electric-sql/pglite": "^0.5.14",
 		"@types/node": "^26.6.4",
+		"@types/pg": "^8.23.1",
 		"miniflare": "^4.20260730.0",
 		"mysql2": "^3.24.6",
+		"pg": "^8.23.1",
 		"typescript": "^7.0.2",
 		"vitest": "^5.0.3"
 	}

@@ -10,6 +10,7 @@ import {
 	type ClientApi,
 	type PokePayload,
 	collection,
+	t,
 	defineMutators,
 	type CollectionId,
 	defineRelations,
@@ -76,13 +77,11 @@ export type DstSchema = {
 }
 
 export const dstSchemaDefinition = defineSchema({
-	projects: collection<DstSchema["projects"]>({ fields: ["id", "name"] }),
+	projects: collection({ id: t.id(), name: t.string() }),
 	tasks: collection<DstSchema["tasks"]>({
 		fields: ["id", "projectId", "text", "note", "done", "priority"],
 	}),
-	comments: collection<DstSchema["comments"]>({
-		fields: ["id", "taskId", "body"],
-	}),
+	comments: collection({ id: t.id(), taskId: t.string(), body: t.string() }),
 	memberships: collection<DstSchema["memberships"]>({ fields: ["id", "role"] }),
 }) satisfies RuntimeSchemaDefinition<DstSchema>
 

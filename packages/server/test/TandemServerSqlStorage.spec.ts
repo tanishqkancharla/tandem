@@ -29,7 +29,9 @@ const schema = defineSchema({
 	messages: collection<Schema["messages"]>({ fields: ["id", "body"] }),
 })
 
-const tables: TandemServerSqlStorageArgs<Schema>["tables"] = {
+const tables: Required<
+	NonNullable<TandemServerSqlStorageArgs<Schema>["tables"]>
+> = {
 	tasks: {
 		table: "app_tasks",
 		idColumns: ["task_id"],

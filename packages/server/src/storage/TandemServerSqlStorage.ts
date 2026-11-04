@@ -2,6 +2,7 @@ import type {
 	AnyCollectionSchema,
 	AnySchema,
 	CollectionName,
+	RuntimeSchemaDefinition,
 } from "@tanishqkancharla/tandem-core"
 import { collectionIdToTuple } from "@tanishqkancharla/tandem-core/internal"
 import * as errore from "errore"
@@ -48,13 +49,27 @@ export type TandemSqlTable<Record extends AnyCollectionSchema> = {
 	decode: (row: TandemSqlRow) => Record
 }
 
+type TandemSqlTables<Schema extends AnySchema> = {
+	[C in CollectionName<Schema>]: TandemSqlTable<Schema[C]>
+}
+
+type TandemSqlRuntimeTable<Schema extends AnySchema> = Omit<
+	TandemSqlTable<Schema[CollectionName<Schema>]>,
+	"idColumns"
+> & { idColumns: readonly string[] }
+
 export type TandemServerSqlStorageArgs<Schema extends AnySchema> = {
 	dialect: TandemSqlDialect
-	tables: { [C in CollectionName<Schema>]: TandemSqlTable<Schema[C]> }
 	query: (statement: TandemSqlStatement) => Promise<TandemSqlRow[]>
 	/** Execute all statements atomically, or reject without committing any. */
 	commit: (statements: readonly TandemSqlStatement[]) => Promise<void>
-}
+} & (
+	| {
+			schema: RuntimeSchemaDefinition<Schema>
+			tables?: Partial<TandemSqlTables<Schema>>
+	  }
+	| { tables: TandemSqlTables<Schema>; schema?: never }
+)
 
 class TandemSqlStorageError extends errore.createTaggedError({
 	name: "TandemSqlStorageError",
@@ -91,7 +106,7 @@ export class TandemServerSqlStorage<
 	private readonly clients = new InMemoryTupleStorage()
 	private readonly compiler: Kysely<unknown>
 	private readonly tables: Array<
-		[CollectionName<Schema>, TandemSqlTable<Schema[CollectionName<Schema>]>]
+		[CollectionName<Schema>, TandemSqlRuntimeTable<Schema>]
 	>
 	private readonly query: TandemServerSqlStorageArgs<Schema>["query"]
 	private readonly commitSql: TandemServerSqlStorageArgs<Schema>["commit"]
@@ -105,7 +120,15 @@ export class TandemServerSqlStorage<
 		})
 		// Erase only the collection-specific parameter type while enumerating the
 		// mapping; the public constructor checks each collection independently.
-		this.tables = Object.entries(args.tables) as typeof this.tables
+		const tables = args.schema
+			? tablesFromSchema({
+					schema: args.schema,
+					dialect: args.dialect,
+					overrides: args.tables,
+				})
+			: args.tables
+		if (tables instanceof Error) throw tables
+		this.tables = Object.entries(tables) as typeof this.tables
 		this.query = args.query
 		this.commitSql = args.commit
 	}
@@ -239,4 +262,68 @@ export class TandemServerSqlStorage<
 			})
 		return entry[1]
 	}
+}
+
+function tablesFromSchema<Schema extends AnySchema>(args: {
+	schema: RuntimeSchemaDefinition<Schema>
+	dialect: TandemSqlDialect
+	overrides?: Partial<TandemSqlTables<Schema>>
+}) {
+	const tables: Record<string, TandemSqlRuntimeTable<Schema>> = {}
+	for (const [name, collection] of Object.entries(args.schema.collections)) {
+		const override = args.overrides?.[name as CollectionName<Schema>]
+		if (override) {
+			tables[name] = override
+			continue
+		}
+		const shape = collection.shape
+		if (!shape || !["id", "string", "number"].includes(shape.id?.type))
+			return new TandemSqlStorageError({
+				operation: `map collection "${name}": use collection({ id: t.id(), ... }) with scalar fields, or supply an explicit table mapping`,
+			})
+		const fields = Object.entries(shape)
+		if (
+			fields.some(
+				([, field]) =>
+					!["id", "string", "number", "boolean"].includes(field.type),
+			)
+		)
+			return new TandemSqlStorageError({
+				operation: `map unsupported fields in collection "${name}"`,
+			})
+		tables[name] = {
+			table: name,
+			idColumns: ["id"],
+			encode: (record) =>
+				Object.fromEntries(
+					fields.map(([field, definition]) => {
+						const value = record[field]
+						return [
+							field,
+							definition.type === "boolean" && args.dialect !== "postgres"
+								? Number(value)
+								: value,
+						]
+					}),
+				),
+			decode: (row) =>
+				Object.fromEntries(
+					fields.map(([field, definition]) => {
+						const value = row[field]
+						const decoded =
+							definition.type === "boolean" && (value === 0 || value === 1)
+								? value === 1
+								: value
+						const expected =
+							definition.type === "id" ? "string" : definition.type
+						if (typeof decoded !== expected)
+							throw new TandemSqlStorageError({
+								operation: `decode "${name}.${field}": expected ${expected}`,
+							})
+						return [field, decoded]
+					}),
+				) as Schema[CollectionName<Schema>],
+		}
+	}
+	return tables
 }
