@@ -120,36 +120,37 @@ function isRecordKey(key: readonly unknown[]): key is RecordKey {
 
 /**
  * The index writes that keep entries in step with record writes. `previous`
- * holds each written record's value before the commit.
+ * holds each written record's value before the commit. Storage applies
+ * removals before sets, so a key both removed and set ends with the set.
  */
 function indexWrites(
 	indexes: SchemaIndexes,
 	writes: WriteOps,
 	previous: ReadonlyMap<string, unknown>,
 ): WriteOps {
+	const final = new Map<string, { key: RecordKey; value: unknown }>()
+	for (const key of writes.remove ?? [])
+		if (isRecordKey(key))
+			final.set(JSON.stringify(key), { key, value: undefined })
+	for (const { key, value } of writes.set ?? [])
+		if (isRecordKey(key)) final.set(JSON.stringify(key), { key, value })
 	const set: KeyValuePair[] = []
 	const remove: KeyValuePair["key"][] = []
-	const update = (key: RecordKey, next: unknown) => {
-		const id = key.slice(2) as CollectionIdPart[]
-		const before = previous.get(JSON.stringify(key)) as
-			| Record<string, unknown>
-			| undefined
+	for (const [id, { key, value }] of final) {
+		const before = previous.get(id) as Record<string, unknown> | undefined
+		const recordId = key.slice(2) as CollectionIdPart[]
 		for (const index of indexes.get(key[1]) ?? []) {
-			const old = before && indexKey(index, before, id)
+			const old = before && indexKey(index, before, recordId)
 			const fresh =
-				next === undefined
+				value === undefined
 					? undefined
-					: indexKey(index, next as Record<string, unknown>, id)
+					: indexKey(index, value as Record<string, unknown>, recordId)
 			if (old && fresh && JSON.stringify(old) === JSON.stringify(fresh))
 				continue
 			if (old) remove.push(old)
 			if (fresh) set.push({ key: fresh, value: null })
 		}
 	}
-	for (const key of writes.remove ?? [])
-		if (isRecordKey(key)) update(key, undefined)
-	for (const { key, value } of writes.set ?? [])
-		if (isRecordKey(key)) update(key, value)
 	return { set, remove }
 }
 
@@ -277,35 +278,43 @@ export class AsyncTupleDatabaseWithIndexes implements AsyncTupleDatabaseApi {
 }
 
 /**
- * Index writes that rebuild every entry from `records`: removals for the
- * stored entries, the entries the records need, and the definitions.
+ * The writes that make stored entries and definitions match `records`, or
+ * undefined when they already do. Committing only differences keeps
+ * processes that share storage from waking each other with rebuilds.
  */
 export function rebuildIndexWrites(
 	indexes: SchemaIndexes,
-	stored: readonly KeyValuePair["key"][],
+	stored: {
+		entries: readonly KeyValuePair["key"][]
+		definitions: string | undefined
+	},
 	records: readonly { key: readonly unknown[]; value: unknown }[],
-): WriteOps {
-	const set: KeyValuePair[] = [
-		{
-			key: ["indexes"],
-			value: { definitions: indexDefinitionsSignature(indexes) },
-		},
-	]
+): WriteOps | undefined {
+	const wanted = new Map<string, KeyValuePair["key"]>()
 	for (const { key, value } of records) {
 		if (!isRecordKey(key)) continue
-		for (const index of indexes.get(key[1]) ?? [])
-			set.push({
-				key: indexKey(
-					index,
-					value as Record<string, unknown>,
-					key.slice(2) as CollectionIdPart[],
-				),
-				value: null,
-			})
+		for (const index of indexes.get(key[1]) ?? []) {
+			const entry = indexKey(
+				index,
+				value as Record<string, unknown>,
+				key.slice(2) as CollectionIdPart[],
+			)
+			wanted.set(JSON.stringify(entry), entry)
+		}
 	}
-	const kept = new Set(set.map(({ key }) => JSON.stringify(key)))
-	return {
-		set,
-		remove: stored.filter((key) => !kept.has(JSON.stringify(key))),
+	const existing = new Set(stored.entries.map((key) => JSON.stringify(key)))
+	const definitions = indexes.size
+		? indexDefinitionsSignature(indexes)
+		: undefined
+	const set: KeyValuePair[] = [...wanted]
+		.filter(([id]) => !existing.has(id))
+		.map(([, key]) => ({ key, value: null }))
+	const remove = stored.entries.filter(
+		(key) => !wanted.has(JSON.stringify(key)),
+	)
+	if (definitions !== stored.definitions) {
+		if (definitions === undefined) remove.push(["indexes"])
+		else set.push({ key: ["indexes"], value: { definitions } })
 	}
+	return set.length || remove.length ? { set, remove } : undefined
 }

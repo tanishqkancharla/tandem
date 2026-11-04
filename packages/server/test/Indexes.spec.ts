@@ -74,12 +74,14 @@ async function storedEntries(storage: TandemServerStorageApi<ChatSchema>) {
 class NotifyingStorage implements TandemServerStorageApi<ChatSchema> {
 	readonly memory = new InMemoryTupleStorage()
 	private readonly listeners = new Set<() => void>()
+	commits = 0
 
 	scan(args?: ScanStorageArgs) {
 		return Promise.resolve(this.memory.scan(args) as TandemTuple<ChatSchema>[])
 	}
 
 	commit(writes: WriteOps<TandemTuple<ChatSchema>>) {
+		this.commits++
 		this.memory.commit(writes)
 		for (const listener of this.listeners) listener()
 		return Promise.resolve()
@@ -197,6 +199,44 @@ test("a server rebuilds entries before its first read when the definitions chang
 	await renamed.close()
 })
 
+test("a server without indexes removes entries a previous schema left", async () => {
+	const storage = new TestTandemServerStorage<ChatSchema>()
+	const plainSchema = defineSchema({
+		messages: collection<Message>({
+			fields: ["id", "threadId", "createdAt", "text"],
+		}),
+	})
+	const indexedServer = new TandemServer({
+		schema: indexed,
+		relations: {},
+		storage,
+	})
+	const tx = indexedServer.transact()
+	tx.set("messages", message("m1"))
+	await indexedServer.commit(tx)
+	await indexedServer.close()
+
+	// A deploy without the index writes a record and drops the old entries.
+	const plain = new TandemServer({
+		schema: plainSchema,
+		relations: {},
+		storage,
+	})
+	const plainTx = plain.transact()
+	plainTx.set("messages", message("m2", { createdAt: 2 }))
+	await plain.commit(plainTx)
+	await plain.close()
+	expect(await storedEntries(storage)).toEqual([])
+	expect(await storage.scan({ gte: ["indexes"], lte: ["indexes"] })).toEqual([])
+
+	// Restoring the index rebuilds entries for both records.
+	const restored = new TandemServer({ schema: indexed, relations: {}, storage })
+	const records = await restored.query({ collection: "messages" })
+	expect(await storedEntries(storage)).toEqual(entriesFor(records))
+	expect(records).toHaveLength(2)
+	await restored.close()
+})
+
 test("a reported outside write, or rebuildIndexes after an unreported one, restores entries", async () => {
 	const storage = new NotifyingStorage()
 	const server = new TandemServer({ schema: indexed, relations: {}, storage })
@@ -230,6 +270,25 @@ test("a reported outside write, or rebuildIndexes after an unreported one, resto
 		entriesFor(await server.query({ collection: "messages" })),
 	)
 	await server.close()
+})
+
+test("servers sharing storage settle after a rebuild instead of waking each other", async () => {
+	const storage = new NotifyingStorage()
+	const first = new TandemServer({ schema: indexed, relations: {}, storage })
+	const second = new TandemServer({ schema: indexed, relations: {}, storage })
+	const tx = first.transact()
+	tx.set("messages", message("m1"))
+	await first.commit(tx)
+	// The first server saved the definitions, then the record with its entry.
+	expect(storage.commits).toBe(2)
+
+	// The second server was notified, so it checks every entry, finds them
+	// current, and writes nothing that would notify the first.
+	await second.query({ collection: "messages" })
+	await first.query({ collection: "messages" })
+	expect(storage.commits).toBe(2)
+	await first.close()
+	await second.close()
 })
 
 test("an index must name fields the collection has", () => {

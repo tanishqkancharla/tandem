@@ -665,7 +665,7 @@ export class TandemServer<
 	 * the current definitions are trusted until then.
 	 */
 	private async checkIndexes(): Promise<TandemServerError | undefined> {
-		if (this.indexState === "current" || !this.indexes.size) return
+		if (this.indexState === "current") return
 		if (this.indexState === "stale") return this.rebuildIndexEntries()
 		const stored = await (
 			this
@@ -674,16 +674,23 @@ export class TandemServer<
 			.get(["indexes"])
 			.catch((cause) => new TandemServerError({ operation: "index", cause }))
 		if (stored instanceof Error) return stored
-		if (stored?.definitions === indexDefinitionsSignature(this.indexes)) {
+		// Without indexes, entries a previous schema left must go too: a later
+		// schema with those indexes would otherwise trust them.
+		const expected = this.indexes.size
+			? indexDefinitionsSignature(this.indexes)
+			: undefined
+		if (stored?.definitions === expected) {
 			this.indexState = "current"
 			return
 		}
 		return this.rebuildIndexEntries()
 	}
 
+	/** Makes stored entries match the records, writing only the differences. */
 	private async rebuildIndexEntries(): Promise<TandemServerError | undefined> {
 		const read = await Promise.all([
 			this.unindexedDb.scan({ gte: ["index"], lte: ["index", true] }),
+			this.unindexedDb.scan({ gte: ["indexes"], lte: ["indexes"] }),
 			...[...this.indexes.keys()].map((collection) =>
 				this.unindexedDb.scan({
 					gte: ["record", collection],
@@ -692,24 +699,30 @@ export class TandemServer<
 			),
 		]).catch((cause) => new TandemServerError({ operation: "index", cause }))
 		if (read instanceof Error) return read
-		const [stored, ...records] = read
-		this.committing = true
-		const committed = await this.unindexedDb
-			.commit(
-				rebuildIndexWrites(
-					this.indexes,
-					stored!.map(({ key }) => key),
-					records.flat(),
-				),
-			)
-			.finally(() => {
-				this.committing = false
-			})
-			.then(
-				() => undefined,
-				(cause) => new TandemServerError({ operation: "index", cause }),
-			)
-		if (committed instanceof Error) return committed
+		const [entries, definitions, ...records] = read
+		const writes = rebuildIndexWrites(
+			this.indexes,
+			{
+				entries: entries!.map(({ key }) => key),
+				definitions: (
+					definitions![0]?.value as { definitions?: string } | undefined
+				)?.definitions,
+			},
+			records.flat(),
+		)
+		if (writes) {
+			this.committing = true
+			const committed = await this.unindexedDb
+				.commit(writes)
+				.finally(() => {
+					this.committing = false
+				})
+				.then(
+					() => undefined,
+					(cause) => new TandemServerError({ operation: "index", cause }),
+				)
+			if (committed instanceof Error) return committed
+		}
 		this.indexState = "current"
 	}
 
@@ -717,7 +730,7 @@ export class TandemServer<
 		query: Query,
 	): Promise<RelationalQueryResult<Schema, Relations, Query>> {
 		// Queries do not wait behind commits, except to check index entries once.
-		if (this.indexState !== "current" && this.indexes.size)
+		if (this.indexState !== "current")
 			await this.run(() => Promise.resolve(undefined))
 		const result = await this.runQuery(this.recordDb, query, "query")
 		if (result instanceof Error) throw result
