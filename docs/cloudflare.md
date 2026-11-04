@@ -41,39 +41,28 @@ The Durable Object class declaration selects Cloudflare's SQLite-backed object t
 
 When adding this to an existing Worker, merge the bindings and add a new migration tag rather than replacing its configuration. An existing Durable Object can own the `TandemServer` directly instead of adding another object class.
 
-## 2. Map existing tables
+## 2. Reuse your Tandem schema
 
-The example maps a `tasks` collection to `tasks(task_id, title, is_done)`. Keep your application's tables and adjust the mapping:
+Use collection and field names that match the database's table and column names. Define field types with the same schema builder used by clients:
 
 ```ts
-import { TandemServerSqlStorage } from "@tanishqkancharla/tandem-server/sql"
-import type { AppSchema } from "./schema"
+import { collection, defineSchema, t } from "@tanishqkancharla/tandem-core"
 
-const storage = new TandemServerSqlStorage<AppSchema>({
-  dialect: "sqlite",
-  tables: {
-    tasks: {
-      table: "tasks",
-      idColumns: ["task_id"],
-      encode: ({ text, done }) => ({ title: text, is_done: Number(done) }),
-      decode: (row) => ({
-        id: row.task_id as string,
-        text: row.title as string,
-        done: row.is_done === 1,
-      }),
-    },
-  },
-  query: async ({ sql, parameters }) =>
-    (await env.DB.prepare(sql).bind(...parameters).all()).results,
-  commit: async (statements) => {
-    await env.DB.batch(statements.map(({ sql, parameters }) =>
-      env.DB.prepare(sql).bind(...parameters),
-    ))
-  },
+export const schema = defineSchema({
+  tasks: collection({ id: t.id(), text: t.string(), done: t.boolean() }),
 })
 ```
 
-D1's `batch()` commits all statements atomically. Do not replace it with separate `run()` calls. The adapter supplies bound parameters and does not create tables or persist tuple keys.
+The example uses `tasks(id, text, done)`, with `id` as the primary key and `done` stored as `0` or `1`. Give the adapter your schema and D1 binding:
+
+```ts
+import { TandemServerD1Storage } from "@tanishqkancharla/tandem-server/sql"
+import { schema } from "./schema"
+
+const storage = new TandemServerD1Storage({ schema, database: env.DB })
+```
+
+The adapter derives column mappings, converts booleans, binds read parameters, and commits each write batch atomically through D1's `batch()`. It creates no tables or columns and does not persist tuple keys. For custom names, compound IDs, or custom value types, see the lower-level [SQL mapping API](sql.md#custom-tables-and-drivers).
 
 For the standalone example, create its table locally:
 

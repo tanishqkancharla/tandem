@@ -32,7 +32,7 @@ test("two clients sync existing D1 rows over SSE and recover a disconnected view
 	await db.prepare(await fs.readFile("schema.sql", "utf8")).run()
 	await db
 		.prepare(
-			"insert into tasks (task_id, title, is_done) values ('existing', 'From SQL', 0)",
+			"insert into tasks (id, text, done) values ('existing', 'From SQL', 0)",
 		)
 		.run()
 	const url = (await runtime.ready).toString()
@@ -63,10 +63,8 @@ test("two clients sync existing D1 rows over SSE and recover a disconnected view
 	await expect
 		.poll(() => bob.query({ collection: "tasks" }))
 		.toEqual([{ id: "existing", text: "Edited through Tandem", done: true }])
-	expect(
-		await db.prepare("select title, is_done from tasks").all(),
-	).toMatchObject({
-		results: [{ title: "Edited through Tandem", is_done: 1 }],
+	expect(await db.prepare("select text, done from tasks").all()).toMatchObject({
+		results: [{ text: "Edited through Tandem", done: 1 }],
 	})
 	await bob.disconnect()
 	const remove = alice.transact()

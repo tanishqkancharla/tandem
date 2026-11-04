@@ -8,7 +8,7 @@ import {
 	TandemServer,
 	createTandemEventStreamResponse,
 } from "@tanishqkancharla/tandem-server"
-import { TandemServerSqlStorage } from "@tanishqkancharla/tandem-server/sql"
+import { TandemServerD1Storage } from "@tanishqkancharla/tandem-server/sql"
 import * as errore from "errore"
 import { schema, type AppSchema, type SyncRequest } from "./schema.js"
 
@@ -55,37 +55,7 @@ export class SyncObject {
 		this.server = new TandemServer({
 			schema,
 			relations: {},
-			storage: new TandemServerSqlStorage<AppSchema>({
-				dialect: "sqlite",
-				tables: {
-					tasks: {
-						table: "tasks",
-						idColumns: ["task_id"],
-						encode: ({ text, done }) => ({
-							title: text,
-							is_done: Number(done),
-						}),
-						decode: (row) => ({
-							id: row.task_id as string,
-							text: row.title as string,
-							done: row.is_done === 1,
-						}),
-					},
-				},
-				query: async ({ sql, parameters }) =>
-					(
-						await env.DB.prepare(sql)
-							.bind(...parameters)
-							.all()
-					).results,
-				commit: async (statements) => {
-					await env.DB.batch(
-						statements.map(({ sql, parameters }) =>
-							env.DB.prepare(sql).bind(...parameters),
-						),
-					)
-				},
-			}),
+			storage: new TandemServerD1Storage({ schema, database: env.DB }),
 		})
 	}
 
