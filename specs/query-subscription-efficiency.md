@@ -179,13 +179,25 @@ The pusher still gets a bare poke at once for its acknowledgement, with any buff
 
 ### Phase 4: Query planner and narrow reads
 
-One executor serves the client's synchronous reads and the server's asynchronous reads. It plans each query node: a full `id` equality becomes a key read; a many-to-one include gathers distinct target IDs and reads them by key; a one-to-many include loads its target candidates once and groups them by the join field. Unplannable nodes scan as today.
+One executor serves the client's synchronous reads and the server's asynchronous reads. A plan is a generator that yields reads and receives their results; `runSync` and `runAsync` perform them and cache whole-collection scans for the run.
 
-Equality in `where` becomes strict: primitives compare with `===`, objects and arrays structurally. The current loose comparison matches `0` with `""` and `"5"` with `5`, which typed queries cannot ask for and no key or index read can reproduce.
+```callstack
+ executeQuerySync / executeQueryAsync / executeScanWindow* [[packages/core/src/query/executeQuery.ts]]
+-├── loadRecords*: scan every named collection
+-└── executeLoadedQuery: per parent row, filter the whole target collection
++└── runSync | runAsync(executeNode)
++    ├── rootCandidates: where id = full ID → one key read; else scan
++    ├── selectRows: where, order, offset, limit (unchanged semantics)
++    └── materializeRows, level by level
++        ├── many-to-one: distinct target IDs read by key together
++        └── one-to-many: target read once, grouped by join value
+```
 
-- [ ] Shared generator-based executor with sync and async drivers.
-- [ ] Key reads for full IDs, including compound IDs; batched include reads.
-- [ ] Reference comparison tests and counting-storage tests.
+Equality in `where` becomes strict: primitives compare with `===`, objects and arrays by JSON. The old loose comparison matched `0` with `""` and `"5"` with `5`, which typed queries cannot ask for and no key or index read can reproduce. Undefined conditions add no clause, as the subscription encoder already did.
+
+- [x] Generator executor with sync and async drivers; scan-window records keep their depth-first order.
+- [x] Key reads for full IDs, including compound IDs; batched many-to-one reads; one read per one-to-many include.
+- [x] Tests: randomized comparison with a scan-everything reference on client and server (6 seeds x 150 queries over mixed types, missing fields, compound IDs, a one-part array ID, nested includes with filters, order, limit, offset, select); equality semantics; subscriptions by ID and through includes update; server read counts.
 
 ### Phase 5: Index schema and write lifecycle
 

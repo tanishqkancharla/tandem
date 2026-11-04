@@ -28,6 +28,12 @@ Only `collection` is required. Every option is typed against the schema, so an u
 
 `OR`, `NOT`, `in`, and filters on related fields are not supported.
 
+`eq` matches only values of the same type: strings with `===`, numbers with `===`, and arrays and objects by their JSON. `1` does not match `"1"`, and `null` does not match a missing field. A condition whose value is `undefined` adds no filter. Comparisons (`gt`, `lt`, `gte`, `lte`) and `orderBy` compare numbers with numbers and strings with strings; values of any other pairing count as equal.
+
+## Reads
+
+The client and the server run queries the same way. A query whose `where` names a full `id`, including a compound one, reads that one record. A many-to-one include reads its distinct targets by key, once for all parent rows. A one-to-many include reads its target collection once and groups it by the join field. Any other query reads the collections it names. On the server, these reads go through the storage adapter's `scan`.
+
 ## Subscriptions
 
 `subscribe` returns the current result and calls the callback whenever the result changes. Call `destroy` to stop.
