@@ -1,5 +1,12 @@
 import fs from "node:fs/promises"
-import { TandemClient, Logger } from "@tanishqkancharla/tandem-core"
+import http from "node:http"
+import {
+	TandemClient,
+	Logger,
+	tag,
+	type ClientId,
+	type MutationId,
+} from "@tanishqkancharla/tandem-core"
 import * as errore from "errore"
 import { build } from "esbuild"
 import { Miniflare } from "miniflare"
@@ -7,7 +14,12 @@ import { expect, test } from "vitest"
 import { schema } from "../src/schema.js"
 import { createRemote } from "../src/remote.js"
 
-test("two clients sync existing D1 rows over SSE and recover a disconnected view", async () => {
+class SyncProxyError extends errore.createTaggedError({
+	name: "SyncProxyError",
+	message: "The test edge could not forward an HTTP request",
+}) {}
+
+async function startWorker() {
 	const bundle = await build({
 		entryPoints: ["src/index.ts"],
 		bundle: true,
@@ -26,10 +38,15 @@ test("two clients sync existing D1 rows over SSE and recover a disconnected view
 		d1Databases: { DB: "cloudflare-example" },
 		durableObjects: { SYNC: { className: "SyncObject", useSQLite: true } },
 	})
-	await using cleanup = new errore.AsyncDisposableStack()
-	cleanup.defer(() => runtime.dispose())
 	const db = await runtime.getD1Database("DB")
 	await db.prepare(await fs.readFile("schema.sql", "utf8")).run()
+	return { runtime, db }
+}
+
+test("two clients sync existing D1 rows over SSE and recover a disconnected view", async () => {
+	const { runtime, db } = await startWorker()
+	await using cleanup = new errore.AsyncDisposableStack()
+	cleanup.defer(() => runtime.dispose())
 	await db
 		.prepare(
 			"insert into tasks (id, text, done) values ('existing', 'From SQL', 0)",
@@ -78,4 +95,80 @@ test("two clients sync existing D1 rows over SSE and recover a disconnected view
 		body: "not JSON",
 	})
 	expect(malformed.status).toBe(400)
+}, 30_000)
+
+// Put a real HTTP edge in front of the Worker and fail only the event route.
+async function blockEventStream(upstream: URL) {
+	const edge = http.createServer((request, response) => {
+		if (request.url?.startsWith("/api/tandem/events")) {
+			response.writeHead(503).end("Stream unavailable")
+			return
+		}
+		const body: Buffer[] = []
+		request.on("data", (chunk: Buffer) => body.push(chunk))
+		request.on("end", () => {
+			void fetch(new URL(request.url!, upstream), {
+				method: request.method,
+				headers: { "content-type": "application/json" },
+				body: Buffer.concat(body),
+			})
+				.then(async (result) => {
+					response.writeHead(result.status).end(await result.text())
+				})
+				.catch((cause) => {
+					console.error(new SyncProxyError({ cause }))
+					response.writeHead(502).end("Upstream failed")
+				})
+		})
+	})
+	await new Promise<void>((resolve) => edge.listen(0, "127.0.0.1", resolve))
+	const address = edge.address()
+	if (typeof address !== "object" || address === null)
+		throw new Error("No edge address")
+	return { edge, url: `http://127.0.0.1:${address.port}` }
+}
+
+test("confirms a writer's push without waiting for an unavailable SSE stream", async () => {
+	const { runtime } = await startWorker()
+	await using cleanup = new errore.AsyncDisposableStack()
+	cleanup.defer(() => runtime.dispose())
+	const { edge, url } = await blockEventStream(await runtime.ready)
+	cleanup.defer(
+		() =>
+			new Promise<void>((resolve, reject) =>
+				edge.close((error) => (error ? reject(error) : resolve())),
+			),
+	)
+	const remote = createRemote(url)
+	const clientId = tag<ClientId>("writer-without-sse")
+	const acknowledgements: MutationId[] = []
+	const disconnect = await remote.connect({
+		clientId,
+		poke: async () => {
+			const response = await remote.pull({ clientId, scanWindow: [] })
+			if ("error" in response) throw new Error(response.message)
+			acknowledgements.push(response.lastMutationId)
+		},
+	})
+	if (typeof disconnect !== "function") throw new Error(disconnect.message)
+	cleanup.defer(disconnect)
+	expect(
+		await remote.push({
+			clientId,
+			mutations: [
+				{
+					id: tag<MutationId>(1),
+					ops: [
+						{
+							type: "set",
+							collection: "tasks",
+							value: { id: "saved", text: "Saved without SSE", done: false },
+						},
+					],
+				},
+			],
+		}),
+	).toEqual({ ok: true })
+	// The event route returns 503, and its fallback does not run for 60 seconds.
+	await expect.poll(() => acknowledgements, { timeout: 2_000 }).toContain(1)
 }, 30_000)

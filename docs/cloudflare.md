@@ -130,7 +130,7 @@ tx.set("tasks", { id: crypto.randomUUID(), text: "Try D1 sync", done: false })
 await db.commit(tx)
 ```
 
-A client must subscribe to a query before another client's matching writes appear. The SSE helper pulls after every connection's `ready` event, retries closed streams, and performs fallback pulls. It does not replay missed SSE messages; the pull reads the current subscribed records.
+A client must subscribe to a query before another client's matching writes appear. The browser remote triggers a pull after a successful push so the writer can confirm it while SSE is unavailable. The SSE helper pulls after every connection's `ready` event, retries closed streams, and performs fallback pulls. It does not replay missed SSE messages; the pull reads the current subscribed records.
 
 ## 5. Run and deploy
 
@@ -140,7 +140,7 @@ From the example directory:
 pnpm dev
 ```
 
-Run its transport test with `pnpm test`. The test bundles the actual Worker and uses local D1, a Durable Object, two clients, and real SSE connections. It checks an existing SQL row, a write visible to another client, and catch-up after reconnecting.
+Run its transport test with `pnpm test`. The test bundles the actual Worker and uses local D1, a Durable Object, two clients, and real SSE connections. It checks an existing SQL row, a write visible to another client, catch-up after reconnecting, and writer acknowledgement while the SSE route returns 503.
 
 For a new example database, apply the schema remotely before deploying. Skip the schema command when using existing application tables:
 
