@@ -5,13 +5,15 @@ import type {
 } from "tuple-database"
 import type {
 	AnySchema,
+	CollectionId,
+	CollectionIdPart,
 	CollectionName,
 	AnyRelations,
 	SchemaToTupleSchema,
 } from "../schema/Schema.js"
 import { collectionIdToTuple } from "../schema/Schema.js"
-import { isEqual, isObject, pick } from "../utils/objectUtils.js"
-import { match } from "../utils/typeUtils.js"
+import { isObject, pick } from "../utils/objectUtils.js"
+import { match, unreachable } from "../utils/typeUtils.js"
 import type {
 	EncodedQuery,
 	Operator,
@@ -63,23 +65,6 @@ type QueryNode<
 	readonly offset?: number
 }
 
-type RecordsByCollection<Schema extends AnySchema> = {
-	readonly [
-		Collection in CollectionName<Schema>
-	]?: readonly Schema[Collection][]
-}
-
-type MutableRecordsByCollection<Schema extends AnySchema> = {
-	-readonly [Collection in CollectionName<Schema>]?: Schema[Collection][]
-}
-
-type QueryRowCollector<Schema extends AnySchema> = <
-	Collection extends CollectionName<Schema>,
->(
-	collection: Collection,
-	record: Schema[Collection],
-) => void
-
 export type ScanWindowRecord<
 	Schema extends AnySchema,
 	Collection extends CollectionName<Schema> = CollectionName<Schema>,
@@ -127,9 +112,11 @@ function normalizeRelationalQuery<Schema extends AnySchema>(
 		if (query.select[field]) select.push(field)
 	}
 
+	// Undefined conditions add no clause, as when a subscription encodes them.
 	const where: QueryWhereClause[] = []
 	for (const field in query.where) {
 		const condition = query.where[field]
+		if (condition === undefined) continue
 		if (!isObject(condition) || Array.isArray(condition)) {
 			where.push([field, "=", condition])
 			continue
@@ -139,6 +126,7 @@ function normalizeRelationalQuery<Schema extends AnySchema>(
 			if (!isRelationalWhereOperator(operator)) {
 				throw new Error(`Unknown where operator "${operator}"`)
 			}
+			if (condition[operator] === undefined) continue
 			where.push([
 				field,
 				encodeRelationalWhereOperator(operator),
@@ -248,91 +236,137 @@ function getQueryCollections<Schema extends AnySchema>(
 	return collections
 }
 
-function scanCollectionSync<
-	Schema extends AnySchema,
-	Collection extends CollectionName<Schema>,
->(
+/** A read the executor needs. A driver performs it on sync or async storage. */
+type QueryRead =
+	| { type: "scan"; collection: string }
+	| { type: "get"; keys: readonly RecordKey[] }
+
+/** `["record", collection, ...id]`, as tuple-database orders it. */
+type RecordKey = readonly ["record", string, ...CollectionIdPart[]]
+
+/**
+ * A query plan. It yields the reads it needs and receives their results, so
+ * the same plan runs against the client's synchronous database and the
+ * server's asynchronous one.
+ */
+type QueryExecution<Result> = Generator<QueryRead, Result, unknown>
+
+function* scanCollection(
+	collection: string,
+): QueryExecution<readonly RuntimeRecord[]> {
+	return (yield { type: "scan", collection }) as RuntimeRecord[]
+}
+
+function* getRecords(
+	keys: readonly RecordKey[],
+): QueryExecution<readonly (RuntimeRecord | undefined)[]> {
+	if (!keys.length) return []
+	return (yield { type: "get", keys }) as (RuntimeRecord | undefined)[]
+}
+
+type ScanResult = { records: RuntimeRecord[]; byId: Map<string, RuntimeRecord> }
+
+type TupleRecordReader = {
+	scan(args: {
+		prefix: readonly unknown[]
+	}): { key: readonly unknown[]; value: unknown }[]
+	get(key: readonly unknown[]): unknown
+}
+
+type AsyncTupleRecordReader = {
+	scan(args: {
+		prefix: readonly unknown[]
+	}): Promise<{ key: readonly unknown[]; value: unknown }[]>
+	get(key: readonly unknown[]): Promise<unknown>
+}
+
+function scanResult(tuples: { key: readonly unknown[]; value: unknown }[]) {
+	const result: ScanResult = { records: [], byId: new Map() }
+	for (const { key, value } of tuples) {
+		result.records.push(value as RuntimeRecord)
+		result.byId.set(JSON.stringify(key.slice(2)), value as RuntimeRecord)
+	}
+	return result
+}
+
+/**
+ * Runs a plan on the client's database. Reads stay inside the tuple-database
+ * client, so a subscription re-runs when any record it read changes. A whole
+ * collection is scanned at most once per run and answers later key reads.
+ */
+function runSync<Schema extends AnySchema, Result>(
 	db: ReadOnlyTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
-	collection: Collection,
-): Schema[Collection][]
-function scanCollectionSync<
-	Schema extends AnySchema,
-	Collection extends CollectionName<Schema>,
->(
-	db: ReadOnlyTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
-	collection: Collection,
-): RuntimeRecord[] {
-	const collectionDb = db as unknown as {
-		scan(args: { prefix: ["record", Collection] }): {
-			value: Schema[Collection]
-		}[]
+	execution: QueryExecution<Result>,
+): Result {
+	const reader = db as unknown as TupleRecordReader
+	const scans = new Map<string, ScanResult>()
+	let step = execution.next()
+	while (!step.done) {
+		const read = step.value
+		switch (read.type) {
+			case "scan": {
+				const scanned =
+					scans.get(read.collection) ??
+					scanResult(reader.scan({ prefix: ["record", read.collection] }))
+				scans.set(read.collection, scanned)
+				step = execution.next(scanned.records)
+				break
+			}
+			case "get":
+				step = execution.next(
+					read.keys.map(
+						(key) =>
+							scans.get(key[1])?.byId.get(JSON.stringify(key.slice(2))) ??
+							(scans.has(key[1])
+								? undefined
+								: (reader.get(key) as RuntimeRecord | undefined)),
+					),
+				)
+				break
+			default:
+				unreachable(read)
+		}
 	}
-	return collectionDb
-		.scan({ prefix: ["record", collection] })
-		.map(({ value }) => value)
+	return step.value
 }
 
-async function scanCollectionAsync<
-	Schema extends AnySchema,
-	Collection extends CollectionName<Schema>,
->(
+/** Runs a plan on the server's storage, reading a batch of keys together. */
+async function runAsync<Schema extends AnySchema, Result>(
 	db: ReadOnlyAsyncTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
-	collection: Collection,
-): Promise<Schema[Collection][]>
-async function scanCollectionAsync<
-	Schema extends AnySchema,
-	Collection extends CollectionName<Schema>,
->(
-	db: ReadOnlyAsyncTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
-	collection: Collection,
-): Promise<RuntimeRecord[]> {
-	const collectionDb = db as unknown as {
-		scan(args: {
-			prefix: ["record", Collection]
-		}): Promise<{ value: Schema[Collection] }[]>
+	execution: QueryExecution<Result>,
+): Promise<Result> {
+	const reader = db as unknown as AsyncTupleRecordReader
+	const scans = new Map<string, ScanResult>()
+	let step = execution.next()
+	while (!step.done) {
+		const read = step.value
+		switch (read.type) {
+			case "scan": {
+				const scanned =
+					scans.get(read.collection) ??
+					scanResult(await reader.scan({ prefix: ["record", read.collection] }))
+				scans.set(read.collection, scanned)
+				step = execution.next(scanned.records)
+				break
+			}
+			case "get":
+				step = execution.next(
+					await Promise.all(
+						read.keys.map((key) =>
+							scans.has(key[1])
+								? Promise.resolve(
+										scans.get(key[1])!.byId.get(JSON.stringify(key.slice(2))),
+									)
+								: (reader.get(key) as Promise<RuntimeRecord | undefined>),
+						),
+					),
+				)
+				break
+			default:
+				unreachable(read)
+		}
 	}
-	const tuples = await collectionDb.scan({ prefix: ["record", collection] })
-	return tuples.map(({ value }) => value)
-}
-
-function getCollectionRecords<
-	Schema extends AnySchema,
-	Collection extends CollectionName<Schema>,
->(
-	recordsByCollection: RecordsByCollection<Schema>,
-	collection: Collection,
-): readonly Schema[Collection][]
-function getCollectionRecords<Schema extends AnySchema>(
-	recordsByCollection: RecordsByCollection<Schema>,
-	collection: CollectionName<Schema>,
-): readonly RuntimeRecord[]
-function getCollectionRecords<Schema extends AnySchema>(
-	recordsByCollection: RecordsByCollection<Schema>,
-	collection: CollectionName<Schema>,
-): readonly RuntimeRecord[] {
-	return recordsByCollection[collection] ?? []
-}
-
-function loadRecordsSync<Schema extends AnySchema>(
-	db: ReadOnlyTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
-	collections: ReadonlySet<CollectionName<Schema>>,
-): RecordsByCollection<Schema> {
-	const records: MutableRecordsByCollection<Schema> = {}
-	for (const collection of collections) {
-		records[collection] = scanCollectionSync(db, collection)
-	}
-	return records
-}
-
-async function loadRecordsAsync<Schema extends AnySchema>(
-	db: ReadOnlyAsyncTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
-	collections: ReadonlySet<CollectionName<Schema>>,
-): Promise<RecordsByCollection<Schema>> {
-	const records: MutableRecordsByCollection<Schema> = {}
-	for (const collection of collections) {
-		records[collection] = await scanCollectionAsync(db, collection)
-	}
-	return records
+	return step.value
 }
 
 function compareOrderedValues(left: unknown, right: unknown) {
@@ -348,12 +382,28 @@ function compareOrderedValues(left: unknown, right: unknown) {
 	return 0
 }
 
+/**
+ * Equality for `where`: primitives compare with `===`, objects and arrays by
+ * their JSON. Values of different types never match, so a key or index read
+ * finds every match.
+ */
+function queryValuesEqual(left: unknown, right: unknown) {
+	if (left === right) return true
+	return (
+		typeof left === "object" &&
+		left !== null &&
+		typeof right === "object" &&
+		right !== null &&
+		JSON.stringify(left) === JSON.stringify(right)
+	)
+}
+
 function compareQueryValue(
 	fieldValue: unknown,
 	operator: Operator,
 	comparisonValue: unknown,
 ) {
-	if (operator === "=") return isEqual(fieldValue, comparisonValue)
+	if (operator === "=") return queryValuesEqual(fieldValue, comparisonValue)
 
 	const comparison = compareOrderedValues(fieldValue, comparisonValue)
 	if (operator === ">") return comparison > 0
@@ -367,28 +417,18 @@ function matchesWhere(record: RuntimeRecord, clause: QueryWhereClause) {
 	return compareQueryValue(record[field], operator, comparisonValue)
 }
 
-function getQueryRows<
-	Schema extends AnySchema,
-	Collection extends CollectionName<Schema>,
->(
-	query: QueryNode<Schema, Collection>,
-	recordsByCollection: RecordsByCollection<Schema>,
-	extraFilter?: (record: Schema[Collection]) => boolean,
-): Schema[Collection][] {
-	const collectionRecords = getCollectionRecords(
-		recordsByCollection,
-		query.collection,
-	)
-	const relationFiltered = extraFilter
-		? collectionRecords.filter(extraFilter)
-		: [...collectionRecords]
-	const whereFiltered = query.where
-		? relationFiltered.filter((record) =>
-				query.where?.every((clause) => matchesWhere(record, clause)),
+/** Applies a node's filters, ordering, offset, and limit to candidates in key order. */
+function selectRows(
+	query: QueryNode<AnySchema>,
+	candidates: readonly RuntimeRecord[],
+) {
+	const filtered = query.where
+		? candidates.filter((record) =>
+				query.where!.every((clause) => matchesWhere(record, clause)),
 			)
-		: relationFiltered
+		: [...candidates]
 	const ordered = query.order
-		? [...whereFiltered].sort((left, right) => {
+		? filtered.sort((left, right) => {
 				for (const [field, direction] of query.order ?? []) {
 					const comparison = compareOrderedValues(left[field], right[field])
 					if (comparison !== 0) {
@@ -397,88 +437,159 @@ function getQueryRows<
 				}
 				return 0
 			})
-		: whereFiltered
+		: filtered
 	const offset =
 		query.offset === undefined ? ordered : ordered.slice(query.offset)
-
 	return query.limit === undefined ? offset : offset.slice(0, query.limit)
 }
 
-function executeLoadedQuery<
-	Schema extends AnySchema,
-	Relations extends AnyRelations<Schema>,
-	Query extends RelationalQuery<Schema, Relations>,
->(
-	query: QueryNode<Schema>,
-	relations: Relations | undefined,
-	recordsByCollection: RecordsByCollection<Schema>,
-	extraFilter?: (record: RuntimeRecord) => boolean,
-	collectRow?: QueryRowCollector<Schema>,
-): RelationalQueryResult<Schema, Relations, Query>
-function executeLoadedQuery<Schema extends AnySchema>(
-	query: QueryNode<Schema>,
-	relations: AnyRelations<Schema> | undefined,
-	recordsByCollection: RecordsByCollection<Schema>,
-	extraFilter?: (record: RuntimeRecord) => boolean,
-	collectRow?: QueryRowCollector<Schema>,
-): RuntimeRecord[]
-function executeLoadedQuery<Schema extends AnySchema>(
-	query: QueryNode<Schema>,
-	relations: AnyRelations<Schema> | undefined,
-	recordsByCollection: RecordsByCollection<Schema>,
-	extraFilter?: (record: RuntimeRecord) => boolean,
-	collectRow?: QueryRowCollector<Schema>,
-): RuntimeRecord[] {
-	const rows = getQueryRows(query, recordsByCollection, extraFilter)
+/** A key part that a stored record ID can hold. */
+function isIdPart(value: unknown): value is CollectionIdPart {
+	return (
+		typeof value === "string" ||
+		(typeof value === "number" && !Number.isNaN(value))
+	)
+}
 
-	return rows.map((row) => {
-		collectRow?.(query.collection, row)
-		const runtimeRow: RuntimeRecord = row
-		const result: RuntimeRecord = query.select
-			? pick(runtimeRow, query.select)
-			: { ...runtimeRow }
-		if (!query.with) return result
-		if (!relations) {
-			throw new Error(
-				"Cannot execute relational query includes without relations",
+/** The record key an ID equality names, if the value is a possible ID. */
+function idKey(collection: string, id: unknown): RecordKey | undefined {
+	if (isIdPart(id)) return ["record", collection, id]
+	if (Array.isArray(id) && id.length > 0 && id.every(isIdPart))
+		return ["record", collection, ...id]
+	return undefined
+}
+
+/**
+ * A root node's candidates: one key read when it filters on a full ID,
+ * otherwise the whole collection. Every where clause still runs on them.
+ */
+function* rootCandidates(
+	query: QueryNode<AnySchema>,
+): QueryExecution<readonly RuntimeRecord[]> {
+	const idClause = query.where?.find(
+		([field, operator]) => field === "id" && operator === "=",
+	)
+	const key = idClause && idKey(query.collection, idClause[2])
+	if (!key) return yield* scanCollection(query.collection)
+	const [record] = yield* getRecords([key])
+	return record ? [record] : []
+}
+
+type AnyRelation = NonNullable<
+	NonNullable<AnyRelations<AnySchema>[string]>[string]
+>
+
+/**
+ * Each parent's related candidates, in key order. A many-to-one relation
+ * reads its distinct target IDs together; a one-to-many relation reads the
+ * target collection once and groups it by the join field. Joins compare with
+ * `===`, as before.
+ */
+function* relatedCandidates(
+	relation: AnyRelation,
+	parents: readonly RuntimeRecord[],
+): QueryExecution<readonly (readonly RuntimeRecord[])[]> {
+	const target = relation.targetCollection
+	if (relation.type === "many-to-one") {
+		const joins = parents.map((parent) => parent[relation.from])
+		const keys = new Map<string, RecordKey>()
+		for (const join of joins)
+			if (isIdPart(join))
+				keys.set(JSON.stringify(join), ["record", target, join])
+		const read = yield* getRecords([...keys.values()])
+		const byJoin = new Map(
+			[...keys.keys()].map((join, index) => [join, read[index]]),
+		)
+		// A join value that is not a key part can only match by reference.
+		const scanned = joins.some(
+			(join) => typeof join === "object" && join !== null,
+		)
+			? yield* scanCollection(target)
+			: []
+		return joins.map((join) => {
+			const candidates = isIdPart(join)
+				? [byJoin.get(JSON.stringify(join))]
+				: scanned.filter((record) => record[relation.to] === join)
+			return candidates.filter(
+				(record): record is RuntimeRecord =>
+					record !== undefined && record[relation.to] === join,
 			)
+		})
+	}
+	const records = yield* scanCollection(target)
+	const groups = new Map<unknown, RuntimeRecord[]>()
+	const others: RuntimeRecord[] = []
+	for (const record of records) {
+		const join = record[relation.to]
+		if (typeof join === "object" || Number.isNaN(join)) {
+			others.push(record)
+			continue
 		}
-
-		for (const [relationName, nestedQuery] of Object.entries(query.with)) {
-			const relation = relations[query.collection]?.[relationName]
-			if (!relation) {
-				throw new Error(
-					`Unknown relation "${query.collection}.${relationName}"`,
-				)
-			}
-
-			const joinValue = runtimeRow[relation.from]
-			const related = executeLoadedQuery(
-				nestedQuery,
-				relations,
-				recordsByCollection,
-				(target) => target[relation.to] === joinValue,
-				collectRow,
-			)
-
-			result[relationName] = match<unknown>(relation.type, {
-				"many-to-one": related[0] ?? null,
-				"one-to-many": related,
-			})
-		}
-
-		return result
+		const group = groups.get(join) ?? []
+		group.push(record)
+		groups.set(join, group)
+	}
+	return parents.map((parent) => {
+		const join = parent[relation.from]
+		return typeof join === "object" || Number.isNaN(join)
+			? others.filter((record) => record[relation.to] === join)
+			: (groups.get(join) ?? [])
 	})
 }
 
-function createScanWindowRecord<
-	Schema extends AnySchema,
-	Collection extends CollectionName<Schema>,
->(
-	collection: Collection,
-	value: Schema[Collection],
-): ScanWindowRecord<Schema, Collection> {
-	return { collection, value }
+/** A result row with the stored record behind it and its related rows. */
+type RowTree = {
+	row: RuntimeRecord
+	result: RuntimeRecord
+	related: RowTree[][]
+}
+
+/** Builds result rows level by level, so each include reads once for all parents. */
+function* materializeRows(
+	query: QueryNode<AnySchema>,
+	relations: AnyRelations<AnySchema> | undefined,
+	rows: readonly RuntimeRecord[],
+): QueryExecution<RowTree[]> {
+	const trees: RowTree[] = rows.map((row) => ({
+		row,
+		result: query.select ? pick(row, query.select) : { ...row },
+		related: [],
+	}))
+	if (!query.with) return trees
+	if (!relations) {
+		throw new Error(
+			"Cannot execute relational query includes without relations",
+		)
+	}
+	for (const [relationName, nested] of Object.entries(query.with)) {
+		const relation = relations[query.collection]?.[relationName]
+		if (!relation) {
+			throw new Error(`Unknown relation "${query.collection}.${relationName}"`)
+		}
+		const candidates = yield* relatedCandidates(relation, rows)
+		const perParent = candidates.map((related) => selectRows(nested, related))
+		const children = yield* materializeRows(nested, relations, perParent.flat())
+		let next = 0
+		for (const [index, related] of perParent.entries()) {
+			const mine = children.slice(next, next + related.length)
+			next += related.length
+			const tree = trees[index]!
+			tree.related.push(mine)
+			tree.result[relationName] = match<unknown>(relation.type, {
+				"many-to-one": mine[0]?.result ?? null,
+				"one-to-many": mine.map(({ result }) => result),
+			})
+		}
+	}
+	return trees
+}
+
+function* executeNode(
+	query: QueryNode<AnySchema>,
+	relations: AnyRelations<AnySchema> | undefined,
+): QueryExecution<RowTree[]> {
+	const candidates = yield* rootCandidates(query)
+	return yield* materializeRows(query, relations, selectRows(query, candidates))
 }
 
 export function executeQuerySync<
@@ -490,15 +601,13 @@ export function executeQuerySync<
 	relations: Relations | undefined,
 	query: Query,
 ): RelationalQueryResult<Schema, Relations, Query> {
-	const normalizedQuery = normalizeRelationalQuery(query, relations)
-	const collections = getQueryCollections([normalizedQuery])
-	const records = loadRecordsSync(db, collections)
-
-	return executeLoadedQuery<Schema, Relations, Query>(
-		normalizedQuery,
-		relations,
-		records,
-	)
+	const normalized = normalizeRelationalQuery(query, relations)
+	const trees = runSync(db, executeNode(normalized, relations))
+	return trees.map(({ result }) => result) as RelationalQueryResult<
+		Schema,
+		Relations,
+		Query
+	>
 }
 
 export async function executeQueryAsync<
@@ -510,15 +619,13 @@ export async function executeQueryAsync<
 	relations: Relations | undefined,
 	query: Query,
 ): Promise<RelationalQueryResult<Schema, Relations, Query>> {
-	const normalizedQuery = normalizeRelationalQuery(query, relations)
-	const collections = getQueryCollections([normalizedQuery])
-	const records = await loadRecordsAsync(db, collections)
-
-	return executeLoadedQuery<Schema, Relations, Query>(
-		normalizedQuery,
-		relations,
-		records,
-	)
+	const normalized = normalizeRelationalQuery(query, relations)
+	const trees = await runAsync(db, executeNode(normalized, relations))
+	return trees.map(({ result }) => result) as RelationalQueryResult<
+		Schema,
+		Relations,
+		Query
+	>
 }
 
 function normalizeScanWindow<Schema extends AnySchema>(
@@ -534,33 +641,54 @@ function normalizeScanWindow<Schema extends AnySchema>(
 	return queries
 }
 
-function collectScanWindow<Schema extends AnySchema>(
+function createScanWindowRecord<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+>(
+	collection: Collection,
+	value: Schema[Collection],
+): ScanWindowRecord<Schema, Collection> {
+	return { collection, value }
+}
+
+/**
+ * Every record the window's queries read, rows before an offset included,
+ * each once, in the order a depth-first walk of the results meets them.
+ */
+function* collectScanWindow<Schema extends AnySchema>(
 	queries: readonly QueryNode<Schema>[],
 	relations: AnyRelations<Schema>,
-	recordsByCollection: RecordsByCollection<Schema>,
-): ScanWindowRecord<Schema>[] {
+): QueryExecution<ScanWindowRecord<Schema>[]> {
 	const result: ScanWindowRecord<Schema>[] = []
-	const seen = new Map<CollectionName<Schema>, Set<string>>()
-	const collectRow: QueryRowCollector<Schema> = (collection, value) => {
-		const collectionIds = seen.get(collection) ?? new Set<string>()
-		const idKey = JSON.stringify(collectionIdToTuple(value.id))
-		if (collectionIds.has(idKey)) return
-
-		collectionIds.add(idKey)
-		seen.set(collection, collectionIds)
-		result.push(createScanWindowRecord(collection, value))
+	const seen = new Set<string>()
+	const visit = (
+		collection: CollectionName<Schema>,
+		tree: RowTree,
+		query: QueryNode<Schema>,
+	) => {
+		const id = JSON.stringify([
+			collection,
+			...collectionIdToTuple(tree.row.id as CollectionId),
+		])
+		if (!seen.has(id)) {
+			seen.add(id)
+			result.push(
+				createScanWindowRecord(
+					collection,
+					tree.row as Schema[CollectionName<Schema>],
+				),
+			)
+		}
+		const nested = Object.values(query.with ?? {})
+		for (const [index, related] of tree.related.entries())
+			for (const child of related)
+				visit(nested[index]!.collection, child, nested[index]!)
 	}
-
 	for (const query of queries) {
-		executeLoadedQuery(
-			windowQueryPrefix(query),
-			relations,
-			recordsByCollection,
-			undefined,
-			collectRow,
-		)
+		const prefixed = windowQueryPrefix(query)
+		const trees = yield* executeNode(prefixed, relations)
+		for (const tree of trees) visit(prefixed.collection, tree, prefixed)
 	}
-
 	return result
 }
 
@@ -591,7 +719,7 @@ function windowQueryPrefix<Schema extends AnySchema>(
 	}
 }
 
-export async function executeScanWindowAsync<
+export function executeScanWindowAsync<
 	Schema extends AnySchema,
 	Relations extends AnyRelations<Schema>,
 >(
@@ -600,12 +728,8 @@ export async function executeScanWindowAsync<
 	scanWindow: ScanWindow<Schema>,
 ): Promise<ScanWindowRecord<Schema>[] | InvalidScanWindowError> {
 	const queries = normalizeScanWindow(scanWindow, relations)
-	if (queries instanceof Error) return queries
-	const recordsByCollection = await loadRecordsAsync(
-		db,
-		getQueryCollections(queries),
-	)
-	return collectScanWindow(queries, relations, recordsByCollection)
+	if (queries instanceof Error) return Promise.resolve(queries)
+	return runAsync(db, collectScanWindow(queries, relations))
 }
 
 export function executeScanWindowSync<
@@ -618,8 +742,7 @@ export function executeScanWindowSync<
 ): ScanWindowRecord<Schema>[] | InvalidScanWindowError {
 	const queries = normalizeScanWindow(scanWindow, relations)
 	if (queries instanceof Error) return queries
-	const recordsByCollection = loadRecordsSync(db, getQueryCollections(queries))
-	return collectScanWindow(queries, relations, recordsByCollection)
+	return runSync(db, collectScanWindow(queries, relations))
 }
 
 /** What a scan window reads, without running it. */
