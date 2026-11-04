@@ -61,7 +61,7 @@ const { cookie, patch, lastMutationId } = await remote.pull({
 ```
 
 - `patch` lists records to `set` and to `remove`.
-- `cookie` is an opaque marker the client sends back on its next pull.
+- `cookie` is an opaque marker the client sends back on its next pull. A remote can use it to send only what changed since that pull, as `TandemServer` does. A client that restarts from storage drops its saved cookie, so its first pull fetches the full window.
 - `lastMutationId` is the last mutation from this client that the remote has applied, on every pull. It is `0` until the remote applies one.
 
 ### Poke

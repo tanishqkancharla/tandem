@@ -193,6 +193,7 @@ function remoteWithPokeEvents(
 	server: Pick<DstServer, "connect" | "push" | "pull">,
 	events: GatekeeperEvents,
 	stats: DstStats,
+	coverage: DstCoverage,
 ): RemoteApi<DstSchema> {
 	let poke: ClientApi<DstSchema>["poke"] = () => Promise.resolve()
 	const pokeEvent = events.on<PokePayload<DstSchema> | undefined>(
@@ -218,7 +219,15 @@ function remoteWithPokeEvents(
 			})
 		},
 		push: (args) => server.push(args, { allowOps: true }),
-		pull: (args) => server.pull(args),
+		pull: async (args) => {
+			const response = await server.pull(args)
+			if (!("error" in response) && !response.patch.reset) {
+				coverage.partialPulls++
+				if (!response.patch.set?.length && !response.patch.remove?.length)
+					coverage.unchangedPulls++
+			}
+			return response
+		},
 	}
 }
 
@@ -720,6 +729,7 @@ export class DstWorld implements AsyncDisposable {
 		const harness = buildHarness({
 			server,
 			stats,
+			coverage,
 			clientNames,
 			withTabs: tabs > 0,
 			tabs: () => world?.tabs,
@@ -1597,6 +1607,7 @@ function boundaryOf(call: DstPendingCall): DstBoundary {
 function buildHarness({
 	server,
 	stats,
+	coverage,
 	clientNames,
 	idSource,
 	onCreate,
@@ -1606,6 +1617,7 @@ function buildHarness({
 	server: DstServer
 	clientNames: readonly DstClientName[]
 	stats: DstStats
+	coverage: DstCoverage
 	idSource: (label: DstClientName) => RngApi
 	onCreate: (name: DstClientName, client: DstClient) => void
 	withTabs: boolean
@@ -1656,7 +1668,7 @@ function buildHarness({
 				Record<`${DstClientName}Storage`, TandemClientStorageApi<DstSchema>>
 			return createClient(
 				name,
-				remoteWithPokeEvents(services.server, events, stats),
+				remoteWithPokeEvents(services.server, events, stats, coverage),
 				dependencies[`${name}Timer`],
 				dependencies[`${name}Storage`],
 			)

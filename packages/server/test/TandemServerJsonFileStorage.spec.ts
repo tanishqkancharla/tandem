@@ -128,19 +128,12 @@ test("reopened servers acknowledge retries without overwriting another client's 
 	})
 	await reopened.push({ clientId, mutations })
 	expect(before.lastMutationId).toBe(1)
+	// The skipped retry changed nothing, so the next pull sends no records.
 	expect(
 		await reopened.pull({ clientId, scanWindow, cookie: before.cookie }),
 	).toMatchObject({
 		lastMutationId: 1,
-		patch: {
-			set: [
-				{
-					collection: "todos",
-					value: { id: "todo-1", title: "Newer edit", completed: true },
-				},
-			],
-			remove: [],
-		},
+		patch: { set: [], remove: [] },
 	})
 	expect(await reopened.query({ collection: "todos" })).toEqual([
 		{ id: "todo-1", title: "Newer edit", completed: true },

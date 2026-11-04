@@ -128,17 +128,20 @@ The server remembers one view per client from its last pull: each record's key a
 
 ```
 fingerprint(value) = SHA-256(canonical(value))
-canonical: tagged, length-prefixed encoding; object keys sorted; Date, bigint,
-           arrays, plain objects, and primitives distinguished; other values
-           make the record always resend
+canonical: tagged, length-prefixed encoding; object keys, Map entries, and Set
+           members sorted; Date, Uint8Array, bigint, -0, and NaN distinguished;
+           other values (class instances, cycles) have no fingerprint and resend
 ```
 
 The client already handles partial patches: records absent from the patch keep their confirmed value, and a live value at or below the pull's revision falls back to its base, which is the last pulled value. A record that changed since that pull has a new fingerprint and arrives in the patch.
 
-- [ ] `recordFingerprint` in the server package, using Web Crypto for portability.
-- [ ] `SyncClientState` keeps `view: Map<recordId, fingerprint>` instead of `syncedRecords`.
-- [ ] Tests: changed-only patch, no-op pull, first pull and reset, new and removed subscriptions, overlapping subscriptions, stale cookie after a dropped response, server restart, direct storage writes without notification, codec values.
-- [ ] DST counts partial pull patches.
+A restarted client must not diff against a saved replica. A crashed instance's save can land after the next instance loads, so the saved replica may not match the view its saved cookie names. Hydration drops the saved cookie, and the first pull after a restart is a reset ([[packages/core/src/Database.ts#Database.loadFromStorage]]).
+
+- [x] `recordFingerprint` in the server package: a synchronous SHA-256, because Web Crypto resolves on a thread pool and broke deterministic simulation.
+- [x] `SyncClientState` keeps `view: Map<recordId, { key, fingerprint }>` instead of `syncedRecords`.
+- [x] Hydration drops the saved cookie.
+- [x] Tests: changed-only patch, no-op pull with an acknowledgement, first pull and reset, new, removed, and overlapping subscriptions, stale cookie after a dropped response, server restart, direct storage writes without notification, runtime and codec values, a 500-record edit, and a reopened client whose saved replica lost a record.
+- [x] DST counts partial and unchanged pull patches.
 
 ### Phase 3: Collection pokes and preserved streaming
 

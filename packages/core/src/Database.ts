@@ -382,6 +382,13 @@ export class Database<
 		if (checkpoint instanceof Error) return checkpoint
 		// Restore Schema-specific storage values into the namespace-wide root view.
 		this.tupleDb.commit({ set: checkpoint as TandemClientTuple<AnySchema>[] })
+		// Pulls send only what changed since the view the cookie names, so the
+		// replica must match that view. A saved one may not: a crashed instance's
+		// save can land after this load. The first pull fetches a full snapshot.
+		const replica = this.tupleDb.get(["replica"])
+		if (replica?.cookie === undefined) return
+		const { cookie: _cookie, ...uncookied } = replica
+		this.tupleDb.commit({ set: [{ key: ["replica"], value: uncookied }] })
 	}
 
 	private async persistStorageBatch() {

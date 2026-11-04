@@ -22,6 +22,10 @@ export type DstCoverage = {
 	windowChecks: number
 	/** Of those, checks where the window excluded some server records. */
 	prunedWindowChecks: number
+	/** Pull responses a client received that diffed against its last pull. */
+	partialPulls: number
+	/** Of those, responses with no records to set or remove. */
+	unchangedPulls: number
 	dropsByKind: Record<DstFaultKind, number>
 	partitionDrops: number
 	disconnects: number
@@ -63,7 +67,12 @@ const subscriptionChecks = [
 ] as const
 
 // Counted for reports; sweeps with full subscriptions never prune.
-const windowCounts = ["windowChecks", "prunedWindowChecks"] as const
+const windowCounts = [
+	"windowChecks",
+	"prunedWindowChecks",
+	"partialPulls",
+	"unchangedPulls",
+] as const
 
 const faultChecks = ["partitionDrops", "disconnects", "reconnects"] as const
 const crashChecks = [
@@ -94,6 +103,8 @@ export function emptyCoverage(
 		compoundViewChecks: 0,
 		windowChecks: 0,
 		prunedWindowChecks: 0,
+		partialPulls: 0,
+		unchangedPulls: 0,
 		dropsByKind: {
 			requestLost: 0,
 			responseLost: 0,
