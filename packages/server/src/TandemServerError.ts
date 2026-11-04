@@ -11,6 +11,7 @@ export type TandemServerOperation =
 	| "pull"
 	| "push"
 	| "get"
+	| "index"
 	| "list"
 	| "query"
 	| "remove"
