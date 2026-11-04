@@ -466,6 +466,9 @@ export class TandemServer<
 	// Whether stored index entries are trusted, need checking against the
 	// definitions, or need rebuilding after an outside write.
 	private indexState: "unchecked" | "current" | "stale" = "unchecked"
+	// Counts outside writes storage reported, so a check that awaited reads
+	// does not trust entries a write made stale meanwhile.
+	private outsideWrites = 0
 	private closed = false
 	// Tuple transactions batch writes but do not snapshot reads or serialize
 	// asynchronous storage commits. Order sync reads and commits here.
@@ -512,6 +515,7 @@ export class TandemServer<
 			if (this.closed || this.committing) return
 			this.forgetLastWrites()
 			// Another process wrote records without updating index entries.
+			this.outsideWrites++
 			this.indexState = "stale"
 			this.emitPokes()
 		})
@@ -655,6 +659,7 @@ export class TandemServer<
 	 * writes through `subscribe`, which schedules the same rebuild.
 	 */
 	rebuildIndexes(): Promise<void> {
+		this.outsideWrites++
 		this.indexState = "stale"
 		return this.run(() => Promise.resolve(undefined))
 	}
@@ -666,7 +671,8 @@ export class TandemServer<
 	 */
 	private async checkIndexes(): Promise<TandemServerError | undefined> {
 		if (this.indexState === "current") return
-		if (this.indexState === "stale") return this.rebuildIndexEntries()
+		const seen = this.outsideWrites
+		if (this.indexState === "stale") return this.rebuildIndexEntries(seen)
 		const stored = await (
 			this
 				.tupleDb as unknown as AsyncTupleDatabaseClient<TandemIndexMetadataTuple>
@@ -680,14 +686,21 @@ export class TandemServer<
 			? indexDefinitionsSignature(this.indexes)
 			: undefined
 		if (stored?.definitions === expected) {
-			this.indexState = "current"
+			this.trustIndexes(seen)
 			return
 		}
-		return this.rebuildIndexEntries()
+		return this.rebuildIndexEntries(seen)
+	}
+
+	/** Trusts entries unless storage reported an outside write since `seen`. */
+	private trustIndexes(seen: number) {
+		if (this.outsideWrites === seen) this.indexState = "current"
 	}
 
 	/** Makes stored entries match the records, writing only the differences. */
-	private async rebuildIndexEntries(): Promise<TandemServerError | undefined> {
+	private async rebuildIndexEntries(
+		seen: number,
+	): Promise<TandemServerError | undefined> {
 		const read = await Promise.all([
 			this.unindexedDb.scan({ gte: ["index"], lte: ["index", true] }),
 			this.unindexedDb.scan({ gte: ["indexes"], lte: ["indexes"] }),
@@ -723,7 +736,7 @@ export class TandemServer<
 				)
 			if (committed instanceof Error) return committed
 		}
-		this.indexState = "current"
+		this.trustIndexes(seen)
 	}
 
 	async query<Query extends RelationalQuery<Schema, Relations>>(

@@ -75,9 +75,23 @@ class NotifyingStorage implements TandemServerStorageApi<ChatSchema> {
 	readonly memory = new InMemoryTupleStorage()
 	private readonly listeners = new Set<() => void>()
 	commits = 0
+	/** Runs once, after the next scan of the messages has read them. */
+	afterMessagesScan?: () => void
 
 	scan(args?: ScanStorageArgs) {
-		return Promise.resolve(this.memory.scan(args) as TandemTuple<ChatSchema>[])
+		const tuples = this.memory.scan(args) as TandemTuple<ChatSchema>[]
+		if (args?.gte?.[0] === "record" && args.gte[1] === "messages") {
+			const after = this.afterMessagesScan
+			this.afterMessagesScan = undefined
+			after?.()
+		}
+		return Promise.resolve(tuples)
+	}
+
+	/** Writes as another process would, and reports it. */
+	writeOutside(writes: WriteOps<TandemTuple<ChatSchema>>) {
+		this.memory.commit(writes)
+		for (const listener of this.listeners) listener()
 	}
 
 	commit(writes: WriteOps<TandemTuple<ChatSchema>>) {
@@ -289,6 +303,32 @@ test("servers sharing storage settle after a rebuild instead of waking each othe
 	expect(storage.commits).toBe(2)
 	await first.close()
 	await second.close()
+})
+
+test("an outside write reported while entries are rebuilt is not lost", async () => {
+	const storage = new NotifyingStorage()
+	const server = new TandemServer({ schema: indexed, relations: {}, storage })
+	storage.writeOutside({
+		set: [{ key: ["record", "messages", "m1"], value: message("m1") }],
+	})
+
+	// The first rebuild reads the records, then another process adds one.
+	storage.afterMessagesScan = () =>
+		storage.writeOutside({
+			set: [
+				{
+					key: ["record", "messages", "m2"],
+					value: message("m2", { createdAt: 2 }),
+				},
+			],
+		})
+	await server.pull({ clientId: tag<ClientId>("reader"), scanWindow: [] })
+
+	// The report arrived mid-rebuild, so the next operation rebuilds again.
+	const records = await server.query({ collection: "messages" })
+	expect(records).toHaveLength(2)
+	expect(await storedEntries(storage)).toEqual(entriesFor(records))
+	await server.close()
 })
 
 test("an index must name fields the collection has", () => {
