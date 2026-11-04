@@ -80,11 +80,12 @@ type StorageOptions<Schema, Database> = {
   database: Database
 }
 type Statement = { sql: string; parameters: readonly unknown[] }
+type PreparedStatement = {
+  bind(...parameters: unknown[]): PreparedStatement
+  all(): Promise<{ results: Record<string, unknown>[] }>
+}
 type D1DatabaseCapabilities = {
-  prepare(sql: string): {
-    bind(...parameters: unknown[]): PreparedStatement
-    all(): Promise<{ results: Record<string, unknown>[] }>
-  }
+  prepare(sql: string): PreparedStatement
   batch(statements: PreparedStatement[]): Promise<unknown>
 }
 ```
@@ -182,13 +183,14 @@ Proposed
 Supply a runnable Worker example and setup guides using one object, one D1 binding, and the new schema-based adapter.
 
 ```changes
-d286e1b..de7db28
+d286e1b..d474107
 ```
 
 The shared schema defines the same task fields as the SQL table. The object constructs one server with its D1 binding:
 
 ```ts
 type Task = { id: string; text: string; done: boolean }
+type AppSchema = { tasks: Task }
 type Env = { DB: D1Database; SYNC: DurableObjectNamespace }
 type SyncRequest =
   | { action: "push"; args: Parameters<RemoteApi<AppSchema>["push"]>[0] }
@@ -205,7 +207,7 @@ HTTP requests still enter the ordinary server API. SQL strings and tuple keys st
 
 ```callstack
  TandemClient.commit [[packages/core/src/TandemClient.ts#TandemClient.commit]]
-+└── createRemote.push [[d286e1b..de7db28:examples/cloudflare/apps/server/src/remote.ts#L40-L46]]
++└── createRemote.push [[d286e1b..d474107:examples/cloudflare/apps/server/src/remote.ts#L48-L59]]
 +   └── Worker.fetch [[de7db28:examples/cloudflare/apps/server/src/index.ts#L92-L98]]
 +      └── SyncObject.fetch [[de7db28:examples/cloudflare/apps/server/src/index.ts#L62-L89]]
           └── TandemServer.push [[packages/server/src/TandemServer.ts#TandemServer.push]]
@@ -237,19 +239,19 @@ sequenceDiagram
     B->>O: Pull subscribed records
     O->>D: Read current rows
     O-->>B: View and acknowledgement
-    %% ref edge:0 [[d286e1b..de7db28:examples/cloudflare/apps/server/src/remote.ts#L19-L22]]
+    %% ref edge:0 [[d286e1b..d474107:examples/cloudflare/apps/server/src/remote.ts#L22-L25]]
     %% ref edge:1 [[d286e1b:packages/server/src/storage/TandemServerD1Storage.ts#L36-L42]]
     %% ref edge:4 [[d286e1b:packages/server/src/storage/TandemServerD1Storage.ts#L29-L35]]
 ```
 
-Ready events start a fresh pull after reconnect; there is no replay of missed SSE messages. Database persistence and connection recovery do not preserve mutation receipts across an object restart. App authentication, migrations, and file handling remain app-owned.
+After a successful push, the remote triggers a bare local poke to confirm the writer immediately, even when SSE is unavailable. Ready events start a fresh pull after reconnect; there is no replay of missed SSE messages. Database persistence and connection recovery do not preserve mutation receipts across an object restart. App authentication, migrations, and file handling remain app-owned.
 
-The actual Worker passed the local D1/DO/SSE integration test, Wrangler deployment dry run, lint, and type checks. The revised guides passed their production build and desktop/mobile viewport inspection. Package publication smoke tests imported the packed `/sql` entry successfully.
+The actual Worker passed both local D1/DO/SSE tests: two-client updates with reconnect catch-up, and writer acknowledgement while a real HTTP edge returns 503 for the event route. Wrangler deployment dry run, lint, and type checks also passed. The revised guides passed their production build and desktop/mobile viewport inspection. Package publication smoke tests imported the packed `/sql` entry successfully.
 
 ## References
 
 - [PR #91 — SQL adapters](https://github.com/tanishqkancharla/tandem/pull/91)
 - [PR #92 — Cloudflare guide and example](https://github.com/tanishqkancharla/tandem/pull/92)
 - [[de7db28:docs/sql.md#L1-L132]]
-- [[de7db28:docs/cloudflare.md#L1-L158]]
+- [[d474107:docs/cloudflare.md#L1-L158]]
 - [Whiteboard stack overview](whiteboard:board/1c05cfe6-dd74-4b8f-892d-0d2579628ae6)
