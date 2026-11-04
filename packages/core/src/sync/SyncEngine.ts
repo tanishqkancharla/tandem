@@ -345,7 +345,11 @@ export class SyncEngine<Schema extends AnySchema> {
 	private readonly rejections = new Map<string, MutationRejection | undefined>()
 	// Advances on disconnect so a connect still in flight unregisters when it resolves.
 	private connectionGeneration = 0
-	private scanWindow: ScanWindow<Schema> = []
+	/**
+	 * Active subscriptions by handle. Identical queries keep separate entries,
+	 * so destroying one leaves the others subscribed.
+	 */
+	private readonly subscriptions = new Set<{ query: EncodedQuery<Schema> }>()
 
 	get clientId(): ClientId {
 		return this.db.replica.clientId
@@ -458,17 +462,36 @@ export class SyncEngine<Schema extends AnySchema> {
 		await unsubscribe?.()
 	}
 
+	/**
+	 * Adds a query to the window the next pull sends. Adding or removing one
+	 * queues a pull, which replaces the server's view with the current list.
+	 */
 	subscribe(query: EncodedQuery<Schema>): Unsubscribe {
 		this.logger.info({ message: "subscribing to query", query })
-		this.scanWindow.push(query)
+		const subscription = { query }
+		this.subscriptions.add(subscription)
+		this.queueWindowPull()
+
+		return () => {
+			// A second call must not remove another subscription.
+			if (!this.subscriptions.delete(subscription)) return
+			this.logger.info({ message: "unsubscribing from query", query })
+			this.queueWindowPull()
+		}
+	}
+
+	/** The queries the next pull sends, one copy of each. */
+	private get scanWindow(): ScanWindow<Schema> {
+		const queries = new Map<string, EncodedQuery<Schema>>()
+		for (const { query } of this.subscriptions)
+			queries.set(JSON.stringify(query), query)
+		return [...queries.values()]
+	}
+
+	private queueWindowPull() {
 		void this.queuePull().catch((error) => {
 			this.logger.error({ message: "error pulling from remote", error })
 		})
-
-		return () => {
-			this.logger.info({ message: "unsubscribing from query", query })
-			this.scanWindow.splice(this.scanWindow.indexOf(query), 1)
-		}
 	}
 
 	queuePull(): Promise<void> {
@@ -531,8 +554,7 @@ export class SyncEngine<Schema extends AnySchema> {
 		const response = await this.remote.pull({
 			clientId,
 			cookie: this.db.replica.cookie,
-			// Subscriptions change this array in place; send what this pull reads.
-			scanWindow: [...this.scanWindow],
+			scanWindow: this.scanWindow,
 		})
 		// A response from before clear() must not acknowledge the new session.
 		if (clientId !== this.clientId) return

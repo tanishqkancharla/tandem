@@ -160,6 +160,13 @@ export function describeViolation(violation: DstViolation): string {
 			`  previous: ${violation.previous?.text ?? "(absent)"}`,
 		].join("\n")
 	}
+	if (violation.kind === "replicaWindow") {
+		return [
+			`${violation.client}: replicaWindow at ${violation.checkpoint}`,
+			`  missing: ${violation.missing.join(", ") || "(none)"}`,
+			`  extra:   ${violation.extra.join(", ") || "(none)"}`,
+		].join("\n")
+	}
 	return [
 		`${violation.client}/${violation.subscriptionId}: ${violation.kind} at ${violation.checkpoint}`,
 		`  query: ${JSON.stringify(violation.spec)}`,

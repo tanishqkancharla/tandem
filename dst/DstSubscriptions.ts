@@ -147,3 +147,66 @@ export function expectedView(
 				}))
 	}
 }
+
+/**
+ * Records a pull returns for the view: each level's matching rows, including
+ * rows before an offset, which the client keeps to apply the offset itself.
+ */
+export function expectedWindow(
+	inventory: DstInventory,
+	spec: DstSubscriptionSpec,
+): Set<string> {
+	const window = new Set<string>()
+	const add = (collection: keyof DstSchema, record: { id: unknown }) =>
+		window.add(windowKey(collection, record.id))
+	const comments = (taskId: string, limit: number) =>
+		inventory.comments
+			.filter((comment) => comment.taskId === taskId)
+			.sort(compareIdentity)
+			.slice(0, limit)
+	switch (spec.kind) {
+		case "inventory":
+			for (const record of inventory[spec.collection])
+				add(spec.collection, record)
+			return window
+		case "tasks":
+			for (const task of inventory.tasks
+				.filter((task) => matchesTask(task, spec))
+				.sort(taskOrder)
+				.slice(0, spec.offset + spec.limit))
+				add("tasks", task)
+			return window
+		case "taskComments":
+			for (const task of inventory.tasks.filter(
+				({ id }) => id === spec.taskId,
+			)) {
+				add("tasks", task)
+				const project = inventory.projects.find(
+					({ id }) => id === task.projectId,
+				)
+				if (project) add("projects", project)
+				for (const comment of comments(task.id, spec.limit))
+					add("comments", comment)
+			}
+			return window
+		case "projectTasks":
+			for (const project of inventory.projects.filter(
+				({ id }) => id === spec.projectId,
+			)) {
+				add("projects", project)
+				for (const task of inventory.tasks
+					.filter(({ projectId }) => projectId === project.id)
+					.sort(taskOrder)
+					.slice(0, spec.limit)) {
+					add("tasks", task)
+					for (const comment of comments(task.id, spec.commentLimit))
+						add("comments", comment)
+				}
+			}
+			return window
+	}
+}
+
+export function windowKey(collection: keyof DstSchema, id: unknown): string {
+	return JSON.stringify([collection, id])
+}

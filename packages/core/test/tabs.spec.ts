@@ -983,6 +983,42 @@ describe("TandemClient tabs", () => {
 	)
 
 	tabsTest(
+		"the leader keeps a query another tab still uses and pulls an empty window after the last one ends",
+		async ({ tabs, server }) => {
+			const first = await tabs.open("tab1")
+			const second = await tabs.open("tab2")
+			const open = { collection: "todos", where: { done: false } } as const
+			const firstPage = first.client.subscribe(open)
+			const secondPage = second.client.subscribe(open)
+			const seedTx = server.transact()
+			seedTx.set("todos", todo("open-1"))
+			seedTx.set("todos", todo("done-1", { done: true }))
+			await server.commit(seedTx)
+			await expect
+				.poll(() => second.client.query({ collection: "todos" }))
+				.toEqual([todo("open-1")])
+
+			// Tab 1 leaves the query; tab 2's identical subscription keeps it in the leader's window.
+			firstPage.destroy()
+			const pullCount = tabs.pulls.length
+			await expect.poll(() => tabs.pulls.length).toBeGreaterThan(pullCount)
+			expect(tabs.pulls.at(-1)?.scanWindow).toEqual([
+				{ collection: "todos", where: [["done", "=", false]] },
+			])
+			expect(second.client.query({ collection: "todos" })).toEqual([
+				todo("open-1"),
+			])
+
+			// Once no tab uses it, the leader pulls an empty window and the record leaves.
+			secondPage.destroy()
+			await expect.poll(() => tabs.pulls.at(-1)?.scanWindow).toEqual([])
+			await expect
+				.poll(() => second.client.query({ collection: "todos" }))
+				.toEqual([])
+		},
+	)
+
+	tabsTest(
 		"records a tab restored at startup survive views of its subscriptions",
 		async ({ tabs }) => {
 			const first = await tabs.open("tab1", { autoConnect: false })

@@ -52,6 +52,8 @@ import {
 	expectedView,
 	matchesTask,
 	subscriptionQuery,
+	expectedWindow,
+	windowKey,
 	type DstSubscriptionMode,
 	type DstSubscriptionSpec,
 } from "./DstSubscriptions.js"
@@ -349,6 +351,17 @@ export type DstViolation =
 			id: string
 			shown: DstSchema["tasks"] | null
 			previous: DstSchema["tasks"] | null
+	  }
+	/**
+	 * A settled client holds records outside its subscriptions, or lacks ones
+	 * inside them. Keys are `[collection, id]` JSON.
+	 */
+	| {
+			kind: "replicaWindow"
+			checkpoint: DstCheckpoint
+			client: DstClientName
+			missing: string[]
+			extra: string[]
 	  }
 	| DstTabViolation
 	| { kind: "effectRepeated"; detail: string }
@@ -1112,6 +1125,39 @@ export class DstWorld implements AsyncDisposable {
 					})
 			}
 		}
+		// Only a forced pull establishes the window; ordinary recovery may not pull.
+		if (checkpoint !== "ordinary")
+			for (const client of this.running) {
+				const window = new Set<string>()
+				for (const { spec } of this.subscriptions(client).values())
+					for (const key of expectedWindow(states.server, spec)) window.add(key)
+				const held = new Set(
+					dstCollections.flatMap((collection) =>
+						states[client]![collection].map(({ id }) =>
+							windowKey(collection, id),
+						),
+					),
+				)
+				this.coverage.windowChecks++
+				if (
+					window.size <
+					dstCollections.reduce(
+						(count, collection) => count + states.server[collection].length,
+						0,
+					)
+				)
+					this.coverage.prunedWindowChecks++
+				const missing = [...window].filter((key) => !held.has(key))
+				const extra = [...held].filter((key) => !window.has(key))
+				if (missing.length || extra.length)
+					violations.push({
+						kind: "replicaWindow",
+						checkpoint,
+						client,
+						missing,
+						extra,
+					})
+			}
 		if (this.tabs)
 			for (const tab of this.tabs.alive) {
 				const actual = this.tabs.inventoryOf(tab)
