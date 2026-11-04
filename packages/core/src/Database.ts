@@ -58,7 +58,11 @@ import type { MutatorCall } from "./mutator/Mutator.js"
 import type { LoggerApi } from "./utils/Logger.js"
 import type { RngApi } from "./utils/randomId.js"
 import { isEqual } from "./utils/objectUtils.js"
-import { schemaIndexes, TupleDatabaseWithIndexes } from "./query/indexes.js"
+import {
+	schemaIndexes,
+	TupleDatabaseWithIndexes,
+	type SchemaIndexes,
+} from "./query/indexes.js"
 import { ThrottleQueue } from "./utils/ThrottleQueue.js"
 import { Timer, type TimerApi } from "./utils/Timer.js"
 import { tag, unreachable, type Unsubscribe } from "./utils/typeUtils.js"
@@ -229,6 +233,7 @@ export class Database<
 	private readonly rng: RngApi
 	readonly schema?: RuntimeSchemaDefinition<Schema>
 	readonly relations?: Relations
+	private readonly indexes: SchemaIndexes
 	private readonly clientStorageWriteQueue?: ThrottleQueue<void | ClientStorageError>
 	private storageWrites: WriteOps<TandemClientTuple<AnySchema>> = {}
 	private storageClearQueued = false
@@ -316,12 +321,13 @@ export class Database<
 			: undefined
 
 		this.rng = rng
+		this.indexes = schemaIndexes(schema)
 		// Index entries live only in memory: every record write, hydration
 		// included, writes them in the same commit.
 		this.tupleDb = new TupleDatabaseClient(
 			new TupleDatabaseWithIndexes({
 				database: new TupleDatabase(new InMemoryTupleStorage(), { rng }),
-				indexes: schemaIndexes(schema),
+				indexes: this.indexes,
 			}),
 		)
 
@@ -568,6 +574,7 @@ export class Database<
 			>,
 			this.relations ?? {},
 			scanWindow,
+			this.indexes,
 		)
 	}
 
@@ -833,6 +840,7 @@ export class Database<
 			>,
 			this.relations,
 			query,
+			this.indexes,
 		)
 	}
 }

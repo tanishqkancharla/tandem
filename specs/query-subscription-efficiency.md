@@ -229,11 +229,35 @@ TandemServer.rebuildIndexes() → rebuild now (unreported outside writes)
 
 ### Phase 6: Indexed execution
 
-The planner uses an index whose leading fields match equality clauses, then a range or the first order field. Range and order use the index only when every entry under the equality prefix has the same comparable type (two one-entry reads check the first and last). Ordered limits stop after offset plus limit qualifying rows and the rest of their tie group. Mixed directions, mixed types, and residual-only plans fall back.
+The planner uses an index whose leading fields the query fixes with equality, then a range or the single order field on the next one. A full-ID key read still comes first.
 
-- [ ] Index selection and scans.
-- [ ] Reference comparison tests across filters, order, limits, offsets, mixed values, compound IDs, relations, writes, rebase, and hydration.
-- [ ] Counting-storage proof for 10 clients x 500 records and a larger dataset.
+```callstack
+ rootCandidates [[packages/core/src/query/executeQuery.ts]]
+ ├── where id = full ID → key read
++├── planIndex: most equality fields, then range, then order + limit
++│   └── indexCandidates
++│       ├── range or order: first and last entry under the prefix must be one type (string or number)
++│       ├── order + limit: orderedCandidates reads entries in order until offset + limit rows match, plus ties
++│       └── otherwise: read the entries in bounds, then their records, in key order
+ └── scan
+ relatedCandidates (one-to-many)
++└── indexedChildren: an index starting with the join field, up to 64 distinct parents
+```
+
+```
+orderedCandidates(query, entries in query order):
+  read entries still needed + 1; fetch their records
+  any record whose field disagrees with its entry → fall back to scan
+  keep records passing every where clause
+  after offset + limit kept, read on to the end of the last value's ties
+  return kept rows in key order; the ordinary sort and page run on them
+```
+
+- [x] Index selection, type check, bounds (empty when inverted), ordered early stop, include reads.
+- [x] Client `Database` and server queries, subscriptions, and pulls pass the schema's indexes; server transaction queries do not.
+- [x] DST declares indexes on tasks and comments and counts index entry scans.
+- [x] Tests: the randomized reference over mixed and uniform data, plain and indexed schemas, writes, and a reopened client, checked against five planner mutations; server read counts for ten clients' latest-50 pages at 500 and 2,000 todos each; indexed pages through completions, inserts, deletes, reorders, category moves, and related changes on the server and through two syncing clients; one-to-many includes through an index; subscriptions over indexed filters.
+- [x] `packages/server/benchmarks/queryReads.ts` reports records read and bytes per pull round.
 
 ## References
 

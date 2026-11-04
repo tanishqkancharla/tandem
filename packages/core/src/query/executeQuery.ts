@@ -12,7 +12,14 @@ import type {
 	SchemaToTupleSchema,
 } from "../schema/Schema.js"
 import { collectionIdToTuple } from "../schema/Schema.js"
+import type { Tuple } from "tuple-database"
+import { compareTuple } from "tuple-database/helpers/compareTuple.js"
 import { isObject, pick } from "../utils/objectUtils.js"
+import {
+	indexValue,
+	type IndexDefinition,
+	type SchemaIndexes,
+} from "./indexes.js"
 import { match, unreachable } from "../utils/typeUtils.js"
 import type {
 	EncodedQuery,
@@ -240,6 +247,17 @@ function getQueryCollections<Schema extends AnySchema>(
 type QueryRead =
 	| { type: "scan"; collection: string }
 	| { type: "get"; keys: readonly RecordKey[] }
+	| { type: "entries"; bounds: EntryBounds }
+
+/** Index entry key bounds, with optional limit and direction. */
+type EntryBounds = {
+	gt?: readonly unknown[]
+	gte?: readonly unknown[]
+	lt?: readonly unknown[]
+	lte?: readonly unknown[]
+	limit?: number
+	reverse?: boolean
+}
 
 /** `["record", collection, ...id]`, as tuple-database orders it. */
 type RecordKey = readonly ["record", string, ...CollectionIdPart[]]
@@ -257,6 +275,12 @@ function* scanCollection(
 	return (yield { type: "scan", collection }) as RuntimeRecord[]
 }
 
+function* scanEntries(
+	bounds: EntryBounds,
+): QueryExecution<readonly (readonly unknown[])[]> {
+	return (yield { type: "entries", bounds }) as (readonly unknown[])[]
+}
+
 function* getRecords(
 	keys: readonly RecordKey[],
 ): QueryExecution<readonly (RuntimeRecord | undefined)[]> {
@@ -267,16 +291,16 @@ function* getRecords(
 type ScanResult = { records: RuntimeRecord[]; byId: Map<string, RuntimeRecord> }
 
 type TupleRecordReader = {
-	scan(args: {
-		prefix: readonly unknown[]
-	}): { key: readonly unknown[]; value: unknown }[]
+	scan(
+		args: { prefix: readonly unknown[] } | EntryBounds,
+	): { key: readonly unknown[]; value: unknown }[]
 	get(key: readonly unknown[]): unknown
 }
 
 type AsyncTupleRecordReader = {
-	scan(args: {
-		prefix: readonly unknown[]
-	}): Promise<{ key: readonly unknown[]; value: unknown }[]>
+	scan(
+		args: { prefix: readonly unknown[] } | EntryBounds,
+	): Promise<{ key: readonly unknown[]; value: unknown }[]>
 	get(key: readonly unknown[]): Promise<unknown>
 }
 
@@ -323,6 +347,9 @@ function runSync<Schema extends AnySchema, Result>(
 					),
 				)
 				break
+			case "entries":
+				step = execution.next(reader.scan(read.bounds).map(({ key }) => key))
+				break
 			default:
 				unreachable(read)
 		}
@@ -360,6 +387,11 @@ async function runAsync<Schema extends AnySchema, Result>(
 								: (reader.get(key) as Promise<RuntimeRecord | undefined>),
 						),
 					),
+				)
+				break
+			case "entries":
+				step = execution.next(
+					(await reader.scan(read.bounds)).map(({ key }) => key),
 				)
 				break
 			default:
@@ -460,19 +492,247 @@ function idKey(collection: string, id: unknown): RecordKey | undefined {
 }
 
 /**
- * A root node's candidates: one key read when it filters on a full ID,
- * otherwise the whole collection. Every where clause still runs on them.
+ * A root node's candidates: one key read when it filters on a full ID, then
+ * a usable index, otherwise the whole collection. Every where clause still
+ * runs on them.
  */
 function* rootCandidates(
 	query: QueryNode<AnySchema>,
+	indexes: SchemaIndexes,
 ): QueryExecution<readonly RuntimeRecord[]> {
 	const idClause = query.where?.find(
 		([field, operator]) => field === "id" && operator === "=",
 	)
 	const key = idClause && idKey(query.collection, idClause[2])
-	if (!key) return yield* scanCollection(query.collection)
-	const [record] = yield* getRecords([key])
-	return record ? [record] : []
+	if (key) {
+		const [record] = yield* getRecords([key])
+		return record ? [record] : []
+	}
+	const plan = planIndex(query, indexes)
+	const indexed = plan && (yield* indexCandidates(query, plan))
+	return indexed ?? (yield* scanCollection(query.collection))
+}
+
+/** tuple-database's largest key suffix: every key continuing a prefix sorts below it. */
+const afterAll: readonly unknown[] = Array.from({ length: 10 }, () => true)
+
+type IndexPlan = {
+	index: IndexDefinition
+	/** `["index", collection, name, ...equality values]`. */
+	prefix: readonly unknown[]
+	/** Range clauses on the field after the prefix, all of one type. */
+	lower?: { value: string | number; inclusive: boolean }
+	upper?: { value: string | number; inclusive: boolean }
+	rangeType?: "string" | "number"
+	/** Set when the query orders by that field alone and has a limit. */
+	order?: "asc" | "desc"
+}
+
+/** Values whose `===` matches exactly the entries with the same key value. */
+function isEqualityValue(value: unknown): value is string | number | boolean {
+	return (
+		typeof value === "string" ||
+		typeof value === "boolean" ||
+		(typeof value === "number" && Number.isFinite(value))
+	)
+}
+
+/** Values on whose order the query comparison and entry order agree. */
+function isRangeValue(value: unknown): value is string | number {
+	return (
+		typeof value === "string" ||
+		(typeof value === "number" && Number.isFinite(value))
+	)
+}
+
+/**
+ * The index whose leading fields the query fixes with equality, then
+ * narrows or orders on the next field, if any index helps.
+ */
+function planIndex(
+	query: QueryNode<AnySchema>,
+	indexes: SchemaIndexes,
+): IndexPlan | undefined {
+	let best: { plan: IndexPlan; score: number } | undefined
+	for (const index of indexes.get(query.collection) ?? []) {
+		const values: unknown[] = []
+		for (const field of index.fields) {
+			const clause = query.where?.find(
+				([name, operator, value]) =>
+					name === field && operator === "=" && isEqualityValue(value),
+			)
+			if (!clause) break
+			values.push(indexValue(clause[2]))
+		}
+		const plan: IndexPlan = {
+			index,
+			prefix: ["index", query.collection, index.name, ...values],
+		}
+		const next = index.fields[values.length]
+		for (const [field, operator, value] of query.where ?? []) {
+			if (field !== next || operator === "=") continue
+			const type = typeof value
+			if (
+				!isRangeValue(value) ||
+				(plan.rangeType !== undefined && plan.rangeType !== type)
+			) {
+				// Clauses that compare across types match nothing or everything.
+				delete plan.lower
+				delete plan.upper
+				delete plan.rangeType
+				break
+			}
+			plan.rangeType = type as "string" | "number"
+			const inclusive = operator === ">=" || operator === "<="
+			if ((operator === ">" || operator === ">=") && !plan.lower)
+				plan.lower = { value, inclusive }
+			if ((operator === "<" || operator === "<=") && !plan.upper)
+				plan.upper = { value, inclusive }
+		}
+		const [order] = query.order ?? []
+		if (
+			next !== undefined &&
+			query.order?.length === 1 &&
+			order?.[0] === next &&
+			query.limit !== undefined
+		)
+			plan.order = order[1]
+		const ranged = plan.lower || plan.upper
+		const score = values.length * 4 + (ranged ? 2 : 0) + (plan.order ? 1 : 0)
+		if (score > 0 && (!best || score > best.score)) best = { plan, score }
+	}
+	return best?.plan
+}
+
+function entryRecordKey(index: IndexDefinition, entry: readonly unknown[]) {
+	return [
+		"record",
+		index.collection,
+		...entry.slice(3 + index.fields.length),
+	] as unknown as RecordKey
+}
+
+function inKeyOrder(records: RuntimeRecord[]) {
+	return records.sort((left, right) =>
+		compareTuple(
+			collectionIdToTuple(left.id as CollectionId),
+			collectionIdToTuple(right.id as CollectionId),
+		),
+	)
+}
+
+/**
+ * Candidates read through an index: a superset of the query's matches, in
+ * key order, so ordering and paging give the same rows as a scan. Returns
+ * undefined when only a scan is sure to.
+ */
+function* indexCandidates(
+	query: QueryNode<AnySchema>,
+	plan: IndexPlan,
+): QueryExecution<RuntimeRecord[] | undefined> {
+	const { index, prefix } = plan
+	const everything = { gte: prefix, lte: [...prefix, ...afterAll] }
+	let { lower, upper, order } = plan
+	if (lower || upper || order) {
+		// Entry order matches query order only if every value under the
+		// prefix is a string, or every one a number. Entries sort by type
+		// first, so the first and last tell.
+		const [first] = yield* scanEntries({ ...everything, limit: 1 })
+		if (!first) return []
+		const [last] = yield* scanEntries({
+			...everything,
+			limit: 1,
+			reverse: true,
+		})
+		const type = typeof first[prefix.length]
+		const uniform =
+			(type === "string" || type === "number") &&
+			typeof last?.[prefix.length] === type &&
+			(plan.rangeType === undefined || plan.rangeType === type)
+		if (!uniform) {
+			// Without equality values, the entries would be the whole collection.
+			if (prefix.length === 3) return undefined
+			lower = undefined
+			upper = undefined
+			order = undefined
+		}
+	}
+	const bounds: EntryBounds = {
+		...(lower
+			? lower.inclusive
+				? { gte: [...prefix, lower.value] }
+				: { gt: [...prefix, lower.value, ...afterAll] }
+			: { gte: prefix }),
+		...(upper
+			? upper.inclusive
+				? { lte: [...prefix, upper.value, ...afterAll] }
+				: { lt: [...prefix, upper.value] }
+			: { lte: [...prefix, ...afterAll] }),
+	}
+	// A lower bound above the upper one selects nothing; storage rejects it.
+	const start = bounds.gt ?? bounds.gte
+	const end = bounds.lt ?? bounds.lte
+	if (start && end && compareTuple(start as Tuple, end as Tuple) > 0) return []
+	if (order)
+		return yield* orderedCandidates(query, index, prefix.length, bounds, order)
+	const entries = yield* scanEntries(bounds)
+	const records = yield* getRecords(
+		entries.map((entry) => entryRecordKey(index, entry)),
+	)
+	return inKeyOrder(
+		records.filter((record): record is RuntimeRecord => record !== undefined),
+	)
+}
+
+/**
+ * Reads entries in the query's order until offset + limit rows match, then
+ * the rest of the last row's tie group. Sorted the query's way, those rows
+ * begin exactly as the full sorted result does. Returns undefined if an
+ * entry disagrees with its record, as after a write outside Tandem.
+ */
+function* orderedCandidates(
+	query: QueryNode<AnySchema>,
+	index: IndexDefinition,
+	position: number,
+	bounds: EntryBounds,
+	order: "asc" | "desc",
+): QueryExecution<RuntimeRecord[] | undefined> {
+	const needed = (query.offset ?? 0) + (query.limit ?? 0)
+	const field = index.fields[position - 3]!
+	const reverse = order === "desc"
+	const collected: RuntimeRecord[] = []
+	let boundary: unknown
+	let cursor = bounds
+	for (;;) {
+		// Read the entries still needed, plus one to see where a tie ends.
+		const limit = Math.max(needed - collected.length, 1) + 1
+		const entries = yield* scanEntries({ ...cursor, limit, reverse })
+		const tied = entries.findIndex(
+			(entry) => boundary !== undefined && entry[position] !== boundary,
+		)
+		const relevant = tied === -1 ? entries : entries.slice(0, tied)
+		const records = yield* getRecords(
+			relevant.map((entry) => entryRecordKey(index, entry)),
+		)
+		for (const [offset, entry] of relevant.entries()) {
+			const value = entry[position]
+			if (boundary !== undefined && value !== boundary)
+				return inKeyOrder(collected)
+			const record = records[offset]
+			if (!record || indexValue(record[field]) !== value) return undefined
+			if (!(query.where ?? []).every((clause) => matchesWhere(record, clause)))
+				continue
+			collected.push(record)
+			if (boundary === undefined && collected.length >= needed) boundary = value
+		}
+		const last = entries.at(-1)
+		if (!last || relevant.length < entries.length || entries.length < limit)
+			return inKeyOrder(collected)
+		const { gt, gte, lt, lte, ...rest } = cursor
+		cursor = reverse
+			? { ...rest, ...(gt && { gt }), ...(gte && { gte }), lt: last }
+			: { ...rest, ...(lt && { lt }), ...(lte && { lte }), gt: last }
+	}
 }
 
 type AnyRelation = NonNullable<
@@ -488,6 +748,7 @@ type AnyRelation = NonNullable<
 function* relatedCandidates(
 	relation: AnyRelation,
 	parents: readonly RuntimeRecord[],
+	indexes: SchemaIndexes,
 ): QueryExecution<readonly (readonly RuntimeRecord[])[]> {
 	const target = relation.targetCollection
 	if (relation.type === "many-to-one") {
@@ -516,6 +777,8 @@ function* relatedCandidates(
 			)
 		})
 	}
+	const indexed = yield* indexedChildren(relation, parents, indexes)
+	if (indexed) return indexed
 	const records = yield* scanCollection(target)
 	const groups = new Map<unknown, RuntimeRecord[]>()
 	const others: RuntimeRecord[] = []
@@ -537,6 +800,53 @@ function* relatedCandidates(
 	})
 }
 
+/** Parents up to which a one-to-many include reads one entry range each. */
+const maxIndexedParents = 64
+
+/**
+ * One-to-many candidates through an index that starts with the join field:
+ * one entry range per distinct parent ID, instead of the whole target.
+ */
+function* indexedChildren(
+	relation: AnyRelation,
+	parents: readonly RuntimeRecord[],
+	indexes: SchemaIndexes,
+): QueryExecution<readonly (readonly RuntimeRecord[])[] | undefined> {
+	const index = indexes
+		.get(relation.targetCollection)
+		?.find(({ fields }) => fields[0] === relation.to)
+	const joins = parents.map((parent) => parent[relation.from])
+	if (!index || !joins.every(isEqualityValue)) return
+	const distinct = [...new Set(joins)]
+	if (distinct.length > maxIndexedParents) return
+	const ranges: (readonly unknown[])[][] = []
+	for (const join of distinct) {
+		const prefix = ["index", index.collection, index.name, indexValue(join)]
+		ranges.push([
+			...(yield* scanEntries({ gte: prefix, lte: [...prefix, ...afterAll] })),
+		])
+	}
+	const records = yield* getRecords(
+		ranges.flat().map((entry) => entryRecordKey(index, entry)),
+	)
+	const byJoin = new Map<unknown, RuntimeRecord[]>()
+	let next = 0
+	for (const [position, join] of distinct.entries()) {
+		const found = records.slice(next, next + ranges[position]!.length)
+		next += ranges[position]!.length
+		byJoin.set(
+			join,
+			inKeyOrder(
+				found.filter(
+					(record): record is RuntimeRecord =>
+						record !== undefined && record[relation.to] === join,
+				),
+			),
+		)
+	}
+	return joins.map((join) => byJoin.get(join) ?? [])
+}
+
 /** A result row with the stored record behind it and its related rows. */
 type RowTree = {
 	row: RuntimeRecord
@@ -549,6 +859,7 @@ function* materializeRows(
 	query: QueryNode<AnySchema>,
 	relations: AnyRelations<AnySchema> | undefined,
 	rows: readonly RuntimeRecord[],
+	indexes: SchemaIndexes,
 ): QueryExecution<RowTree[]> {
 	const trees: RowTree[] = rows.map((row) => ({
 		row,
@@ -567,9 +878,14 @@ function* materializeRows(
 		if (!relation) {
 			throw new Error(`Unknown relation "${query.collection}.${relationName}"`)
 		}
-		const candidates = yield* relatedCandidates(relation, rows)
+		const candidates = yield* relatedCandidates(relation, rows, indexes)
 		const perParent = candidates.map((related) => selectRows(nested, related))
-		const children = yield* materializeRows(nested, relations, perParent.flat())
+		const children = yield* materializeRows(
+			nested,
+			relations,
+			perParent.flat(),
+			indexes,
+		)
 		let next = 0
 		for (const [index, related] of perParent.entries()) {
 			const mine = children.slice(next, next + related.length)
@@ -588,9 +904,15 @@ function* materializeRows(
 function* executeNode(
 	query: QueryNode<AnySchema>,
 	relations: AnyRelations<AnySchema> | undefined,
+	indexes: SchemaIndexes,
 ): QueryExecution<RowTree[]> {
-	const candidates = yield* rootCandidates(query)
-	return yield* materializeRows(query, relations, selectRows(query, candidates))
+	const candidates = yield* rootCandidates(query, indexes)
+	return yield* materializeRows(
+		query,
+		relations,
+		selectRows(query, candidates),
+		indexes,
+	)
 }
 
 export function executeQuerySync<
@@ -601,9 +923,10 @@ export function executeQuerySync<
 	db: ReadOnlyTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
 	relations: Relations | undefined,
 	query: Query,
+	indexes: SchemaIndexes = new Map(),
 ): RelationalQueryResult<Schema, Relations, Query> {
 	const normalized = normalizeRelationalQuery(query, relations)
-	const trees = runSync(db, executeNode(normalized, relations))
+	const trees = runSync(db, executeNode(normalized, relations, indexes))
 	return trees.map(({ result }) => result) as RelationalQueryResult<
 		Schema,
 		Relations,
@@ -619,9 +942,10 @@ export async function executeQueryAsync<
 	db: ReadOnlyAsyncTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
 	relations: Relations | undefined,
 	query: Query,
+	indexes: SchemaIndexes = new Map(),
 ): Promise<RelationalQueryResult<Schema, Relations, Query>> {
 	const normalized = normalizeRelationalQuery(query, relations)
-	const trees = await runAsync(db, executeNode(normalized, relations))
+	const trees = await runAsync(db, executeNode(normalized, relations, indexes))
 	return trees.map(({ result }) => result) as RelationalQueryResult<
 		Schema,
 		Relations,
@@ -659,6 +983,7 @@ function createScanWindowRecord<
 function* collectScanWindow<Schema extends AnySchema>(
 	queries: readonly QueryNode<Schema>[],
 	relations: AnyRelations<Schema>,
+	indexes: SchemaIndexes,
 ): QueryExecution<ScanWindowRecord<Schema>[]> {
 	const result: ScanWindowRecord<Schema>[] = []
 	const seen = new Set<string>()
@@ -687,7 +1012,7 @@ function* collectScanWindow<Schema extends AnySchema>(
 	}
 	for (const query of queries) {
 		const prefixed = windowQueryPrefix(query)
-		const trees = yield* executeNode(prefixed, relations)
+		const trees = yield* executeNode(prefixed, relations, indexes)
 		for (const tree of trees) visit(prefixed.collection, tree, prefixed)
 	}
 	return result
@@ -727,10 +1052,11 @@ export function executeScanWindowAsync<
 	db: ReadOnlyAsyncTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
 	relations: Relations,
 	scanWindow: ScanWindow<Schema>,
+	indexes: SchemaIndexes = new Map(),
 ): Promise<ScanWindowRecord<Schema>[] | InvalidScanWindowError> {
 	const queries = normalizeScanWindow(scanWindow, relations)
 	if (queries instanceof Error) return Promise.resolve(queries)
-	return runAsync(db, collectScanWindow(queries, relations))
+	return runAsync(db, collectScanWindow(queries, relations, indexes))
 }
 
 export function executeScanWindowSync<
@@ -740,10 +1066,11 @@ export function executeScanWindowSync<
 	db: ReadOnlyTupleDatabaseClientApi<SchemaToTupleSchema<Schema>>,
 	relations: Relations,
 	scanWindow: ScanWindow<Schema>,
+	indexes: SchemaIndexes = new Map(),
 ): ScanWindowRecord<Schema>[] | InvalidScanWindowError {
 	const queries = normalizeScanWindow(scanWindow, relations)
 	if (queries instanceof Error) return queries
-	return runSync(db, collectScanWindow(queries, relations))
+	return runSync(db, collectScanWindow(queries, relations, indexes))
 }
 
 /** What a scan window reads, without running it. */
