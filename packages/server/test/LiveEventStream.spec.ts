@@ -40,7 +40,7 @@ const schema = defineSchema({
 	}),
 })
 
-test("server-sent pokes show codec-backed records and appends before any pull returns them", async () => {
+test("server-sent pokes show codec-backed appends before any pull returns them", async () => {
 	await using cleanup = new errore.AsyncDisposableStack()
 	const server = new TandemServer({
 		schema,
@@ -48,6 +48,14 @@ test("server-sent pokes show codec-backed records and appends before any pull re
 		storage: new TestTandemServerStorage<EventSchema>(),
 	})
 	cleanup.defer(() => server.close())
+	const event = {
+		id: 42,
+		title: "Launch",
+		startAt: new Date("2026-03-04T18:30:00.000Z"),
+	}
+	const tx = server.transact()
+	tx.set("events", event)
+	await server.commit(tx)
 
 	const events = new AbortController()
 	const httpServer = http.createServer(async (request, response) => {
@@ -112,15 +120,7 @@ test("server-sent pokes show codec-backed records and appends before any pull re
 	const waitOptions = { timeout: 10_000 }
 	await vi.waitFor(() => expect(streamReady).toBe(true), waitOptions)
 
-	const event = {
-		id: 42,
-		title: "Launch",
-		startAt: new Date("2026-03-04T18:30:00.000Z"),
-	}
-	const tx = server.transact()
-	tx.set("events", event)
-	await server.commit(tx)
-
+	// The ready event's pull delivers the record the server already had.
 	await vi.waitFor(
 		() => expect(client.query({ collection: "events" })).toEqual([event]),
 		waitOptions,

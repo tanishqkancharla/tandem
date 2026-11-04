@@ -145,31 +145,37 @@ A restarted client must not diff against a saved replica. A crashed instance's s
 
 ### Phase 3: Collection pokes and preserved streaming
 
-At pull time the server stores the client's queries and the set of collections they read, including every nested include. After a commit it intersects the commit's collections with each client's set and sends bare pokes. No query runs.
+At pull time the server derives what the client's window reads ([[packages/core/src/query/executeQuery.ts#scanWindowDependencies]]): every collection at any include depth, the fields that filter, order, or join each collection, and for each collection the collections that decide which of its records are selected. After a commit it intersects the commit's collections with each client's set and sends bare pokes. No query runs, and the commit reads nothing beyond the before-images it already read.
 
 ```callstack
- TandemServer.commitTransaction
- └── emitLivePokes
+ TandemServer.commitTransaction [[packages/server/src/TandemServer.ts#TandemServer.commitTransaction]]
++├── deriveAppends                    # before/after of each set; undefined if any change is not an append
+ └── emitLivePokes [[packages/server/src/TandemServer.ts#TandemServer.emitLivePokes]]
 -    └── selectScanWindowRecordsAsync per client
-+    ├── dependent = client.collections ∩ changed collections
-+    ├── append-only, safe, client not invalidated → buffer append payload
-+    └── otherwise → flush buffered payload, bare poke, mark invalidated until next pull
++    ├── affected = client collections ∩ changed collections
++    ├── liveAppends(client) → buffer append payload (merged per 50 ms interval)
++    └── otherwise → flush buffered payload, bare poke, mark changed collections invalidated until the next pull
 ```
 
 An append is safe for a client when all of these hold:
 
 ```
-safeAppend(client, record, fields, before):
-  client pulled since the last poke it was sent for another change
-  client has the record: its last known fingerprint == fingerprint(before)
-  no appended field is a where, order, or join field of any query node on the record's collection
+liveAppends(client, commit):
+  commit only appended text to string fields the codec carries alone
+  for each appended record in a collection the client reads:
+    client has it: fingerprint(before) == last live append sent ?? fingerprint at last pull
+    no appended field is a where, order, or join field on that collection
+    no invalidated collection decides that collection's membership:
+      itself when a query node on it has a limit or offset,
+      and every collection an include of it hangs from
 ```
 
-The pusher still gets a bare poke at once for its acknowledgement, with any safe appends flushed first. Storage notifications without detail poke every client, as today.
+The pusher still gets a bare poke at once for its acknowledgement, with any buffered appends flushed first. Storage notifications without detail poke every client and invalidate all its collections. A record that enters a page without changing arrives with the pull.
 
-- [ ] Query metadata helper: collections and sensitive fields per collection, from normalized queries.
-- [ ] Replace per-commit window reads in `emitLivePokes`.
-- [ ] Tests: two clients with different collections, related-collection changes, latest-50 page, append to a filtered or ordered string field, agent-chat stream stays compact, pusher acknowledgement, lost and reordered pokes.
+- [x] `scanWindowDependencies` replaces `selectScanWindowRecordsAsync` and `scanWindowOffsetCollections`.
+- [x] `emitLivePokes` routes by collection; `LivePayloadBuffer` carries appends only, with the set fallback kept as a guard.
+- [x] Tests: viewers of different collections and includes, an ordinary commit's storage reads with 0 and 10 viewers of 500 records, pusher-only pokes, append classification, codec suffixes, appends to filtered, ordered, or unknown records, outside writes with and without notification, batching, invalidation under a limit, agent-chat streaming.
+- [x] DST counts bare and payload pokes; `--server-write-rate` and `--server-append-rate` give a streaming workload.
 
 ### Phase 4: Query planner and narrow reads
 

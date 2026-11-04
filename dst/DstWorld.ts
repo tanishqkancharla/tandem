@@ -199,6 +199,8 @@ function remoteWithPokeEvents(
 	const pokeEvent = events.on<PokePayload<DstSchema> | undefined>(
 		"poke",
 		(payload) => {
+			if (payload) coverage.payloadPokes++
+			else coverage.barePokes++
 			if (payload?.append) stats.appendPayloadsDelivered += 1
 			// Each generated append is " t<step>", so merged text has several.
 			if (payload?.append?.some(({ text }) => text.split(" t").length > 2))

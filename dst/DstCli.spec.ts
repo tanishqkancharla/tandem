@@ -126,7 +126,7 @@ describe("DST CLI coverage and recovery", () => {
 		"continues after a first-seed violation and gates its exit with --fail-on-violation=%s",
 		(failOnViolation) => {
 			const directory = temporaryDirectory()
-			// Ordinary lost-notification mismatches at seeds 15 and 17 must not
+			// Ordinary lost-notification mismatches at seeds 14 and 16 must not
 			// stop the healthy seeds between them from running.
 			const result = childProcess.spawnSync(
 				process.execPath,
@@ -137,7 +137,7 @@ describe("DST CLI coverage and recovery", () => {
 					"--runs",
 					"5",
 					"--seed",
-					"15",
+					"14",
 					"--steps",
 					"300",
 					"--client-count",
@@ -147,7 +147,7 @@ describe("DST CLI coverage and recovery", () => {
 					"--initial-subscriptions",
 					"full",
 					"--fault-rate",
-					"0.1",
+					"0.2",
 					"--crash-rate",
 					"0.03",
 					"--out-dir",
@@ -156,17 +156,17 @@ describe("DST CLI coverage and recovery", () => {
 				],
 				{ cwd: new URL(".", import.meta.url), encoding: "utf8" },
 			)
-			const artifactPath = path.join(directory, "seed-15.jsonl")
+			const artifactPath = path.join(directory, "seed-14.jsonl")
 			const artifact = parseArtifact(fs.readFileSync(artifactPath, "utf8"))
 
 			expect(result.status, result.stderr).toBe(failOnViolation ? 1 : 0)
 			expect(result.stdout).toContain("| 3 | 2 | 0 | 0 | 0 |")
-			expect(result.stdout).toContain("seed 15 (violation)")
-			expect(result.stdout).toContain("seed 17 (violation)")
+			expect(result.stdout).toContain("seed 14 (violation)")
+			expect(result.stdout).toContain("seed 16 (violation)")
 			expect(result.stdout).toContain(`pnpm dst:run --replay '${artifactPath}'`)
 			expect(fs.readdirSync(directory).sort()).toEqual([
-				"seed-15.jsonl",
-				"seed-17.jsonl",
+				"seed-14.jsonl",
+				"seed-16.jsonl",
 			])
 			expect(artifact.outcome?.violation).toMatchObject({
 				kind: "subscriptionView",

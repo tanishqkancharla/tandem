@@ -4,7 +4,6 @@ import {
 	defineMutator,
 	defineSchema,
 	partialObject,
-	PokeApi,
 	string,
 	tag,
 } from "@tanishqkancharla/tandem-core"
@@ -127,6 +126,7 @@ test("get/set appends multiple fields and leaves missing records absent", async 
 })
 
 test("only lossless string growth produces a compact poke", async ({
+	server,
 	viewer,
 	commit,
 }) => {
@@ -141,40 +141,28 @@ test("only lossless string growth produces a compact poke", async ({
 		expect.objectContaining({ field: "text", offset: 1, text: "B" }),
 		expect.objectContaining({ field: "note", offset: 1, text: "y" }),
 	])
-	await commit((tx) =>
-		tx.set(
-			"messages",
-			message("reply", { text: "ABC", note: "xy", status: "done" }),
-		),
-	)
-	expect(pokes.at(-1)?.set).toHaveLength(1)
-	expect(pokes.at(-1)?.append).toBeUndefined()
-	await commit((tx) =>
-		tx.set("messages", message("reply", { text: "Z", status: "done" })),
-	)
-	expect(pokes.at(-1)?.set).toHaveLength(1)
-	await commit((tx) =>
-		tx.set(
-			"messages",
-			message("reply", { text: "ZZ", status: 0 as unknown as string }),
-		),
-	)
-	expect(pokes.at(-1)?.set).toHaveLength(1)
-	await commit((tx) =>
-		tx.set(
-			"messages",
-			message("reply", { text: "ZZZ", status: false as unknown as string }),
-		),
-	)
-	expect(pokes.at(-1)?.set).toHaveLength(1)
-	expect(pokes.at(-1)?.append).toBeUndefined()
+
+	// Any other change pokes bare; the pull it starts sends the record.
+	for (const next of [
+		message("reply", { text: "ABC", note: "xy", status: "done" }),
+		message("reply", { text: "Z", status: "done" }),
+		message("reply", { text: "ZZ", status: 0 as unknown as string }),
+		message("reply", { text: "ZZZ", status: false as unknown as string }),
+	]) {
+		await commit((tx) => tx.set("messages", next))
+		expect(pokes.at(-1)).toBeUndefined()
+		await server.pull({
+			clientId: tag<ClientId>("classification"),
+			scanWindow: [{ collection: "messages" }],
+		})
+	}
 })
 
-test("a full-value codec that rejects suffixes receives a full set", async () => {
-	type Coded = { id: string; text: string }
+test("growth a codec cannot carry on its own pokes bare", async () => {
+	type Coded = { id: string; text: string; meta?: Map<string, string> }
 	const codedSchema = defineSchema({
 		messages: collection<Coded>({
-			fields: ["id", "text"],
+			fields: ["id", "text", "meta"],
 			codec: partialObject({
 				id: string,
 				text: codec<string, string>(
@@ -186,49 +174,6 @@ test("a full-value codec that rejects suffixes receives a full set", async () =>
 					},
 					(value) => value as string,
 				),
-			}),
-		}),
-	})
-	const server = new TandemServer({
-		schema: codedSchema,
-		relations: {},
-		storage: new TestTandemServerStorage<{ messages: Coded }>(),
-		livePokeInterval: 0,
-	})
-	const clientId = tag<ClientId>("codec-viewer")
-	const pokes: (PokePayload<{ messages: Coded }> | undefined)[] = []
-	await server.connect({
-		clientId,
-		poke: (payload) => {
-			pokes.push(payload)
-			return Promise.resolve()
-		},
-	})
-	const initial = server.transact()
-	initial.set("messages", { id: "reply", text: "Hello" })
-	await server.commit(initial)
-	await server.pull({ clientId, scanWindow: [{ collection: "messages" }] })
-	pokes.length = 0
-	const update = server.transact()
-	await update.update("messages", "reply", { text: "Hello!" })
-	await server.commit(update)
-	expect(pokes).toEqual([
-		{
-			revision: expect.any(Object),
-			set: [{ collection: "messages", value: { id: "reply", text: "Hello!" } }],
-		},
-	])
-	await server.close()
-})
-
-test("codec-backed Map metadata changes force a full set", async () => {
-	type Coded = { id: string; text: string; meta: Map<string, string> }
-	const codedSchema = defineSchema({
-		messages: collection<Coded>({
-			fields: ["id", "text", "meta"],
-			codec: partialObject({
-				id: string,
-				text: string,
 				meta: codec<Map<string, string>, [string, string][]>(
 					"map-entries",
 					(value) => [...(value as Map<string, string>).entries()],
@@ -243,7 +188,10 @@ test("codec-backed Map metadata changes force a full set", async () => {
 		storage: new TestTandemServerStorage<{ messages: Coded }>(),
 		livePokeInterval: 0,
 	})
-	const clientId = tag<ClientId>("map-viewer")
+	const clientId = tag<ClientId>("codec-viewer")
+	const scanWindow: ScanWindow<{ messages: Coded }> = [
+		{ collection: "messages" },
+	]
 	const pokes: (PokePayload<{ messages: Coded }> | undefined)[] = []
 	await server.connect({
 		clientId,
@@ -255,24 +203,37 @@ test("codec-backed Map metadata changes force a full set", async () => {
 	const initial = server.transact()
 	initial.set("messages", {
 		id: "reply",
-		text: "Hi",
+		text: "Hello",
 		meta: new Map([["a", "old"]]),
 	})
 	await server.commit(initial)
-	await server.pull({ clientId, scanWindow: [{ collection: "messages" }] })
+	await server.pull({ clientId, scanWindow })
 	pokes.length = 0
+
+	// The suffix alone fails the codec, so the pull sends the whole record.
 	const update = server.transact()
-	update.set("messages", {
+	await update.update("messages", "reply", { text: "Hello!" })
+	await server.commit(update)
+	expect(pokes).toEqual([undefined])
+
+	// A changed Map beside the growth is not an append either.
+	const pulled = await server.pull({ clientId, scanWindow })
+	const mapTx = server.transact()
+	mapTx.set("messages", {
 		id: "reply",
-		text: "Hi!",
+		text: "Hello!!",
 		meta: new Map([["a", "new"]]),
 	})
-	await server.commit(update)
-	expect(pokes[0]?.append).toBeUndefined()
-	expect(pokes[0]?.set?.[0]?.value.meta.get("a")).toBe("new")
-	expect(PokeApi.codec(codedSchema).encode(pokes[0]!)).toMatchObject({
-		set: [{ value: { meta: [["a", "new"]] } }],
+	await server.commit(mapTx)
+	expect(pokes).toEqual([undefined, undefined])
+	assert(!("error" in pulled))
+	const next = await server.pull({
+		clientId,
+		scanWindow,
+		cookie: pulled.cookie,
 	})
+	assert(!("error" in next))
+	expect(next.patch.set?.[0]?.value.meta?.get("a")).toBe("new")
 	await server.close()
 })
 
@@ -374,10 +335,7 @@ test("final transaction writes determine whether a poke is an append", async ({
 	expect((await server.query({ collection: "messages" }))[0]?.text).toBe(
 		"Reset!",
 	)
-	expect(pokes[0]?.set).toEqual([
-		{ collection: "messages", value: message("reply", { text: "Reset!" }) },
-	])
-	expect(pokes[0]?.append).toBeUndefined()
+	expect(pokes).toEqual([undefined])
 })
 
 test("a viewer that has the record receives only the appended text", async ({
@@ -422,7 +380,8 @@ test("a viewer that has the record receives only the appended text", async ({
 	])
 })
 
-test("an append never names a record the viewer cannot see or has not seen", async ({
+test("an append the viewer lacks, or one that can change its queries, pokes bare", async ({
+	server,
 	viewer,
 	commit,
 }) => {
@@ -430,35 +389,75 @@ test("an append never names a record the viewer cannot see or has not seen", asy
 		tx.set("messages", message("hidden", { threadId: "thread-2", text: "Se" }))
 		tx.set("messages", message("draft", { text: "Hell" }))
 	})
-	const threadPokes = await viewer("thread", [
+	const thread: ScanWindow<ChatSchema> = [
 		{ collection: "messages", where: [["threadId", "=", "thread-1"]] },
-	])
-	const donePokes = await viewer("done", [
+	]
+	const done: ScanWindow<ChatSchema> = [
 		{ collection: "messages", where: [["text", "=", "Hello"]] },
-	])
+	]
+	const latest: ScanWindow<ChatSchema> = [
+		{ collection: "messages", order: [["text", "desc"]], limit: 1 },
+	]
+	const threadPokes = await viewer("thread", thread)
+	const donePokes = await viewer("done", done)
+	const latestPokes = await viewer("latest", latest)
 
-	// A record outside the view reaches nobody.
+	// A record outside the thread view is not one the viewer has, so its text stays out.
 	await commit((tx) => appendFields(tx, "hidden", { text: "cret" }))
-	expect(threadPokes).toEqual([])
-	expect(donePokes).toEqual([])
+	expect(threadPokes).toEqual([undefined])
 
-	// A record an append moves into a view arrives whole, since the viewer
-	// has never seen it, and leaves as a removal.
+	// Text that a filter or an ordering reads can change which records a
+	// query selects, so those viewers pull instead of seeing the text.
+	await server.pull({ clientId: tag<ClientId>("thread"), scanWindow: thread })
+	await server.pull({ clientId: tag<ClientId>("done"), scanWindow: done })
+	await server.pull({ clientId: tag<ClientId>("latest"), scanWindow: latest })
 	await commit((tx) => appendFields(tx, "draft", { text: "o" }))
-	expect(donePokes).toEqual([
-		{
-			revision: expect.any(Object),
-			set: [
-				{ collection: "messages", value: message("draft", { text: "Hello" }) },
-			],
-		},
+	expect(donePokes).toEqual([undefined, undefined])
+	expect(latestPokes).toEqual([undefined, undefined])
+
+	// The thread viewer has the draft and filters on threadId only.
+	expect(threadPokes.at(-1)?.append).toEqual([
+		expect.objectContaining({ id: "draft", offset: 4, text: "o" }),
 	])
-	await commit((tx) => appendFields(tx, "draft", { text: "!" }))
-	expect(donePokes.at(-1)).toEqual({
-		revision: expect.any(Object),
-		remove: [{ collection: "messages", id: "draft" }],
+})
+
+test("an append to a record changed behind the server's back pokes bare", async () => {
+	const storage = new TestTandemServerStorage<ChatSchema>()
+	const direct = new TandemServer({
+		schema,
+		relations: {},
+		storage,
+		livePokeInterval: 0,
 	})
-	expect(threadPokes.map((poke) => poke?.append?.[0]?.text)).toEqual(["o", "!"])
+	const clientId = tag<ClientId>("viewer")
+	const pokes: (PokePayload<ChatSchema> | undefined)[] = []
+	await direct.connect({
+		clientId,
+		poke: (payload) => {
+			pokes.push(payload)
+			return Promise.resolve()
+		},
+	})
+	const setTx = direct.transact()
+	setTx.set("messages", message("reply", { text: "Hel" }))
+	await direct.commit(setTx)
+	await direct.pull({ clientId, scanWindow: [{ collection: "messages" }] })
+	pokes.length = 0
+
+	// Another writer changes the record without a notification.
+	await storage.commit({
+		set: [
+			{
+				key: ["record", "messages", "reply"],
+				value: message("reply", { text: "Hel", threadId: "thread-2" }),
+			},
+		],
+	})
+	const appendTx = direct.transact()
+	await appendFields(appendTx, "reply", { text: "lo" })
+	await direct.commit(appendTx)
+	expect(pokes).toEqual([undefined])
+	await direct.close()
 })
 
 /** Storage two server processes share, which tells each about every commit. */
@@ -524,18 +523,28 @@ test("after another process writes storage, appends wait for a pull that read it
 		}),
 	])
 
-	// Another process rewrites the text, so the next append extends a value
-	// no earlier pull or payload carried.
+	// Another process rewrites the text. Its notification pokes the viewer,
+	// and appends poke bare until the viewer pulls what the process wrote.
 	const rewriteTx = other.transact()
 	rewriteTx.set("messages", message("reply", { text: "xy" }))
 	await other.commit(rewriteTx)
 	const secondAppendTx = local.transact()
 	await appendFields(secondAppendTx, "reply", { text: "!" })
 	await local.commit(secondAppendTx)
-	const [bare, appended] = pokes.slice(1)
-	expect(bare).toBeUndefined()
-	const [op] = appended!.append!
-	expect(op).toMatchObject({ offset: 2, text: "!" })
+	expect(pokes.slice(1)).toEqual([undefined, undefined])
+
+	// After that pull, the next append extends the value it read.
+	const repulled = await local.pull({
+		clientId,
+		cookie: pulled.cookie,
+		scanWindow: [{ collection: "messages" }],
+	})
+	assert(!("error" in repulled))
+	const thirdAppendTx = local.transact()
+	await appendFields(thirdAppendTx, "reply", { text: "?" })
+	await local.commit(thirdAppendTx)
+	const [op] = pokes.at(-1)!.append!
+	expect(op).toMatchObject({ offset: 3, text: "?" })
 	expect(op!.after.commit).toBeGreaterThan(pokes[0]!.revision.commit)
 	await Promise.all([local.close(), other.close()])
 })

@@ -31,13 +31,13 @@ The recorded outcome has client4 seeing task `client4-item-1`, text `Note client
 pnpm dst:run --replay dst/known-failures/crash-removal.jsonl
 ```
 
-With append batching integrated, replay stops at step 32 because `client1.poke#1` reaches a different recorded boundary. The original 1,000 workload events and expected ghost remain intact for investigation; the test verifies that replay reports the incompatible schedule, not successful recovery. This is no longer an executable reproduction of the ghost on the current stack. Neither a different event schedule nor replay divergence proves the defect is fixed.
+With collection pokes, which send bare pokes for ordinary commits, replay stops at step 435 because `client1.poke#5` is not held at its recorded boundary. The original 1,000 workload events and expected ghost remain intact for investigation; the test verifies that replay reports the incompatible schedule, not successful recovery. This is no longer an executable reproduction of the ghost on the current stack. Neither a different event schedule nor replay divergence proves the defect is fixed.
 
 ## Ordinary recovery limitation: a lost poke can leave no scheduled pull
 
 `recovery.spec.ts` drops a server poke, heals transport, and verifies that ordinary recovery reports a view mismatch while forced repair succeeds. Healing must not silently schedule an application pull. The configured sync timer debounces queued work; it is not periodic polling and does not by itself reacquire a lost notification.
 
-The current fault profile exposes ordinary stale project views at seeds 15 and 17 over 300 steps with five clients. Both pass explicit repair. The CLI continuation test verifies that the first violation does not stop later seeds and retains artifacts for each mismatch. A separate focused test deliberately loses a poke and checks ordinary recovery against forced repair. These scenarios are distinct from the historical crash ghost.
+With a 0.2 fault rate, ordinary stale views appear at seeds 14 and 16 over 300 steps with five clients; the 0.1 profile showed them at seeds 36 and 53 of 1-80. Both pass explicit repair. The CLI continuation test verifies that the first violation does not stop later seeds and retains artifacts for each mismatch. A separate focused test deliberately loses a poke and checks ordinary recovery against forced repair. These scenarios are distinct from the historical crash ghost.
 
 Randomized sweeps do not exempt equivalent known failures. CI passes `--fail-on-violation`, fails on incomplete recovery or missing required coverage, and uploads failing artifacts with replay commands.
 

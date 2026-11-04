@@ -52,6 +52,10 @@ export interface DstRunOptions {
 	sharedWriteRate?: number
 	/** Chance a writer calls the shared named append mutation. */
 	namedAppendRate?: number
+	/** Share of new writes the server makes itself rather than a client. */
+	serverWriteRate?: number
+	/** Of the server's writes other than removals, the share that stream text. */
+	serverAppendRate?: number
 	initialSubscriptions?: DstSubscriptionMode
 	subscriptionRate?: number
 	connectivityRate?: number
@@ -72,6 +76,8 @@ export function resolveRunOptions(
 		maxMutationsInFlight: options.maxMutationsInFlight ?? 4,
 		sharedWriteRate: options.sharedWriteRate ?? 1,
 		namedAppendRate: options.namedAppendRate ?? 0,
+		serverWriteRate: options.serverWriteRate ?? 0.4,
+		serverAppendRate: options.serverAppendRate ?? 0.6,
 		initialSubscriptions: options.initialSubscriptions ?? "full",
 		subscriptionRate: options.subscriptionRate ?? 0.08,
 		connectivityRate: options.connectivityRate ?? 0.02,
@@ -96,8 +102,6 @@ export type DstRunResult = {
 
 /** How often a step starts a mutation rather than advancing a pending call. */
 const mutateRate = 0.35
-/** Share of new writes the server makes itself rather than a client. */
-const serverWriteRate = 0.4
 /** Chance per step that a crashed client restarts. */
 const restartRate = 0.25
 /** Chance per step that waiting server poke intervals end. */
@@ -257,7 +261,7 @@ export class DstSimulation {
 			world.mutationsInFlight < maxMutationsInFlight &&
 			(pending.length === 0 || rng.boolean(mutateRate))
 		) {
-			if (rng.boolean(serverWriteRate)) {
+			if (rng.boolean(this.options.serverWriteRate)) {
 				// Mostly its own records, as an agent streaming replies would, but
 				// also ones clients share, so writers conflict.
 				const id = rng.boolean(0.7)
@@ -265,7 +269,7 @@ export class DstSimulation {
 					: `item-${rng.int(1, this.options.recordCount)}`
 				if (rng.boolean(0.1)) return { type: "serverRemove", id }
 				// Streams text into the record, as a reply would token by token.
-				if (rng.boolean(0.6))
+				if (rng.boolean(this.options.serverAppendRate))
 					return { type: "serverAppend", id, text: ` t${step}` }
 				return {
 					type: "serverSet",

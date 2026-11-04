@@ -34,6 +34,8 @@ function completeCoverage(): DstCoverage {
 		prunedWindowChecks: 1,
 		partialPulls: 1,
 		unchangedPulls: 1,
+		barePokes: 1,
+		payloadPokes: 1,
 		dropsByKind: { requestLost: 1, responseLost: 1, pokeLost: 1 },
 		partitionDrops: 1,
 		disconnects: 1,
@@ -80,6 +82,8 @@ describe("DST executed coverage", () => {
 			prunedWindowChecks: 2,
 			partialPulls: 2,
 			unchangedPulls: 2,
+			barePokes: 2,
+			payloadPokes: 2,
 			dropsByKind: {
 				requestLost: 2,
 				responseLost: 2,

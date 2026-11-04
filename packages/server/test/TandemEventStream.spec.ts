@@ -93,7 +93,7 @@ test("streams a ready event and then pokes for server and client writes", async 
 	await server.close()
 })
 
-test("a poke event carries the client's changed records, encoded with collection codecs", async () => {
+test("a poke event carries appended text, encoded with collection codecs", async () => {
 	type Event = { id: number; title: string; startAt: Date }
 	const eventSchema = defineSchema({
 		events: collection<Event>({
@@ -113,6 +113,14 @@ test("a poke event carries the client's changed records, encoded with collection
 		relations: {},
 		storage: new TestTandemServerStorage<{ events: Event }>(),
 	})
+	const event = {
+		id: 42,
+		title: "Launch",
+		startAt: new Date("2026-03-04T18:30:00.000Z"),
+	}
+	const tx = server.transact()
+	tx.set("events", event)
+	await server.commit(tx)
 	const clientId = tag<ClientId>("viewer")
 	const events = readEvents(
 		await createTandemEventStreamResponse({
@@ -124,31 +132,35 @@ test("a poke event carries the client's changed records, encoded with collection
 	expect(await events.next()).toBe("event: ready\ndata:")
 	await server.pull({ clientId, scanWindow: [{ collection: "events" }] })
 
-	const event = {
-		id: 42,
-		title: "Launch",
-		startAt: new Date("2026-03-04T18:30:00.000Z"),
-	}
-	const tx = server.transact()
-	tx.set("events", event)
-	await server.commit(tx)
+	const appendTx = server.transact()
+	appendTx.set("events", { ...event, title: "Launch day" })
+	await server.commit(appendTx)
 	const removeTx = server.transact()
 	removeTx.remove("events", 42)
 	await server.commit(removeTx)
 
-	// Each frame decodes back to the runtime records the commit wrote.
-	const decode = (frame: string | undefined) =>
+	// The append's frame decodes back to the runtime identity and text.
+	const frame = await events.next()
+	expect(frame).toMatch(/"id":"event-42"/)
+	expect(
 		PokeApi.codec(eventSchema).decode(
 			JSON.parse(frame!.replace("event: poke\ndata: ", "")),
-		)
-	expect(decode(await events.next())).toEqual({
+		),
+	).toEqual({
 		revision: expect.any(Object),
-		set: [{ collection: "events", value: event }],
+		append: [
+			{
+				collection: "events",
+				id: 42,
+				field: "title",
+				offset: 6,
+				text: " day",
+				after: expect.any(Object),
+			},
+		],
 	})
-	expect(decode(await events.next())).toEqual({
-		revision: expect.any(Object),
-		remove: [{ collection: "events", id: 42 }],
-	})
+	// The delete is a bare poke; the pull it starts removes the record.
+	expect(await events.next()).toBe("event: poke\ndata:")
 
 	await events.reader.cancel()
 	await server.close()

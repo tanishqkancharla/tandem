@@ -506,12 +506,14 @@ test("every viewer sees a long reply only grow, with a bounded number of pulls",
 			seen.slice(0, -1).every(({ status }) => status === "streaming"),
 		).toBe(true)
 		// Hundreds of appends reach each viewer in a few payloads per second
-		// and about one pull per second, not one of each per token.
+		// and about one pull per second, not one of each per token. New
+		// records and status changes are not appends: the user message, the
+		// reply, its part, and the final status each add a pull.
 		const pulls = traffic.pulls - before[index]!.pulls
 		const payloads = traffic.payloads - before[index]!.payloads
 		expect(seen.length).toBeGreaterThan(3)
 		expect(traffic.appends).toBeGreaterThan(0)
-		expect(pulls).toBeLessThanOrEqual(Math.ceil(seconds) + 3)
+		expect(pulls).toBeLessThanOrEqual(Math.ceil(seconds) + 6)
 		expect(payloads).toBeLessThanOrEqual(Math.ceil(seconds * 20) + 3)
 	}
 })

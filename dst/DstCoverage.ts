@@ -26,6 +26,10 @@ export type DstCoverage = {
 	partialPulls: number
 	/** Of those, responses with no records to set or remove. */
 	unchangedPulls: number
+	/** Pokes without a payload that reached a client. */
+	barePokes: number
+	/** Poke payloads that reached a client. */
+	payloadPokes: number
 	dropsByKind: Record<DstFaultKind, number>
 	partitionDrops: number
 	disconnects: number
@@ -72,6 +76,8 @@ const windowCounts = [
 	"prunedWindowChecks",
 	"partialPulls",
 	"unchangedPulls",
+	"barePokes",
+	"payloadPokes",
 ] as const
 
 const faultChecks = ["partitionDrops", "disconnects", "reconnects"] as const
@@ -105,6 +111,8 @@ export function emptyCoverage(
 		prunedWindowChecks: 0,
 		partialPulls: 0,
 		unchangedPulls: 0,
+		barePokes: 0,
+		payloadPokes: 0,
 		dropsByKind: {
 			requestLost: 0,
 			responseLost: 0,
