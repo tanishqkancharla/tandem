@@ -18,6 +18,10 @@ export type DstCoverage = {
 	offsetViewChecks: number
 	nestedRelationChecks: number
 	compoundViewChecks: number
+	/** Settled replicas compared with the records their subscriptions cover. */
+	windowChecks: number
+	/** Of those, checks where the window excluded some server records. */
+	prunedWindowChecks: number
 	dropsByKind: Record<DstFaultKind, number>
 	partitionDrops: number
 	disconnects: number
@@ -58,6 +62,9 @@ const subscriptionChecks = [
 	"compoundViewChecks",
 ] as const
 
+// Counted for reports; sweeps with full subscriptions never prune.
+const windowCounts = ["windowChecks", "prunedWindowChecks"] as const
+
 const faultChecks = ["partitionDrops", "disconnects", "reconnects"] as const
 const crashChecks = [
 	"crashesBeforeDurability",
@@ -85,6 +92,8 @@ export function emptyCoverage(
 		offsetViewChecks: 0,
 		nestedRelationChecks: 0,
 		compoundViewChecks: 0,
+		windowChecks: 0,
+		prunedWindowChecks: 0,
 		dropsByKind: {
 			requestLost: 0,
 			responseLost: 0,
@@ -122,6 +131,7 @@ export function aggregateCoverage(
 			...writeChecks,
 			"conflictingMutations",
 			...subscriptionChecks,
+			...windowCounts,
 			...faultChecks,
 			...crashChecks,
 		] as const) {

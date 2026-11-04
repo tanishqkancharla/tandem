@@ -126,7 +126,7 @@ describe("DST CLI coverage and recovery", () => {
 		"continues after a first-seed violation and gates its exit with --fail-on-violation=%s",
 		(failOnViolation) => {
 			const directory = temporaryDirectory()
-			// Ordinary lost-notification mismatches at seeds 15 and 19 must not
+			// Ordinary lost-notification mismatches at seeds 15 and 17 must not
 			// stop the healthy seeds between them from running.
 			const result = childProcess.spawnSync(
 				process.execPath,
@@ -162,17 +162,19 @@ describe("DST CLI coverage and recovery", () => {
 			expect(result.status, result.stderr).toBe(failOnViolation ? 1 : 0)
 			expect(result.stdout).toContain("| 3 | 2 | 0 | 0 | 0 |")
 			expect(result.stdout).toContain("seed 15 (violation)")
-			expect(result.stdout).toContain("seed 19 (violation)")
+			expect(result.stdout).toContain("seed 17 (violation)")
 			expect(result.stdout).toContain(`pnpm dst:run --replay '${artifactPath}'`)
 			expect(fs.readdirSync(directory).sort()).toEqual([
 				"seed-15.jsonl",
-				"seed-19.jsonl",
+				"seed-17.jsonl",
 			])
 			expect(artifact.outcome?.violation).toMatchObject({
 				kind: "subscriptionView",
 				checkpoint: "ordinary",
 			})
 		},
+		// The child process runs five seeds.
+		30_000,
 	)
 
 	it.each(["sweep", "single"] as const)(

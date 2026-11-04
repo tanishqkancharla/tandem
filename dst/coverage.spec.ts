@@ -30,6 +30,8 @@ function completeCoverage(): DstCoverage {
 		offsetViewChecks: 1,
 		nestedRelationChecks: 1,
 		compoundViewChecks: 1,
+		windowChecks: 1,
+		prunedWindowChecks: 1,
 		dropsByKind: { requestLost: 1, responseLost: 1, pokeLost: 1 },
 		partitionDrops: 1,
 		disconnects: 1,
@@ -72,6 +74,8 @@ describe("DST executed coverage", () => {
 			offsetViewChecks: 2,
 			nestedRelationChecks: 2,
 			compoundViewChecks: 2,
+			windowChecks: 2,
+			prunedWindowChecks: 2,
 			dropsByKind: {
 				requestLost: 2,
 				responseLost: 2,

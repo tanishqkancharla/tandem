@@ -24,7 +24,7 @@ A `set` carries the whole record, not a field-level diff. A `remove` is recorded
 
 ## Scan windows
 
-A scan window is the list of queries the client currently subscribes to, encoded for the wire. `subscribe` adds a query, and `destroy` removes it. Each pull sends the scan window, and the remote returns only records inside it.
+A scan window is the list of queries the client currently subscribes to, encoded for the wire. `subscribe` adds a query, and `destroy` removes it; either change starts a pull, which sends the new window, empty or not. Identical subscriptions count separately, so destroying one leaves the others, and destroying the same subscription twice does nothing. Each pull sends the scan window, and the remote returns only records inside it.
 
 So a client does not receive another client's writes until it subscribes to a query that covers them. Calling `pullFromRemote()` runs a pull with the current scan window.
 
