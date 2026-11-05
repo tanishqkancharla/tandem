@@ -33,8 +33,12 @@ import type {
 } from "@tanishqkancharla/tandem-core"
 import { tag, unreachable } from "@tanishqkancharla/tandem-core"
 import {
+	AsyncTupleDatabaseWithIndexes,
 	collectionIdToTuple,
 	executeQueryAsync,
+	indexDefinitionsSignature,
+	rebuildIndexWrites,
+	schemaIndexes,
 	executeScanWindowAsync,
 	InvalidScanWindowError,
 	scanWindowDependencies,
@@ -44,6 +48,8 @@ import {
 import type {
 	ScanWindowDependencies,
 	ScanWindowRecord,
+	SchemaIndexes,
+	TandemIndexMetadataTuple,
 } from "@tanishqkancharla/tandem-core/internal"
 import * as errore from "errore"
 import {
@@ -454,6 +460,15 @@ export class TandemServer<
 	private forgottenWritesThrough = 0
 	// Set while this instance commits, to tell its own writes from others'.
 	private committing = false
+	private readonly indexes: SchemaIndexes
+	// The storage that index rebuilds write to directly.
+	private readonly unindexedDb: AsyncTupleDatabase
+	// Whether stored index entries are trusted, need checking against the
+	// definitions, or need rebuilding after an outside write.
+	private indexState: "unchecked" | "current" | "stale" = "unchecked"
+	// Counts outside writes storage reported, so a check that awaited reads
+	// does not trust entries a write made stale meanwhile.
+	private outsideWrites = 0
 	private closed = false
 	// Tuple transactions batch writes but do not snapshot reads or serialize
 	// asynchronous storage commits. Order sync reads and commits here.
@@ -484,15 +499,24 @@ export class TandemServer<
 						}
 					: undefined
 		this.instanceId = args.rng?.randomId() ?? crypto.randomUUID()
-		const database = new AsyncTupleDatabase(
+		this.indexes = schemaIndexes(args.schema)
+		this.unindexedDb = new AsyncTupleDatabase(
 			tandemStorageToTupleDatabaseStorage(args.storage),
 			{ rng: args.rng },
 		)
-		this.tupleDb = new AsyncTupleDatabaseClient<TandemTuple<Schema>>(database)
+		this.tupleDb = new AsyncTupleDatabaseClient<TandemTuple<Schema>>(
+			new AsyncTupleDatabaseWithIndexes({
+				database: this.unindexedDb,
+				indexes: this.indexes,
+			}),
+		)
 		this.unsubscribeStorage = args.storage.subscribe?.(() => {
 			// This instance's own commits poke clients themselves.
 			if (this.closed || this.committing) return
 			this.forgetLastWrites()
+			// Another process wrote records without updating index entries.
+			this.outsideWrites++
+			this.indexState = "stale"
 			this.emitPokes()
 		})
 	}
@@ -616,6 +640,8 @@ export class TandemServer<
 
 	private run<T>(operation: () => Promise<T | TandemServerError>): Promise<T> {
 		const result = this.queue.then(async () => {
+			const checked = await this.checkIndexes()
+			if (checked instanceof Error) throw checked
 			const value = await operation()
 			if (value instanceof Error) throw value
 			return value
@@ -627,9 +653,98 @@ export class TandemServer<
 		return result
 	}
 
+	/**
+	 * Rebuilds every index entry from the stored records. Call it after
+	 * writing records to storage outside Tandem, unless storage reported those
+	 * writes through `subscribe`, which schedules the same rebuild.
+	 */
+	rebuildIndexes(): Promise<void> {
+		this.outsideWrites++
+		this.indexState = "stale"
+		return this.run(() => Promise.resolve(undefined))
+	}
+
+	/**
+	 * Before the first read or write, and after storage reports an outside
+	 * write, makes stored index entries match the records. Entries built for
+	 * the current definitions are trusted until then.
+	 */
+	private async checkIndexes(): Promise<TandemServerError | undefined> {
+		if (this.indexState === "current") return
+		const seen = this.outsideWrites
+		if (this.indexState === "stale") return this.rebuildIndexEntries(seen)
+		const stored = await (
+			this
+				.tupleDb as unknown as AsyncTupleDatabaseClient<TandemIndexMetadataTuple>
+		)
+			.get(["indexes"])
+			.catch((cause) => new TandemServerError({ operation: "index", cause }))
+		if (stored instanceof Error) return stored
+		// Without indexes, entries a previous schema left must go too: a later
+		// schema with those indexes would otherwise trust them.
+		const expected = this.indexes.size
+			? indexDefinitionsSignature(this.indexes)
+			: undefined
+		if (stored?.definitions === expected) {
+			this.trustIndexes(seen)
+			return
+		}
+		return this.rebuildIndexEntries(seen)
+	}
+
+	/** Trusts entries unless storage reported an outside write since `seen`. */
+	private trustIndexes(seen: number) {
+		if (this.outsideWrites === seen) this.indexState = "current"
+	}
+
+	/** Makes stored entries match the records, writing only the differences. */
+	private async rebuildIndexEntries(
+		seen: number,
+	): Promise<TandemServerError | undefined> {
+		const read = await Promise.all([
+			this.unindexedDb.scan({ gte: ["index"], lte: ["index", true] }),
+			this.unindexedDb.scan({ gte: ["indexes"], lte: ["indexes"] }),
+			...[...this.indexes.keys()].map((collection) =>
+				this.unindexedDb.scan({
+					gte: ["record", collection],
+					lte: ["record", collection, true],
+				}),
+			),
+		]).catch((cause) => new TandemServerError({ operation: "index", cause }))
+		if (read instanceof Error) return read
+		const [entries, definitions, ...records] = read
+		const writes = rebuildIndexWrites(
+			this.indexes,
+			{
+				entries: entries!.map(({ key }) => key),
+				definitions: (
+					definitions![0]?.value as { definitions?: string } | undefined
+				)?.definitions,
+			},
+			records.flat(),
+		)
+		if (writes) {
+			this.committing = true
+			const committed = await this.unindexedDb
+				.commit(writes)
+				.finally(() => {
+					this.committing = false
+				})
+				.then(
+					() => undefined,
+					(cause) => new TandemServerError({ operation: "index", cause }),
+				)
+			if (committed instanceof Error) return committed
+		}
+		this.trustIndexes(seen)
+	}
+
 	async query<Query extends RelationalQuery<Schema, Relations>>(
 		query: Query,
 	): Promise<RelationalQueryResult<Schema, Relations, Query>> {
+		// Queries do not wait behind commits, except to check index entries once.
+		if (this.indexState !== "current")
+			await this.run(() => Promise.resolve(undefined))
 		const result = await this.runQuery(this.recordDb, query, "query")
 		if (result instanceof Error) throw result
 		return result

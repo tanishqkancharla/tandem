@@ -11,6 +11,17 @@ export type {
 } from "./query/executeQuery.js"
 export { collectionIdsEqual, collectionIdToTuple } from "./schema/Schema.js"
 export {
+	AsyncTupleDatabaseWithIndexes,
+	indexDefinitionsSignature,
+	rebuildIndexWrites,
+	schemaIndexes,
+} from "./query/indexes.js"
+export type {
+	SchemaIndexes,
+	TandemIndexMetadataTuple,
+	TandemIndexTuple,
+} from "./query/indexes.js"
+export {
 	UpdatePayloadError,
 	validateUpdatePayload,
 } from "./transaction/Transaction.js"

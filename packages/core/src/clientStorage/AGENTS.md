@@ -21,6 +21,7 @@ const db = new TandemClient({ schema, clientStorage: storage })
 ## How it works
 
 - **IndexedDB**: Browser persistent storage
+- **Index entries**: schemas that declare indexes get `["index", collection, name, ...values, ...id]` tuples in the in-memory database, written with each record write. They are never saved; hydration rebuilds them when it loads the saved records.
 - **Tuple Model**: `TandemClientTuple<Schema>` includes `["record", collection, ...id]` records, `["base", collection, ...id]` sparse server values and `lastWrittenBy`, `["replica"]` metadata (`clientId`, `lastIssuedMutationId`, optional `cookie`), `["outbox", mutationId]` ordered mutation operations, `["session", clientId]` markers recording the last mutation a tab session forwarded to the leader, and `["tab-write", clientId, mutationId]` receipts mapping a forwarded tab mutation to the leader mutation that carries it until the tab hears it was saved. All use the same `scan` and `commit` methods.
 - **Caching**: In-memory cache with write-through
 - **Batching**: Groups writes for better performance
