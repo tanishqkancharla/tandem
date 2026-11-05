@@ -20,7 +20,15 @@
 		{ "group": "Get started", "pages": ["overview", "quickstart"] },
 		{
 			"group": "Guides",
-			"pages": ["queries", "server", "sql", "cloudflare", "agent-chat"]
+			"pages": [
+				"queries",
+				"server",
+				"permissions",
+				"migrations",
+				"sql",
+				"cloudflare",
+				"agent-chat"
+			]
 		},
 		{ "group": "Concepts", "pages": ["sync", "custom-remote"] },
 		{ "group": "Project", "pages": ["roadmap", "design/relational-queries"] }

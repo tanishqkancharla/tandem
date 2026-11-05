@@ -176,6 +176,8 @@ The package also exports `useTandemClient` for direct client access and `useEnti
 
 Run a `TandemServer` and expose its `push` and `pull` methods over HTTP.
 
+This example omits authentication and access checks. Before exposing it to users, follow [Permissions](permissions.md) for pushes, pulls, and the event route. See [Migrations](migrations.md) before changing a schema with persisted data.
+
 ```ts
 // server/index.ts
 import {
