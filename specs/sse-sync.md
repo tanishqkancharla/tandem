@@ -19,7 +19,7 @@ Deliver pokes to browsers over server-sent events and keep HTTP POST push and pu
 ## Non-goals
 
 - WebSockets or an external pub/sub service.
-- Multi-process fanout. Pokes reach only streams connected to the process that committed or received a storage notification; other processes rely on the fallback pull until storage notifications or shared fanout exist ([docs/roadmap.md](../docs/roadmap.md)).
+- Multi-process fanout. Pokes reach only streams connected to the process that committed or received a storage notification; other processes rely on the fallback pull until storage notifications or shared fanout exist.
 - Durable or replayable events. A missed poke delays a pull; it never loses data.
 
 ## Implementation

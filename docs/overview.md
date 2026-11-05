@@ -51,8 +51,6 @@ A remote implements the `RemoteApi` contract: `connect`, `push`, and `pull`. `Ta
 - [Permissions](permissions.md) belong to the application. Named mutation hooks support write authorization; read and connection access need server-side enforcement in your transport or remote.
 - There is no built-in application schema versioning or client migration runner. Your application owns [migrations](migrations.md), including pending offline writes.
 
-See the [Roadmap](roadmap.md) for planned work.
-
 ## Next steps
 
 - [Quickstart](quickstart.md)

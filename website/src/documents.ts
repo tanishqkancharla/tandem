@@ -26,7 +26,6 @@ export const docSections = [
 	{
 		title: "Project",
 		pages: [
-			{ slug: "roadmap", title: "Roadmap" },
 			{ slug: "design/relational-queries", title: "Relational queries design" },
 		],
 	},

@@ -79,7 +79,6 @@ Visit [tandemsync.dev](https://tandemsync.dev) or read the guides at [docs.tande
 - [Agent chat](docs/agent-chat.md): stream an agent's reply to every viewer with plain subscriptions
 - [How sync works](docs/sync.md): mutations, push, pull, and rebase
 - [Custom remotes](docs/custom-remote.md): implement the `RemoteApi` contract yourself
-- [Roadmap](docs/roadmap.md)
 
 The full index is in [docs/README.md](docs/README.md).
 

@@ -45,5 +45,4 @@ The workspace applies `patches/@holocron.so__vite@0.38.0.patch` to render Holocr
 
 ## Project
 
-- [Roadmap](roadmap.md)
 - [Relational queries design](design/relational-queries.md)
