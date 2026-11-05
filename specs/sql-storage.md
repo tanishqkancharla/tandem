@@ -36,10 +36,10 @@ flowchart LR
     A --> D[D1: existing application tables]
     A -. after SQL succeeds .-> M[Memory: mutation receipts]
     O -. SSE ready and poke .-> B
-    %% ref node:W [[de7db28:examples/cloudflare/apps/server/src/index.ts#L92-L98]]
-    %% ref node:O [[de7db28:examples/cloudflare/apps/server/src/index.ts#L51-L60]]
-    %% ref node:A [[d286e1b:packages/server/src/storage/TandemServerD1Storage.ts#L18-L45]]
-    %% ref node:M [[2016e73..d286e1b:packages/server/src/storage/TandemServerSqlStorage.ts#L176-L191]]
+    %% ref node:W [[135d64d:examples/cloudflare/apps/server/src/index.ts#L92-L98]]
+    %% ref node:O [[135d64d:examples/cloudflare/apps/server/src/index.ts#L51-L60]]
+    %% ref node:A [[2c048b4:packages/server/src/storage/TandemServerD1Storage.ts#L18-L45]]
+    %% ref node:M [[ae7f3bc..2c048b4:packages/server/src/storage/TandemServerSqlStorage.ts#L176-L191]]
 ```
 
 ## Goals
@@ -69,7 +69,7 @@ Proposed
 Derive those mappings from runtime field definitions and supply database-specific adapters. Keep explicit mapping and execution available for custom schemas or drivers.
 
 ```changes
-2016e73..d286e1b
+ae7f3bc..2c048b4
 ```
 
 The simple constructor accepts a runtime schema and an existing database handle. The concrete handle is a D1 binding, a `pg` pool, or a `mysql2` callback pool:
@@ -90,14 +90,14 @@ type D1DatabaseCapabilities = {
 }
 ```
 
-The [D1 contract](https://github.com/tanishqkancharla/tandem/blob/d286e1b/packages/server/src/storage/TandemServerD1Storage.ts) stays structural, so it accepts Cloudflare's existing binding. PostgreSQL and MySQL reuse Kysely's existing pool interfaces and drivers.
+The [D1 contract](https://github.com/tanishqkancharla/tandem/blob/2c048b4/packages/server/src/storage/TandemServerD1Storage.ts) stays structural, so it accepts Cloudflare's existing binding. PostgreSQL and MySQL reuse Kysely's existing pool interfaces and drivers.
 
 ```callstack
- new TandemServerD1Storage [[d286e1b:packages/server/src/storage/TandemServerD1Storage.ts#L22-L43]]
+ new TandemServerD1Storage [[2c048b4:packages/server/src/storage/TandemServerD1Storage.ts#L22-L43]]
 +├── supply D1 reads and atomic batches inside the adapter
- └── new TandemServerSqlStorage [[d286e1b:packages/server/src/storage/TandemServerSqlStorage.ts#L114-L134]]
+ └── new TandemServerSqlStorage [[2c048b4:packages/server/src/storage/TandemServerSqlStorage.ts#L114-L134]]
 -   └── require mappings for every collection
-+   └── tablesFromSchema [[d286e1b:packages/server/src/storage/TandemServerSqlStorage.ts#L267-L329]]
++   └── tablesFromSchema [[2c048b4:packages/server/src/storage/TandemServerSqlStorage.ts#L267-L329]]
 +      ├── derive matching table, id, and column names
 +      └── convert supported field values
 ```
@@ -125,7 +125,7 @@ function tablesFromSchema(schema, dialect, overrides) {
 }
 ```
 
-Reads constrain shared ID prefixes in SQL, then use a temporary tuple view to apply exact ordering, remaining bounds, and limits. General filters and relations still run in Tandem's query engine; large scans can require substantial memory.
+Reads constrain shared ID prefixes in SQL, then use a temporary tuple view to apply exact ordering, remaining bounds, and limits. The merged query planner shares collection scans within a query window and uses exact key reads for full IDs and many-to-one targets, which become primary-key constraints in this adapter. Other filters and relations still run in Tandem's query engine; large scans can require substantial memory.
 
 ```ts
 async function scan(bounds) {
@@ -150,9 +150,9 @@ flowchart TD
     T --> E{SQL succeeds?}
     E -->|no| R[Rollback and reject]
     E -->|yes| M[Advance receipts in memory]
-    %% ref node:S [[2016e73..d286e1b:packages/server/src/storage/TandemServerSqlStorage.ts#L197-L254]]
-    %% ref node:T [[d286e1b:packages/server/src/storage/kyselyToTandemSqlExecution.ts#L15-L22]] [[d286e1b:packages/server/src/storage/TandemServerD1Storage.ts#L36-L42]]
-    %% ref node:M [[2016e73..d286e1b:packages/server/src/storage/TandemServerSqlStorage.ts#L186-L190]]
+    %% ref node:S [[ae7f3bc..2c048b4:packages/server/src/storage/TandemServerSqlStorage.ts#L197-L254]]
+    %% ref node:T [[2c048b4:packages/server/src/storage/kyselyToTandemSqlExecution.ts#L15-L22]] [[2c048b4:packages/server/src/storage/TandemServerD1Storage.ts#L36-L42]]
+    %% ref node:M [[ae7f3bc..2c048b4:packages/server/src/storage/TandemServerSqlStorage.ts#L186-L190]]
 ```
 
 D1 uses its native batch API. PostgreSQL and MySQL execute bound statements within Kysely's transaction on one pooled connection:
@@ -170,7 +170,7 @@ clientReceipts.apply(writes.clientReceipts)
 
 Kysely supplies the dialect compilers and the pool drivers; Tandem supplies no custom SQL grammar. Closing storage leaves app-owned database handles open. Custom drivers can still use the low-level `{ dialect, schema, tables?, query, commit }` contract; explicit mappings support compound keys and custom codecs.
 
-Validation passed 25 focused cases across local D1, PGlite, live PostgreSQL 17, and MySQL 8.4. The full default server suite passed 95 tests; live pool cases run when their connection URLs are set. All 145 simulation tests passed, including five SQL-backed fault/crash seeds and exact replays that now exercise default mappings for projects and comments.
+Validation passed 25 focused cases across local D1, PGlite, live PostgreSQL 17, and MySQL 8.4. After integrating #94, #95, #97, and #98, the full default server suite passed 107 tests; live pool cases run when their connection URLs are set. All 145 simulation tests passed, including five SQL-backed fault/crash seeds and exact replays that now exercise default mappings for projects and comments.
 
 ### ✅ Phase 2: Host sync on Cloudflare — PR #92
 
@@ -183,7 +183,7 @@ Proposed
 Supply a runnable Worker example and setup guides using one object, one D1 binding, and the new schema-based adapter.
 
 ```changes
-d286e1b..d474107
+2c048b4..f76666a
 ```
 
 The shared schema defines the same task fields as the SQL table. The object constructs one server with its D1 binding:
@@ -207,12 +207,12 @@ HTTP requests still enter the ordinary server API. SQL strings and tuple keys st
 
 ```callstack
  TandemClient.commit [[packages/core/src/TandemClient.ts#TandemClient.commit]]
-+└── createRemote.push [[d286e1b..d474107:examples/cloudflare/apps/server/src/remote.ts#L48-L59]]
-+   └── Worker.fetch [[de7db28:examples/cloudflare/apps/server/src/index.ts#L92-L98]]
-+      └── SyncObject.fetch [[de7db28:examples/cloudflare/apps/server/src/index.ts#L62-L89]]
++└── createRemote.push [[2c048b4..f76666a:examples/cloudflare/apps/server/src/remote.ts#L48-L59]]
++   └── Worker.fetch [[135d64d:examples/cloudflare/apps/server/src/index.ts#L92-L98]]
++      └── SyncObject.fetch [[135d64d:examples/cloudflare/apps/server/src/index.ts#L62-L89]]
           └── TandemServer.push [[packages/server/src/TandemServer.ts#TandemServer.push]]
-+            └── TandemServerSqlStorage.commit [[2016e73..d286e1b:packages/server/src/storage/TandemServerSqlStorage.ts#L176-L191]]
-+               └── commit through D1.batch inside the adapter [[d286e1b:packages/server/src/storage/TandemServerD1Storage.ts#L36-L42]]
++            └── TandemServerSqlStorage.commit [[ae7f3bc..2c048b4:packages/server/src/storage/TandemServerSqlStorage.ts#L176-L191]]
++               └── commit through D1.batch inside the adapter [[2c048b4:packages/server/src/storage/TandemServerD1Storage.ts#L36-L42]]
 ```
 
 The Worker routes sync traffic to one named object. The object validates request envelopes, decodes mutations with the schema codec, and returns the existing SSE response:
@@ -239,9 +239,9 @@ sequenceDiagram
     B->>O: Pull subscribed records
     O->>D: Read current rows
     O-->>B: View and acknowledgement
-    %% ref edge:0 [[d286e1b..d474107:examples/cloudflare/apps/server/src/remote.ts#L22-L25]]
-    %% ref edge:1 [[d286e1b:packages/server/src/storage/TandemServerD1Storage.ts#L36-L42]]
-    %% ref edge:4 [[d286e1b:packages/server/src/storage/TandemServerD1Storage.ts#L29-L35]]
+    %% ref edge:0 [[2c048b4..f76666a:examples/cloudflare/apps/server/src/remote.ts#L22-L25]]
+    %% ref edge:1 [[2c048b4:packages/server/src/storage/TandemServerD1Storage.ts#L36-L42]]
+    %% ref edge:4 [[2c048b4:packages/server/src/storage/TandemServerD1Storage.ts#L29-L35]]
 ```
 
 After a successful push, the remote triggers a bare local poke to confirm the writer immediately, even when SSE is unavailable. Ready events start a fresh pull after reconnect; there is no replay of missed SSE messages. Database persistence and connection recovery do not preserve mutation receipts across an object restart. App authentication, migrations, and file handling remain app-owned.
@@ -252,6 +252,6 @@ The actual Worker passed both local D1/DO/SSE tests: two-client updates with rec
 
 - [PR #91 — SQL adapters](https://github.com/tanishqkancharla/tandem/pull/91)
 - [PR #92 — Cloudflare guide and example](https://github.com/tanishqkancharla/tandem/pull/92)
-- [[de7db28:docs/sql.md#L1-L132]]
-- [[d474107:docs/cloudflare.md#L1-L158]]
+- [[135d64d:docs/sql.md#L1-L132]]
+- [[f76666a:docs/cloudflare.md#L1-L158]]
 - [Whiteboard stack overview](whiteboard:board/1c05cfe6-dd74-4b8f-892d-0d2579628ae6)
