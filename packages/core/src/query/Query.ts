@@ -71,6 +71,8 @@ export type RelationalQueryOptions<
 	Relations extends AnyRelations<Schema>,
 	Collection extends CollectionName<Schema>,
 > = {
+	readonly aggregate?: never
+	readonly groupBy?: never
 	readonly select?: RelationalSelectOptions<Schema, Collection>
 	readonly where?: RelationalWhereOptions<Schema, Collection>
 	readonly with?: RelationalWithOptions<Schema, Relations, Collection>
@@ -207,6 +209,37 @@ export type RelationalQueryResult<
 	Query["collection"] & CollectionName<Schema>,
 	Query
 >
+
+export type AggregateGroupKey = string | number | boolean | null | undefined
+
+export type AggregateGroupFields<Row> = {
+	[Key in keyof Row & string]: Row[Key] extends AggregateGroupKey ? Key : never
+}[keyof Row & string]
+
+export type AggregateQuery<
+	Schema extends AnySchema,
+	Collection extends CollectionName<Schema>,
+	Result,
+	GroupKeys extends
+		| readonly AggregateGroupFields<Schema[Collection]>[]
+		| undefined = undefined,
+> = {
+	readonly collection: Collection
+	readonly where?: RelationalWhereOptions<Schema, Collection>
+	readonly groupBy?: GroupKeys
+	readonly aggregate: (rows: readonly Readonly<Schema[Collection]>[]) => Result
+	readonly select?: never
+	readonly with?: never
+	readonly orderBy?: never
+	readonly limit?: never
+	readonly offset?: never
+}
+
+export type GroupedAggregateRow<
+	Row,
+	Keys extends readonly (keyof Row)[],
+	Result,
+> = Pick<Row, Keys[number]> & Result
 
 export type Operator = "=" | ">" | "<" | ">=" | "<="
 
