@@ -153,9 +153,11 @@ interface TandemServerStorageApi<Schema> {
 
 `TandemServerJsonFileStorage` keeps tuples in memory and writes the whole file on each commit. It suits development and examples, not production.
 
+For existing SQL tables, see the experimental [SQL adapter](sql.md) and [Cloudflare D1 guide](cloudflare.md). The SQL adapter keeps acknowledgements in memory until durable metadata support is added.
+
 ## Limitations
 
-- Records are durable when storage is durable. Sync metadata (revisions, acknowledged mutation IDs, client scan windows) lives in the server process and resets on restart.
+- Records and acknowledged mutation IDs persist when the storage adapter persists them. The JSON-file adapter stores both; the experimental SQL adapter persists only application records. Revisions, cookies, and client scan windows live in the server process and reset on restart.
 - Pokes come from the `TandemServer` instance that committed the write, or from storage `subscribe` notifications. Writes made by other processes or directly to the database do not poke clients unless storage reports them. Event streams connected to another process miss those pokes and rely on the client's fallback pull. Storage notifications are bare pokes, without records.
 - Appends assume the server knows which records left a view. The server compares an appended record's stored value with the one the viewer has, so another process's write to that record makes the append a bare poke even without a notification. When storage reports another process's write through `subscribe`, the server treats every collection as changed until each client pulls. A write that storage does not report can still move other records into a limited page, and the server cannot see that the appended record left the page; its text keeps streaming until the client's next pull.
 - Revisions are per instance. If a client's pokes and pulls reach different instances, live records shown from one instance's pokes are dropped by the next pull from another.
