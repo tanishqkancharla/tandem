@@ -43,6 +43,8 @@ The server serializes named mutations, so concurrent calls read the latest commi
 
 The constructor retains the shared registry's names and argument types. A hooks factory receives the session supplied by the authenticated push transport. It runs for each named call, and an asynchronous `afterCommit` closes over that call's session. The server sets `ctx.source`; clients cannot choose it.
 
+The wrappers below show mutation routing. They delegate reads and connections directly, so they require a separate access boundary before use with untrusted callers. Follow [Permissions](permissions.md) to enforce thread read access, bind client IDs, and end streams when access changes.
+
 ```ts
 const mutators = { appendReply, sendMessage, finishReply }
 function createChatServer(

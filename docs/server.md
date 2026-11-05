@@ -26,6 +26,8 @@ Call `server.close()` on shutdown to close storage.
 
 Register shared mutators once in the constructor with `mutators`; optional `hooks` add server-only authorization and post-commit work. `server.mutate.name(args)` retains each registered mutation's argument type. Pass authenticated request context to `server.push(request, { context })`; the hooks factory receives it for that request. See [Agent chat](agent-chat.md) for the full pattern.
 
+See [Permissions](permissions.md) before exposing sync to users. Mutation hooks authorize named writes; your application must also enforce read access and authorize live connections.
+
 ## Connect clients
 
 `TandemServer` has `connect`, `push`, and `pull` methods that match `RemoteApi`. Clients in the same process can use the server as their `remote` directly:
@@ -155,10 +157,12 @@ interface TandemServerStorageApi<Schema> {
 
 For existing SQL tables, see the experimental [SQL adapter](sql.md) and [Cloudflare D1 guide](cloudflare.md). The SQL adapter keeps acknowledgements in memory until durable metadata support is added.
 
+Tandem does not create or migrate application tables. See [Migrations](migrations.md) for server schema changes, persisted client caches, and older offline clients.
+
 ## Limitations
 
 - Records and acknowledged mutation IDs persist when the storage adapter persists them. The JSON-file adapter stores both; the experimental SQL adapter persists only application records. Revisions, cookies, and client scan windows live in the server process and reset on restart.
 - Pokes come from the `TandemServer` instance that committed the write, or from storage `subscribe` notifications. Writes made by other processes or directly to the database do not poke clients unless storage reports them. Event streams connected to another process miss those pokes and rely on the client's fallback pull. Storage notifications are bare pokes, without records.
 - Appends assume the server knows which records left a view. The server compares an appended record's stored value with the one the viewer has, so another process's write to that record makes the append a bare poke even without a notification. When storage reports another process's write through `subscribe`, the server treats every collection as changed until each client pulls. A write that storage does not report can still move other records into a limited page, and the server cannot see that the appended record left the page; its text keeps streaming until the client's next pull.
 - Revisions are per instance. If a client's pokes and pulls reach different instances, live records shown from one instance's pokes are dropped by the next pull from another.
-- The server does no authentication or authorization. Check requests in your transport before calling `push` or `pull`, and authorize `connect` (including the event stream route) the same way: pokes carry the records of the client's latest pulled view to whoever holds its connection. A view lasts until the client's next pull or until its last connection closes, so when a user loses access, close that client's connections: pokes then carry no records until a pull your transport authorizes.
+- The server has no built-in identity or read permission system. Named mutations support `authorize` hooks, but raw operations bypass them. Authenticate and authorize `push`, `pull`, and `connect` in your transport, including the event stream route. Pokes can carry records from the client's latest pulled view; close all affected connections when access ends. See [Permissions](permissions.md).

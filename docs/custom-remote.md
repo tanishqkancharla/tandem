@@ -15,7 +15,7 @@ type RemoteApi<Schema> = {
 		clientId: ClientId
 		mutations: Mutation<Schema>[]
 	}): Promise<
-		| { ok: true }
+		| { ok: true; rejected?: { id: MutationId; message: string }[] }
 		| { error: "invalid-request" | "unavailable"; message: string }
 		| { error: "mutation-gap"; expectedMutationId: number; receivedMutationId: number }
 	>
@@ -27,6 +27,7 @@ type RemoteApi<Schema> = {
 	}): Promise<{
 		cookie: Cookie
 		patch: {
+			reset?: boolean
 			set?: { collection: string; value: Record }[]
 			remove?: { collection: string; id: Id }[]
 		}
@@ -70,6 +71,8 @@ Apply the mutations in order. Each `set` carries a full record, each `remove` ca
 
 Return an error if the mutations cannot be applied. Each affected `commit` promise rejects, but the client keeps the mutations pending and sends them again with its next push, so an error that repeats on every attempt stops that client's later pushes too. To deny a write the client may not make, drop the operation and still apply the mutation's other operations and its ID. The client's next pull acknowledges the mutation and shows the server's value instead.
 
+To refuse an entire named mutation, apply none of its writes, acknowledge its ID, and include `{ id, message }` in the successful response's `rejected` list. This lets the waiting client call reject without blocking later mutations. `TandemServer` does this when a named mutation's authorization or argument validation fails; see [Permissions](permissions.md#check-writes-with-named-mutation-hooks).
+
 ## Mutation codecs at the wire boundary
 
 `RemoteApi` carries runtime values. Use `MutationApi.codec(schema)` when a transport serializes push mutations: encode before sending JSON and decode after parsing it, before calling `server.push`. It applies each collection's codec to set values, update payloads, and record identities without changing operation order or mutation IDs.
@@ -98,6 +101,7 @@ Return a patch that moves the client from the state at `cookie` to the current s
 
 - `patch.set` holds records in the scan window that are new or changed. Returning every record in the window is also correct, just larger.
 - `patch.remove` holds records the client received earlier that were since deleted or dropped out of the window. The client keeps any record that is not explicitly removed.
+- `patch.reset` replaces the client's synced base with the patch's records when the remote cannot use its cookie. Pending local mutations still replay over that base; this does not migrate or discard them. See [Migrations](migrations.md).
 - `cookie` is opaque to the client. It sends back the last cookie it received. A revision number works.
 - `lastMutationId` is the last mutation from `clientId` that the remote applied, or `0` before it applies one. Report it on every pull, even when the patch is empty. The client treats that mutation and all earlier ones as confirmed and stops replaying them.
 - `revision` is the latest commit the pull's read reflects. Return it if pokes carry payloads. The pull replaces every payload record at or below that revision from the same `server`, and every payload record from another `server`. Without a revision, the pull replaces them all.
@@ -106,30 +110,11 @@ The scan window is a list of `EncodedQuery` objects. Filters are `[field, operat
 
 ## Wrapping `TandemServer`
 
-To add authentication, validation, or a different transport while keeping Tandem's sync logic, delegate to a `TandemServer`:
+To add authentication, validation, or a different transport while keeping Tandem's sync logic, delegate to a `TandemServer` after checking the caller's access. Follow [Permissions](permissions.md) for the complete boundary: authenticated client IDs, authorized scan windows, named mutation hooks, and live connection revocation.
 
-```ts
-import type { RemoteApi } from "@tanishqkancharla/tandem-core"
+For named mutations, forward trusted session context with `server.push(request, { context: session, allowOps: false })`. Filtering `mutation.ops` does not authorize a named call: the server runs its registered definition instead. For raw operations, a custom wrapper must check the current record and proposed write before passing allowed operations through, and preserve mutation IDs when acknowledging denied operations. Use named mutations when several writes must succeed or be refused together.
 
-function authorizedRemote(
-	server: TandemServer<TodoSchema, {}>,
-	session: Session,
-): RemoteApi<TodoSchema> {
-	return {
-		connect: (api) => server.connect(api),
-		push: (args) =>
-			// Forbidden operations are dropped; the mutation is still acknowledged.
-			server.push({
-				...args,
-				mutations: args.mutations.map((mutation) => ({
-					...mutation,
-					ops: mutation.ops.filter((op) => canWrite(session, op)),
-				})),
-			}),
-		pull: (args) => server.pull(args),
-	}
-}
-```
+Do not delegate `pull` and `connect` without a read access boundary. Checking writes alone leaves records exposed through queries and live payloads.
 
 ## Testing
 

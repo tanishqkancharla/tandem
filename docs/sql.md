@@ -33,6 +33,8 @@ The adapter converts booleans to `0`/`1` for D1 and MySQL, and uses native boole
 
 Only fields declared in the schema enter Tandem records or get updated. `audit_note` stays under the application's control. New rows still need values or database defaults for every required unmapped column. Tandem does not create or alter tables, or add sync columns.
 
+Use your application's migration tool for schema changes and backfills. [Migrations](migrations.md) also covers old clients and pending writes; changing a table alone does not upgrade either. The adapters do not configure database row policies or authenticated user context. See [Permissions](permissions.md) for read and write access.
+
 ## Connect a database
 
 Import adapters from the server package's `/sql` entry. For D1, pass the existing binding:

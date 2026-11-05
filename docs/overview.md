@@ -47,8 +47,9 @@ A remote implements the `RemoteApi` contract: `connect`, `push`, and `pull`. `Ta
 ## Current limitations
 
 - Conflicts resolve as last write wins per record. There are no field-level merges or intents.
-- Server sync metadata lives in memory and resets when the server process restarts.
-- There is no schema versioning or migration story for persisted client storage.
+- Cookies, revisions, and client views reset when the server process restarts. Mutation acknowledgement durability depends on the [storage adapter](server.md#limitations).
+- [Permissions](permissions.md) belong to the application. Named mutation hooks support write authorization; read and connection access need server-side enforcement in your transport or remote.
+- There is no built-in application schema versioning or client migration runner. Your application owns [migrations](migrations.md), including pending offline writes.
 
 See the [Roadmap](roadmap.md) for planned work.
 
