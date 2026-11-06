@@ -1,5 +1,6 @@
 import type {
 	AnySchema,
+	CandidateRead,
 	ClientId,
 	MutationId,
 	SchemaToTupleSchema,
@@ -19,6 +20,16 @@ export interface TandemServerStorageApi<Schema extends AnySchema> {
 	scan(args?: ScanStorageArgs): Promise<TandemTuple<Schema>[]>
 
 	commit(writes: WriteOps<TandemTuple<Schema>>): Promise<void>
+
+	/**
+	 * Optional native query reads. Resolve with every record of the read's
+	 * collection that could be among the query's results, in key order, or
+	 * undefined to have the query scan the collection instead. Extra records
+	 * are allowed. Queries inside transactions always scan.
+	 */
+	readCandidates?(
+		read: CandidateRead,
+	): Promise<TandemTuple<Schema>[] | undefined>
 
 	/**
 	 * Optional change notifications, including external writes when supported.

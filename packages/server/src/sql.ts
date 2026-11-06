@@ -12,5 +12,6 @@ export {
 	type TandemSqlDialect,
 	type TandemSqlRow,
 	type TandemSqlStatement,
+	type TandemSqlField,
 	type TandemSqlTable,
 } from "./storage/TandemServerSqlStorage.js"

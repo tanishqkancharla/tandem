@@ -42,6 +42,7 @@ import {
 	validateMutatorArgs,
 } from "@tanishqkancharla/tandem-core/internal"
 import type {
+	ReadCandidates,
 	ScanWindowDependencies,
 	ScanWindowRecord,
 } from "@tanishqkancharla/tandem-core/internal"
@@ -440,6 +441,8 @@ export class TandemServer<
 	private readonly syncClients = new Map<ClientId, SyncClientState<Schema>>()
 	private readonly schema: RuntimeSchemaDefinition<Schema>
 	private readonly tupleDb: AsyncTupleDatabaseClient<TandemTuple<Schema>>
+	/** Storage's native query reads, used outside transactions. */
+	private readonly readCandidates?: ReadCandidates
 	private readonly rng?: RngApi
 	private readonly livePokeTimer?: TimerApi
 	private readonly unsubscribeStorage?: () => void
@@ -489,6 +492,7 @@ export class TandemServer<
 			{ rng: args.rng },
 		)
 		this.tupleDb = new AsyncTupleDatabaseClient<TandemTuple<Schema>>(database)
+		this.readCandidates = args.storage.readCandidates?.bind(args.storage)
 		this.unsubscribeStorage = args.storage.subscribe?.(() => {
 			// This instance's own commits poke clients themselves.
 			if (this.closed || this.committing) return
@@ -696,6 +700,7 @@ export class TandemServer<
 			db,
 			this.relations,
 			query,
+			this.readCandidates,
 		).catch((cause) => new TandemServerError({ operation, cause }))
 	}
 
@@ -944,6 +949,7 @@ export class TandemServer<
 			this.recordDb,
 			this.relations,
 			scanWindow,
+			this.readCandidates,
 		).catch((cause) => new TandemServerError({ operation: "pull", cause }))
 		if (records instanceof InvalidScanWindowError) {
 			return { error: "invalid-request", message: records.message }

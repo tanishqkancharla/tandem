@@ -41,6 +41,8 @@ const tables: Required<
 			text: row.task_text as string,
 			done: row.is_done === 1,
 		}),
+		// is_done holds 0 or 1 on every dialect, so done filters after reading.
+		fields: { text: { column: "task_text", type: "string" } },
 	},
 	messages: {
 		table: "app_messages",
@@ -275,6 +277,41 @@ for (const dialect of ["sqlite", "postgres", "mysql"] as const) {
 				subscription.destroy()
 				await alice.close()
 				await bob.close()
+			})
+
+			test("filters declared fields in SQL and the rest after reading", async () => {
+				const tx = server.transact()
+				for (const [id, text, done] of [
+					["a", "shared", false],
+					["b", "shared", true],
+					["c", "other", false],
+				] as const)
+					tx.set("tasks", { id, text, done })
+				await server.commit(tx)
+				let rowsRead = 0
+				const counting = new TandemServer({
+					schema,
+					relations: {},
+					storage: new TandemServerSqlStorage({
+						dialect,
+						tables,
+						...db,
+						query: async (statement) => {
+							const rows = await db.query(statement)
+							rowsRead += rows.length
+							return rows
+						},
+					}),
+				})
+				expect(
+					await counting.query({
+						collection: "tasks",
+						where: { text: "shared", done: false },
+					}),
+				).toEqual([{ id: "a", text: "shared", done: false }])
+				// MySQL reads whole tables: Tandem does not push queries to it.
+				expect(rowsRead).toBe(dialect === "mysql" ? 3 : 2)
+				await counting.close()
 			})
 
 			test("reopens durable records and borrows the database lifetime", async () => {

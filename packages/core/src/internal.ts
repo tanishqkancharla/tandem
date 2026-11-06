@@ -6,6 +6,7 @@ export {
 	scanWindowDependencies,
 } from "./query/executeQuery.js"
 export type {
+	ReadCandidates,
 	ScanWindowDependencies,
 	ScanWindowRecord,
 } from "./query/executeQuery.js"

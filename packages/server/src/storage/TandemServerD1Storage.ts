@@ -26,6 +26,8 @@ export class TandemServerD1Storage<
 		super({
 			schema: args.schema,
 			dialect: "sqlite",
+			// https://developers.cloudflare.com/d1/platform/limits/
+			maxParameters: 100,
 			query: async ({ sql, parameters }) =>
 				(
 					await args.database
