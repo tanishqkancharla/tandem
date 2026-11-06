@@ -4,11 +4,14 @@
  * reads with SQL reads. Writes one JSON file per run.
  *
  * pnpm --filter tandem-dst exec tsx ../packages/server/benchmarks/sqlSync.ts \
- *   <sqlite|postgres> <rows> <clients> <out.json> [rounds=3] [updates=10]
+ *   <sqlite|postgres> <rows> <clients> <out.json> [rounds=3] [updates=10] \
+ *   [syncIntervalMs=0]
  *
  * Clients are TandemClient instances in this Node process with in-memory
- * replicas and the default 150 ms sync interval, connected to the server
- * directly rather than over HTTP. The tables carry the messages_thread_created
+ * replicas, connected to the server directly rather than over HTTP. The
+ * clients' sync interval defaults to 0 so latency measures the server rather
+ * than client batching; pass 150 for TandemClient's default. An update that
+ * no viewer shows within 30 s counts as a timeout. The tables carry the messages_thread_created
  * index. Each round runs four cells in a shuffled order: whole-table or SQL
  * reads, with every client on one paged thread view or on every message.
  */
@@ -47,6 +50,8 @@ const clientCount = Number(process.argv[4])
 const out = process.argv[5]!
 const rounds = Number(process.argv[6] ?? 3)
 const updates = Number(process.argv[7] ?? 10)
+const syncInterval = Number(process.argv[8] ?? 0)
+const updateTimeoutMs = 30_000
 
 type Query = RelationalQuery<Schema, typeof relations>
 
@@ -134,6 +139,8 @@ const result = {
 	clients: clientCount,
 	rounds,
 	updates,
+	syncIntervalMs: syncInterval,
+	updateTimeoutMs,
 	node: process.version,
 	database: await db.version(),
 	commit: execSync("git rev-parse HEAD").toString().trim(),
@@ -178,7 +185,14 @@ for (let round = 0; round < rounds; round++)
 		rowsDecoded = 0
 		const clients = Array.from(
 			{ length: clientCount },
-			() => new TandemClient({ schema, relations, remote: server, logger }),
+			() =>
+				new TandemClient({
+					schema,
+					relations,
+					remote: server,
+					logger,
+					syncInterval,
+				}),
 		)
 		const latest = clients.map(() => undefined as unknown)
 		const waiters = new Set<() => void>()
@@ -188,12 +202,18 @@ for (let round = 0; round < rounds; round++)
 				for (const waiter of waiters) waiter()
 			}),
 		)
+		/** Resolves true once `done` holds, or false after the update timeout. */
 		const until = (done: () => boolean) =>
-			new Promise<void>((resolve) => {
+			new Promise<boolean>((resolve) => {
+				const timeout = setTimeout(() => {
+					waiters.delete(check)
+					resolve(false)
+				}, updateTimeoutMs)
 				const check = () => {
 					if (!done()) return
+					clearTimeout(timeout)
 					waiters.delete(check)
-					resolve()
+					resolve(true)
 				}
 				waiters.add(check)
 				check()
@@ -212,6 +232,7 @@ for (let round = 0; round < rounds; round++)
 		rowsDecoded = 0
 		const [author] = clients
 		const updateMs: number[] = []
+		let updateTimeouts = 0
 		const ids: string[] = []
 		for (let update = 0; update < updates; update++) {
 			const id = `sync-${written++}`
@@ -227,7 +248,7 @@ for (let round = 0; round < rounds; round++)
 			})
 			const started = performance.now()
 			await author!.commit(tx)
-			await until(() =>
+			const shown = await until(() =>
 				latest.every(
 					(value, index) =>
 						index === 0 ||
@@ -236,7 +257,8 @@ for (let round = 0; round < rounds; round++)
 						),
 				),
 			)
-			updateMs.push(performance.now() - started)
+			if (shown) updateMs.push(performance.now() - started)
+			else updateTimeouts++
 		}
 		const updateWork = { statements, rowsDecoded }
 		// Every write reached the server, and every replica matches it.
@@ -255,6 +277,7 @@ for (let round = 0; round < rounds; round++)
 			initialExact,
 			initialReplicaRows: clients.map((client) => client.query(query).length),
 			updateMs,
+			updateTimeouts,
 			updateWork,
 			finalExact: clients.every((client) =>
 				isDeepStrictEqual(client.query(query), expectedFinal),

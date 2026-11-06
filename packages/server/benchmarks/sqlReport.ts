@@ -30,7 +30,7 @@ const queryCsv = [
 	"dialect,rows,config,workload,samples,median_ms,p95_ms,returned_rows,rows_decoded,statements,pushed,fallback,exact",
 ]
 const syncCsv = [
-	"dialect,rows,clients,reads,view,rounds,initial_median_ms,update_median_ms,update_p95_ms,update_samples,initial_statements,initial_rows_decoded,update_statements,update_rows_decoded,exact",
+	"dialect,rows,clients,sync_interval_ms,reads,view,rounds,initial_median_ms,update_median_ms,update_p95_ms,update_samples,initial_statements,initial_rows_decoded,update_statements,update_rows_decoded,exact",
 ]
 
 const queryRuns = files
@@ -127,10 +127,10 @@ if (syncRuns.length)
 	lines.push(
 		"### Client sync",
 		"",
-		"Node in-memory TandemClient replicas, default 150 ms sync interval, connected to the server in process. Every client subscribes to the same view; one client writes. Update latency runs from the author's commit until every other client's subscription shows the message. Work counts SQL statements and rows SQL returned during each phase, for all clients together.",
+		"Node in-memory TandemClient replicas connected to the server in process. Runs before the sync interval was configurable used TandemClient's 150 ms default. Every client subscribes to the same view; one client writes. Update latency runs from the author's commit until every other client's subscription shows the message. Work counts SQL statements and rows SQL returned during each phase, for all clients together.",
 		"",
-		"| DB | Rows | Clients | View | Reads | Initial sync ms | Update ms median (p95), n | Initial statements / rows decoded | Update statements / rows decoded | Exact |",
-		"| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+		"| DB | Rows | Clients | Sync interval ms | View | Reads | Initial sync ms | Update ms median (p95), n | Timeouts | Initial statements / rows decoded | Update statements / rows decoded | Exact |",
+		"| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
 	)
 for (const run of syncRuns) {
 	const cells = run.cells as Record<string, any>[]
@@ -140,6 +140,11 @@ for (const run of syncRuns) {
 				(cell) => cell.view === view && cell.reads === reads,
 			)
 			const updates = these.flatMap((cell) => cell.updateMs as number[])
+			const interval = run.syncIntervalMs ?? 150
+			const timeouts = these.reduce(
+				(count, cell) => count + (cell.updateTimeouts ?? 0),
+				0,
+			)
 			const exact = these.every(
 				(cell) => cell.initialExact && cell.finalExact && cell.writesStored,
 			)
@@ -150,6 +155,7 @@ for (const run of syncRuns) {
 					run.dialect,
 					run.rows,
 					run.clients,
+					run.syncIntervalMs ?? 150,
 					reads,
 					view,
 					these.length,
@@ -165,7 +171,7 @@ for (const run of syncRuns) {
 				].join(","),
 			)
 			lines.push(
-				`| ${run.dialect} | ${run.rows.toLocaleString("en-US")} | ${run.clients} | ${view} | ${reads === "sql" ? "SQL" : "whole tables"} | ${ms(median(these.map((cell) => cell.initialMs)))} | ${ms(median(updates))} (${ms(quantile(updates, 0.95))}), ${updates.length} | ${work("initialWork", "statements")} / ${work("initialWork", "rowsDecoded")} | ${work("updateWork", "statements")} / ${work("updateWork", "rowsDecoded")} | ${exact ? "yes" : "NO"} |`,
+				`| ${run.dialect} | ${run.rows.toLocaleString("en-US")} | ${run.clients} | ${interval} | ${view} | ${reads === "sql" ? "SQL" : "whole tables"} | ${ms(median(these.map((cell) => cell.initialMs)))} | ${ms(median(updates))} (${ms(quantile(updates, 0.95))}), ${updates.length} | ${timeouts} | ${work("initialWork", "statements")} / ${work("initialWork", "rowsDecoded")} | ${work("updateWork", "statements")} / ${work("updateWork", "rowsDecoded")} | ${exact ? "yes" : "NO"} |`,
 			)
 		}
 }
