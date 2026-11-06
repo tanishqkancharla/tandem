@@ -337,21 +337,24 @@ function runSync<Schema extends AnySchema, Result>(
 ): Result {
 	const reader = db as unknown as TupleRecordReader
 	const scans = new Map<string, ScanResult>()
+	const scan = (collection: string) => {
+		const scanned =
+			scans.get(collection) ??
+			scanResult(reader.scan({ prefix: ["record", collection] }))
+		scans.set(collection, scanned)
+		return scanned.records
+	}
 	let step = execution.next()
 	while (!step.done) {
 		const read = step.value
 		switch (read.type) {
 			case "scan":
-			case "candidates": {
-				const collection =
-					read.type === "scan" ? read.collection : read.read.collection
-				const scanned =
-					scans.get(collection) ??
-					scanResult(reader.scan({ prefix: ["record", collection] }))
-				scans.set(collection, scanned)
-				step = execution.next(scanned.records)
+				step = execution.next(scan(read.collection))
 				break
-			}
+			// The client's database is in memory: a scan costs no more.
+			case "candidates":
+				step = execution.next(scan(read.read.collection))
+				break
 			case "get":
 				step = execution.next(
 					read.keys.map(
@@ -531,17 +534,22 @@ function* rootCandidates(
 		([field, operator]) => field === "id" && operator === "=",
 	)
 	const key = idClause && idKey(query.collection, idClause[2])
+	// Scan windows come from clients, so a page may not be a count.
+	const offset = query.offset ?? 0
 	if (!key)
 		return yield* readCandidates({
 			collection: query.collection,
 			where: query.where ?? [],
 			order: query.order ?? [],
-			...(query.limit === undefined
-				? {}
-				: { limit: (query.offset ?? 0) + query.limit }),
+			...(isCount(offset) &&
+				isCount(query.limit) && { limit: offset + query.limit }),
 		})
 	const [record] = yield* getRecords([key])
 	return record ? [record] : []
+}
+
+function isCount(value: unknown): value is number {
+	return Number.isSafeInteger(value) && (value as number) >= 0
 }
 
 type AnyRelation = NonNullable<

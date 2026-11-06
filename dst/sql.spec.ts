@@ -36,10 +36,10 @@ function tables(dialect: TandemSqlDialect) {
 					done: rest.done === true || rest.done === 1,
 					...(note === null ? {} : { note }),
 				}) as DstSchema["tasks"],
-			// note is optional, so SQL cannot filter it like a query would.
 			fields: {
 				projectId: { column: "projectId", type: "string" },
 				text: { column: "text", type: "string" },
+				note: { column: "note", type: "string", nullable: true },
 				done: { column: "done", type: "boolean" },
 				priority: { column: "priority", type: "number" },
 			},

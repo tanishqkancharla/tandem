@@ -446,6 +446,37 @@ for (const name of sqlDatabaseNames) {
 						limit: 2,
 					},
 				],
+				// Inherited names are not fields; unknown collections hold nothing.
+				[{ collection: "messages", where: [["constructor", "=", "x"]] }],
+				[{ collection: "messages", order: [["toString", "asc"]], limit: 2 }],
+				[{ collection: "nope", where: [["id", ">", 1]] }],
+				// Pages that are not counts still page as the query engine does.
+				...[-1, 1.5, "2", 1e20, Number.NaN].flatMap((page) => [
+					[
+						{
+							collection: "messages",
+							where: [["threadId", "=", "t1"]],
+							order: [["createdAt", "desc"]],
+							limit: page,
+						},
+					],
+					[
+						{
+							collection: "messages",
+							where: [["threadId", "=", "missing"]],
+							order: [["createdAt", "desc"]],
+							limit: page,
+						},
+					],
+					[
+						{
+							collection: "messages",
+							order: [["createdAt", "desc"]],
+							offset: page,
+							limit: 2,
+						},
+					],
+				]),
 			] as unknown as ScanWindow<Schema>[]) {
 				const pull = { clientId: tag<ClientId>("hostile"), scanWindow }
 				const native = await server.pull(pull)
@@ -455,6 +486,88 @@ for (const name of sqlDatabaseNames) {
 				)
 			}
 			expect(await server.query({ collection: "messages" })).toHaveLength(120)
+		})
+
+		test("nullable columns stay tied with every number", async () => {
+			type Task = { id: string; title: string; dueAt?: number | null }
+			type TaskSchema = { tasks: Task }
+			const taskSchema = defineSchema({
+				tasks: collection<Task>({ fields: ["id", "title", "dueAt"] }),
+			})
+			await db.exec(
+				`create table "tasks" ("id" text primary key, "title" text not null, "due_at" ${db.dialect === "postgres" ? "double precision" : "real"})`,
+			)
+			const storage = (pushdown: boolean) => {
+				const tasks = new TandemServerSqlStorage<TaskSchema>({
+					dialect: db.dialect,
+					schema: taskSchema,
+					tables: {
+						tasks: {
+							table: "tasks",
+							idColumns: ["id"],
+							encode: ({ title, dueAt }) => ({ title, due_at: dueAt ?? null }),
+							// NULL reads back as a missing field, as an optional field would.
+							decode: ({ id, title, due_at }) => ({
+								id: id as string,
+								title: title as string,
+								...(due_at === null ? {} : { dueAt: due_at as number }),
+							}),
+							fields: {
+								title: { column: "title", type: "string" },
+								dueAt: { column: "due_at", type: "number", nullable: true },
+							},
+						},
+					},
+					query: db.query,
+					commit: db.commit,
+				})
+				return pushdown
+					? tasks
+					: {
+							scan: tasks.scan.bind(tasks),
+							commit: tasks.commit.bind(tasks),
+							close: () => Promise.resolve(),
+						}
+			}
+			const native = new TandemServer({
+				schema: taskSchema,
+				relations: {},
+				storage: storage(true),
+			})
+			const full = new TandemServer({
+				schema: taskSchema,
+				relations: {},
+				storage: storage(false),
+			})
+			const tx = native.transact()
+			for (const [id, dueAt] of [
+				["a", 1],
+				["b", undefined],
+				["c", 3],
+				["d", 2],
+				["e", undefined],
+			] as const)
+				tx.set("tasks", {
+					id,
+					title: id,
+					...(dueAt === undefined ? {} : { dueAt }),
+				})
+			await native.commit(tx)
+			for (const query of [
+				{ collection: "tasks", where: { dueAt: { gte: 2 } } },
+				{ collection: "tasks", where: { dueAt: { lte: 2 } } },
+				{ collection: "tasks", where: { dueAt: { gt: 1 } } },
+				{ collection: "tasks", where: { dueAt: { lt: 3 } } },
+				{ collection: "tasks", orderBy: { dueAt: "desc" }, limit: 2 },
+				{ collection: "tasks", orderBy: { dueAt: "asc" }, limit: 3 },
+			] as const) {
+				expect(
+					await native.query(query as never),
+					JSON.stringify(query),
+				).toEqual(await full.query(query as never))
+			}
+			await native.close()
+			await full.close()
 		})
 
 		test("string query values SQL cannot compare exactly still match", async () => {

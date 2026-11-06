@@ -492,9 +492,7 @@ export class TandemServer<
 			{ rng: args.rng },
 		)
 		this.tupleDb = new AsyncTupleDatabaseClient<TandemTuple<Schema>>(database)
-		const storage = args.storage
-		this.readCandidates =
-			storage.readCandidates && ((read) => storage.readCandidates!(read))
+		this.readCandidates = args.storage.readCandidates?.bind(args.storage)
 		this.unsubscribeStorage = args.storage.subscribe?.(() => {
 			// This instance's own commits poke clients themselves.
 			if (this.closed || this.committing) return

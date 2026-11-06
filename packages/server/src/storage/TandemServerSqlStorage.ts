@@ -46,8 +46,14 @@ type IdColumns<Id> = Id extends readonly [unknown, ...unknown[]]
 /** A record field that one column holds unchanged. */
 export type TandemSqlField = {
 	column: string
-	/** Booleans are 0 and 1 on SQLite and booleans on Postgres. */
+	/**
+	 * Booleans are 0 and 1 on SQLite and booleans on Postgres. On Postgres,
+	 * strings need text columns with deterministic collations and numbers need
+	 * integer or double precision columns.
+	 */
 	type: "string" | "number" | "boolean"
+	/** The column may hold NULL; the record then holds null or lacks the field. */
+	nullable?: boolean
 }
 
 export type TandemSqlTable<Record extends AnyCollectionSchema> = {
@@ -193,18 +199,23 @@ export class TandemServerSqlStorage<
 		if (this.dialect === "mysql") return
 		const collection = read.collection as CollectionName<Schema>
 		const table = this.table(collection)
-		if (table instanceof Error) throw table
-		const fields = table.fields ?? {}
+		// Scans skip unmapped collections too.
+		if (table instanceof Error) return
+		// Field names come from clients; only declared fields count.
+		const field = (name: string) =>
+			table.fields && Object.hasOwn(table.fields, name)
+				? table.fields[name]
+				: undefined
 		// A clause SQL cannot decide exactly is left to the query: the read
 		// returns a superset, but can no longer apply the limit.
 		const where = read.where.flatMap(
-			([field, operator, value]) =>
-				this.condition(fields[field], operator, value) ?? [],
+			([name, operator, value]) =>
+				this.condition(field(name), operator, value) ?? [],
 		)
 		const order: RawBuilder<unknown>[] = []
 		const orderFields: TandemSqlField[] = []
-		for (const [field, direction] of read.order) {
-			const definition = fields[field]
+		for (const [name, direction] of read.order) {
+			const definition = field(name)
 			// Scan windows come from clients; only known directions reach SQL.
 			const keyword = Object.hasOwn(sqlDirections, direction)
 				? sqlDirections[direction]
@@ -218,7 +229,7 @@ export class TandemServerSqlStorage<
 				? read.limit
 				: undefined
 		const join =
-			read.join && this.joinValues(fields[read.join.field], read.join.values)
+			read.join && this.joinValues(field(read.join.field), read.join.values)
 		if (!where.length && !join && limit === undefined) return
 		const tuples = await this.readMatches(
 			collection,
@@ -264,22 +275,24 @@ export class TandemServerSqlStorage<
 		}
 		if (limit === undefined) return this.select(collection, table, where)
 		if (limit === 0) return []
-		// Postgres sorts NaN above every number, while queries treat it as equal
-		// to every value. Read all matches when an order field holds NaN.
-		if (this.dialect === "postgres") {
-			const nan = await this.rows(
+		// Queries treat NULL, a missing field, and NaN as equal to every value,
+		// while SQL sorts them first or last. Read all matches when an order
+		// field holds one; SQLite stores NaN as NULL.
+		const unordered = order.fields.flatMap(({ column, nullable }) => [
+			...(nullable ? [sql`${sql.id(column)} is null`] : []),
+			...(this.dialect === "postgres"
+				? [sql`${sql.id(column)} = ${postgresNaN}`]
+				: []),
+		])
+		if (unordered.length) {
+			const found = await this.rows(
 				sql`select 1 from ${sql.id(table.table)} ${whereSql([
 					...where,
-					sql`(${sql.join(
-						order.fields.map(
-							({ column }) => sql`${sql.id(column)} = ${postgresNaN}`,
-						),
-						sql` or `,
-					)})`,
+					sql`(${sql.join(unordered, sql` or `)})`,
 				])} limit 1`,
 			)
-			if (nan instanceof Error) return nan
-			if (nan.length) return this.select(collection, table, where)
+			if (found instanceof Error) return found
+			if (found.length) return this.select(collection, table, where)
 		}
 		const top = await this.select(
 			collection,
@@ -321,14 +334,22 @@ export class TandemServerSqlStorage<
 		// code unit, which no SQL collation does.
 		if (field.type !== "number") return
 		const comparison = sql`${column} ${sqlOperators[operator]} ${parameter}`
-		if (this.dialect !== "postgres") return comparison
-		// Queries treat NaN as equal to every number, so >= and <= match it.
-		// Postgres sorts it above every number.
+		// Queries treat NaN, null, and missing fields as equal to every number,
+		// so >= and <= match them and > and < do not. SQL comparisons with NULL
+		// match nothing; Postgres sorts NaN above every number.
+		const nan = this.dialect === "postgres"
+		const or = (...tied: RawBuilder<unknown>[]) =>
+			tied.length
+				? sql`(${sql.join([comparison, ...tied], sql` or `)})`
+				: comparison
+		const isNull = field.nullable ? [sql`${column} is null`] : []
 		return match(operator, {
-			">": sql`(${comparison} and ${column} <> ${postgresNaN})`,
-			"<=": sql`(${comparison} or ${column} = ${postgresNaN})`,
+			">": nan
+				? sql`(${comparison} and ${column} <> ${postgresNaN})`
+				: comparison,
 			"<": comparison,
-			">=": comparison,
+			">=": or(...isNull),
+			"<=": or(...(nan ? [sql`${column} = ${postgresNaN}`] : []), ...isNull),
 		})
 	}
 

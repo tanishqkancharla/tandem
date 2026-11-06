@@ -163,8 +163,7 @@ class DstServerStorage implements TandemServerStorageApi<DstSchema> {
 
 	constructor(external?: TandemServerStorageApi<DstSchema>) {
 		this.external = external
-		if (external?.readCandidates)
-			this.readCandidates = (read) => external.readCandidates!(read)
+		this.readCandidates = external?.readCandidates?.bind(external)
 	}
 
 	/** Every value each server-owned record has had, in commit order; null when absent. */
