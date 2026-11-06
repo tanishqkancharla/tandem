@@ -83,11 +83,20 @@ type TandemSqlRuntimeTable<Schema extends AnySchema> = Omit<
 	fields?: { readonly [field: string]: TandemSqlField | undefined }
 }
 
-/** Join values read in one statement, well under every dialect's limit. */
-const joinValuesPerStatement = 500
+/**
+ * Values each dialect binds in one statement: SQLite's default before 3.32,
+ * and Postgres's protocol limit.
+ */
+const defaultMaxParameters = { sqlite: 999, postgres: 65_535, mysql: 65_535 }
 
 export type TandemServerSqlStorageArgs<Schema extends AnySchema> = {
 	dialect: TandemSqlDialect
+	/**
+	 * Most values the database binds in one statement. Query reads that need
+	 * more read whole tables or split include joins.
+	 * @default 999 on SQLite, 65535 otherwise
+	 */
+	maxParameters?: number
 	query: (statement: TandemSqlStatement) => Promise<TandemSqlRow[]>
 	/** Execute all statements atomically, or reject without committing any. */
 	commit: (statements: readonly TandemSqlStatement[]) => Promise<void>
@@ -137,6 +146,7 @@ export class TandemServerSqlStorage<
 		[CollectionName<Schema>, TandemSqlRuntimeTable<Schema>]
 	>
 	private readonly dialect: TandemSqlDialect
+	private readonly maxParameters: number
 	private readonly query: TandemServerSqlStorageArgs<Schema>["query"]
 	private readonly commitSql: TandemServerSqlStorageArgs<Schema>["commit"]
 
@@ -159,6 +169,8 @@ export class TandemServerSqlStorage<
 		if (tables instanceof Error) throw tables
 		this.tables = Object.entries(tables) as typeof this.tables
 		this.dialect = args.dialect
+		this.maxParameters =
+			args.maxParameters ?? defaultMaxParameters[args.dialect]
 		this.query = args.query
 		this.commitSql = args.commit
 	}
@@ -231,6 +243,13 @@ export class TandemServerSqlStorage<
 		const join =
 			read.join && this.joinValues(field(read.join.field), read.join.values)
 		if (!where.length && !join && limit === undefined) return
+		// Every statement binds the WHERE values, plus the limit, one value per
+		// tied order field, or a share of the join values. Reads that cannot fit
+		// scan instead of failing.
+		const spare =
+			this.maxParameters -
+			whereSql(where).compile(this.compiler).parameters.length
+		if (spare < Math.max(1, order.length)) return
 		const tuples = await this.readMatches(
 			collection,
 			table,
@@ -238,7 +257,7 @@ export class TandemServerSqlStorage<
 			where,
 			{ order, fields: orderFields },
 			limit,
-			join,
+			join && { ...join, perStatement: spare },
 		)
 		if (tuples instanceof Error) throw tuples
 		// Deduplicate and restore key order.
@@ -254,16 +273,18 @@ export class TandemServerSqlStorage<
 		where: RawBuilder<unknown>[],
 		order: { order: RawBuilder<unknown>[]; fields: TandemSqlField[] },
 		limit: number | undefined,
-		join: { column: string; values: RawBuilder<unknown>[] } | undefined,
+		join:
+			| { column: string; values: RawBuilder<unknown>[]; perStatement: number }
+			| undefined,
 	) {
 		if (join) {
 			const tuples: Exclude<Awaited<ReturnType<typeof this.select>>, Error> = []
 			for (
 				let index = 0;
 				index < join.values.length;
-				index += joinValuesPerStatement
+				index += join.perStatement
 			) {
-				const values = join.values.slice(index, index + joinValuesPerStatement)
+				const values = join.values.slice(index, index + join.perStatement)
 				const chunk = await this.select(collection, table, [
 					...where,
 					sql`${sql.id(join.column)} in (${sql.join(values)})`,

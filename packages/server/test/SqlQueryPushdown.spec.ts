@@ -10,9 +10,14 @@ import {
 	type ScanWindow,
 	type SchemaFromCollections,
 } from "@tanishqkancharla/tandem-core"
+import { Miniflare } from "miniflare"
 import { afterEach, beforeEach, describe, expect, test } from "vitest"
 import { TandemServer } from "../src/index.js"
-import { TandemServerSqlStorage } from "../src/sql.js"
+import {
+	TandemServerD1Storage,
+	TandemServerSqlStorage,
+	type TandemD1Database,
+} from "../src/sql.js"
 import {
 	openSqlDatabase,
 	sqlDatabaseNames,
@@ -690,3 +695,115 @@ for (const name of sqlDatabaseNames) {
 		})
 	})
 }
+
+test("D1 includes over more parents than D1 binds stay within its limit", async () => {
+	const runtime = new Miniflare({
+		modules: true,
+		script: "export default {fetch() {return new Response('ok')}}",
+		compatibilityDate: "2026-07-01",
+		d1Databases: { DB: `limit-${crypto.randomUUID()}` },
+	})
+	const d1 = await runtime.getD1Database("DB")
+	for (const statement of ddl("sqlite")) await d1.prepare(statement).run()
+	// Deployed D1 rejects statements with more than 100 bound values; the
+	// local runtime does not, so this binding does.
+	const statements: string[] = []
+	const database: TandemD1Database = {
+		prepare: (sql) => {
+			statements.push(sql)
+			const statement = d1.prepare(sql)
+			return {
+				bind: (...parameters) => {
+					if (parameters.length > 100)
+						throw new Error(`too many SQL variables: ${parameters.length}`)
+					return statement.bind(...parameters)
+				},
+				all: () => statement.all(),
+			}
+		},
+		batch: (batch) => d1.batch(batch as never),
+	}
+	const storage = new TandemServerD1Storage({ schema, database })
+	const server = new TandemServer({ schema, relations, storage })
+	const fullReads = new TandemServer({
+		schema,
+		relations,
+		storage: {
+			scan: (args) => storage.scan(args),
+			commit: (writes) => storage.commit(writes),
+			close: () => Promise.resolve(),
+		},
+	})
+	const tx = server.transact()
+	for (let index = 0; index < 150; index++) {
+		const thread = `t${String(index).padStart(3, "0")}`
+		tx.set("threads", {
+			id: thread,
+			title: thread,
+			archived: false,
+			updatedAt: index,
+		})
+		for (const offset of [0, 1, 2])
+			tx.set("messages", {
+				id: `${thread}-${offset}`,
+				threadId: thread,
+				authorId: "u1",
+				body: "",
+				createdAt: index * 3 + offset,
+				score: offset,
+				pinned: offset !== 1,
+			})
+	}
+	await server.commit(tx)
+	const query = {
+		collection: "threads",
+		where: { archived: false },
+		with: {
+			messages: {
+				where: { pinned: true, createdAt: { gte: 30 } },
+				orderBy: { createdAt: "desc" },
+				limit: 1,
+			},
+		},
+	} as const satisfies Query
+	statements.length = 0
+	const native = await server.query(query)
+	expect(native).toEqual(await fullReads.query(query))
+	expect(native).toHaveLength(150)
+	// The include ran in SQL, split across statements.
+	expect(statements.filter((sql) => / in \(/.test(sql)).length).toBeGreaterThan(
+		1,
+	)
+	// A host budget smaller than a query's WHERE clause reads the whole table.
+	const tight = new TandemServer({
+		schema,
+		relations,
+		storage: new TandemServerSqlStorage({
+			schema,
+			dialect: "sqlite",
+			maxParameters: 2,
+			query: async ({ sql, parameters }) => {
+				if (parameters.length > 2)
+					throw new Error(`too many SQL variables: ${parameters.length}`)
+				return (
+					await d1
+						.prepare(sql)
+						.bind(...parameters)
+						.all()
+				).results
+			},
+			commit: () => Promise.reject(new Error("read only")),
+		}),
+	})
+	const filtered = {
+		collection: "messages",
+		where: { threadId: "t100", pinned: true, createdAt: { gte: 300 } },
+		orderBy: { createdAt: "desc" },
+		limit: 1,
+	} as const satisfies Query
+	expect(await tight.query(filtered)).toEqual(await fullReads.query(filtered))
+	await tight.close()
+	await server.close()
+	await fullReads.close()
+	await runtime.dispose()
+}, 60_000)

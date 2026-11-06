@@ -43,7 +43,7 @@ const storage = new TandemServerSqlStorage<{ tasks: Task }>({
 })
 ```
 
-Here `dialect` selects `sqlite`, `postgres`, or `mysql` syntax. `query` returns rows, and `commit` must execute every statement atomically or reject with the whole batch rolled back. Pass parameters to the driver's binding API, never interpolate them into SQL strings. Kysely compiles the statements; these callbacks own execution.
+Here `dialect` selects `sqlite`, `postgres`, or `mysql` syntax. Set `maxParameters` when your database binds fewer values per statement than the dialect's default of 999 for SQLite or 65,535 otherwise; D1 allows 100. `query` returns rows, and `commit` must execute every statement atomically or reject with the whole batch rolled back. Pass parameters to the driver's binding API, never interpolate them into SQL strings. Kysely compiles the statements; these callbacks own execution.
 
 `encode` returns mapped column values. `decode` returns a complete record, including its ID. For compound IDs, list primary-key columns in the same order as the ID parts. You can also pass `schema` and provide `tables` overrides only for collections that need custom mappings.
 
