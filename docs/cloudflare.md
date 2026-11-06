@@ -21,23 +21,25 @@ Use your existing D1 binding or create a database with `pnpm exec wrangler d1 cr
 
 ```jsonc
 {
-  "name": "tandem-cloudflare-example",
-  "main": "src/index.ts",
-  "compatibility_date": "2026-07-01",
-  "compatibility_flags": ["nodejs_compat"],
-  "d1_databases": [{
-    "binding": "DB",
-    "database_name": "tandem-example",
-    "database_id": "YOUR_DATABASE_ID"
-  }],
-  "durable_objects": {
-    "bindings": [{ "name": "SYNC", "class_name": "SyncObject" }]
-  },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SyncObject"] }]
+	"name": "tandem-cloudflare-example",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-07-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "tandem-example",
+			"database_id": "YOUR_DATABASE_ID",
+		},
+	],
+	"durable_objects": {
+		"bindings": [{ "name": "SYNC", "class_name": "SyncObject" }],
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["SyncObject"] }],
 }
 ```
 
-The Durable Object class declaration selects Cloudflare's SQLite-backed object type. The example does not use that object's storage for application records; those live in D1. `nodejs_compat` supports dependencies imported by the server package.
+The `new_sqlite_classes` migration selects Cloudflare's SQLite-backed object type. The example does not use that object's storage for application records; those live in D1. `nodejs_compat` supports dependencies imported by the server package.
 
 When adding this to an existing Worker, merge the bindings and add a new migration tag rather than replacing its configuration. An existing Durable Object can own the `TandemServer` directly instead of adding another object class.
 
@@ -49,7 +51,7 @@ Use collection and field names that match the database's table and column names.
 import { collection, defineSchema, t } from "@tanishqkancharla/tandem-core"
 
 export const schema = defineSchema({
-  tasks: collection({ id: t.id(), text: t.string(), done: t.boolean() }),
+	tasks: collection({ id: t.id(), text: t.string(), done: t.boolean() }),
 })
 ```
 
@@ -91,11 +93,13 @@ The example's [Worker source](https://github.com/tanishqkancharla/tandem/blob/ma
 The SSE handler returns a standard `Response`:
 
 ```ts
+const clientId = url.searchParams.get("clientId")
+if (!clientId) return new Response("Missing clientId", { status: 400 })
 return createTandemEventStreamResponse({
-  remote: this.server,
-  clientId,
-  schema,
-  signal: request.signal,
+	remote: this.server,
+	clientId: tag<ClientId>(clientId),
+	schema,
+	signal: request.signal,
 })
 ```
 
@@ -119,8 +123,8 @@ import { schema } from "./schema"
 import { createRemote } from "./remote"
 
 const db = new TandemClient({
-  schema,
-  remote: createRemote(window.location.origin),
+	schema,
+	remote: createRemote(window.location.origin),
 })
 
 db.subscribe({ collection: "tasks" }, (tasks) => console.log(tasks))
@@ -146,7 +150,7 @@ For a new example database, apply the schema remotely before deploying. Skip the
 
 ```sh
 pnpm exec wrangler d1 execute tandem-example --remote --file schema.sql
-pnpm deploy
+pnpm run deploy
 ```
 
 SSE streams keep the object active rather than using WebSocket hibernation. Deployments and runtime restarts can close connections; browsers reconnect and pull their views again. Keep restart-safe mutation handling separate from that connection recovery.

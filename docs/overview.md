@@ -28,9 +28,11 @@ graph LR
 
 `TandemClient` is the app-facing API from `@tanishqkancharla/tandem-core`. It exposes:
 
+- `ready`, which resolves once local storage has loaded
 - `query` and `subscribe` for typed object queries
-- `transact` and `commit` for writes
+- `transact` and `commit` for raw writes, and `mutate` for [named mutations](mutations.md#named-mutations)
 - `connect`, `disconnect`, and `pullFromRemote` for sync control
+- `flushClientStorage`, `clear`, and `close` for storage and lifecycle
 
 ### Local database
 
@@ -46,11 +48,10 @@ The sync engine runs when a client has a `remote`. It pushes local mutations, pu
 
 ## Current limitations
 
-- Conflicts resolve as last write wins per record. There are no field-level merges or intents.
+- Conflicts resolve as last write wins: per record for `set`, per top-level field for `update`. Named mutations rerun on the server's latest state. Tandem does not merge within a field, such as concurrent text edits. See [Conflicts](sync.md#conflicts).
 - Cookies, revisions, and client views reset when the server process restarts. Mutation acknowledgement durability depends on the [storage adapter](server.md#limitations).
 - [Permissions](permissions.md) belong to the application. Named mutation hooks support write authorization; read and connection access need server-side enforcement in your transport or remote.
 - There is no built-in application schema versioning or client migration runner. Your application owns [migrations](migrations.md), including pending offline writes.
-
 
 ## Next steps
 

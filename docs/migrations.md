@@ -63,7 +63,7 @@ Pass `eventsUrl` to `connectTandemEventSource`. `EventSource` hides HTTP respons
 2. Migrate the database and deploy server code with the updated Tandem schema, mappings, mutations, and required protocol version. Retire old server instances before reopening sync.
 3. Deploy the matching client and resume sync. Old clients receive `409`; updated clients use the new version.
 
-The [SQL adapters](sql.md#sql-limitations) reads current rows on each pull; there is no separate in-memory copy to migrate. Deploy new code for schema and mapping changes. Restarting clears remembered client views, which the next pull rebuilds. Direct SQL changes do not notify clients, so reconnect them after migration.
+The [SQL adapters](sql.md#sql-limitations) read current rows on each pull; there is no separate in-memory copy to migrate. Deploy new code for schema and mapping changes. Restarting clears remembered client views, which the next pull rebuilds. Direct SQL changes do not notify clients, so reconnect them after migration.
 
 SQL mutation acknowledgements currently live in memory, so restarts can replay writes or cause mutation gaps. Version checks do not fix that [storage limitation](sql.md#sql-limitations).
 
@@ -75,7 +75,7 @@ Updating application code does not convert IndexedDB records or pending writes. 
 const client = new TandemClient({
 	schema,
 	remote,
-	clientStorage: new TandemClientIndexedDbStorage({
+	clientStorage: new TandemClientIndexedDbStorage<AppSchema>({
 		dbName: `tasks:${userId}:${workspaceId}:v2`,
 		schema,
 	}),

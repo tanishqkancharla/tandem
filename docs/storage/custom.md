@@ -4,7 +4,7 @@ Use a custom SQL mapping when your tables differ from Tandem's collection schema
 
 ## Custom SQL mappings
 
-Use the lower-level `TandemServerSqlStorage` when your physical schema differs from the collection schema or your driver is not covered above:
+Use the lower-level `TandemServerSqlStorage` when your physical schema differs from the collection schema or your driver is not `pg`, `mysql2`, or D1:
 
 ```ts
 import {
@@ -55,12 +55,12 @@ The built-in SQL adapter's [limitations](../sql.md#sql-limitations) apply to cus
 
 `TandemServer` accepts a `TandemServerStorageApi<Schema>` with these methods:
 
-| Method                | Contract                                                                                        |
-| --------------------- | ----------------------------------------------------------------------------------------------- |
-| `scan(args?)`         | Read stored tuples within the tuple-database scan bounds.                                       |
-| `commit(writes)`      | Apply the whole write batch atomically, including record changes and mutation acknowledgements. |
-| `close()`             | Release resources owned by the adapter.                                                         |
-| `subscribe(onChange)` | Optional: notify after external changes become readable; return an unsubscribe function.        |
+| Method                | Contract                                                                                            |
+| --------------------- | --------------------------------------------------------------------------------------------------- |
+| `scan(args?)`         | Read stored tuples within the tuple-database scan bounds.                                           |
+| `commit(writes)`      | Apply the whole write batch atomically, including record changes and mutation acknowledgements.     |
+| `close()`             | Release resources owned by the adapter.                                                             |
+| `subscribe(onChange)` | Optional: notify after external changes become readable; return a synchronous unsubscribe function. |
 
 The tuple union includes application records and per-client mutation acknowledgements. Persist both if accepted mutations must not run again after a restart. Use the exported `TandemTuple` and `TandemServerStorageApi` types from `@tanishqkancharla/tandem-server` rather than defining a second tuple format.
 

@@ -34,6 +34,8 @@ await client.connect()
 | `tabs`                       | Shared browser replica settings, or `false` to disable sharing.             |
 | `logger`, `rng`              | Optional logging and random ID dependencies.                                |
 
+The four interval options take milliseconds or a `TimerApi`, such as a test timer.
+
 ## Read and write
 
 `client.query(query)` returns local records synchronously. `client.subscribe(query, callback?)` returns `{ result, destroy }` and updates the callback when the result changes. Destroy the subscription when no longer needed. See [Queries](queries.md) for filters, sorting, projections, and relations.
@@ -48,11 +50,12 @@ By default, the local database lives in memory. To retain records and pending wr
 
 ```ts
 import { TandemClientIndexedDbStorage } from "@tanishqkancharla/tandem-core"
+import { schema, type AppSchema } from "./schema"
 
 const client = new TandemClient({
 	schema,
 	remote,
-	clientStorage: new TandemClientIndexedDbStorage({
+	clientStorage: new TandemClientIndexedDbStorage<AppSchema>({
 		dbName: `tasks:${userId}:${workspaceId}`,
 		schema,
 	}),
@@ -68,11 +71,11 @@ In browsers, clients with named storage and a remote share a replica across tabs
 
 | Method                 | Behavior                                                                                                            |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `connect()`            | Start sync; resolves to a function that disconnects this client. Requires a configured remote.                      |
+| `connect()`            | Start sync and wait for the first pull and any pending push. Resolves to a disconnect function. Requires a remote.  |
 | `disconnect()`         | Stop this client's remote participation without discarding records or pending writes.                               |
-| `pullFromRemote()`     | Queue a pull for the current subscriptions while connected.                                                         |
+| `pullFromRemote()`     | Pull the current subscriptions and wait for the result. Rejects on a remote error; does nothing while disconnected. |
 | `flushClientStorage()` | Save local persistence immediately.                                                                                 |
 | `clear()`              | Discard local records and pending mutations; synced clients start a new sync identity. Does not undo server writes. |
 | `close()`              | Stop this client; a shared-tab leader saves the replica and hands leadership to another tab.                        |
 
-`clear()` preserves connection state and can reconnect. Stop writes and disconnect first when resetting an application session, and await the reset before new work. With shared tabs, `connect()` and `disconnect()` affect this tab's wish to sync; the leader remains connected while another tab still wants it.
+If that first pull or push fails, `connect()` rejects, but the client stays connected. `clear()` preserves connection state and can reconnect. Stop writes and disconnect first when resetting an application session, and await the reset before new work. With shared tabs, `connect()` and `disconnect()` affect this tab's wish to sync; the leader remains connected while another tab still wants it. There `connect()` resolves once the leader is connected, and the first pull and push run in the background.

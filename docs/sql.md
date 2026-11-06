@@ -24,11 +24,11 @@ export const schema = defineSchema({
 })
 ```
 
-Collection names match table names, field names match column names, and each table has an `id` primary key. The built-in mapping supports scalar string or number IDs and the builder's string, number, and boolean fields. Field-name-only definitions such as `collection<Task>({ fields: [...] })` need an [explicit mapping](storage/custom.md#custom-sql-mappings) because TypeScript types do not exist at runtime.
+Collection names match table names, field names match column names, and each table has an `id` primary key. The built-in mapping supports scalar string or number IDs and the builder's string, number, and boolean fields. The adapters take no per-collection overrides: if any collection lacks a field shape, such as `collection<Task>({ fields: [...] })`, or uses another field type, the constructor throws. For such schemas, use `TandemServerSqlStorage` with your own `query` and `commit` callbacks and an [explicit mapping](storage/custom.md#custom-sql-mappings).
 
 Only mapped fields enter Tandem records or get updated. Other columns stay under application control; new rows still need values or database defaults for required unmapped columns. Tandem does not create tables, alter them, or add sync columns. See [Schema changes and client compatibility](migrations.md).
 
-The adapters convert booleans to `0`/`1` for D1 and MySQL and use native booleans for PostgreSQL. Dates, JSON, nullable fields, decimals returned as strings, and compound IDs need custom mappings. The application owns its database handle; `server.close()` does not close a borrowed pool or binding.
+The adapters convert booleans to `0`/`1` for D1 and MySQL and use native booleans for PostgreSQL. Dates, JSON, nullable fields, decimals returned as strings, and compound IDs need custom mappings. The constructor checks only the schema: a mapped column that returns `NULL` or a decimal string fails every scan of its table. The application owns its database handle; `server.close()` does not close a borrowed pool or binding.
 
 ## SQL limitations
 

@@ -8,19 +8,23 @@ Each client stores records as ordered tuples: `["record", collection, ...idParts
 
 ## Mutations
 
-`commit` turns a transaction into a mutation: an ID and a list of operations. The ID is a per-client counter: 1 for a client's first mutation, then one more for each commit.
+`commit` turns a transaction into a mutation: an ID and a list of operations. A [named mutation](mutations.md#named-mutations) also carries its name and arguments. The ID is a per-client counter: 1 for a client's first mutation, then one more for each commit.
 
 ```ts
 type Mutation = {
 	id: MutationId
 	ops: (
 		| { type: "set"; collection: string; value: Record }
+		| { type: "update"; collection: string; id: Id; payload: Partial<Record> }
 		| { type: "remove"; collection: string; id: Id }
 	)[]
+	// Named mutations only. The server runs the mutator with these
+	// arguments and ignores `ops`, which the client sends empty.
+	mutator?: { name: string; args: Json }
 }
 ```
 
-A `set` carries the whole record, not a field-level diff. A `remove` is recorded even when the client doesn't have the record. Operations carry no previous value, because the client never undoes a mutation. See [Rebase](#rebase).
+A `set` carries the whole record. An `update` carries only the fields it assigns, and the remote applies them to its current record. A `remove` is recorded even when the client doesn't have the record. Operations carry no previous value, because the client never undoes a mutation. See [Rebase](#rebase).
 
 ## Scan windows
 
@@ -46,21 +50,20 @@ The sync engine batches queued pushes and pulls on an interval (`syncInterval`, 
 await remote.push({ clientId, mutations })
 ```
 
-If the push fails, the `commit` promise rejects, but the mutation stays pending and goes out again with the next push or reconnect. While disconnected, the client skips pushes and sends pending mutations after `connect`.
+If the push fails, the `commit` promise rejects, but the mutation stays pending and goes out again with the next push or reconnect. If the remote refuses a mutation, it acknowledges the mutation and returns a rejection: `commit` rejects with `MutationRejectedError`, and the next pull drops the write. While disconnected, the client skips pushes, so `commit` resolves at once; it sends pending mutations after `connect`.
 
 ### Pull
 
 A pull asks for changes since the last cookie, limited to the scan window:
 
 ```ts
-const { cookie, patch, lastMutationId } = await remote.pull({
-	clientId,
-	cookie,
-	scanWindow,
-})
+const response = await remote.pull({ clientId, cookie, scanWindow })
+if ("error" in response) return // Local state stays as it was.
+const { patch, lastMutationId } = response
+cookie = response.cookie
 ```
 
-- `patch` lists records to `set` and to `remove`.
+- `patch` lists records to `set` and to `remove`. A patch with `reset` holds the whole window instead, and the client drops every server record it does not list.
 - `cookie` is an opaque marker the client sends back on its next pull. A remote can use it to send only what changed since that pull, as `TandemServer` does. A client that restarts from storage drops its saved cookie, so its first pull fetches the full window.
 - `lastMutationId` is the last mutation from this client that the remote has applied, on every pull. It is `0` until the remote applies one.
 
@@ -82,7 +85,7 @@ Live records are not saved as server state. After a restart the client shows its
 
 The client applies each pull in one local transaction:
 
-1. Apply the patch, and update the base of any record it mentions.
+1. Apply the patch, and update the base of any record it mentions. A `reset` patch first removes every record and marks every base as absent.
 2. Drop pending mutations up to and including `lastMutationId`, since the remote has applied them. This happens even when the patch is empty.
 3. Reset each record that has a base to its base value.
 4. Re-apply the remaining pending mutations, one operation at a time, in order.
@@ -104,14 +107,21 @@ sequenceDiagram
 
 ## Conflicts
 
-Conflicts resolve as last write wins per record, in the order the remote applies pushes. Say clients A and B both edit todo `1`:
+The remote applies pushes in the order they arrive. Each operation acts on the remote's current record, so the last write wins at the scope the operation names:
+
+- `set` replaces the whole record.
+- `update` assigns only the fields it names. Concurrent updates to different fields both survive.
+- `remove` deletes the record. A later `update` of the missing record does nothing.
+- A named mutation reruns its definition on the server against the latest committed state, so it can read the other client's write. See [Mutations](mutations.md#named-mutations).
+
+Say clients A and B both edit todo `1`:
 
 1. A sets `{ text: "Buy milk", complete: true }`.
 2. B sets `{ text: "Buy oat milk", complete: false }`.
 3. The remote applies A, then B. Its record is B's value.
 4. After both clients pull and their mutations are acknowledged, both have B's value.
 
-A's `complete: true` is lost because B's `set` replaced the whole record. Until A's pull acknowledges its mutation, A keeps replaying its own value on top of each patch.
+A's `complete: true` is lost because B's `set` replaced the whole record. Had A updated `{ complete: true }` and B updated `{ text: "Buy oat milk" }`, the remote would keep both fields. Until A's pull acknowledges its mutation, A keeps replaying its own operations on top of each patch.
 
 ## Client storage
 
