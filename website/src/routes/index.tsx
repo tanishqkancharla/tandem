@@ -82,10 +82,9 @@ function Home() {
 					no new infra
 				</h1>
 				<p>
-					Tandem is an open-source sync engine made of two libraries: a local
-					database for every client and a library for your server. Writes apply
-					locally right away. Tandem syncs them with your existing backend,
-					keeping your server as the source of truth. No new service to deploy.
+					Tandem is an open-source sync engine that plugs into your existing
+					infrastructure. Add the Tandem libraries to sync data in real time
+					across your clients and server. No new services to deploy.
 				</p>
 				<div className="home-start">
 					<button
