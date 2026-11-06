@@ -91,9 +91,11 @@ The example's [Worker source](https://github.com/tanishqkancharla/tandem/blob/ma
 The SSE handler returns a standard `Response`:
 
 ```ts
+const clientId = url.searchParams.get("clientId")
+if (!clientId) return new Response("Missing clientId", { status: 400 })
 return createTandemEventStreamResponse({
   remote: this.server,
-  clientId,
+  clientId: tag<ClientId>(clientId),
   schema,
   signal: request.signal,
 })
@@ -146,7 +148,7 @@ For a new example database, apply the schema remotely before deploying. Skip the
 
 ```sh
 pnpm exec wrangler d1 execute tandem-example --remote --file schema.sql
-pnpm deploy
+pnpm run deploy
 ```
 
 SSE streams keep the object active rather than using WebSocket hibernation. Deployments and runtime restarts can close connections; browsers reconnect and pull their views again. Keep restart-safe mutation handling separate from that connection recovery.

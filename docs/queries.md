@@ -17,18 +17,18 @@ Only `collection` is required. Every option is typed against the schema, so an u
 
 ## Options
 
-| Option    | Shape                                          | Notes                                                                  |
-| --------- | ---------------------------------------------- | ---------------------------------------------------------------------- |
-| `select`  | `{ field: true }`                              | Omit to return all fields. The result type narrows to selected fields. |
-| `where`   | `{ field: value \| { eq, gt, lt, gte, lte } }` | A bare value means `eq`. All conditions combine with AND.              |
-| `orderBy` | `{ field: "asc" \| "desc" }`                   | Key order sets sort precedence. Omit it and the order is unspecified.  |
-| `limit`   | `number`                                       | Maximum number of rows.                                                |
-| `offset`  | `number`                                       | Rows to skip, applied after `where` and `orderBy`.                     |
-| `with`    | `{ relation: true \| QueryOptions }`           | Includes related records. See [Relations](#relations).                 |
+| Option    | Shape                                          | Notes                                                                            |
+| --------- | ---------------------------------------------- | -------------------------------------------------------------------------------- |
+| `select`  | `{ field: true }`                              | Omit to return all fields. The result type narrows to selected fields.           |
+| `where`   | `{ field: value \| { eq, gt, lt, gte, lte } }` | A bare value means `eq`, but see objects below. All conditions combine with AND. |
+| `orderBy` | `{ field: "asc" \| "desc" }`                   | Key order sets sort precedence. Omit it and the order is unspecified.            |
+| `limit`   | `number`                                       | Maximum number of rows.                                                          |
+| `offset`  | `number`                                       | Rows to skip, applied after `where` and `orderBy`.                               |
+| `with`    | `{ relation: true \| QueryOptions }`           | Includes related records. See [Relations](#relations).                           |
 
 `OR`, `NOT`, `in`, and filters on related fields are not supported.
 
-`eq` matches only values of the same type: strings with `===`, numbers with `===`, and arrays and objects by their JSON. `1` does not match `"1"`, and `null` does not match a missing field. A condition whose value is `undefined` adds no filter. Comparisons (`gt`, `lt`, `gte`, `lte`) and `orderBy` compare numbers with numbers and strings with strings; values of any other pairing count as equal.
+`eq` matches only values of the same type: strings with `===`, numbers with `===`, and arrays and objects by their JSON, so object key order matters. `1` does not match `"1"`, and `null` does not match a missing field. A bare array means `eq`, but to match an object, write `{ eq: { ... } }`. Tandem reads any other bare object, including a `Date`, as operators: an unknown key throws, and an object without keys adds no filter. A condition whose value is `undefined` adds no filter. Comparisons (`gt`, `lt`, `gte`, `lte`) and `orderBy` compare numbers with numbers and strings with strings; values of any other pairing count as equal.
 
 ## Reads
 

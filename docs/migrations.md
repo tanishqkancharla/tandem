@@ -75,7 +75,7 @@ Updating application code does not convert IndexedDB records or pending writes. 
 const client = new TandemClient({
 	schema,
 	remote,
-	clientStorage: new TandemClientIndexedDbStorage({
+	clientStorage: new TandemClientIndexedDbStorage<AppSchema>({
 		dbName: `tasks:${userId}:${workspaceId}:v2`,
 		schema,
 	}),
