@@ -14,7 +14,7 @@
 			"@tanishqkancharla/tandem-server": ["./src/index.ts"]
 		}
 	},
-	"include": ["src/**/*.ts", "test/**/*.ts"],
+	"include": ["src/**/*.ts", "test/**/*.ts", "benchmarks/**/*.ts"],
 	"references": [
 		{
 			"path": "../core"
