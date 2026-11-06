@@ -39,7 +39,7 @@ Use your existing D1 binding or create a database with `pnpm exec wrangler d1 cr
 }
 ```
 
-The Durable Object class declaration selects Cloudflare's SQLite-backed object type. The example does not use that object's storage for application records; those live in D1. `nodejs_compat` supports dependencies imported by the server package.
+The `new_sqlite_classes` migration selects Cloudflare's SQLite-backed object type. The example does not use that object's storage for application records; those live in D1. `nodejs_compat` supports dependencies imported by the server package.
 
 When adding this to an existing Worker, merge the bindings and add a new migration tag rather than replacing its configuration. An existing Durable Object can own the `TandemServer` directly instead of adding another object class.
 

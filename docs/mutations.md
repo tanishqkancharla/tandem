@@ -49,7 +49,7 @@ A hook, hooks factory, or `run` that throws also refuses the call. An error caus
 
 The server calls the hooks factory once per named call. It sets `ctx.source` to `"client"` for pushes and `"server"` for direct `server.mutate` calls. Direct calls run hooks without a request session. Low-level server transactions do not run mutator hooks. See [Permissions](permissions.md#check-writes-with-named-mutation-hooks) and the [streaming chat guide](agent-chat.md) for examples.
 
-With a mutator registry, pushes refuse raw operation mutations by default. `allowOps: false` keeps that policy explicit; `allowOps: true` requires separate raw-write authorization.
+With a mutator registry, even an empty one, pushes refuse raw operation mutations by default. `allowOps: false` keeps that policy explicit. `allowOps: true` applies raw operations with no server check, so your transport must authorize them first.
 
 ## Raw transactions
 
@@ -72,12 +72,12 @@ await client.commit(tx)
 | `remove(collection, id)`          | Remove a record.                                                                                       |
 | `cancel()`                        | Discard the uncommitted transaction.                                                                   |
 
-An update cannot change identity or delete fields. Supplied objects and arrays replace the whole field. For server transactions, reads, `update`, and `cancel` are async; use `server.commit(tx)`. See [Server](server.md#read-and-write-on-the-server).
+An update cannot change identity or delete fields. Supplied objects and arrays replace the whole field. Do not pass `undefined` to clear a field: the local record changes, but a JSON transport drops the key, so the server keeps its value. Store `null`, or `set` the record without the field. For server transactions, reads, `update`, and `cancel` are async; use `server.commit(tx)`. See [Server](server.md#read-and-write-on-the-server).
 
 ## Completion and failures
 
-With a connected remote, client mutation and commit promises settle after the push, not after other clients have received the write. A transport failure rejects the waiting promise but leaves the write pending for a later attempt. Local-only writes do not wait for a remote.
+With a connected remote, client mutation and commit promises settle after the push, not after other clients have received the write. A transport failure rejects the waiting promise but leaves the write pending for a later attempt. While a client with a remote is disconnected, the promise resolves without a push; if the server later refuses the write, no caller sees the error, but the next pull still rolls it back. In a [shared tab](sync.md#multiple-tabs) that does not want the remote, the promise resolves once the leader has saved the write. Local-only writes do not wait for a remote.
 
-For a refused named mutation, the server commits no record changes but acknowledges its mutation ID and returns a rejection. The waiting call rejects with `MutationRejectedError`; the next pull removes its optimistic effect and replays later pending writes. Keep the push response's `rejected` entries intact in your transport. Unknown names and invalid server arguments are refused too.
+When the server refuses a mutation, it commits no record changes but acknowledges its mutation ID and returns a rejection. The waiting call rejects with `MutationRejectedError`; the next pull removes its optimistic effect and replays later pending writes. Keep the push response's `rejected` entries intact in your transport. The server refuses unknown names, invalid arguments, calls whose hooks or `run` return or throw an error, and raw operations when `allowOps` is off. A direct `server.mutate` call rejects with the error instead.
 
 Persisted pending mutations can outlive the code that created them. Changing names or arguments needs an application [compatibility policy](migrations.md). [How sync works](sync.md) explains acknowledgements, conflicts, and rebase in more detail.

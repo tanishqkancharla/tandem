@@ -82,7 +82,7 @@ const { result, destroy } = db.subscribe({ collection: "todos" }, (todos) => {
 destroy()
 ```
 
-Writes go through transactions. `commit` applies the changes locally right away. The returned promise settles once the push to the remote finishes, and rejects if the push fails. A failed write stays pending and is sent again with the next push.
+Writes go through transactions. `commit` applies the changes locally right away, and its promise resolves once the remote accepts the push. If the push fails in transit, the promise rejects and the write stays pending for the next push. If the server refuses the write, the promise rejects with `MutationRejectedError` and the next pull rolls the write back. While the client is disconnected, `commit` resolves without pushing. See [Completion and failures](mutations.md#completion-and-failures).
 
 ```ts
 const tx = db.transact()
@@ -103,7 +103,7 @@ A transaction also exposes `get`, `list`, and `scan` for reads that should see i
 
 ## 4. Use it in React
 
-`TandemClientProvider` waits for `db.ready`, and connects to the remote when you pass `connect`.
+`TandemClientProvider` renders `fallback` (default `null`) until `db.ready` resolves, or until a `ready` promise you pass instead. With `connect`, it connects on mount and disconnects on unmount.
 
 ```tsx
 // client/main.tsx
@@ -249,7 +249,7 @@ export const todoRemote: RemoteApi<TodoSchema> = {
 }
 ```
 
-`connectTandemEventSource` pulls when the stream opens or reconnects, on every server poke, and every 60 seconds as a fallback (`pullInterval`). The browser's `EventSource` reconnects dropped streams on its own.
+`connectTandemEventSource` pulls when the stream opens or reconnects, on every server poke, and every 60 seconds as a fallback (`pullInterval`; `null` turns it off). The browser's `EventSource` reconnects dropped streams on its own. When it gives up, such as after an error response, the helper reopens the stream after `reconnectDelay` (5 s by default). Pass `schema` to decode poke records with [collection codecs](server.md#collection-codecs), and `eventSourceInit` for `EventSource` options such as `withCredentials`.
 
 The client only pulls data for queries it subscribes to, so another client's writes appear once a matching `subscribe` or `useTandemQuery` is active.
 
