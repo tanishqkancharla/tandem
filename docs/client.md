@@ -48,11 +48,12 @@ By default, the local database lives in memory. To retain records and pending wr
 
 ```ts
 import { TandemClientIndexedDbStorage } from "@tanishqkancharla/tandem-core"
+import { schema, type AppSchema } from "./schema"
 
 const client = new TandemClient({
 	schema,
 	remote,
-	clientStorage: new TandemClientIndexedDbStorage({
+	clientStorage: new TandemClientIndexedDbStorage<AppSchema>({
 		dbName: `tasks:${userId}:${workspaceId}`,
 		schema,
 	}),

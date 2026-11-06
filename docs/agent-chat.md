@@ -2,7 +2,7 @@
 
 A shared append mutation can receive text from a browser client, from a server-hosted client SDK, or directly from server code. In every case, the server commits the final record and subscribed clients receive live pokes followed by a confirming pull.
 
-The runnable [agent chat test](../examples/agent-chat/apps/server/test/AgentChatMutators.e2e.spec.ts) uses the server process to generate a reply. It covers a lost push response, a stop request, authorization, and the final text.
+The runnable [agent chat test](https://github.com/tanishqkancharla/tandem/blob/main/examples/agent-chat/apps/server/test/AgentChatMutators.e2e.spec.ts) uses the server process to generate a reply. It covers a lost push response, a stop request, authorization, and the final text.
 
 ## Shared append definition
 
@@ -100,7 +100,7 @@ const remote: RemoteApi<ChatSchema> = {
 }
 ```
 
-`sendMessage` is a separate shared mutation that creates the user message and one empty reply. `finishReply` sets the reply's terminal status through a shared mutation. Only server mode installs the `sendMessage.afterCommit` generation hook; append calls do not retrigger it. A retried push keeps the same mutation ID and does not start a second response. The [runnable test](../examples/agent-chat/apps/server/test/AgentChatMutators.e2e.spec.ts) shows the complete definitions, both streaming paths, and stop behavior.
+`sendMessage` is a separate shared mutation that creates the user message and one empty reply. `finishReply` sets the reply's terminal status through a shared mutation. Only server mode installs the `sendMessage.afterCommit` generation hook; append calls do not retrigger it. A retried push keeps the same mutation ID and does not start a second response. The [runnable test](https://github.com/tanishqkancharla/tandem/blob/main/examples/agent-chat/apps/server/test/AgentChatMutators.e2e.spec.ts) shows the complete definitions, both streaming paths, and stop behavior.
 
 ## Receive updates in a client
 
