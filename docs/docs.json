@@ -17,20 +17,32 @@
 		]
 	},
 	"navigation": [
-		{ "group": "Get started", "pages": ["overview", "quickstart"] },
 		{
-			"group": "Guides",
+			"group": "Start here",
+			"pages": ["overview", "quickstart", "sync"]
+		},
+		{
+			"group": "How-to guides",
+			"pages": ["agent-chat", "existing-api-server", "cloudflare"]
+		},
+		{
+			"group": "Storage adapters",
 			"pages": [
-				"queries",
-				"server",
-				"permissions",
-				"migrations",
 				"sql",
-				"cloudflare",
-				"agent-chat"
+				"storage/postgresql",
+				"storage/mysql",
+				"storage/d1",
+				"storage/json-file",
+				"storage/custom"
 			]
 		},
-		{ "group": "Concepts", "pages": ["sync", "custom-remote"] },
-		{ "group": "Project", "pages": ["design/relational-queries"] }
+		{
+			"group": "API reference",
+			"pages": ["client", "queries", "mutations", "server"]
+		},
+		{
+			"group": "Application responsibilities",
+			"pages": ["permissions", "migrations"]
+		}
 	]
 }

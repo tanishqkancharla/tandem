@@ -1,4 +1,4 @@
-# Stream chat with shared mutations
+# Build streaming chat
 
 A shared append mutation can receive text from a browser client, from a server-hosted client SDK, or directly from server code. In every case, the server commits the final record and subscribed clients receive live pokes followed by a confirming pull.
 
@@ -118,23 +118,7 @@ const subscription = client.subscribe(
 
 A client outside the scan window can call `pullFromRemote()` to fetch a new view after changing its subscriptions.
 
-## Option 1: the client reads the model stream
-
-A browser or other client starts generation and consumes its own model stream. Construct the server with `createChatServer("client", async () => {})`, so `sendMessage` creates an empty reply without a server generation hook. The append hook permits a client with access to the reply's thread. Each append is optimistic locally and syncs to other subscribed clients.
-
-```ts
-await client.mutate.sendMessage({ messageId, threadId, text: prompt })
-const replyId = `${messageId}:reply`
-const stream = await startModelStream({ threadId, prompt })
-for await (const delta of stream.textStream) {
-  await client.mutate.appendReply({ id: replyId, text: delta })
-}
-await client.mutate.finishReply({ id: replyId, status: "complete" })
-```
-
-The client owns the generation in this option. On a stream error, call `finishReply` with `status: "error"`. Keep model credentials in a trusted service when the provider requires them; `startModelStream` can read an authenticated response stream from that service.
-
-## Option 2: server code streams through a TandemClient
+## Option 1: server code streams through a TandemClient
 
 Construct the server with `createChatServer("client", async () => {})`. A server process creates a headless `TandemClient` with in-memory state and `tabs: false`. Its authenticated remote routes calls through client sync, so `ctx.source` is `"client"` and the session must have access to the thread. The server process consumes the model stream; its client SDK performs optimistic appends and sync. Other subscribed clients receive the committed text and terminal status.
 
@@ -168,7 +152,7 @@ try {
 
 This path is useful when the stream reader lives on a server but should use the same client mutation and sync behavior as a browser. Use a session issued by the server transport for the service's allowed threads.
 
-## Option 3: server code mutates TandemServer directly
+## Option 2: server code mutates TandemServer directly
 
 Construct the server with `createChatServer("server", streamReply)`. A client calls `sendMessage` once. Its `afterCommit` returns the stream promise, which the server observes without holding the mutation queue. The server code consumes the model stream and calls typed `server.mutate.appendReply` for each chunk. These calls have `ctx.source === "server"`; the server controls this value. Subscribed clients receive the committed text and terminal status.
 
@@ -184,3 +168,19 @@ async function streamReply(id: string, threadId: string) {
 ```
 
 The runnable test uses this direct path and records `"error"` or `"stopped"` status if generation fails or is aborted. The `afterCommit` hook is best effort and in memory; persist and recover work separately if a response must survive a server crash.
+
+## Option 3: the client reads the model stream
+
+A browser or other client starts generation and consumes its own model stream. Construct the server with `createChatServer("client", async () => {})`, so `sendMessage` creates an empty reply without a server generation hook. The append hook permits a client with access to the reply's thread. Each append is optimistic locally and syncs to other subscribed clients.
+
+```ts
+await client.mutate.sendMessage({ messageId, threadId, text: prompt })
+const replyId = `${messageId}:reply`
+const stream = await startModelStream({ threadId, prompt })
+for await (const delta of stream.textStream) {
+  await client.mutate.appendReply({ id: replyId, text: delta })
+}
+await client.mutate.finishReply({ id: replyId, status: "complete" })
+```
+
+The client owns the generation in this option. On a stream error, call `finishReply` with `status: "error"`. Keep model credentials in a trusted service when the provider requires them; `startModelStream` can read an authenticated response stream from that service.

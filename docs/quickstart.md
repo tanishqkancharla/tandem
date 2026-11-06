@@ -176,7 +176,7 @@ The package also exports `useTandemClient` for direct client access and `useEnti
 
 Run a `TandemServer` and expose its `push` and `pull` methods over HTTP.
 
-This example omits authentication and access checks. Before exposing it to users, follow [Permissions](permissions.md) for pushes, pulls, and the event route. See [Migrations](migrations.md) before changing a schema with persisted data.
+This example omits authentication and access checks. Before exposing it to users, follow [Permissions](permissions.md) for pushes, pulls, and the event route. The [schema compatibility guide](migrations.md) covers changes to persisted data and older clients.
 
 ```ts
 // server/index.ts
@@ -255,6 +255,8 @@ The client only pulls data for queries it subscribes to, so another client's wri
 
 ## Next steps
 
-- [Queries](queries.md)
-- [Server](server.md)
-- [How sync works](sync.md)
+- [Client](client.md) and [Queries](queries.md): client configuration and reads
+- [Mutations](mutations.md) and [Server](server.md): writes and server APIs
+- [Choosing storage](sql.md): PostgreSQL, MySQL, D1, and JSON file adapters
+- [Add Tandem to an existing API server](existing-api-server.md): reuse your backend and application routes
+- [How sync works](sync.md): what push, pull, and rebase do

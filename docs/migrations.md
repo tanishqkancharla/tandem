@@ -1,4 +1,4 @@
-# Migrations
+# Schema changes and client compatibility
 
 Use your application's database migration tool to change tables and existing rows. Update Tandem's record types, runtime schema, SQL mappings or codecs, and affected mutations alongside that change. Tandem does not run migrations or negotiate application schema versions.
 
@@ -63,9 +63,9 @@ Pass `eventsUrl` to `connectTandemEventSource`. `EventSource` hides HTTP respons
 2. Migrate the database and deploy server code with the updated Tandem schema, mappings, mutations, and required protocol version. Retire old server instances before reopening sync.
 3. Deploy the matching client and resume sync. Old clients receive `409`; updated clients use the new version.
 
-The [SQL adapter](sql.md) reads current rows on each pull; there is no separate in-memory copy to migrate. Deploy new code for schema and mapping changes. Restarting clears remembered client views, which the next pull rebuilds. Direct SQL changes do not notify clients, so reconnect them after migration.
+The [SQL adapters](sql.md#sql-limitations) reads current rows on each pull; there is no separate in-memory copy to migrate. Deploy new code for schema and mapping changes. Restarting clears remembered client views, which the next pull rebuilds. Direct SQL changes do not notify clients, so reconnect them after migration.
 
-SQL mutation acknowledgements currently live in memory, so restarts can replay writes or cause mutation gaps. Version checks do not fix that [storage limitation](sql.md).
+SQL mutation acknowledgements currently live in memory, so restarts can replay writes or cause mutation gaps. Version checks do not fix that [storage limitation](sql.md#sql-limitations).
 
 ## Handle the client's old cache
 

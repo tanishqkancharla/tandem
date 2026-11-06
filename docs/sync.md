@@ -70,7 +70,7 @@ const { cookie, patch, lastMutationId } = await remote.pull({
 
 ### Live records
 
-A poke can carry records a server commit changed in the client's view, tagged with the commit's revision. The client shows them at once, in the same tick, and still pulls once the payloads go quiet. [`TandemServer`](server.md#connect-clients) carries only appended text this way, such as a streaming [agent reply](agent-chat.md); its other changes reach clients through the pull a bare poke starts. A custom remote can send whole records too. Like a pull, a live record can make an open transaction that read the record fail to commit.
+A poke can carry records a server commit changed in the client's view, tagged with the commit's revision. The client shows them at once, in the same tick, and still pulls once the payloads go quiet. [`TandemServer`](server.md#connect-clients) carries only appended text this way, such as a streaming [agent reply](agent-chat.md); its other changes reach clients through the pull a bare poke starts. Like a pull, a live record can make an open transaction that read the record fail to commit.
 
 A live record stands in for the server value under any pending local writes, which replay on top of it. It is never pushed. Each pull reports the revision its read reflects and replaces every live record at or below it, so a pull that read the server before a newer commit keeps the newer live record. The client ignores a poke record that is no newer than the latest pull or the record's current live value.
 
@@ -134,5 +134,5 @@ The leader stays connected to the remote while any tab wants it: `connect` and `
 
 ## Next steps
 
-- [Server](server.md): a `RemoteApi` implementation you can use directly
-- [Custom remotes](custom-remote.md): what a remote must guarantee
+- [Server](server.md): connect clients to a Tandem server
+- [Mutations](mutations.md): named operations, transactions, and failures

@@ -1,4 +1,4 @@
-# Permissions
+# Authentication and permissions
 
 Enforce permissions in your application's sync endpoints: authenticate the caller, restrict what they can read, and check what they can write. Tandem has no built-in users, roles, or read permission rules.
 
@@ -44,7 +44,7 @@ async function syncEndpoint(request: Request) {
 }
 ```
 
-Mount this on your push/pull and event routes. The helpers belong to your app: authenticate the session, check current membership, and verify your server-held binding between the client ID, user, and workspace. `readSyncRequest` validates the envelope and client ID, decodes push mutations, and returns a `push`, `pull`, or `connect` action. See [Custom remotes](custom-remote.md#mutation-codecs-at-the-wire-boundary) for codecs.
+Mount this on your push/pull and event routes. The helpers belong to your app: authenticate the session, check current membership, and verify your server-held binding between the client ID, user, and workspace. `readSyncRequest` validates the envelope and client ID, decodes push mutations, and returns a `push`, `pull`, or `connect` action. See [Server transport codecs](server.md#transport-codecs) for codecs.
 
 `workspaceServer` reuses a server with isolated storage and registered named mutations. Separate instances over one unfiltered database do not isolate records. Scope client storage and tab sharing by user and workspace too.
 

@@ -78,7 +78,10 @@ Visit [tandemsync.dev](https://tandemsync.dev) or read the guides at [docs.tande
 - [Server](docs/server.md): run `TandemServer` and connect clients to it
 - [Agent chat](docs/agent-chat.md): stream an agent's reply to every viewer with plain subscriptions
 - [How sync works](docs/sync.md): mutations, push, pull, and rebase
-- [Custom remotes](docs/custom-remote.md): implement the `RemoteApi` contract yourself
+- [Client](docs/client.md): persistence, tab sharing, and lifecycle
+- [Mutations](docs/mutations.md): named operations and transactions
+- [Storage adapters](docs/sql.md): PostgreSQL, MySQL, D1, and JSON file storage
+- [Application permissions](docs/permissions.md) and [schema compatibility](docs/migrations.md)
 
 The full index is in [docs/README.md](docs/README.md).
 

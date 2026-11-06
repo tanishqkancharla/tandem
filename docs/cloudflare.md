@@ -1,10 +1,10 @@
-# Cloudflare Workers and D1
+# Deploy on Cloudflare
 
 Run one `TandemServer` inside one Durable Object, store application records in existing D1 tables, and connect browsers with HTTP and server-sent events. The Worker forwards sync traffic to the same object so its mutation queue and connected clients share one owner.
 
 The [runnable example](https://github.com/tanishqkancharla/tandem/tree/main/examples/cloudflare/apps/server) includes the Worker, browser remote, SQL schema, and Wrangler configuration. It uses no web framework, WebSockets, or R2 adapter. Copy its handlers into an existing Worker or a fetch-style framework such as Hono.
 
-The SQL adapter is experimental: mutation acknowledgements remain in memory. D1 preserves records after an object restart, but pending writes can replay or encounter mutation gaps. This guide demonstrates hosting and SSE recovery; durable mutation recovery is separate work. See [SQL storage](sql.md) before using it for production writes.
+The SQL adapter is experimental: mutation acknowledgements remain in memory. D1 preserves records after an object restart, but pending writes can replay or encounter mutation gaps. This guide demonstrates hosting and SSE recovery; durable mutation recovery is separate work. See [D1 storage](storage/d1.md) before using it for production writes.
 
 ## 1. Configure bindings
 
@@ -62,7 +62,7 @@ import { schema } from "./schema"
 const storage = new TandemServerD1Storage({ schema, database: env.DB })
 ```
 
-The adapter derives column mappings, converts booleans, binds read parameters, and commits each write batch atomically through D1's `batch()`. It creates no tables or columns and does not persist tuple keys. For custom names, compound IDs, or custom value types, see the lower-level [SQL mapping API](sql.md#custom-tables-and-drivers).
+The adapter derives column mappings, converts booleans, binds read parameters, and commits each write batch atomically through D1's `batch()`. It creates no tables or columns and does not persist tuple keys. For custom names, compound IDs, or custom value types, see the lower-level [SQL mapping API](storage/custom.md#custom-sql-mappings).
 
 For the standalone example, create its table locally:
 
