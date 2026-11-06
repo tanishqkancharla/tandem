@@ -107,4 +107,4 @@ threads[0].messages[0]?.body
 
 On one-to-many includes, `limit` and `offset` apply per parent row. Tandem reads join fields internally, so `select` can leave them out. Subscriptions re-emit when included child records change.
 
-The reasoning behind this shape is in [Relational queries design](design/relational-queries.md).
+The reasoning behind this shape is in the repository's [Relational queries design](https://github.com/tanishqkancharla/tandem/blob/main/docs/design/relational-queries.md).

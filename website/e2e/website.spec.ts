@@ -77,14 +77,23 @@ test("read the docs and follow Markdown links", async ({ page }) => {
 	await expect(
 		page.getByRole("heading", { name: "Compound IDs", exact: true }),
 	).toBeInViewport()
-	await page.goto("/docs/design/relational-queries")
-	await expect(page.getByRole("heading", { level: 1 })).toContainText(
-		"Relational",
+	const docs = page.getByRole("navigation", {
+		name: "Documentation",
+		exact: true,
+	})
+	await docs.getByRole("link", { name: "Cloudflare D1", exact: true }).click()
+	await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+		"Cloudflare D1",
 	)
 	await page
 		.locator(".markdown")
-		.getByRole("link", { name: "Queries", exact: true })
+		.getByRole("link", { name: "Choosing storage", exact: true })
 		.click()
+	await expect(page).toHaveURL(/\/docs\/sql#shared-sql-mapping$/)
+	await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+		"Choosing storage",
+	)
+	await docs.getByRole("link", { name: "Queries", exact: true }).click()
 	await expect(
 		page.getByRole("heading", { name: "Queries", exact: true }),
 	).toBeVisible()
@@ -117,7 +126,7 @@ test("find a page and keep the selected theme on a narrow screen", async ({
 		name: "Documentation",
 		exact: true,
 	})
-	await expect(nav.getByRole("link")).toHaveCount(2)
+	await expect(nav.getByRole("link")).toHaveCount(1)
 	await nav.getByRole("link", { name: "Queries", exact: true }).click()
 	await expect(
 		page.getByRole("heading", { name: "Queries", exact: true }),

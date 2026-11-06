@@ -1,6 +1,6 @@
 # Server
 
-`TandemServer` from `@tanishqkancharla/tandem-server` is a server-side Tandem database. It implements `RemoteApi`, so clients can sync against it, and it also exposes its own query and transaction API for server code.
+`TandemServer` from `@tanishqkancharla/tandem-server` is a server-side Tandem database. Clients sync against it through your application transport. Server code can also query and mutate records directly.
 
 ## Create a server
 
@@ -24,19 +24,19 @@ const server = new TandemServer({
 
 Call `server.close()` on shutdown to close storage.
 
-Register shared mutators once in the constructor with `mutators`; optional `hooks` add server-only authorization and post-commit work. `server.mutate.name(args)` retains each registered mutation's argument type. Pass authenticated request context to `server.push(request, { context })`; the hooks factory receives it for that request. See [Agent chat](agent-chat.md) for the full pattern.
+Register shared mutators once in the constructor with `mutators`; optional `hooks` add server-only authorization and post-commit work. `server.mutate.name(args)` retains each registered mutation's argument type. Pass authenticated request context to `server.push(request, { context })`; the hooks factory receives it for that request. See [Mutations](mutations.md) for definitions, hooks, and completion behavior.
 
 See [Permissions](permissions.md) before exposing sync to users. Mutation hooks authorize named writes; your application must also enforce read access and authorize live connections.
 
 ## Connect clients
 
-`TandemServer` has `connect`, `push`, and `pull` methods that match `RemoteApi`. Clients in the same process can use the server as their `remote` directly:
+`TandemServer` exposes `connect`, `push`, and `pull` for client sync. Clients in the same process can use the server as their `remote` directly:
 
 ```ts
 const client = new TandemClient({ schema, remote: server })
 ```
 
-Across a network, the client's `remote` is a transport that forwards `push` and `pull` to the server and calls `poke` when there may be new data. The [Quickstart](quickstart.md#5-add-a-server) shows a minimal HTTP transport, and [`examples/todo`](https://github.com/tanishqkancharla/tandem/tree/main/examples/todo) has a complete Hono server.
+Across a network, the client's `remote` is a transport that forwards `push` and `pull` to the server and calls `poke` when there may be new data. The [Quickstart](quickstart.md#5-add-a-server) shows a minimal HTTP transport, and [Add Tandem to an existing API server](existing-api-server.md) shows how to mount those routes in your backend.
 
 After every commit that writes data, the server pokes each connected client whose queries read a collection the commit changed, including collections reached through relation includes. It runs no query to decide: the pull the poke starts compares the client's view with storage. A client's queries are those of its latest pull made while connected, so a client that has not pulled yet gets a bare poke for every commit. Pokes for other records of the same collection are expected; the pull then sends nothing new.
 
@@ -55,6 +55,30 @@ Every pull reports the revision its read reflects. Revisions count this instance
 Each pull reads the whole window from storage, but the patch carries only what the client lacks. The server remembers, per connected client, the records its latest pull put in the view and a SHA-256 fingerprint of each one's contents. A pull that returns that pull's cookie gets the records that are new to the view or whose contents changed, and removals for records no query still covers; a pull with nothing new returns an empty patch with its acknowledgement. A pull without a recognized cookie, such as the first one, a retry after a lost response, or any pull after a server restart, gets every record with `reset`. The memory cost is one key and one 64-character fingerprint per record per client; the server keeps no record contents. Writes made directly in storage show up in the next pull, because it reads and fingerprints every record again. Values without a canonical form, such as class instances other than `Date`, `Map`, `Set`, and `Uint8Array`, are resent on every pull.
 
 `createTandemEventStreamResponse` serves those pokes to browsers as server-sent events, and `connectTandemEventSource` from `@tanishqkancharla/tandem-core` turns them back into `poke` calls. A poke event's data is the payload as JSON, or empty for a bare poke; pass `schema` to both helpers to apply collection codecs. A stream whose reader falls behind drops payloads and sends one bare poke when it catches up. The stream sends `ready` after it registers, so the client pulls once per connection and catches writes it missed while disconnected. It also sends a keep-alive comment every 15 seconds and closes when the request aborts or the body is cancelled. Open streams keep an HTTP server from closing, so combine the request signal with a shutdown signal, as [`examples/todo`](../examples/todo/apps/server/src/app.ts) does. The [Quickstart](quickstart.md#5-add-a-server) shows both sides.
+
+## Transport codecs
+
+The sync methods carry runtime values. Use `MutationApi.codec(schema)` when a transport serializes push mutations: encode before sending JSON and decode after parsing it, before calling `server.push`. It applies each collection's codec to set values, update payloads, and record identities without changing operation order or mutation IDs.
+
+```ts
+import { MutationApi } from "@tanishqkancharla/tandem-core"
+
+const mutationCodec = MutationApi.codec(schema)
+const body = JSON.stringify({
+	clientId,
+	mutations: mutations.map((mutation) => mutationCodec.encode(mutation)),
+})
+
+// Server HTTP handler, after checking the request envelope:
+const decoded = request.mutations.map((mutation) =>
+	mutationCodec.decode(mutation),
+)
+await server.push({ clientId: request.clientId, mutations: decoded })
+```
+
+Decode the request's mutations before applying any of them. Return `invalid-request` if decoding fails; do not acknowledge or apply a prefix of an undecodable request. `TandemServer` does not repeat collection encoding or decoding when applying runtime operations.
+
+Collection codecs are optional; collections without them pass their values through and require JSON-native values or transport-owned validation. This codec handles push mutations only, not pull response records, authentication, or authorization. `PokeApi.codec(schema)` does the same for poke payloads; the SSE helpers apply it when given `schema`. The [todo HTTP transport](https://github.com/tanishqkancharla/tandem/blob/main/examples/todo/apps/server/src/app.ts) shows the complete request path.
 
 ## Read and write on the server
 
@@ -153,11 +177,11 @@ interface TandemServerStorageApi<Schema> {
 }
 ```
 
-`TandemServerJsonFileStorage` keeps tuples in memory and writes the whole file on each commit. It suits development and examples, not production.
+The [JSON file adapter](storage/json-file.md) reads stored tuples and writes the whole file on each commit. It suits development and examples.
 
-For existing SQL tables, see the experimental [SQL adapter](sql.md) and [Cloudflare D1 guide](cloudflare.md). The SQL adapter keeps acknowledgements in memory until durable metadata support is added.
+Choose [PostgreSQL](storage/postgresql.md), [MySQL](storage/mysql.md), or [D1](storage/d1.md) for existing application tables, or use [custom storage adapters](storage/custom.md). The SQL adapters keep acknowledgements in memory until durable metadata support is added. See [Choosing storage](sql.md) for their shared mapping and limitations.
 
-Tandem does not create or migrate application tables. See [Migrations](migrations.md) for server schema changes, persisted client caches, and older offline clients.
+Tandem does not create or migrate application tables. See [Schema changes and client compatibility](migrations.md) for server schema changes, persisted client caches, and older offline clients.
 
 ## Limitations
 

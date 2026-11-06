@@ -21,7 +21,7 @@ graph LR
 	TandemClient --> LocalDB[Local database]
 	TandemClient --> SyncEngine[Sync engine]
 	LocalDB --> ClientStorage[IndexedDB, optional]
-	SyncEngine -->|RemoteApi| Server[TandemServer or custom remote]
+	SyncEngine -->|HTTP or RPC| Server[TandemServer]
 ```
 
 ### `TandemClient`
@@ -40,9 +40,9 @@ The local database stores records as ordered tuples. It evaluates queries in mem
 
 The sync engine runs when a client has a `remote`. It pushes local mutations, pulls patches for the queries the client subscribes to, and rebases pending local mutations on top of each patch. See [How sync works](sync.md).
 
-### Remote
+### Server connection
 
-A remote implements the `RemoteApi` contract: `connect`, `push`, and `pull`. `TandemServer` from `@tanishqkancharla/tandem-server` implements it directly. In a browser app, a small HTTP or RPC transport on the client forwards calls to it. See [Server](server.md) and [Custom remotes](custom-remote.md).
+`TandemServer` from `@tanishqkancharla/tandem-server` receives pushed mutations, returns records for subscribed queries, and notifies clients of changes. In a browser app, a small HTTP or RPC transport forwards calls to it. See [Server](server.md#connect-clients).
 
 ## Current limitations
 
@@ -51,7 +51,10 @@ A remote implements the `RemoteApi` contract: `connect`, `push`, and `pull`. `Ta
 - [Permissions](permissions.md) belong to the application. Named mutation hooks support write authorization; read and connection access need server-side enforcement in your transport or remote.
 - There is no built-in application schema versioning or client migration runner. Your application owns [migrations](migrations.md), including pending offline writes.
 
+
 ## Next steps
 
-- [Quickstart](quickstart.md)
-- [How sync works](sync.md)
+- [Quickstart](quickstart.md): build a synced app
+- [How sync works](sync.md): understand push, pull, and rebase
+- [Choosing storage](sql.md): select a server storage adapter
+- [Client](client.md): configure queries, persistence, and lifecycle

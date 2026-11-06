@@ -2,31 +2,49 @@ import { notFound } from "@tanstack/react-router"
 
 export const docSections = [
 	{
-		title: "Get started",
+		title: "Start here",
 		pages: [
 			{ slug: "overview", title: "Overview" },
 			{ slug: "quickstart", title: "Quickstart" },
-		],
-	},
-	{
-		title: "Guides",
-		pages: [
-			{ slug: "queries", title: "Queries" },
-			{ slug: "server", title: "Server" },
-			{ slug: "agent-chat", title: "Agent chat" },
-		],
-	},
-	{
-		title: "Concepts",
-		pages: [
 			{ slug: "sync", title: "How sync works" },
-			{ slug: "custom-remote", title: "Custom remotes" },
 		],
 	},
 	{
-		title: "Project",
+		title: "How-to guides",
 		pages: [
-			{ slug: "design/relational-queries", title: "Relational queries design" },
+			{ slug: "agent-chat", title: "Build streaming chat" },
+			{
+				slug: "existing-api-server",
+				title: "Add Tandem to an existing API server",
+			},
+			{ slug: "cloudflare", title: "Deploy on Cloudflare" },
+		],
+	},
+	{
+		title: "Storage adapters",
+		pages: [
+			{ slug: "sql", title: "Choosing storage" },
+			{ slug: "storage/postgresql", title: "PostgreSQL" },
+			{ slug: "storage/mysql", title: "MySQL" },
+			{ slug: "storage/d1", title: "Cloudflare D1" },
+			{ slug: "storage/json-file", title: "JSON file" },
+			{ slug: "storage/custom", title: "Custom storage adapters" },
+		],
+	},
+	{
+		title: "API reference",
+		pages: [
+			{ slug: "client", title: "Client" },
+			{ slug: "queries", title: "Queries" },
+			{ slug: "mutations", title: "Mutations" },
+			{ slug: "server", title: "Server" },
+		],
+	},
+	{
+		title: "Application responsibilities",
+		pages: [
+			{ slug: "permissions", title: "Authentication and permissions" },
+			{ slug: "migrations", title: "Schema changes and client compatibility" },
 		],
 	},
 ]
