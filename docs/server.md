@@ -24,7 +24,7 @@ const server = new TandemServer({
 
 Call `server.close()` on shutdown to close storage.
 
-Register shared mutators once in the constructor with `mutators`; optional `hooks` add server-only authorization and post-commit work. `server.mutate.name(args)` retains each registered mutation's argument type. Pass authenticated request context to `server.push(request, { context })`; the hooks factory receives it for that request. See [Mutations](mutations.md) for definitions, hooks, and completion behavior.
+Register shared mutators once in the constructor with `mutators`; optional `hooks` add server-only authorization and post-commit work. `server.mutate.name(args)` retains each registered mutation's argument type. Pass authenticated request context to `server.push(request, { context })`; the server calls the hooks factory with it for each named call in that push. See [Mutations](mutations.md) for definitions, hooks, and completion behavior.
 
 See [Permissions](permissions.md) before exposing sync to users. Mutation hooks authorize named writes; your application must also enforce read access and authorize live connections.
 
@@ -97,7 +97,7 @@ const { result, destroy } = await server.subscribe(
 )
 ```
 
-Server transactions have async reads and sync writes. Commit them through the server so connected clients get poked.
+Server transactions have async reads. `set` and `remove` are sync; `update` is async because it reads the current record. Commit them through the server so connected clients get poked.
 
 ```ts
 const tx = server.transact()
@@ -113,11 +113,11 @@ if (!existing) {
 await server.commit(tx)
 ```
 
-A transaction also has `list`, `scan`, `update`, `remove`, `query`, and `cancel`.
+A transaction also has `list`, `scan`, `update`, `remove`, `query`, and `cancel`, which returns a promise.
 
 `update` accepts partial assignments and awaits the current record. Reads in the same transaction see those assignments; missing records and empty payloads are no-ops. Supplied nested objects and arrays replace their entire field. Use `set` for complete replacements; updates cannot change identity or delete fields.
 
-```tsx
+```ts
 const tx = server.transact()
 await tx.update("todos", "welcome", { complete: true })
 await server.commit(tx)
@@ -129,11 +129,11 @@ Define a shared named mutator that reads the record and writes its extended valu
 
 ```ts
 const appendReply = defineMutator(schema, {
-  args: z.object({ id: z.string(), text: z.string() }),
-  run: async (tx, { id, text }) => {
-    const message = await tx.get("messages", id)
-    if (message) tx.set("messages", { ...message, text: message.text + text })
-  },
+	args: z.object({ id: z.string(), text: z.string() }),
+	run: async (tx, { id, text }) => {
+		const message = await tx.get("messages", id)
+		if (message) tx.set("messages", { ...message, text: message.text + text })
+	},
 })
 ```
 

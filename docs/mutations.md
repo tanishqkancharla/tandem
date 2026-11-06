@@ -45,7 +45,9 @@ The mutator transaction exposes async `get`, `scan`, and `update`, plus synchron
 | `authorize(tx, args, ctx)` | Runs before the shared definition in the same transaction. Return an `Error` to refuse the entire call; `false` does not refuse it. |
 | `afterCommit(args, ctx)`   | Runs after a successful commit. Its failure cannot undo the write; recover durable jobs separately.                                 |
 
-The server sets `ctx.source` to `"client"` for pushes and `"server"` for direct `server.mutate` calls. Direct calls run hooks without a request session. Low-level server transactions do not run mutator hooks. See [Permissions](permissions.md#check-writes-with-named-mutation-hooks) and the [streaming chat guide](agent-chat.md) for examples.
+A hook, hooks factory, or `run` that throws also refuses the call. An error caused by a storage failure is not a refusal: the push returns `unavailable`, and the client sends the mutation again.
+
+The server calls the hooks factory once per named call. It sets `ctx.source` to `"client"` for pushes and `"server"` for direct `server.mutate` calls. Direct calls run hooks without a request session. Low-level server transactions do not run mutator hooks. See [Permissions](permissions.md#check-writes-with-named-mutation-hooks) and the [streaming chat guide](agent-chat.md) for examples.
 
 With a mutator registry, pushes refuse raw operation mutations by default. `allowOps: false` keeps that policy explicit; `allowOps: true` requires separate raw-write authorization.
 
@@ -70,7 +72,7 @@ await client.commit(tx)
 | `remove(collection, id)`          | Remove a record.                                                                                       |
 | `cancel()`                        | Discard the uncommitted transaction.                                                                   |
 
-An update cannot change identity or delete fields. Supplied objects and arrays replace the whole field. For server transactions, reads and `update` are async; use `server.commit(tx)`. See [Server](server.md#read-and-write-on-the-server).
+An update cannot change identity or delete fields. Supplied objects and arrays replace the whole field. For server transactions, reads, `update`, and `cancel` are async; use `server.commit(tx)`. See [Server](server.md#read-and-write-on-the-server).
 
 ## Completion and failures
 
