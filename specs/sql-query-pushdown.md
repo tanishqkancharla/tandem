@@ -36,7 +36,8 @@ readCandidates(read):
   where clauses SQL decides exactly          -> WHERE (others dropped: superset)
   every clause pushed, leading number order  -> ORDER BY prefix LIMIT offset+limit
                                                 + rows tied with the last row
-  join (one-to-many include)                 -> col IN (parent values), 500 per statement
+  join (one-to-many include)                 -> col IN (parent values), chunked to the bind budget
+  WHERE values alone exceed the bind budget  -> undefined
   nothing narrows the read                   -> undefined
 ```
 
@@ -63,14 +64,14 @@ The tie read keeps paging exact. SQL picks the top rows by the leading number fi
 The planner yields a candidate read where it used to scan, and the async driver sends it to an optional storage method. The SQL adapter answers with parameterized SQL over declared fields. Status: committed on `michael/sql-query-pushdown`.
 
 ```callstack
- TandemServer.query / pull / subscribe [[dedb712fbc..8965e2c472:packages/server/src/TandemServer.ts#L703]]
- └── runAsync [[dedb712fbc..8965e2c472:packages/core/src/query/executeQuery.ts#L382]]
+ TandemServer.query / pull / subscribe [[dedb712fbc..7f300fc8b3:packages/server/src/TandemServer.ts#L703]]
+ └── runAsync [[dedb712fbc..7f300fc8b3:packages/core/src/query/executeQuery.ts#L382]]
 -    └── reader.scan(prefix)
 +    ├── reader.scan(prefix, limit 0)         # registers subscription and conflict reads; no rows
-+    └── candidates(read) [[dedb712fbc..8965e2c472:packages/core/src/query/executeQuery.ts#L410]]
-+        └── TandemServerSqlStorage.readCandidates [[dedb712fbc..8965e2c472:packages/server/src/storage/TandemServerSqlStorage.ts#L195]]
-+            ├── condition                    # exact comparisons only [[dedb712fbc..8965e2c472:packages/server/src/storage/TandemServerSqlStorage.ts#L319]]
-+            └── readMatches                  # NaN probe, top rows, tied rows [[dedb712fbc..8965e2c472:packages/server/src/storage/TandemServerSqlStorage.ts#L250]]
++    └── candidates(read) [[dedb712fbc..7f300fc8b3:packages/core/src/query/executeQuery.ts#L410]]
++        └── TandemServerSqlStorage.readCandidates [[dedb712fbc..7f300fc8b3:packages/server/src/storage/TandemServerSqlStorage.ts#L207]]
++            ├── condition                    # exact comparisons only [[dedb712fbc..7f300fc8b3:packages/server/src/storage/TandemServerSqlStorage.ts#L340]]
++            └── readMatches                  # NaN probe, top rows, tied rows [[dedb712fbc..7f300fc8b3:packages/server/src/storage/TandemServerSqlStorage.ts#L269]]
 ```
 
 Subscriptions on the server use tuple-database's read tracking. The candidate read first scans the collection with `limit: 0`, which registers a listener on the collection and reads no rows: `TandemServerSqlStorage.scan` returns `[]` for it without SQL. Queries inside `server.transact()` never pass `readCandidates`, so they see staged writes and keep conflict tracking.
@@ -89,9 +90,10 @@ What SQL decides, and why the rest stays in JavaScript:
 | operators, directions, field names | whitelist, own properties | scan windows come from clients |
 | limits and offsets | offset, limit, and their sum non-negative safe integers | other pages, such as offset -5, stay in the query engine, which slices them as arrays do |
 | unknown collections | `undefined` | scans already read nothing for them |
+| bound values | `maxParameters`: 100 on D1, 999 other SQLite, 65,535 otherwise | each statement reserves WHERE plus limit or tie values; joins chunk; filters that do not fit scan |
 
 ```changes
-dedb712fbc..8965e2c472
+dedb712fbc..7f300fc8b3
 ```
 
 DST used to wrap SQL storage in a class that forwarded only `scan` and `commit`, so its SQL seeds never reached SQL reads. The wrapper now forwards `readCandidates`, and `dst/sql.spec.ts` runs scoped views on PGlite and `node:sqlite` with declared fields and indexes.
@@ -99,13 +101,14 @@ DST used to wrap SQL storage in a class that forwarded only `scan` and `commit`,
 ```callstack
  DstWorld.start
  └── new DstServerStorage(external)
-+    └── readCandidates = external.readCandidates [[dedb712fbc..8965e2c472:dst/DstWorld.ts#L166]]
++    └── readCandidates = external.readCandidates [[dedb712fbc..7f300fc8b3:dst/DstWorld.ts#L166]]
 ```
 
 - [x] `CandidateRead` and `readCandidates` in `packages/core/src/query/executeQuery.ts`; optional `readCandidates` on `TandemServerStorageApi`.
 - [x] SQL translation, `fields` on `TandemSqlTable`, inferred fields for schema mappings without a codec.
 - [x] Independent review fixes: own-property field lookup, unknown collections, client limits, nullable fields, Postgres column-type docs.
 - [x] Limits only for pages that count leading rows, with `server.query` differential coverage for negative, fractional, NaN, and huge pages.
+- [x] Bind budget (`maxParameters`), with a regression through a D1 binding that rejects more than 100 values, 150 parents, and a nested WHERE.
 - [x] Differential tests against whole-table reads on node:sqlite, D1, PGlite, and Postgres 16 (`packages/server/test/SqlQueryPushdown.spec.ts`).
 - [x] DST forwards the capability; seeds 1-40 pass on both dialects.
 - [x] `docs/sql.md` describes what runs in SQL and how to choose indexes.
@@ -114,14 +117,15 @@ DST used to wrap SQL storage in a class that forwarded only `scan` and `commit`,
 
 `packages/server/benchmarks` seeds the same rows into SQLite and Postgres and times `TandemServer.query` under whole-table reads and SQL reads with 0, 1, and 2 secondary indexes, in shuffled rounds. A second script times initial sync and author-to-viewer updates for 5 and 10 in-memory clients. Status: committed on `michael/sql-query-pushdown-benchmark` and run on 2026-11-06; the full report and raw data stay on the VM, and the PR summarizes them.
 
-At 100,000 messages, an indexed thread page took 0.4 to 1.9 ms against 0.8 to 1.1 s for whole-table reads, on SQLite and Postgres. One composite index, `messages (threadId, createdAt)`, served five of seven workloads; a second, `messages (createdAt)`, helped only the two queries with no thread filter. Paged client sync with 10 clients at 10,000 rows decoded 2,200 rows during updates instead of about one million. Every sample matched whole-table reads.
+At 100,000 messages, an indexed thread page took 0.4 to 1.9 ms against 0.8 to 1.1 s for whole-table reads, on SQLite and Postgres. One composite index, `messages (threadId, createdAt)`, served five of seven workloads; a second, `messages (createdAt)`, helped only the two queries with no thread filter. Paged client sync with 10 clients at 10,000 rows decoded 2,200 rows during updates instead of about one million. With the clients' sync interval at 0, paged updates took 17.8 ms against 854.4 ms on SQLite and 36.8 ms against 868.7 ms on Postgres; the original matrix used the 150 ms default, which hid most of that difference. Every sample matched whole-table reads. The query and original sync matrices ran at `0a4bd73` and the zero-interval controls at `1bfcbbd`; the later page check and bind budget commits change none of the SQL statements the workloads issue, and the budget check adds planning work that was not timed separately.
 
 ```changes
-8965e2c472..b3287395ba
+7f300fc8b3..f30a76565f
 ```
 
 - [x] `sqlQueries.ts`, `sqlSync.ts`, `sqlBenchmarks.ts`, `sqlWorkload.ts`.
 - [x] Full run, report, and served results.
+- [x] `sqlSync.ts` takes the sync interval (default 0) and bounds waits; zero-interval controls at 10,000 rows and 10 clients on both databases.
 
 ## References
 
