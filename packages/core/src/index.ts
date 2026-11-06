@@ -110,6 +110,7 @@ export type {
 	RelationalWithOptions,
 	ScanWindow,
 } from "./query/Query.js"
+export type { CandidateRead } from "./query/executeQuery.js"
 export {
 	codec,
 	string,

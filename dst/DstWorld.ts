@@ -158,9 +158,13 @@ export type DstInventory = { [C in keyof DstSchema]: DstSchema[C][] }
 class DstServerStorage implements TandemServerStorageApi<DstSchema> {
 	private readonly memory = new InMemoryTupleStorage()
 	private readonly external?: TandemServerStorageApi<DstSchema>
+	/** The external storage's native query reads, when it has them. */
+	readonly readCandidates?: TandemServerStorageApi<DstSchema>["readCandidates"]
 
 	constructor(external?: TandemServerStorageApi<DstSchema>) {
 		this.external = external
+		if (external?.readCandidates)
+			this.readCandidates = (read) => external.readCandidates!(read)
 	}
 
 	/** Every value each server-owned record has had, in commit order; null when absent. */

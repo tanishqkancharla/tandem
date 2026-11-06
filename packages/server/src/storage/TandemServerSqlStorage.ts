@@ -1,9 +1,12 @@
 import type {
 	AnyCollectionSchema,
 	AnySchema,
+	CandidateRead,
 	CollectionName,
+	Operator,
 	RuntimeSchemaDefinition,
 } from "@tanishqkancharla/tandem-core"
+import { match, unreachable } from "@tanishqkancharla/tandem-core"
 import { collectionIdToTuple } from "@tanishqkancharla/tandem-core/internal"
 import * as errore from "errore"
 import {
@@ -19,6 +22,7 @@ import {
 	SqliteIntrospector,
 	SqliteQueryCompiler,
 	sql,
+	type RawBuilder,
 } from "kysely"
 import { InMemoryTupleStorage } from "tuple-database"
 import type { ScanStorageArgs, WriteOps } from "tuple-database"
@@ -39,6 +43,13 @@ type IdColumns<Id> = Id extends readonly [unknown, ...unknown[]]
 	? { readonly [Index in keyof Id]: string }
 	: readonly [string]
 
+/** A record field that one column holds unchanged. */
+export type TandemSqlField = {
+	column: string
+	/** Booleans are 0 and 1 on SQLite and booleans on Postgres. */
+	type: "string" | "number" | "boolean"
+}
+
 export type TandemSqlTable<Record extends AnyCollectionSchema> = {
 	table: string
 	/** Primary-key columns in the same order as the record's ID parts. */
@@ -47,6 +58,11 @@ export type TandemSqlTable<Record extends AnyCollectionSchema> = {
 	encode: (record: Record) => TandemSqlRow
 	/** Decode a SQL row, including its scalar or compound ID. */
 	decode: (row: TandemSqlRow) => Record
+	/**
+	 * Fields queries may filter and order on in SQL. Queries filter other
+	 * fields after reading. Schema mappings list every field.
+	 */
+	fields?: { readonly [Field in keyof Record & string]?: TandemSqlField }
 }
 
 type TandemSqlTables<Schema extends AnySchema> = {
@@ -55,8 +71,14 @@ type TandemSqlTables<Schema extends AnySchema> = {
 
 type TandemSqlRuntimeTable<Schema extends AnySchema> = Omit<
 	TandemSqlTable<Schema[CollectionName<Schema>]>,
-	"idColumns"
-> & { idColumns: readonly string[] }
+	"idColumns" | "fields"
+> & {
+	idColumns: readonly string[]
+	fields?: { readonly [field: string]: TandemSqlField | undefined }
+}
+
+/** Join values read in one statement, well under every dialect's limit. */
+const joinValuesPerStatement = 500
 
 export type TandemServerSqlStorageArgs<Schema extends AnySchema> = {
 	dialect: TandemSqlDialect
@@ -108,6 +130,7 @@ export class TandemServerSqlStorage<
 	private readonly tables: Array<
 		[CollectionName<Schema>, TandemSqlRuntimeTable<Schema>]
 	>
+	private readonly dialect: TandemSqlDialect
 	private readonly query: TandemServerSqlStorageArgs<Schema>["query"]
 	private readonly commitSql: TandemServerSqlStorageArgs<Schema>["commit"]
 
@@ -129,11 +152,14 @@ export class TandemServerSqlStorage<
 			: args.tables
 		if (tables instanceof Error) throw tables
 		this.tables = Object.entries(tables) as typeof this.tables
+		this.dialect = args.dialect
 		this.query = args.query
 		this.commitSql = args.commit
 	}
 
 	async scan(args: ScanStorageArgs = {}): Promise<TandemTuple<Schema>[]> {
+		// Query reads scan nothing to register a subscription dependency.
+		if (args.limit === 0) return []
 		const prefix = getPrefixContainingBounds(args)
 		const memory = new InMemoryTupleStorage(this.clients.scan())
 		for (const [collection, table] of this.tables) {
@@ -144,33 +170,251 @@ export class TandemServerSqlStorage<
 			const conditions = parts.map(
 				(part, index) => sql`${sql.id(table.idColumns[index])} = ${part}`,
 			)
-			const where = conditions.length
-				? sql`where ${sql.join(conditions, sql` and `)}`
-				: sql``
-			const statement =
-				sql`select * from ${sql.id(table.table)} ${where}`.compile(
-					this.compiler,
-				)
-			const rows = await this.query(statement).catch(
-				(cause) => new TandemSqlStorageError({ operation: "read rows", cause }),
-			)
-			if (rows instanceof Error) throw rows
-			const decoded = errore.try({
-				try: () =>
-					rows.map((row) => {
-						const value = table.decode(row)
-						const id = collectionIdToTuple(value.id)
-						return { key: ["record", collection, ...id], value }
-					}),
-				catch: (cause) =>
-					new TandemSqlStorageError({ operation: "decode rows", cause }),
-			})
-			if (decoded instanceof Error) throw decoded
-			memory.commit({ set: decoded })
+			const tuples = await this.select(collection, table, conditions)
+			if (tuples instanceof Error) throw tuples
+			memory.commit({ set: tuples })
 		}
 		// SQL collations need not match tuple ordering. Apply the exact bounds,
 		// ordering and global limit after decoding, without retaining record data.
 		return memory.scan(args) as TandemTuple<Schema>[]
+	}
+
+	/**
+	 * Reads a query node's candidates with SQL: every pushed clause in WHERE,
+	 * and with a limit, ORDER BY and LIMIT over the leading number fields of
+	 * the order. Rows tied with the last one on those fields are read too, so
+	 * the query's own ordering and key-order ties pick the same rows. Returns
+	 * undefined when no clause narrows the read, so the query scans instead.
+	 */
+	async readCandidates(
+		read: CandidateRead,
+	): Promise<TandemTuple<Schema>[] | undefined> {
+		// MySQL's default collations compare strings without case; untested.
+		if (this.dialect === "mysql") return
+		const collection = read.collection as CollectionName<Schema>
+		const table = this.table(collection)
+		if (table instanceof Error) throw table
+		const fields = table.fields ?? {}
+		// A clause SQL cannot decide exactly is left to the query: the read
+		// returns a superset, but can no longer apply the limit.
+		const where = read.where.flatMap(
+			([field, operator, value]) =>
+				this.condition(fields[field], operator, value) ?? [],
+		)
+		const order: RawBuilder<unknown>[] = []
+		const orderFields: TandemSqlField[] = []
+		for (const [field, direction] of read.order) {
+			const definition = fields[field]
+			// Scan windows come from clients; only known directions reach SQL.
+			const keyword = Object.hasOwn(sqlDirections, direction)
+				? sqlDirections[direction]
+				: undefined
+			if (definition?.type !== "number" || !keyword) break
+			order.push(sql`${sql.id(definition.column)} ${keyword}`)
+			orderFields.push(definition)
+		}
+		const limit =
+			where.length === read.where.length && order.length && !read.join
+				? read.limit
+				: undefined
+		const join =
+			read.join && this.joinValues(fields[read.join.field], read.join.values)
+		if (!where.length && !join && limit === undefined) return
+		const tuples = await this.readMatches(
+			collection,
+			table,
+			read,
+			where,
+			{ order, fields: orderFields },
+			limit,
+			join,
+		)
+		if (tuples instanceof Error) throw tuples
+		// Deduplicate and restore key order.
+		const memory = new InMemoryTupleStorage()
+		memory.commit({ set: tuples })
+		return memory.scan() as TandemTuple<Schema>[]
+	}
+
+	private async readMatches(
+		collection: CollectionName<Schema>,
+		table: TandemSqlRuntimeTable<Schema>,
+		read: CandidateRead,
+		where: RawBuilder<unknown>[],
+		order: { order: RawBuilder<unknown>[]; fields: TandemSqlField[] },
+		limit: number | undefined,
+		join: { column: string; values: RawBuilder<unknown>[] } | undefined,
+	) {
+		if (join) {
+			const tuples: Exclude<Awaited<ReturnType<typeof this.select>>, Error> = []
+			for (
+				let index = 0;
+				index < join.values.length;
+				index += joinValuesPerStatement
+			) {
+				const values = join.values.slice(index, index + joinValuesPerStatement)
+				const chunk = await this.select(collection, table, [
+					...where,
+					sql`${sql.id(join.column)} in (${sql.join(values)})`,
+				])
+				if (chunk instanceof Error) return chunk
+				tuples.push(...chunk)
+			}
+			return tuples
+		}
+		if (limit === undefined) return this.select(collection, table, where)
+		if (limit === 0) return []
+		// Postgres sorts NaN above every number, while queries treat it as equal
+		// to every value. Read all matches when an order field holds NaN.
+		if (this.dialect === "postgres") {
+			const nan = await this.rows(
+				sql`select 1 from ${sql.id(table.table)} ${whereSql([
+					...where,
+					sql`(${sql.join(
+						order.fields.map(
+							({ column }) => sql`${sql.id(column)} = ${postgresNaN}`,
+						),
+						sql` or `,
+					)})`,
+				])} limit 1`,
+			)
+			if (nan instanceof Error) return nan
+			if (nan.length) return this.select(collection, table, where)
+		}
+		const top = await this.select(
+			collection,
+			table,
+			where,
+			sql`order by ${sql.join(order.order)} limit ${limit}`,
+		)
+		if (top instanceof Error || top.length < limit) return top
+		const last = top.at(-1)!.value as Record<string, unknown>
+		const ties = order.fields.map((field, index) =>
+			this.condition(field, "=", last[read.order[index]![0]]),
+		)
+		if (ties.some((tie) => tie === undefined))
+			return this.select(collection, table, where)
+		const tied = await this.select(collection, table, [
+			...where,
+			...(ties as RawBuilder<unknown>[]),
+		])
+		if (tied instanceof Error) return tied
+		return [...top, ...tied]
+	}
+
+	/** A comparison SQL decides exactly as a query would, if there is one. */
+	private condition(
+		field: TandemSqlField | undefined,
+		operator: Operator,
+		value: unknown,
+	): RawBuilder<unknown> | undefined {
+		// Scan windows come from clients; only known operators reach SQL.
+		if (!field || !Object.hasOwn(sqlOperators, operator)) return
+		const parameter = this.parameter(field, value)
+		if (!parameter) return
+		const column = sql.id(field.column)
+		if (operator === "=")
+			return field.type === "string" && this.dialect === "sqlite"
+				? sql`${column} = ${parameter} collate binary`
+				: sql`${column} = ${parameter}`
+		// Queries order only numbers with numbers; strings compare by UTF-16
+		// code unit, which no SQL collation does.
+		if (field.type !== "number") return
+		const comparison = sql`${column} ${sqlOperators[operator]} ${parameter}`
+		if (this.dialect !== "postgres") return comparison
+		// Queries treat NaN as equal to every number, so >= and <= match it.
+		// Postgres sorts it above every number.
+		return match(operator, {
+			">": sql`(${comparison} and ${column} <> ${postgresNaN})`,
+			"<=": sql`(${comparison} or ${column} = ${postgresNaN})`,
+			"<": comparison,
+			">=": comparison,
+		})
+	}
+
+	/**
+	 * A SQL value equal to a query value under the field's column, or
+	 * undefined when the dialect may compare it differently.
+	 */
+	private parameter(
+		field: TandemSqlField,
+		value: unknown,
+	): RawBuilder<unknown> | undefined {
+		switch (field.type) {
+			case "string":
+				// Drivers replace lone surrogates; node:sqlite cuts text at NUL and
+				// Postgres rejects it.
+				return typeof value === "string" &&
+					value.isWellFormed() &&
+					!value.includes("\0")
+					? sql`${value}`
+					: undefined
+			case "number":
+				// D1 binds non-finite numbers as NULL.
+				if (typeof value !== "number" || !Number.isFinite(value)) return
+				if (this.dialect !== "postgres") return sql`${value}`
+				// Without a type, Postgres casts the parameter to the column's type,
+				// which rejects fractions for integer columns.
+				return Number.isSafeInteger(value)
+					? sql`cast(${value} as bigint)`
+					: sql`cast(${value} as double precision)`
+			case "boolean":
+				if (typeof value !== "boolean") return
+				return this.dialect === "postgres"
+					? sql`cast(${value} as boolean)`
+					: sql`${Number(value)}`
+			default:
+				return unreachable(field.type)
+		}
+	}
+
+	/**
+	 * Join values a column can hold, or undefined when SQL cannot match one of
+	 * them exactly. Values of another type never equal a decoded field.
+	 */
+	private joinValues(
+		field: TandemSqlField | undefined,
+		values: readonly unknown[],
+	) {
+		if (!field) return
+		const parameters: RawBuilder<unknown>[] = []
+		for (const value of values) {
+			if (typeof value !== field.type) continue
+			// NaN equals nothing, so it joins no rows.
+			if (typeof value === "number" && Number.isNaN(value)) continue
+			const parameter = this.parameter(field, value)
+			if (!parameter) return
+			parameters.push(parameter)
+		}
+		return { column: field.column, values: parameters }
+	}
+
+	private async select(
+		collection: CollectionName<Schema>,
+		table: TandemSqlRuntimeTable<Schema>,
+		conditions: RawBuilder<unknown>[],
+		tail: RawBuilder<unknown> = sql``,
+	) {
+		const rows = await this.rows(
+			sql`select * from ${sql.id(table.table)} ${whereSql(conditions)} ${tail}`,
+		)
+		if (rows instanceof Error) return rows
+		return errore.try({
+			try: () =>
+				rows.map((row) => {
+					const value = table.decode(row)
+					const id = collectionIdToTuple(value.id)
+					return { key: ["record", collection, ...id], value }
+				}),
+			catch: (cause) =>
+				new TandemSqlStorageError({ operation: "decode rows", cause }),
+		})
+	}
+
+	private rows(statement: RawBuilder<unknown>) {
+		return this.query(statement.compile(this.compiler)).catch(
+			(cause) => new TandemSqlStorageError({ operation: "read rows", cause }),
+		)
 	}
 
 	async commit(writes: WriteOps<TandemTuple<Schema>>): Promise<void> {
@@ -264,6 +508,25 @@ export class TandemServerSqlStorage<
 	}
 }
 
+const postgresNaN = sql`cast('NaN' as double precision)`
+const sqlOperators: Record<Operator, RawBuilder<unknown>> = {
+	"=": sql`=`,
+	">": sql`>`,
+	"<": sql`<`,
+	">=": sql`>=`,
+	"<=": sql`<=`,
+}
+const sqlDirections: Partial<Record<string, RawBuilder<unknown>>> = {
+	asc: sql`asc`,
+	desc: sql`desc`,
+}
+
+function whereSql(conditions: readonly RawBuilder<unknown>[]) {
+	return conditions.length
+		? sql`where ${sql.join(conditions, sql` and `)}`
+		: sql``
+}
+
 function tablesFromSchema<Schema extends AnySchema>(args: {
 	schema: RuntimeSchemaDefinition<Schema>
 	dialect: TandemSqlDialect
@@ -294,6 +557,18 @@ function tablesFromSchema<Schema extends AnySchema>(args: {
 		tables[name] = {
 			table: name,
 			idColumns: ["id"],
+			// A codec stores values the schema's field types do not describe.
+			...(!collection.codec && {
+				fields: Object.fromEntries(
+					fields.map(([field, definition]) => [
+						field,
+						{
+							column: field,
+							type: definition.type === "id" ? "string" : definition.type,
+						} as TandemSqlField,
+					]),
+				),
+			}),
 			encode: (record) =>
 				Object.fromEntries(
 					fields.map(([field, definition]) => {
