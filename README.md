@@ -3,7 +3,7 @@
 A sync engine and database for building collaborative apps.
 
 > [!WARNING]
-> Tandem is a work in progress and is not ready for production use. APIs change without notice.
+> Tandem is a work in progress and pre-1.0. APIs change without notice.
 
 Tandem gives each client a local, queryable database. Writes apply locally first. Tandem then syncs them to a server in the background and replays any pending local changes on top of what the server sends back.
 
