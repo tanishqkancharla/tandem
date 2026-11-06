@@ -28,9 +28,11 @@ graph LR
 
 `TandemClient` is the app-facing API from `@tanishqkancharla/tandem-core`. It exposes:
 
+- `ready`, which resolves once local storage has loaded
 - `query` and `subscribe` for typed object queries
-- `transact` and `commit` for writes
+- `transact` and `commit` for raw writes, and `mutate` for [named mutations](mutations.md#named-mutations)
 - `connect`, `disconnect`, and `pullFromRemote` for sync control
+- `flushClientStorage`, `clear`, and `close` for storage and lifecycle
 
 ### Local database
 

@@ -4,7 +4,7 @@
 
 ## Create a server
 
-`TandemServer` takes the same runtime schema and relations as the client, plus a storage adapter.
+`TandemServer` takes the same runtime schema and relations as the client, plus a storage adapter. `relations` is required on the server; pass `{}` when you define none.
 
 ```ts
 import {
@@ -52,9 +52,31 @@ A client's first payload goes out at once. Appends from further commits within `
 
 Every pull reports the revision its read reflects. Revisions count this instance's commits and start over in a new instance, like cookies.
 
-Each pull reads the whole window from storage, but the patch carries only what the client lacks. The server remembers, per connected client, the records its latest pull put in the view and a SHA-256 fingerprint of each one's contents. A pull that returns that pull's cookie gets the records that are new to the view or whose contents changed, and removals for records no query still covers; a pull with nothing new returns an empty patch with its acknowledgement. A pull without a recognized cookie, such as the first one, a retry after a lost response, or any pull after a server restart, gets every record with `reset`. The memory cost is one key and one 64-character fingerprint per record per client; the server keeps no record contents. Writes made directly in storage show up in the next pull, because it reads and fingerprints every record again. Values without a canonical form, such as class instances other than `Date`, `Map`, `Set`, and `Uint8Array`, are resent on every pull.
+Each pull reads the whole window from storage, but the patch carries only what the client lacks. The server remembers, per client, the records its latest pull put in the view and a SHA-256 fingerprint of each one's contents. A pull that returns that pull's cookie gets the records that are new to the view or whose contents changed, and removals for records no query still covers; a pull with nothing new returns an empty patch with its acknowledgement. A pull without a recognized cookie, such as the first one, a retry after a lost response, or any pull after a server restart, gets every record with `reset`. The memory cost is one key and one 64-character fingerprint per record per client; the server keeps no record contents. The server frees this memory when a client's last connection closes, so a client that pulls without ever connecting keeps it until the server restarts. Writes made directly in storage show up in the next pull, because it reads and fingerprints every record again. Values without a canonical form, such as class instances other than `Date`, `Map`, `Set`, and `Uint8Array`, are resent on every pull.
 
 `createTandemEventStreamResponse` serves those pokes to browsers as server-sent events, and `connectTandemEventSource` from `@tanishqkancharla/tandem-core` turns them back into `poke` calls. A poke event's data is the payload as JSON, or empty for a bare poke; pass `schema` to both helpers to apply collection codecs. A stream whose reader falls behind drops payloads and sends one bare poke when it catches up. The stream sends `ready` after it registers, so the client pulls once per connection and catches writes it missed while disconnected. It also sends a keep-alive comment every 15 seconds and closes when the request aborts or the body is cancelled. Open streams keep an HTTP server from closing, so combine the request signal with a shutdown signal, as [`examples/todo`](https://github.com/tanishqkancharla/tandem/blob/main/examples/todo/apps/server/src/app.ts) does. The [Quickstart](quickstart.md#5-add-a-server) shows both sides.
+
+## Collection codecs
+
+A collection codec converts records between runtime values, such as `Date`, and JSON-safe values. `partialObject` builds one from field codecs such as `string`, `date`, `literal`, and `oneOf`, or your own from `codec`:
+
+```ts
+import {
+	collection,
+	date,
+	defineSchema,
+	partialObject,
+	string,
+} from "@tanishqkancharla/tandem-core"
+
+const schema = defineSchema({
+	events: collection({
+		codec: partialObject({ id: string, title: string, startsAt: date }),
+	}),
+})
+```
+
+Tandem applies collection codecs in IndexedDB client storage, between tabs, in the transport codecs below, and when deciding whether appended text can travel in a poke. Pull responses carry runtime records, and Tandem has no pull codec yet. Keep synced fields JSON-native, or encode `patch.set` values with the collection codec in your transport and decode them in the client's remote.
 
 ## Transport codecs
 
@@ -97,7 +119,7 @@ const { result, destroy } = await server.subscribe(
 )
 ```
 
-Server transactions have async reads. `set` and `remove` are sync; `update` is async because it reads the current record. Commit them through the server so connected clients get poked.
+Server transactions have async reads. `set` and `remove` are sync; `update` is async because it reads the current record. Commit them through the server so connected clients get poked. `server.commit` rejects if another commit changed a record the transaction read; start a new transaction to retry.
 
 ```ts
 const tx = server.transact()
@@ -137,7 +159,7 @@ const appendReply = defineMutator(schema, {
 })
 ```
 
-A missing record stays missing. A nullable string field can use `(message.note ?? "") + text`. The app's argument schema should reject malformed text. Concurrent named calls each read the latest committed value in the server queue. Raw transactions whose reads ran before another commit do not gain that guarantee.
+A missing record stays missing. A nullable string field can use `(message.note ?? "") + text`. The app's argument schema should reject malformed text. Concurrent named calls each read the latest committed value in the server queue. A raw transaction whose read went stale fails to commit instead, and you must retry it.
 
 The server compares each committed record with its before image. If the only differences are string extensions whose suffixes round trip through the collection codec, a viewer that already has the record receives compact append pokes. Other changes send a bare poke, and the viewer pulls the record. A poke carries each field's previous length and a guarded previous revision; missing or reordered pokes fall back to a pull. The server tracks the last write of its 10,000 most recently written records; older entries use a conservative guard.
 
@@ -174,6 +196,8 @@ interface TandemServerStorageApi<Schema> {
 	scan(args?: ScanStorageArgs): Promise<TandemTuple<Schema>[]>
 	commit(writes: WriteOps<TandemTuple<Schema>>): Promise<void>
 	close(): Promise<void>
+	// Optional: report external writes. Returns a synchronous unsubscribe.
+	subscribe?(onChange: () => void): () => void
 }
 ```
 
@@ -186,7 +210,7 @@ Tandem does not create or migrate application tables. See [Schema changes and cl
 ## Limitations
 
 - Records and acknowledged mutation IDs persist when the storage adapter persists them. The JSON-file adapter stores both; the experimental SQL adapter persists only application records. Revisions, cookies, and client scan windows live in the server process and reset on restart.
-- Pokes come from the `TandemServer` instance that committed the write, or from storage `subscribe` notifications. Writes made by other processes or directly to the database do not poke clients unless storage reports them. Event streams connected to another process miss those pokes and rely on the client's fallback pull. Storage notifications are bare pokes, without records.
+- Pokes come from the `TandemServer` instance that committed the write, or from storage `subscribe` notifications. Writes made by other processes or directly to the database do not poke clients unless storage reports them. Event streams connected to another process miss those pokes and rely on the client's fallback pull. Storage notifications are bare pokes, without records. The server ignores notifications that arrive while it commits its own write, so an external write reported in that window pokes no one; clients see it on their next pull.
 - Appends assume the server knows which records left a view. The server compares an appended record's stored value with the one the viewer has, so another process's write to that record makes the append a bare poke even without a notification. When storage reports another process's write through `subscribe`, the server treats every collection as changed until each client pulls. A write that storage does not report can still move other records into a limited page, and the server cannot see that the appended record left the page; its text keeps streaming until the client's next pull.
 - Revisions are per instance. If a client's pokes and pulls reach different instances, live records shown from one instance's pokes are dropped by the next pull from another.
 - The server has no built-in identity or read permission system. Named mutations support `authorize` hooks, but raw operations bypass them. Authenticate and authorize `push`, `pull`, and `connect` in your transport, including the event stream route. Pokes can carry records from the client's latest pulled view; close all affected connections when access ends. See [Permissions](permissions.md).

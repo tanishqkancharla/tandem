@@ -50,7 +50,7 @@ The sync engine batches queued pushes and pulls on an interval (`syncInterval`, 
 await remote.push({ clientId, mutations })
 ```
 
-If the push fails, the `commit` promise rejects, but the mutation stays pending and goes out again with the next push or reconnect. While disconnected, the client skips pushes and sends pending mutations after `connect`.
+If the push fails, the `commit` promise rejects, but the mutation stays pending and goes out again with the next push or reconnect. If the remote refuses a mutation, it acknowledges the mutation and returns a rejection: `commit` rejects with `MutationRejectedError`, and the next pull drops the write. While disconnected, the client skips pushes, so `commit` resolves at once; it sends pending mutations after `connect`.
 
 ### Pull
 
@@ -63,7 +63,7 @@ const { patch, lastMutationId } = response
 cookie = response.cookie
 ```
 
-- `patch` lists records to `set` and to `remove`.
+- `patch` lists records to `set` and to `remove`. A patch with `reset` holds the whole window instead, and the client drops every server record it does not list.
 - `cookie` is an opaque marker the client sends back on its next pull. A remote can use it to send only what changed since that pull, as `TandemServer` does. A client that restarts from storage drops its saved cookie, so its first pull fetches the full window.
 - `lastMutationId` is the last mutation from this client that the remote has applied, on every pull. It is `0` until the remote applies one.
 
@@ -85,7 +85,7 @@ Live records are not saved as server state. After a restart the client shows its
 
 The client applies each pull in one local transaction:
 
-1. Apply the patch, and update the base of any record it mentions.
+1. Apply the patch, and update the base of any record it mentions. A `reset` patch first removes every record and marks every base as absent.
 2. Drop pending mutations up to and including `lastMutationId`, since the remote has applied them. This happens even when the patch is empty.
 3. Reset each record that has a base to its base value.
 4. Re-apply the remaining pending mutations, one operation at a time, in order.

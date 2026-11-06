@@ -85,6 +85,7 @@ const client = new TandemClient({ schema, relations })
 
 - `one` defines a many-to-one relation. Its result is the related row or `null`.
 - `many` defines a one-to-many relation. Its result is an array, which is `[]` when nothing matches.
+- A `one` relation must point `to: "id"`, and a `many` relation must start `from: "id"`. `defineRelations` throws otherwise.
 
 Include relations with `with`. `true` includes all fields. An object accepts the same options as a root query, scoped to the related collection, and can nest further `with` clauses.
 

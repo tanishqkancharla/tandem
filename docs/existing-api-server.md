@@ -74,7 +74,7 @@ app.get("/api/tandem/events", async (c) => {
 })
 ```
 
-`readSyncRequest` and `checkSyncAccess` are application helpers. The first validates the `{ action, args }` envelope and decodes mutations before any push, as described in [Transport codecs](server.md#transport-codecs); it returns a `push` or `pull` request. The second rejects missing sessions, checks client ID ownership and access to this instance's data, and validates every pull query against the caller's read scope. Reuse the same checks for event connections. See the [todo server source](https://github.com/tanishqkancharla/tandem/blob/main/examples/todo/apps/server/src/app.ts) for request parsing and route wiring.
+`readSyncRequest` and `checkSyncAccess` are application helpers. The first validates the `{ action, args }` envelope and decodes mutations before any push, as described in [Transport codecs](server.md#transport-codecs); it returns a `push` or `pull` request. The second rejects missing sessions, checks client ID ownership and access to this instance's data, and validates every pull query against the caller's read scope. Reuse the same checks for event connections. The [todo server source](https://github.com/tanishqkancharla/tandem/blob/main/examples/todo/apps/server/src/app.ts) shows request parsing, as `validateRequest`, and route wiring. It checks only the envelope and has no authentication.
 
 Register server-only mutation hooks for write permissions. `allowOps: false` blocks raw operation mutations; it does not add permission checks to named mutations. The `session` passed to `push` reaches your hooks factory. See [Mutations](mutations.md#server-hooks).
 
