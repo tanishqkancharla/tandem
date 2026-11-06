@@ -488,6 +488,36 @@ for (const name of sqlDatabaseNames) {
 			expect(await server.query({ collection: "messages" })).toHaveLength(120)
 		})
 
+		test("pages that are not counts slice as arrays do", async () => {
+			await seed(7)
+			const pages: [offset: unknown, limit: unknown][] = [
+				[-5, 10],
+				[-5, 2],
+				[3, -1],
+				[1.5, 4],
+				[2, 2.5],
+				[Number.NaN, 3],
+				[2, Number.NaN],
+				[1e20, 3],
+				// Each a count, but their sum is not a safe integer.
+				[Number.MAX_SAFE_INTEGER, 1],
+			]
+			for (const [offset, limit] of pages)
+				for (const threadId of ["t1", "missing"]) {
+					const query = {
+						collection: "messages",
+						where: { threadId },
+						orderBy: { createdAt: "desc" },
+						offset,
+						limit,
+					} as unknown as Query
+					expect(
+						await server.query(query),
+						JSON.stringify({ offset, limit, threadId }),
+					).toEqual(await fullReads.query(query))
+				}
+		})
+
 		test("nullable columns stay tied with every number", async () => {
 			type Task = { id: string; title: string; dueAt?: number | null }
 			type TaskSchema = { tasks: Task }

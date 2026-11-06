@@ -534,15 +534,18 @@ function* rootCandidates(
 		([field, operator]) => field === "id" && operator === "=",
 	)
 	const key = idClause && idKey(query.collection, idClause[2])
-	// Scan windows come from clients, so a page may not be a count.
+	// Queries and scan windows can page with any number, which selectRows
+	// slices as arrays do. Only a count of leading rows becomes a limit.
 	const offset = query.offset ?? 0
+	const limit = offset + (query.limit ?? Number.NaN)
 	if (!key)
 		return yield* readCandidates({
 			collection: query.collection,
 			where: query.where ?? [],
 			order: query.order ?? [],
 			...(isCount(offset) &&
-				isCount(query.limit) && { limit: offset + query.limit }),
+				isCount(query.limit) &&
+				isCount(limit) && { limit }),
 		})
 	const [record] = yield* getRecords([key])
 	return record ? [record] : []
