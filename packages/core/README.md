@@ -31,6 +31,13 @@ await client.commit(tx)
 client.subscribe({ collection: "todos" }, (todos) => console.log(todos))
 ```
 
-Pass a `remote` to sync with a server built on [`@tanishqkancharla/tandem-server`](https://www.npmjs.com/package/@tanishqkancharla/tandem-server). The package also holds the schema builders, named mutations, IndexedDB storage, and `connectTandemEventSource` for server-sent events.
+Pass a `remote` to sync with a server built on [`@tanishqkancharla/tandem-server`](https://www.npmjs.com/package/@tanishqkancharla/tandem-server). The package also holds the schema builders, named mutations, and `connectTandemEventSource` for server-sent events.
+
+Two entry points hold code for one runtime, so the main entry runs anywhere:
+
+| Entry                                     | Holds                                                    |
+| ----------------------------------------- | -------------------------------------------------------- |
+| `@tanishqkancharla/tandem-core/indexeddb` | `TandemClientIndexedDbStorage`, browser IndexedDB storage |
+| `@tanishqkancharla/tandem-core/node`      | `JsonlLoggerSink`, a Node file logger                    |
 
 Read the [documentation](https://docs.tandemsync.dev), starting with the [Quickstart](https://docs.tandemsync.dev/quickstart).

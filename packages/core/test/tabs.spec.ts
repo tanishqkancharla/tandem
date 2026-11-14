@@ -12,8 +12,8 @@ import {
 	TandemClient,
 	type TandemClientArgs,
 	type TandemClientStorageApi,
-	TandemClientIndexedDbStorage,
 } from "@tanishqkancharla/tandem-core"
+import { TandemClientIndexedDbStorage } from "@tanishqkancharla/tandem-core/indexeddb"
 import {
 	InMemoryTabs,
 	type InMemoryTab,
