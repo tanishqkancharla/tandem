@@ -32,7 +32,7 @@ export const Route = createRootRoute({
 			<p>That page doesn’t exist. Find your way back to Tandem.</p>
 			<Link to="/">Home</Link>
 			{" · "}
-			<Link to="/docs">Documentation</Link>
+			<a href="https://docs.tandemsync.dev">Documentation</a>
 		</main>
 	),
 })

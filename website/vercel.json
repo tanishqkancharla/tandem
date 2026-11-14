@@ -3,5 +3,17 @@
 	"framework": null,
 	"buildCommand": "pnpm --filter @tandem/website build",
 	"outputDirectory": "dist/client",
+	"redirects": [
+		{
+			"source": "/docs",
+			"destination": "https://docs.tandemsync.dev",
+			"permanent": false
+		},
+		{
+			"source": "/docs/:path*",
+			"destination": "https://docs.tandemsync.dev/:path*",
+			"permanent": false
+		}
+	],
 	"rewrites": [{ "source": "/(.*)", "destination": "/_shell.html" }]
 }

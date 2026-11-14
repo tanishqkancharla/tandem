@@ -18,12 +18,8 @@
 		"errore": "^0.14.1",
 		"maui": "npm:@tanishqkancharla/maui@^0.0.62",
 		"motion": "^14.6.0",
-		"purse-styles": "^0.2.6",
 		"react": "^19.3.0",
-		"react-dom": "^19.3.0",
-		"react-markdown": "^10.1.0",
-		"rehype-slug": "^6.0.0",
-		"remark-gfm": "^4.0.1"
+		"react-dom": "^19.3.0"
 	},
 	"devDependencies": {
 		"@playwright/test": "^1.63.0",

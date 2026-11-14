@@ -1,6 +1,6 @@
 # Tandem documentation
 
-The guides are also a Holocron site. Edit the Markdown files here; `docs.json` controls navigation and site settings. The homepage in `website/` remains a separate TanStack Start app.
+The guides are also a Holocron site. Edit the Markdown files here; `docs.json` controls navigation and site settings, so add new pages there and to the index below. The homepage in `website/` is a separate TanStack Start app; its `/docs` paths redirect to this site.
 
 ## Run the docs site
 

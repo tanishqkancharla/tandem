@@ -1,4 +1,4 @@
-/* Maui owns typography, controls, colors, and focus on the docs pages. CSS owns the page layout and the home page. */
+/* Maui sets the theme. CSS owns the page layout and the home page. */
 html {
 	scroll-padding-top: 32px;
 }
@@ -177,127 +177,6 @@ button {
 	margin-top: 10px;
 	font-size: 13px;
 }
-.docs-shell {
-	max-width: 1280px;
-	margin: 0 auto;
-	padding: 32px;
-	display: grid;
-	grid-template-columns: 208px minmax(0, 1fr);
-	gap: 56px;
-	align-items: start;
-}
-.docs-sidebar {
-	position: sticky;
-	top: 32px;
-	max-height: calc(100svh - 64px);
-	overflow-y: auto;
-	display: flex;
-	flex-direction: column;
-	gap: 20px;
-	padding: 8px;
-}
-.docs-label {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	margin-top: -12px;
-}
-.docs-navigation {
-	display: flex;
-	flex-direction: column;
-	gap: 20px;
-}
-.nav-section > span {
-	display: block;
-	padding: 0 9px;
-	margin-bottom: 6px;
-}
-.nav-section ul {
-	list-style: none;
-	padding: 0;
-	margin: 0;
-	display: grid;
-	gap: 2px;
-}
-.sidebar-source {
-	padding: 12px 9px;
-	font-size: 12px;
-}
-.search-empty {
-	padding: 9px;
-}
-.docs-main {
-	min-width: 0;
-	padding: 8px 0 40px;
-}
-.doc-page {
-	max-width: 80ch;
-	margin: 0 auto;
-}
-.doc-eyebrow {
-	margin-bottom: 24px;
-}
-.markdown {
-	min-width: 0;
-	overflow-wrap: anywhere;
-}
-.markdown h1,
-.markdown h2,
-.markdown h3,
-.markdown h4 {
-	scroll-margin-top: 32px;
-}
-.markdown > h2 {
-	margin-top: 24px;
-}
-.markdown > h3 {
-	margin-top: 12px;
-}
-.markdown pre {
-	overflow-wrap: normal;
-	tab-size: 2;
-}
-.markdown .table-scroll {
-	overflow-x: auto;
-}
-.markdown table {
-	width: 100%;
-	border-collapse: collapse;
-	font-size: 14px;
-}
-.markdown td,
-.markdown th {
-	padding: 10px 12px;
-	border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
-	text-align: left;
-}
-.doc-edit {
-	margin-top: 48px;
-	font-size: 12px;
-}
-.doc-pagination {
-	border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
-	margin-top: 24px;
-	padding-top: 24px;
-	display: flex;
-	justify-content: space-between;
-	gap: 24px;
-}
-.doc-pagination a {
-	display: flex;
-	flex-direction: column;
-	gap: 6px;
-	text-decoration: none;
-}
-.doc-pagination a:hover {
-	text-decoration: underline;
-}
-.doc-pagination > div:last-child {
-	text-align: right;
-}
-.docs-mobile-header {
-	display: none;
-}
 .loading,
 .not-found {
 	max-width: 680px;
@@ -307,41 +186,6 @@ button {
 }
 .not-found p {
 	margin: 16px 0;
-}
-@media (max-width: 760px) {
-	.docs-shell {
-		display: block;
-		padding: 0 24px;
-	}
-	.docs-mobile-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		min-height: 64px;
-		gap: 24px;
-	}
-	.docs-sidebar {
-		display: none;
-		position: static;
-		max-height: none;
-		padding: 16px 0 32px;
-	}
-	.docs-sidebar.is-open {
-		display: flex;
-	}
-	.docs-brand,
-	.docs-label {
-		display: none;
-	}
-	.docs-main {
-		padding-top: 24px;
-	}
-	.doc-eyebrow {
-		margin-bottom: 20px;
-	}
-	.doc-pagination {
-		gap: 16px;
-	}
 }
 @media (max-width: 560px) {
 	.home {
