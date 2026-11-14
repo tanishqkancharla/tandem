@@ -1,6 +1,6 @@
 # Relational queries design
 
-Status: implemented. For usage, see [Queries](../queries.md). This page records the design rationale.
+Status: implemented. For usage, see [Queries](../queries.md). This page records the design rationale; where the implementation differs from the original plan, it describes the implementation.
 
 ## Overview
 
@@ -9,7 +9,7 @@ Relational Queries v2 makes Tandem queries schema-aware and relation-aware while
 The public query shape is a single serializable object with an explicit `collection` field:
 
 ```ts
-const threads = useQuery({
+const threads = useTandemQuery({
 	collection: "threads",
 	select: { id: true, title: true, status: true, updatedAt: true },
 	where: { status: "active" },
@@ -37,7 +37,7 @@ Only `collection` is required; omitted options are equivalent to `{}`.
 
 ## Design goals
 
-- Query a collection with `useQuery({ collection: "collection", select, where, with, orderBy, limit, offset })`.
+- Query a collection with `useTandemQuery({ collection: "collection", select, where, with, orderBy, limit, offset })`.
 - Include `many-to-one` and `one-to-many` relations through `with` using the same nested options shape as the root query.
 - Keep the public query shape JSON-serializable so it can be encoded for scan windows and remote sync.
 - Preserve relation cardinality in results: `many-to-one` returns object/null, `one-to-many` returns array.
@@ -84,7 +84,7 @@ where: {
 
 Rules:
 
-- A bare value is equality shorthand and encodes as `eq`.
+- A bare value other than a plain object is equality shorthand and encodes as `eq`. A bare object is read as operators, so object equality needs `{ eq: {...} }`.
 - Operator objects may use `eq`, `gt`, `lt`, `gte`, and `lte`.
 - Multiple fields and multiple operators on one field are combined with AND.
 - `OR`, `NOT`, `in`, `contains`, relation-field predicates, and arbitrary predicate functions are out of scope for v1.
@@ -102,7 +102,7 @@ Rules:
 
 - Values are only `"asc"` or `"desc"`.
 - Property insertion order defines sort precedence for multiple fields.
-- Omitted `orderBy` leaves storage scan order unspecified.
+- Omitted `orderBy` leaves the order unspecified. Today rows come back in ID order, but callers should not rely on it.
 - Callers that need stable pagination must provide an explicit order.
 - Nested relation `orderBy` clauses target the related collection.
 
@@ -110,7 +110,7 @@ Tradeoff: object syntax is ergonomic, but array syntax would make precedence mor
 
 ### `limit` and `offset`
 
-`limit` and `offset` are non-negative integers applied after `where` and `orderBy`:
+`limit` and `offset` apply after `where` and `orderBy`:
 
 ```ts
 limit: 50,
@@ -122,9 +122,9 @@ Rules:
 - Omitted `limit` means no maximum result count.
 - Omitted `offset` means `0`.
 - `limit: 0` is valid and returns no rows.
-- Negative, fractional, `NaN`, and infinite values are invalid.
+- Pass non-negative integers. Tandem does not validate them, and a negative `limit` drops rows from the end, as `Array.prototype.slice` does.
 - On `one-to-many` relation includes, `limit` and `offset` apply per parent.
-- On `many-to-one` relation includes, `limit` and `offset` are invalid because the relation result is already at most one object.
+- On `many-to-one` relation includes, they apply to the single match, so `offset: 1` yields `null`. They are accepted but have no use.
 
 ### `with`
 
@@ -198,7 +198,7 @@ The public API should enforce these compile-time rules:
 - `collection` must be a known collection name from the client schema.
 - `select`, `where`, and `orderBy` keys must be scalar fields on the current collection.
 - `where` values must be assignable to the field's TypeScript type.
-- Comparison operators should be restricted to comparable field types where practical.
+- Comparison operators are allowed on every field type. At runtime, values that are not both numbers or both strings compare as equal.
 - `with` keys must be relation names defined for the current collection.
 - Nested `with` options must be scoped to the target collection of that relation.
 - Result types must reflect selected scalar fields, included nested relations, and relation cardinality.
@@ -206,7 +206,7 @@ The public API should enforce these compile-time rules:
 This should type-check:
 
 ```ts
-const threads = useQuery({
+const threads = useTandemQuery({
 	collection: "threads",
 	select: { id: true, title: true },
 	where: { status: "active" },
@@ -225,42 +225,24 @@ threads[0].messages[0]?.body
 These should fail at compile time:
 
 ```ts
-useQuery({ collection: "threads", select: { missingField: true } })
-useQuery({ collection: "threads", where: { status: 123 } })
-useQuery({ collection: "threads", orderBy: { missingField: "asc" } })
-useQuery({ collection: "threads", with: { missingRelation: true } })
+useTandemQuery({ collection: "threads", select: { missingField: true } })
+useTandemQuery({ collection: "threads", where: { status: 123 } })
+useTandemQuery({ collection: "threads", orderBy: { missingField: "asc" } })
+useTandemQuery({ collection: "threads", with: { missingRelation: true } })
 ```
 
 Implementation detail: `defineRelations` must preserve literal relation names, target collections, and `many-to-one`/`one-to-many` relation types. If relation metadata widens too early to `AnyRelations<Schema>`, `with` and nested result inference will be weakly typed.
 
 ## Server authorization model
 
-Ad hoc object queries can work with a single backend `query` endpoint as long as the endpoint treats client queries as untrusted shape requests, not authorization decisions.
+Clients do not call a query endpoint. Their subscribed queries travel to the server as the scan window of each `pull`, and the server returns the records those queries cover. The server treats that window as an untrusted request for data, not an authorization decision. Tandem has no security context or row-level security of its own, so the application's sync endpoint must, before calling `pull`:
 
-The backend should always execute the query inside a server-derived security context:
+- Derive tenant and user context from the authenticated session, never from client-supplied filters.
+- Check every query in the window against the caller's read scope, including relation includes.
+- Validate the query shape: collection names, field names, relation names, operators, include depth, and maximum limits.
+- Cap resource use with maximum `limit`, `offset`, include depth, and window size.
 
-```ts
-async function handleQuery(request: Request, session: Session) {
-	const query = parseAndValidateQuery(await request.json())
-
-	return db
-		.withContext({
-			tenantId: session.tenantId,
-			userId: session.userId,
-		})
-		.runQuery(query)
-}
-```
-
-Required server behavior:
-
-- Derive tenant/user context from authenticated session state, never from client-provided query filters.
-- Apply tenant scoping and RLS to every collection touched by the query, including nested relations.
-- Validate query shape: collection names, field names, relation names, operators, include depth, and maximum limits.
-- Enforce field-level and relation-level allowlists if some columns or relations are sensitive; RLS alone usually protects rows, not columns.
-- Cap resource usage with maximum `limit`, maximum `offset`, maximum include depth, and possibly maximum relation fanout.
-
-With this model, named query registries are optional ergonomics rather than required for security. A Zero-like named query layer may still be useful later for app-defined reusable queries or policy-heavy endpoints.
+Sync sends whole records, so `select` does not hide fields; keep sensitive fields in collections the caller cannot query. [Authentication and permissions](../permissions.md) shows the setup. With this model, named query registries are optional ergonomics rather than required for security. A Zero-like named query layer may still be useful later for reusable queries or policy-heavy endpoints.
 
 ## Comparison with inspirations
 
@@ -287,7 +269,7 @@ const threads = await db.query.threads.findMany({
 Equivalent Tandem proposal:
 
 ```ts
-const threads = useQuery({
+const threads = useTandemQuery({
 	collection: "threads",
 	select: { id: true, title: true, status: true },
 	where: { status: "active" },
@@ -328,7 +310,7 @@ const activeThreads = createLiveQueryCollection({
 Equivalent Tandem proposal:
 
 ```ts
-const activeThreads = useQuery({
+const activeThreads = useTandemQuery({
 	collection: "threads",
 	select: { id: true, title: true, status: true },
 	where: { status: "active" },
@@ -375,7 +357,7 @@ const [threads] = useQuery(queries.threads.active({ limit: 50 }))
 Equivalent Tandem proposal:
 
 ```ts
-const threads = useQuery({
+const threads = useTandemQuery({
 	collection: "threads",
 	where: { status: "active" },
 	orderBy: { updatedAt: "desc" },

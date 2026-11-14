@@ -49,7 +49,9 @@ Create one `TandemServer` and add two routes next to the existing ones:
 - `POST /api/tandem` with body `{ action: "push" | "pull", args }`. Respond with `await server.push(args)` or `await server.pull(args)`.
 - `GET /api/tandem/events?clientId=...`. Return `createTandemEventStreamResponse({ remote: server, clientId, schema, signal })`.
 
-`TandemServerJsonFileStorage` is fine for development. It is not meant for production; tell the user and point them to [Server storage](https://docs.tandemsync.dev/server#storage) for writing an adapter over their database. Run a single `TandemServer` instance, and apply the project's existing authentication to both routes.
+`TandemServerJsonFileStorage` is fine for development. It is not meant for production. If the project uses PostgreSQL, MySQL, or Cloudflare D1, tell the user about the experimental SQL adapters in [Choosing storage](https://docs.tandemsync.dev/sql), including their limits; otherwise point them to [Custom storage adapters](https://docs.tandemsync.dev/storage/custom). [Add Tandem to an existing API server](https://docs.tandemsync.dev/existing-api-server) shows the routes in a real backend.
+
+Run a single `TandemServer` instance. Apply the project's existing authentication to both routes, and limit each user's pulls and event stream to data they may read; see [Authentication and permissions](https://docs.tandemsync.dev/permissions). If you cannot enforce read access, tell the user.
 
 ## 5. Create the client
 
@@ -62,6 +64,6 @@ Pick one screen. Read with `useTandemQuery` (or `client.subscribe`) and write wi
 ## 7. Verify
 
 - Run the project's type check, lint, and tests.
-- Start the app, open it in two tabs, write in one, and confirm the change appears in the other without a reload.
+- Start the app and open it in two separate browser profiles, or a normal and a private window. Write in one and confirm the change appears in the other without a reload. Two tabs of one profile share data locally, so they pass even when the server is not syncing.
 
 Report what you changed, which routes you added, and anything you could not wire up.
