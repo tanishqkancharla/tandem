@@ -307,6 +307,9 @@ importers:
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
+      eventsource:
+        specifier: ^5.1.5
+        version: 5.1.5
       miniflare:
         specifier: ^4.20260730.0
         version: 4.20260730.0
@@ -521,6 +524,9 @@ importers:
       '@types/pg':
         specifier: ^8.23.1
         version: 8.23.1
+      eventsource:
+        specifier: ^5.1.5
+        version: 5.1.5
       miniflare:
         specifier: ^4.20260730.0
         version: 4.20260730.0
@@ -4507,9 +4513,17 @@ packages:
     resolution: {integrity: sha512-EKN1vKAMcZ8MlYMpaNuxN6R9yakzH6uajHcHVTqWJzvu5pWw9DyhbP35HH8MVBQ+dZjAfDxk+A8NiR9KWaXiyQ==}
     engines: {node: '>=18.0.0'}
 
+  eventsource-parser@4.1.3:
+    resolution: {integrity: sha512-jZVIVilXZfAx6H20ZKKEj5dabbpD9ETmMj3uHsjMmgBzBHB6tsHrmdWB4mAiy3amtN6MOoVkfXRQu4wf1n88Rw==}
+    engines: {node: '>=22.12'}
+
   eventsource@3.0.7:
     resolution: {integrity: sha512-CRT1WTyuQoD771GW56XEZFQ/ZoSfWid1alKGDYMmkt2yl8UXrVR4pspqWNEcqKvVIzg6PAltWjxcSSPrboA4iA==}
     engines: {node: '>=18.0.0'}
+
+  eventsource@5.1.5:
+    resolution: {integrity: sha512-Z41ZPzy7CM1NgAKgrG6pzPdOSimaly20ZY3+6opMQw/VEso+xhPWX4asJT2WAX8zPyFitV3C1+WJMWSLKSlAWg==}
+    engines: {node: '>=22.12.0'}
 
   execa@5.1.1:
     resolution: {integrity: sha512-8uSpZZocAZRBAPIEINJj3Lo9HyGitllczc27Eh5YYojjMFMn8yHMDMaUHE2Jqfq05D/wucwI4JGURyXt1vchyg==}
@@ -10869,9 +10883,15 @@ snapshots:
 
   eventsource-parser@3.1.1: {}
 
+  eventsource-parser@4.1.3: {}
+
   eventsource@3.0.7:
     dependencies:
       eventsource-parser: 3.1.1
+
+  eventsource@5.1.5:
+    dependencies:
+      eventsource-parser: 4.1.3
 
   execa@5.1.1:
     dependencies:

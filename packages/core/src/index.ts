@@ -23,7 +23,11 @@ export type {
 } from "./sync/SyncEngine.js"
 export { PatchApi, PokeApi } from "./sync/SyncEngine.js"
 export { connectTandemEventSource } from "./sync/TandemEventSource.js"
-export type { TandemEventSourceArgs } from "./sync/TandemEventSource.js"
+export type {
+	TandemEventSourceApi,
+	TandemEventSourceArgs,
+	TandemEventSourceConstructor,
+} from "./sync/TandemEventSource.js"
 export { Transaction } from "./transaction/Transaction.js"
 export type {
 	AppendableField,

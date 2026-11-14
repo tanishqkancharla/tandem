@@ -249,6 +249,14 @@ export const todoRemote: RemoteApi<TodoSchema> = {
 
 `connectTandemEventSource` pulls when the stream opens or reconnects, on every server poke, and every 60 seconds as a fallback (`pullInterval`; `null` turns it off). The browser's `EventSource` reconnects dropped streams on its own. When it gives up, such as after an error response, the helper reopens the stream after `reconnectDelay` (5 s by default). Pass `schema` to decode poke records with [collection codecs](server.md#collection-codecs), and `eventSourceInit` for `EventSource` options such as `withCredentials`.
 
+Outside a browser, such as in Node, Cloudflare Workers, or React Native, the runtime may have no global `EventSource`. Pass one with the `EventSource` option, such as the one from the [`eventsource`](https://www.npmjs.com/package/eventsource) package. `eventSourceInit` then takes that constructor's options:
+
+```ts
+import { EventSource } from "eventsource"
+
+connectTandemEventSource({ url, poke, EventSource })
+```
+
 The client only pulls data for queries it subscribes to, so another client's writes appear once a matching `subscribe` or `useTandemQuery` is active.
 
 ## Next steps

@@ -4,6 +4,7 @@ import {
 	type RemoteApi,
 	type ClientApi,
 	type ClientId,
+	type TandemEventSourceConstructor,
 } from "@tanishqkancharla/tandem-core"
 import * as errore from "errore"
 import { schema, type AppSchema } from "./schema.js"
@@ -13,7 +14,11 @@ class SyncRemoteError extends errore.createTaggedError({
 	message: "Sync HTTP failed to $action",
 }) {}
 
-export function createRemote(baseUrl: string): RemoteApi<AppSchema> {
+/** Pass `EventSource` where the runtime has no global one, such as Node. */
+export function createRemote(
+	baseUrl: string,
+	EventSource?: TandemEventSourceConstructor,
+): RemoteApi<AppSchema> {
 	const pokes = new Map<ClientId, ClientApi<AppSchema>["poke"]>()
 	async function call<Action extends "push" | "pull">(
 		action: Action,
@@ -38,7 +43,12 @@ export function createRemote(baseUrl: string): RemoteApi<AppSchema> {
 		connect: ({ clientId, poke }) => {
 			const url = new URL("/api/tandem/events", baseUrl)
 			url.searchParams.set("clientId", clientId)
-			const disconnect = connectTandemEventSource({ url, poke, schema })
+			const disconnect = connectTandemEventSource({
+				url,
+				poke,
+				schema,
+				EventSource,
+			})
 			pokes.set(clientId, poke)
 			return Promise.resolve(() => {
 				if (pokes.get(clientId) === poke) pokes.delete(clientId)
