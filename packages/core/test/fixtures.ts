@@ -15,9 +15,9 @@ import {
 	type RuntimeSchemaDefinition,
 	t,
 	TandemClient,
-	TandemClientIndexedDbStorage,
 	type TimerApi,
 } from "@tanishqkancharla/tandem-core"
+import { TandemClientIndexedDbStorage } from "@tanishqkancharla/tandem-core/indexeddb"
 import {
 	TandemServer,
 	type TandemServerStorageApi,

@@ -16,6 +16,10 @@
 			"import": "./dist/internal.js",
 			"default": "./dist/internal.js"
 		},
+		"./indexeddb": {
+			"types": "./dist/clientStorage/TandemClientIndexedDbStorage.d.ts",
+			"import": "./dist/clientStorage/TandemClientIndexedDbStorage.js"
+		},
 		"./node": {
 			"types": "./dist/utils/Logger.node.d.ts",
 			"import": "./dist/utils/Logger.node.js"

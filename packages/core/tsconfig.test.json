@@ -11,6 +11,9 @@
 		"paths": {
 			"@tanishqkancharla/tandem-core": ["./src/index.ts"],
 			"@tanishqkancharla/tandem-core/internal": ["./src/internal.ts"],
+			"@tanishqkancharla/tandem-core/indexeddb": [
+				"./src/clientStorage/TandemClientIndexedDbStorage.ts"
+			],
 			"@tanishqkancharla/tandem-server": ["../server/src/index.ts"],
 			"@tanishqkancharla/gatekeeper": ["../gatekeeper/src/Gatekeeper.ts"]
 		}
