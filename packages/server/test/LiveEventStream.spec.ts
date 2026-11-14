@@ -15,6 +15,7 @@ import {
 	type RemoteApi,
 } from "@tanishqkancharla/tandem-core"
 import * as errore from "errore"
+import { EventSource } from "eventsource"
 import { expect, test, vi } from "vitest"
 import { createTandemEventStreamResponse, TandemServer } from "../src/index.js"
 import { TestTandemServerStorage } from "./TandemServerStorage.fixture.js"
@@ -100,6 +101,8 @@ test("server-sent pokes show codec-backed appends before any pull returns them",
 					},
 					schema,
 					pullInterval: null,
+					// Node has no global EventSource without a flag.
+					EventSource,
 				}),
 			),
 		pull: async (args) => {

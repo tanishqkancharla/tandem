@@ -9,6 +9,7 @@ import {
 } from "@tanishqkancharla/tandem-core"
 import * as errore from "errore"
 import { build } from "esbuild"
+import { EventSource } from "eventsource"
 import { Miniflare } from "miniflare"
 import { expect, test } from "vitest"
 import { schema } from "../src/schema.js"
@@ -55,12 +56,12 @@ test("two clients sync existing D1 rows over SSE and recover a disconnected view
 	const url = (await runtime.ready).toString()
 	const alice = new TandemClient({
 		schema,
-		remote: createRemote(url),
+		remote: createRemote(url, EventSource),
 		logger: new Logger(),
 	})
 	const bob = new TandemClient({
 		schema,
-		remote: createRemote(url),
+		remote: createRemote(url, EventSource),
 		logger: new Logger(),
 	})
 	cleanup.defer(() => alice.close())
@@ -139,7 +140,7 @@ test("confirms a writer's push without waiting for an unavailable SSE stream", a
 				edge.close((error) => (error ? reject(error) : resolve())),
 			),
 	)
-	const remote = createRemote(url)
+	const remote = createRemote(url, EventSource)
 	const clientId = tag<ClientId>("writer-without-sse")
 	const acknowledgements: MutationId[] = []
 	const disconnect = await remote.connect({

@@ -38,8 +38,6 @@ export default defineConfig({
 	},
 	test: {
 		allowOnly: !process.env.CI,
-		// Node 22 ships EventSource behind a flag; SSE tests use the real one.
-		execArgv: ["--experimental-eventsource"],
 		isolate: false,
 	},
 })
