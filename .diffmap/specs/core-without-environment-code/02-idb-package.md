@@ -8,7 +8,7 @@
 
 Create `packages/idb`, published as `@tanishqkancharla/tandem-idb`, and move the storage, its test, and the benchmark there. Core then has no browser code and no IndexedDB dependency. The package can depend on core without a cycle, because core tests use memory storage.
 
-The storage's dependencies point one way. It takes public types from core's main entry and the shared codec helper from `/internal`, the entry [[packages/server/src/TandemServer.ts]] already imports from:
+The storage's dependencies point one way. It takes public types and `codec` from core's main entry, and three helpers that apps never need from `/internal`, the entry [[packages/server/src/TandemServer.ts]] already imports from. It takes `encodeTuple` and `decodeTuple` from `tuple-database`, so the package lists that dependency too:
 
 ```mermaid [Imports of the moved storage]
 flowchart LR
@@ -16,14 +16,16 @@ flowchart LR
     main["@tanishqkancharla/tandem-core"]
     internal["@tanishqkancharla/tandem-core/internal"]
     idbdep["idb"]
-    storage -->|"TandemClientStorageApi, codecs, schema types"| main
-    storage -->|transformClientTupleValue| internal
+    tuples["tuple-database"]
+    storage -->|"TandemClientStorageApi, TandemClientTuple, CollectionCodecs,<br/>AnySchema, RuntimeSchemaDefinition, codec, Json"| main
+    storage -->|"getSchemaCodecs, transformClientTupleValue,<br/>AnyStorageSchema"| internal
     storage --> idbdep
+    storage -->|"encodeTuple, decodeTuple, ScanStorageArgs, WriteOps"| tuples
     %% ref node:main [[packages/core/src/index.ts]]
     %% ref node:internal [[packages/core/src/internal.ts]]
 ```
 
-Today the storage imports the helper by relative path. It moves to `/internal`:
+Today the storage imports these helpers by relative path. The write path shows the change:
 
 ```callstack [TandemClientIndexedDbStorage.commit]
  TandemClientIndexedDbStorage.commit [[packages/core/src/browser/TandemClientIndexedDbStorage.ts#TandemClientIndexedDbStorage]]
@@ -33,8 +35,12 @@ Today the storage imports the helper by relative path. It moves to `/internal`:
 ```
 
 ```ts
-// packages/core/src/internal.ts gains one line
-export { transformClientTupleValue } from "./clientStorage/clientTupleValues.js"
+// packages/core/src/internal.ts gains
+export { getSchemaCodecs } from "./schema/collectionCodecs.js"
+export {
+	transformClientTupleValue,
+	type AnyStorageSchema,
+} from "./clientStorage/clientTupleValues.js"
 ```
 
 The new package looks like `packages/react`: one `src/` folder, a `dist/` build, and a project reference to core. Its tsconfig extends the root one, which already includes the DOM lib, so the storage needs no special config:
@@ -59,7 +65,8 @@ packages/idb/
 	},
 	"dependencies": {
 		"@tanishqkancharla/tandem-core": "workspace:*",
-		"idb": "^8.0.4"
+		"idb": "^8.0.4",
+		"tuple-database": "github:tanishqkancharla/tuple-database#ebe6b84edbc1371d0eb611cf5ca28d2f76be38db"
 	},
 	"devDependencies": {
 		"fake-indexeddb": "^6.2.5"
@@ -80,7 +87,7 @@ The test keeps running the shared contract. It imports the suite from core's tes
 
 The root [[vitest.config.js]] swaps its `@tanishqkancharla/tandem-core/idb` alias for one named `@tanishqkancharla/tandem-idb`, pointing at `packages/idb/src/index.ts`. Core's [[packages/core/tsconfig.test.json]] drops its `/idb` path and core drops `fake-indexeddb`.
 
-The benchmark moves with the storage, because it measures tab coordination over IndexedDB. Its run command changes from `../packages/core/benchmarks/tabs.ts` to `../packages/idb/benchmarks/tabs.ts`, and its relative imports of core and server source gain one more `../core` step.
+The benchmark moves with the storage, because it measures tab coordination over IndexedDB. Its run command changes from `../packages/core/benchmarks/tabs.ts` to `../packages/idb/benchmarks/tabs.ts`. Its imports of core source change from `../src/...` to `../../core/src/...`. Its imports of server source stay `../../server/src/...`, since both benchmark folders sit at the same depth. It imports the storage from `../src/index.js`.
 
 Publishing needs one more line, after core and before react, in [[.github/workflows/publish.yml]]. [[scripts/publish-smoke.mjs]] finds packages under `packages/` and orders them by dependencies, so it covers the new package without changes:
 
