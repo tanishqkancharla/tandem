@@ -1,6 +1,6 @@
 # Phase 7: Run the sync engine as its own service
 
-[Phase 6](11-stateless-pulls.md) made the server stateless and [Phase 5](10-channels.md) made channels the only contract with the sync engine. This phase wraps `TandemSyncEngine` in an HTTP service, so a serverless server can publish to it and clients can connect to it: mode 2 in [Target architecture](02-target-architecture.md#mode-2-serverless-server-with-an-external-sync-engine).
+[Phase 6](11-stateless-pulls.md) made the backend stateless and [Phase 5](10-channels.md) made channels the only contract with the sync engine. This phase wraps `TandemSyncEngine` in an HTTP service, so a serverless backend can publish to it and clients can connect to it: mode 2 in [Target architecture](02-target-architecture.md#mode-2-serverless-backend-with-an-external-sync-engine).
 
 **Today**
 
@@ -8,7 +8,7 @@ Pokes come only from the process that committed ([[docs/server.md]]). A server o
 
 **Proposed**
 
-The app deploys one small Node service, `createTandemSyncEngineServer`, on Fly, Railway, or any VM. The serverless server publishes to it over HTTP with a shared secret. Clients connect to it with the token from their pull. A commit reaches other clients within one network round trip of the publish.
+The app deploys one small Node service, `createTandemSyncEngineServer`, on Fly, Railway, or any VM. The serverless backend publishes to it over HTTP with a shared secret. Clients connect to it with the token from their pull. A commit reaches other clients within one network round trip of the publish.
 
 ```ts
 // sync-engine.ts, deployed once
@@ -21,7 +21,7 @@ createTandemSyncEngineServer({ engine, publishSecret: process.env.TANDEM_SECRET!
 
 ```ts
 // the app's server, in a function
-const server = new TandemServer({
+const server = new TandemBackend({
 	// ...
 	publisher: tandemSyncEngineClient({ url: SYNC_URL, secret: TANDEM_SECRET }),
 	live: { url: SYNC_URL, secret: TANDEM_SECRET }, // signs grants in pull responses
@@ -39,7 +39,7 @@ const server = new TandemServer({
 
 ## Tokens
 
-A grant token is an HMAC over the client ID, channels, and expiry, signed with the secret the server and sync engine share. It is short-lived; each pull issues a fresh one when the old one nears expiry.
+A grant token is an HMAC over the client ID, channels, and expiry, signed with the secret the backend and sync engine share. It is short-lived; each pull issues a fresh one when the old one nears expiry.
 
 ```ts
 type TandemGrantClaims = { clientId: ClientId; channels: string[]; expires: number }
@@ -55,13 +55,13 @@ function verifyTandemToken(secret: string) {
 }
 ```
 
-The secret signs with Web Crypto, so the server side runs in Workers and functions.
+The secret signs with Web Crypto, so the backend side runs in Workers and functions.
 
 ## Scale
 
 One Node process holds tens of thousands of SSE connections. Past that, several sync engines need publishes fanned out to all of them, through Redis pub/sub or Postgres `NOTIFY`. This phase supports one process and documents the limit; a `TandemPublisher` that writes to Redis can come later without changing clients.
 
-Tests: an end-to-end test runs the server and sync engine as separate HTTP servers and checks a second client sees a commit without its fallback pull. `dst/` treats publish requests as network messages, so they can be dropped, delayed, or reordered, and asserts that a dropped publish is repaired by the fallback pull within its interval.
+Tests: an end-to-end test runs the backend and sync engine as separate HTTP servers and checks a second client sees a commit without its fallback pull. `dst/` treats publish requests as network messages, so they can be dropped, delayed, or reordered, and asserts that a dropped publish is repaired by the fallback pull within its interval.
 
 ```changes
 

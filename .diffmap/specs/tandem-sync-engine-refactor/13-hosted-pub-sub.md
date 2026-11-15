@@ -1,6 +1,6 @@
 # Phase 8: Ably and Pusher as sync engines
 
-[Phase 7](12-standalone-sync-engine.md) gave apps a sync engine they deploy themselves. This phase lets apps skip that service and use a hosted pub/sub service instead, which is mode 4 in [Target architecture](02-target-architecture.md#mode-4-hosted-pub-sub-ably-pusher). The [Library API](03-library-api.md#two-seams) seams carry it: a `TandemPublisher` on the server and a `TandemLiveTransport` on the client.
+[Phase 7](12-standalone-sync-engine.md) gave apps a sync engine they deploy themselves. This phase lets apps skip that service and use a hosted pub/sub service instead, which is mode 4 in [Target architecture](02-target-architecture.md#mode-4-a-hosted-service-ably-pusher). The [Library API](03-library-api.md#two-seams) seams carry it: a `TandemPublisher` on the backend and a `TandemLiveTransport` on the client.
 
 **Today**
 
@@ -8,11 +8,11 @@ An app on Vercel with an Ably or Pusher account has to hand-write a remote whose
 
 **Proposed**
 
-The app passes `ablyPublisher` or `pusherPublisher` to the server and `ablyLive` or `pusherLive` to `createTandemRemote`. It runs no long-lived process of its own.
+The app passes `ablyPublisher` or `pusherPublisher` to the backend and `ablyLive` or `pusherLive` to `createTandemRemote`. It runs no long-lived process of its own.
 
 ```ts
 // server
-const server = new TandemServer({
+const server = new TandemBackend({
 	// ...
 	publisher: ablyPublisher({ rest: new Ably.Rest(ABLY_KEY) }),
 	live: ablyGrants({ rest }), // pull responses carry an Ably token request scoped to the client's channels

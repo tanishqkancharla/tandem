@@ -1,6 +1,6 @@
 # Phase 9: Feed the sync engine from Postgres
 
-Phases [7](12-standalone-sync-engine.md) and [8](13-hosted-pub-sub.md) poke clients only for writes that go through `TandemServer`. This phase adds a `TandemChangeSource` for Postgres ([Library API](03-library-api.md#sync-engine)), so the sync engine pokes clients for any write to a mapped table: mode 3 in [Target architecture](02-target-architecture.md#mode-3-database-change-feed).
+Phases [7](12-standalone-sync-engine.md) and [8](13-hosted-pub-sub.md) poke clients only for writes that go through `TandemBackend`. This phase adds a `TandemChangeSource` for Postgres ([Library API](03-library-api.md#sync-engine)), so the sync engine pokes clients for any write to a mapped table: mode 3 in [Target architecture](02-target-architecture.md#mode-3-database-change-feed).
 
 **Today**
 
@@ -14,8 +14,8 @@ The sync engine service starts a Postgres change source. A write from any source
 const engine = new TandemSyncEngine({ verify })
 const feed = postgresChangeSource({
 	pool,
-	tables, // the same TandemSqlTable mapping the server uses
-	channels, // the same record channel function the server uses
+	tables, // the same TandemSqlTable mapping the backend uses
+	channels, // the same record channel function the backend uses
 	mode: "logical-replication", // or "notify"
 })
 await feed.start(engine)
@@ -44,7 +44,7 @@ Recommendation: ship triggers with `NOTIFY` first, since they work everywhere an
 +    └── publisher.publish({ channels })
 ```
 
-Writes made by `TandemServer` itself arrive twice: once from the server's publish and once from the feed. The client's pull queue coalesces them, so the cost is one extra poke per commit, not an extra pull. Apps that run only the feed can omit the server's publisher.
+Writes made by `TandemBackend` itself arrive twice: once from the backend's publish and once from the feed. The client's pull queue coalesces them, so the cost is one extra poke per commit, not an extra pull. Apps that run only the feed can omit the backend's publisher.
 
 The trigger and function come from the migration helper in [Database metadata](04-database-metadata.md#fumadb-or-kysely), generated per mapped table:
 
@@ -63,7 +63,7 @@ create trigger tandem_notify_todos after insert or update or delete on todos
 
 A row over the 8 KB limit sends only its key columns, and the source publishes the collection-level channel for it.
 
-Tests: PGlite supports `LISTEN`/`NOTIFY`, so a server test writes with raw SQL and checks the client is poked. Logical replication tests need a real Postgres and run in CI only. `dst/` adds external writers that bypass the server, with checks that each one pokes subscribed clients when the feed is on.
+Tests: PGlite supports `LISTEN`/`NOTIFY`, so a backend test writes with raw SQL and checks the client is poked. Logical replication tests need a real Postgres and run in CI only. `dst/` adds external writers that bypass the backend, with checks that each one pokes subscribed clients when the feed is on.
 
 ```changes
 

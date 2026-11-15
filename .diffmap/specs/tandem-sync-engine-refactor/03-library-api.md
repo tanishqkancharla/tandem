@@ -12,7 +12,7 @@ The flexibility comes from two small interfaces, one on each side of the sync en
 ```mermaid [The seams]
 flowchart LR
     subgraph Server side
-      S[TandemServer] -->|publish| P{{TandemPublisher}}
+      S[TandemBackend] -->|publish| P{{TandemPublisher}}
       CF[Change source] -->|publish| P
     end
     P --> E1[TandemSyncEngine in process]
@@ -31,13 +31,13 @@ flowchart LR
 
 ## Server side
 
-The server gains three optional arguments. Without them it behaves as a server with no sync engine.
+`TandemBackend` takes today's server arguments plus four optional ones. Without them it is a backend with no sync engine: clients see changes on their own pushes and fallback pulls. `TandemServer` takes the same arguments minus `publisher`, and wires in its own `TandemSyncEngine` ([Phase 4](09-extract-sync-engine.md)).
 
 ```ts
-export type TandemServerArgs<Schema, Relations, Mutators, RequestContext> = {
+export type TandemBackendArgs<Schema, Relations, Mutators, RequestContext> = {
 	schema: RuntimeSchemaDefinition<Schema>
 	relations: Relations
-	storage: TandemServerStorageApi<Schema>
+	storage: TandemBackendStorageApi<Schema>
 	mutators?: Mutators
 	hooks?: (request: RequestContext | undefined) => ServerMutatorHooks<Schema, Relations, Mutators>
 	/** Where commits are announced. Omit for no live updates. */
@@ -105,12 +105,12 @@ export type TandemLiveGrant = {
 
 ## Sync engine
 
-`TandemSyncEngine` is the in-memory core every Tandem-run sync engine shares. It implements `TandemPublisher`, so mode 1 passes it straight to the server:
+`TandemSyncEngine` is the in-memory core every Tandem-run sync engine shares. It implements `TandemPublisher`, so `TandemServer` passes it straight to its backend:
 
 ```ts
 export class TandemSyncEngine implements TandemPublisher {
 	constructor(args: {
-		/** Checks a grant's token. Omit when the engine runs in the server's process. */
+		/** Checks a grant's token. Omit when the engine runs in the backend's process. */
 		verify?: (token: string, clientId: ClientId) => Promise<string[] | Error>
 		/** At most one poke per connection per interval, in milliseconds. @default 50 */
 		pokeInterval?: number | TimerApi
@@ -168,7 +168,8 @@ const remote = createTandemRemote({
 +response = remote.pull({ clientId, cookie, scanWindow })
 +├── response = POST url { action: "pull", args } # with the MutationApi codec
 +├── if response.live differs from the last grant:
-+│   └── connection.setChannels(response.live) # join and leave channels
++│   ├── await connection.setChannels(response.live) # join and leave channels
++│   └── if channels were added: queue another pull # see Phase 5
 +└── return response
 ```
 
@@ -177,12 +178,13 @@ const remote = createTandemRemote({
 | Package or entry | Contents | Runs in |
 | --- | --- | --- |
 | `@tanishqkancharla/tandem-core` | `createTandemRemote`, `TandemLiveTransport`, `tandemEventSource` | Any runtime, after #112 |
-| `@tanishqkancharla/tandem-server` | `TandemServer`, `TandemPublisher`, `TandemChannels`, view stores | Any runtime |
-| `@tanishqkancharla/tandem-server/sql` | SQL storage and metadata migrations | Any runtime |
+| `@tanishqkancharla/tandem-backend` (today's `tandem-server`) | `TandemBackend`, `TandemPublisher`, `TandemChannels`, view stores, `handleTandemRequest` | Any runtime |
+| `@tanishqkancharla/tandem-backend/sql` | SQL storage and metadata migrations | Any runtime |
+| `@tanishqkancharla/tandem-server` | `TandemServer`: a backend and a sync engine in one process | Any long-lived runtime |
 | `@tanishqkancharla/tandem-sync` (new) | `TandemSyncEngine`, event stream and WebSocket responses, `tandemSyncEngineClient` publisher | Any runtime |
 | `@tanishqkancharla/tandem-sync/node` | Standalone sync engine HTTP server | Node |
 | `@tanishqkancharla/tandem-sync/postgres` | Postgres change source | Node |
-| `.../ably`, `.../pusher` | Publishers (server) and live transports (client) | Any runtime |
+| `.../ably`, `.../pusher` | Publishers (backend) and live transports (client) | Any runtime |
 | `.../cloudflare`, `.../next`, `.../rivet` | Adapters from [Phase 10](15-first-class-adapters.md) | Their hosts |
 
-A separate `tandem-sync` package keeps the sync engine free of storage code, since it deploys apart from the server. The hosted-service adapters can start as subpaths and move to their own packages if their SDKs weigh on installs; they would be optional peer dependencies.
+Each package matches a class. A separate `tandem-sync` package keeps the sync engine free of storage code, since it can deploy apart from the backend; `tandem-server` depends on both. The hosted-service adapters can start as subpaths and move to their own packages if their SDKs weigh on installs; they would be optional peer dependencies.
