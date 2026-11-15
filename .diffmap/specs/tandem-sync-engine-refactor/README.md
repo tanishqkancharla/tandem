@@ -1,0 +1,104 @@
+# Split Tandem into a client, a stateless server, and an optional sync engine
+
+A plan for running Tandem's server without state, so it fits serverless hosts, and moving the job of telling clients about changes into a separate, optional sync engine. Nothing here is built yet.
+
+## Problem
+
+`TandemServer` does three jobs in one object, and two of them need a long-lived process:
+
+1. It runs mutations and writes the database. This needs no state between requests.
+2. It answers pulls with a diff against what each client last saw. It keeps that view in memory, per client.
+3. It holds every client's event stream and pokes clients after each commit. It keeps the connections, what each client reads, and a per-instance commit counter in memory.
+
+So every request and event stream for one data scope must reach the same process. The docs say so: "Route that scope to one owner" ([[docs/existing-api-server.md]]). That works on a Node server or a Durable Object, but not on Vercel, Netlify, or Lambda, where each request may reach a fresh instance and long connections are costly. It also means only writes made through that process reach clients live: a background job that writes the database directly pokes no one.
+
+## Solution overview
+
+Split the three jobs into three pieces with narrow contracts:
+
+```mermaid [Three pieces]
+flowchart LR
+    C[Client: TandemClient] -->|push, pull over HTTP| S[Server: TandemServer, stateless]
+    S -->|reads and writes records and metadata| DB[(App database)]
+    S -->|publish: these channels changed| E[Sync engine, optional]
+    DB -.->|change feed, optional| E
+    E -->|poke over SSE, WebSocket, Ably, or Pusher| C
+    %% ref node:C [[packages/core/src/TandemClient.ts#TandemClient]]
+    %% ref node:S [[packages/server/src/TandemServer.ts#TandemServer]]
+```
+
+- **Client.** Unchanged in spirit. It pushes and pulls through the server, and opens a live connection to whatever sync engine the app uses. The client's `RemoteApi` already separates `connect` from `push` and `pull` ([[packages/core/src/sync/SyncEngine.ts#RemoteApi]]), which is the seam this plan uses.
+- **Server.** Runs mutations and pulls per request, keeping everything it needs between requests in the database: client acknowledgements, a commit counter, and, if the app wants small pulls, each client's view. After a commit it publishes the names of the channels that changed.
+- **Sync engine.** Holds live connections and pokes the clients subscribed to a channel. It does not read records or answer pulls. It can run inside the server process (today's model), as Tandem's own Node service, as a Durable Object or Rivet actor, or as a hosted service such as Ably or Pusher. A database change feed can feed it too.
+
+The pages explain the parts in order:
+
+1. [How Tandem syncs today](01-how-tandem-syncs-today.md): push, pull, the event stream, what the database holds, and the integrations.
+2. [Target architecture and deployment modes](02-target-architecture.md).
+3. [Library API](03-library-api.md): the interfaces that let one codebase run in every mode.
+4. [Database metadata](04-database-metadata.md): the tables the server and sync engine need, and why Kysely rather than fumadb.
+5. [Engineering blockers](05-engineering-blockers.md).
+6. Ten migration phases, one commit-sized step per page:
+   1. [Store client acknowledgements in the database](06-durable-client-acks.md)
+   2. [Number commits in the database](07-database-revisions.md)
+   3. [Move per-client poke rules to the client](08-client-side-poke-rules.md)
+   4. [Extract the sync engine from TandemServer](09-extract-sync-engine.md)
+   5. [Channels in pull responses and publishes](10-channels.md)
+   6. [Run TandemServer without state between requests](11-stateless-pulls.md)
+   7. [Run the sync engine as its own service](12-standalone-sync-engine.md)
+   8. [Ably and Pusher as sync engines](13-hosted-pub-sub.md)
+   9. [Feed the sync engine from Postgres](14-postgres-change-feed.md)
+   10. [Adapters for Durable Objects, Next.js, and Rivet](15-first-class-adapters.md)
+
+Phases 1 to 3 help today's single-process deployments on their own: they fix duplicate mutations after a restart, live text lost across instances, and pending mutations that wait for a poke. Phases 4 to 6 are the split itself. Phases 7 to 10 add modes and hosts, in any order.
+
+## Assumptions
+
+These are design choices whose answers change the plan. Each is my recommendation, not a decision; the page that relies on it says so.
+
+| Question | Assumed answer | Main page |
+| --- | --- | --- |
+| Do pulls go through the sync engine? | No. Pushes and pulls go to the server; the sync engine only pokes. | [Target architecture](02-target-architecture.md#rejected-pulls-through-the-sync-engine) |
+| How does the sync engine learn about changes? | The server publishes after each commit; a database change feed is an optional second source. | [Library API](03-library-api.md) |
+| Where is subscription tracking? | Channels. The server names a pull's channels and each commit's channels; the sync engine fans out by channel. | [Phase 5](10-channels.md) |
+| How do pulls stay small without in-memory views? | Stateless pulls start as resets; a view table keeps them small for apps that want it. | [Phase 6](11-stateless-pulls.md) |
+| How are commits numbered across instances? | A counter row in the database, bumped in each commit's transaction. | [Phase 2](07-database-revisions.md) |
+| fumadb or Kysely for metadata tables? | Kysely, which the SQL adapters already use. | [Database metadata](04-database-metadata.md#fumadb-or-kysely) |
+| Live text appends without server state? | The server sends each commit's appends to the channel; each client decides whether it can show them. | [Phase 3](08-client-side-poke-rules.md) |
+| How do clients authenticate to the sync engine? | A short-lived token the server signs, listing the client and its channels. | [Phase 7](12-standalone-sync-engine.md) |
+| What is the new piece called? | `TandemSyncEngine`. The client's existing `SyncEngine` class becomes `TandemClientSync`. | [Phase 4](09-extract-sync-engine.md) |
+| How do concurrent stateless instances keep mutators serial? | A lock on the scope's revision row inside a database transaction where the database supports one; a single writer (Durable Object, Rivet actor, one Node process) where it does not. | [Blockers](05-engineering-blockers.md#1-mutators-stop-being-serial) |
+
+## Goals
+
+- `TandemServer` handles push and pull on any host that runs a request handler, including serverless functions, with no state kept between requests.
+- Apps choose how clients hear about changes: the server process itself, Tandem's sync engine service, a hosted pub/sub service, or a database change feed.
+- A deployment that runs everything in one process keeps working with no new moving parts.
+- Durable Objects, Next.js, and Rivet each get a small, documented adapter.
+- `dst/` can run the stateless server across several instances, with faults and crashes, through the public API.
+
+## Non-goals
+
+- Pulls through the sync engine, or a sync engine that reads records and computes diffs (the Zero and Electric model). [02](02-target-architecture.md#rejected-pulls-through-the-sync-engine) explains why.
+- Keeping today's protocol or storage layout compatible. Tandem is unreleased.
+- A hosted Tandem service.
+- Non-SQL databases for metadata.
+
+## Prerequisites
+
+[PR #112](https://github.com/tanishqkancharla/tandem/pull/112), which makes tandem-core's main entry isomorphic, is still open. This plan assumes it lands first: a sync engine and live transports must run in Node, Workers, and Rivet without browser globals, and the platform module it adds is where a WebSocket or fetch-based event source would read its runtime values.
+
+## References
+
+- [[packages/server/src/TandemServer.ts]]
+- [[packages/server/src/TandemEventStream.ts]]
+- [[packages/server/src/storage/TandemServerStorage.ts]]
+- [[packages/server/src/storage/TandemServerSqlStorage.ts]]
+- [[packages/core/src/sync/SyncEngine.ts]]
+- [[packages/core/src/sync/TandemEventSource.ts]]
+- [[examples/cloudflare/apps/server/src/index.ts]]
+- [[docs/server.md]], [[docs/existing-api-server.md]], [[TODO.md]]
+- [PR #112: Make tandem-core's main entry isomorphic](https://github.com/tanishqkancharla/tandem/pull/112)
+- [fumadb](https://github.com/fuma-nama/fumadb), [Kysely migrations](https://kysely.dev/docs/migrations)
+- [Vercel: publish and subscribe for realtime](https://vercel.com/guides/publish-and-subscribe-to-realtime-data-on-vercel), [Ably](https://ably.com/docs), [Pusher Channels](https://pusher.com/docs/channels/)
+- [Rivet actors](https://rivet.dev/docs/actors), [Cloudflare Durable Objects](https://developers.cloudflare.com/durable-objects/)
