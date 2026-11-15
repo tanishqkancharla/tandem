@@ -4,7 +4,7 @@ Earlier phases built the folders ([Phase 4](04-environment-folders.md)), the che
 
 **Today**
 
-Client storage comes in two kinds: memory and IndexedDB.
+Client storage comes in two kinds: memory and IndexedDB. Both run the client storage contract.
 
 **Proposed**
 
@@ -39,10 +39,10 @@ OPFS needs DOM and file-system types, so it lives in `src/browser/` behind `./op
 Each backend runs the client storage contract and gets a row in the core README's table of subpaths:
 
 ```callstack [Client storage contract runs]
- describeClientStorageContract("memory", makeMemoryStorage)
- describeClientStorageContract("IndexedDB", makeIdbStorage) # fake-indexeddb
-+describeClientStorageContract("SQLite", makeSqliteStorage) # node:sqlite
-+describeClientStorageContract("OPFS", makeOpfsStorage) # Vitest browser mode
+ describeClientStorageContract("TandemClientMemoryStorage", open) [[packages/core/test/memory-storage.spec.ts]]
+ describeClientStorageContract("TandemClientIndexedDbStorage", open) # fake-indexeddb [[packages/core/test/idb-storage.spec.ts]]
++describeClientStorageContract("TandemClientSqliteStorage", open) # node:sqlite
++describeClientStorageContract("TandemClientOpfsStorage", open) # Vitest browser mode
 ```
 
 ```changes

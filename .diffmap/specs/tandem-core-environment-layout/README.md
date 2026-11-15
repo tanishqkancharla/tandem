@@ -4,11 +4,11 @@
 
 `@tanishqkancharla/tandem-core` should run unchanged in browsers, web workers, Node, Bun, Deno, Cloudflare Workers, and React Native. Most of it already does. A few pieces need one environment: IndexedDB storage, the Node file logger, and the defaults for `EventSource`, tab coordination, and the visibility timer. Nothing keeps those pieces apart from the rest, so a new browser or Node global can slip into shared code and still compile.
 
-Three things hide such leaks today:
+Three things hid such leaks:
 
 - The root [[tsconfig.json]] gives every package the DOM lib.
-- Core's [[packages/core/tsconfig.json]] loads `@types/node`, which declares `localStorage`, `navigator`, `BroadcastChannel`, `EventSource`, and `process`.
-- [[packages/core/test/fixtures.ts#L1]] imports `fake-indexeddb/auto`. With `isolate: false` in [[vitest.config.js]], every core test runs with an IndexedDB global, so no test can notice a runtime dependency on it.
+- Core's tsconfig loaded `@types/node`, which declares `localStorage`, `navigator`, `BroadcastChannel`, `EventSource`, and `process`.
+- `packages/core/test/fixtures.ts` imported `fake-indexeddb/auto`. With `isolate: false` in [[vitest.config.js]], every core test ran with an IndexedDB global, so no test could notice a runtime dependency on it.
 
 ## Solution overview
 
@@ -75,11 +75,12 @@ A backend gets its own package only when it must ship a heavy native or wasm dep
 ## References
 
 - [[packages/core/package.json]]: subpath exports.
-- [[packages/core/tsconfig.json]] and [[packages/core/tsconfig.test.json]]: core's TypeScript projects.
+- [[packages/core/tsconfig.json]], [[packages/core/tsconfig.browser.json]], [[packages/core/tsconfig.node.json]], and [[packages/core/src/globals.d.ts]]: what each group may use.
 - [[packages/core/src/clientStorage/TandemClientStorage.ts#TandemClientStorageApi]]: the storage interface every backend implements.
-- [[packages/core/src/clientStorage/TandemClientIndexedDbStorage.ts#TandemClientIndexedDbStorage]]: the browser-only IndexedDB storage.
-- [[packages/core/src/utils/Logger.node.ts#JsonlLoggerSink]]: the Node-only logger.
-- [[packages/core/src/tabs/TabEnvironment.ts#browserTabEnvironment]], [[packages/core/src/utils/Timer.ts#VisibilityAwareTimer]], [[packages/core/src/sync/TandemEventSource.ts#connectTandemEventSource]]: feature-detected platform defaults.
-- [[packages/core/test/fixtures.ts]]: the `makeStorage` fixture and the global polyfill.
-- [[.oxlintrc.json]]: lint configuration.
+- [[packages/core/src/clientStorage/TandemClientMemoryStorage.ts#TandemClientMemoryStorage]] and [[packages/core/src/browser/TandemClientIndexedDbStorage.ts#TandemClientIndexedDbStorage]]: the two client storages.
+- [[packages/core/test/clientStorageContract.ts#describeClientStorageContract]]: the suite every client storage runs.
+- [[packages/core/src/platform.ts]]: the only module in shared code that reads runtime globals.
+- [[packages/core/src/node/JsonlLoggerSink.ts#JsonlLoggerSink]]: the Node-only logger.
+- [[.oxlintrc.json]] and [[packages/core/AGENTS.md]]: the rules and how they are enforced.
+- [[packages/core/test/runtime.spec.ts]]: the Node and workerd smoke tests.
 - [PR #108](https://github.com/tanishqkancharla/tandem/pull/108) and [PR #109](https://github.com/tanishqkancharla/tandem/pull/109): the IndexedDB subpath and the injectable `EventSource`.
