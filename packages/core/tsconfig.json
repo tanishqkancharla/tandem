@@ -4,8 +4,17 @@
 		"outDir": "./dist",
 		"rootDir": "./src",
 		"composite": true,
+		// Core runs in browsers, Node, and other runtimes, so it gets no DOM types.
+		// tsconfig.indexeddb.json builds the browser-only IndexedDB entry.
+		"lib": ["ESNext", "ESNext.Disposable"],
 		"types": ["node"]
 	},
 	"include": ["src/**/*.ts"],
-	"exclude": ["dist", "node_modules", "src/**/*.spec.ts", "src/**/*.types.ts"]
+	"exclude": [
+		"dist",
+		"node_modules",
+		"src/**/*.spec.ts",
+		"src/**/*.types.ts",
+		"src/clientStorage/TandemClientIndexedDbStorage.ts"
+	]
 }
