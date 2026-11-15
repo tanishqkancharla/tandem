@@ -1,5 +1,3 @@
-/// <reference lib="dom" />
-
 import { openDB } from "idb"
 import type { DBSchema, IDBPDatabase } from "idb"
 import type { ScanStorageArgs, WriteOps } from "tuple-database"

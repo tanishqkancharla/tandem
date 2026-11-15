@@ -1,0 +1,9 @@
+{
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"composite": false,
+		"lib": ["ESNext", "ESNext.Disposable", "DOM"]
+	},
+	"include": ["src/clientStorage/TandemClientIndexedDbStorage.ts"],
+	"exclude": []
+}

@@ -42,11 +42,11 @@
 		"!dist/**/*.map"
 	],
 	"scripts": {
-		"build": "rm -rf dist tsconfig.tsbuildinfo && tsc",
+		"build": "rm -rf dist tsconfig.tsbuildinfo && tsc && tsc -p tsconfig.indexeddb.json",
 		"prepublishOnly": "pnpm run build",
-		"type-check": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit",
+		"type-check": "tsc --noEmit && tsc -p tsconfig.indexeddb.json --noEmit && tsc -p tsconfig.test.json --noEmit",
 		"format": "oxfmt \"src/**/*.ts\" \"test/**/*.ts\"",
-		"lint": "oxlint src --fix && tsc --noEmit",
+		"lint": "oxlint src --fix && tsc --noEmit && tsc -p tsconfig.indexeddb.json --noEmit",
 		"test": "vitest run --config ../../vitest.config.js"
 	},
 	"dependencies": {
