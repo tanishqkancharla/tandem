@@ -35,8 +35,8 @@ class MutatorCommitError extends errore.createTaggedError({
 /** Runs of one call before a read-write conflict rejects it. */
 const maxMutatorAttempts = 3
 
+import { browserTabEnvironment } from "./platform.js"
 import {
-	browserTabEnvironment,
 	tabLifetimeLock,
 	type TabEnvironmentApi,
 } from "./tabs/TabEnvironment.js"
