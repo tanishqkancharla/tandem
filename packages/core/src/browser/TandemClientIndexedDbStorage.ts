@@ -10,11 +10,11 @@ import {
 import {
 	transformClientTupleValue,
 	type AnyStorageSchema,
-} from "./clientTupleValues.js"
+} from "../clientStorage/clientTupleValues.js"
 import type {
 	TandemClientStorageApi,
 	TandemClientTuple,
-} from "./TandemClientStorage.js"
+} from "../clientStorage/TandemClientStorage.js"
 import { codec, type Codec, type PartialObjectCodec } from "../utils/Codec.js"
 import type { Json } from "../utils/typeUtils.js"
 

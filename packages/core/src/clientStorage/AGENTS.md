@@ -7,7 +7,7 @@ Client tuple storage. `TandemClientIndexedDbStorage` persists to IndexedDB in br
 ## How to use
 
 ```typescript
-import { TandemClientIndexedDbStorage } from "./TandemClientIndexedDbStorage.js"
+import { TandemClientIndexedDbStorage } from "@tanishqkancharla/tandem-core/idb"
 
 const storage = new TandemClientIndexedDbStorage<Schema>({
 	dbName: "my-app",

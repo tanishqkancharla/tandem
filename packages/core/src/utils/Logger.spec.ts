@@ -8,7 +8,7 @@ import {
 	type LoggerEntry,
 	type LoggerSinkApi,
 } from "./Logger.js"
-import { JsonlLoggerSink } from "./Logger.node.js"
+import { JsonlLoggerSink } from "../node/JsonlLoggerSink.js"
 
 const test = base.extend<{ tempDir: string }>({
 	tempDir: async ({}, use) => {

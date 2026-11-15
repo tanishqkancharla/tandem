@@ -17,12 +17,12 @@
 			"default": "./dist/internal.js"
 		},
 		"./idb": {
-			"types": "./dist/clientStorage/TandemClientIndexedDbStorage.d.ts",
-			"import": "./dist/clientStorage/TandemClientIndexedDbStorage.js"
+			"types": "./dist/browser/TandemClientIndexedDbStorage.d.ts",
+			"import": "./dist/browser/TandemClientIndexedDbStorage.js"
 		},
 		"./node": {
-			"types": "./dist/utils/Logger.node.d.ts",
-			"import": "./dist/utils/Logger.node.js"
+			"types": "./dist/node/JsonlLoggerSink.d.ts",
+			"import": "./dist/node/JsonlLoggerSink.js"
 		}
 	},
 	"publishConfig": {
@@ -42,11 +42,11 @@
 		"!dist/**/*.map"
 	],
 	"scripts": {
-		"build": "rm -rf dist tsconfig.tsbuildinfo && tsc && tsc -p tsconfig.indexeddb.json",
+		"build": "rm -rf dist tsconfig.tsbuildinfo && tsc && tsc -p tsconfig.browser.json && tsc -p tsconfig.node.json",
 		"prepublishOnly": "pnpm run build",
-		"type-check": "tsc --noEmit && tsc -p tsconfig.indexeddb.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+		"type-check": "tsc --noEmit && tsc -p tsconfig.browser.json --noEmit && tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.test.json --noEmit",
 		"format": "oxfmt \"src/**/*.ts\" \"test/**/*.ts\"",
-		"lint": "oxlint src --fix && tsc --noEmit && tsc -p tsconfig.indexeddb.json --noEmit",
+		"lint": "oxlint src --fix && tsc --noEmit && tsc -p tsconfig.browser.json --noEmit && tsc -p tsconfig.node.json --noEmit",
 		"test": "vitest run --config ../../vitest.config.js"
 	},
 	"dependencies": {

@@ -4,6 +4,6 @@
 		"composite": false,
 		"lib": ["ESNext", "ESNext.Disposable", "DOM"]
 	},
-	"include": ["src/clientStorage/TandemClientIndexedDbStorage.ts"],
-	"exclude": []
+	"include": ["src/browser/**/*.ts"],
+	"exclude": ["src/**/*.spec.ts"]
 }
