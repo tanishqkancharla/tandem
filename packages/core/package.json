@@ -59,8 +59,10 @@
 	},
 	"devDependencies": {
 		"@tanishqkancharla/gatekeeper": "workspace:*",
+		"esbuild": "^0.28.2",
 		"extendable-expect": "^1.0.5",
 		"fake-indexeddb": "^6.2.5",
+		"miniflare": "^4.20260730.0",
 		"typescript": "^7.0.2",
 		"vitest": "^5.0.3"
 	}

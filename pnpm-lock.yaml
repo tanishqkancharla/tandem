@@ -431,12 +431,18 @@ importers:
       '@tanishqkancharla/gatekeeper':
         specifier: workspace:*
         version: link:../gatekeeper
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
       extendable-expect:
         specifier: ^1.0.5
         version: 1.0.5
       fake-indexeddb:
         specifier: ^6.2.5
         version: 6.2.5
+      miniflare:
+        specifier: ^4.20260730.0
+        version: 4.20260730.0
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
