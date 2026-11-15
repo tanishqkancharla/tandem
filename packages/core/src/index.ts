@@ -61,6 +61,8 @@ export type {
 	TandemClientTuple,
 } from "./clientStorage/TandemClientStorage.js"
 export { WriteOpsApi } from "./clientStorage/TandemClientStorage.js"
+export { TandemClientMemoryStorage } from "./clientStorage/TandemClientMemoryStorage.js"
+export type { TandemClientMemoryStorageArgs } from "./clientStorage/TandemClientMemoryStorage.js"
 export type { CollectionCodecs } from "./schema/collectionCodecs.js"
 export {
 	collection,

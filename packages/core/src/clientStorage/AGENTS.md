@@ -2,7 +2,7 @@
 
 ## What
 
-Persistent tuple storage with IndexedDB backend. Handles data persistence, caching, and provides storage abstraction for the database layer.
+Client tuple storage. `TandemClientIndexedDbStorage` persists to IndexedDB in browsers, behind the `/idb` entry. `TandemClientMemoryStorage` keeps tuples in memory in any runtime; storages with the same `name` share one in-process store, and it exposes no `TandemClientStorageApi.name`, so it never turns on tab coordination. Both apply collection codecs through `transformClientTupleValue` in `clientTupleValues.ts`, and both run the contract suite in `test/clientStorageContract.ts`.
 
 ## How to use
 

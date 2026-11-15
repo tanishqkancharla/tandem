@@ -63,6 +63,21 @@ const client = new TandemClient({
 await client.ready
 ```
 
+Outside a browser, `TandemClientMemoryStorage` from the main entry keeps the same tuples in memory. It suits tests, server rendering, and short-lived clients. Storages created with the same `name` share data for the life of the process, so a client recreated with that name restores its records and pending writes. Memory storage never turns on tab coordination:
+
+```ts
+import { TandemClientMemoryStorage } from "@tanishqkancharla/tandem-core"
+
+const client = new TandemClient({
+	schema,
+	remote,
+	clientStorage: new TandemClientMemoryStorage<AppSchema>({
+		name: "tasks",
+		schema,
+	}),
+})
+```
+
 `flushClientStorage()` writes pending local persistence immediately; it does not wait for server acknowledgement. Scope the database name to the authenticated user and data scope. Updating code does not migrate cached records or pending writes; see [Schema changes and client compatibility](migrations.md).
 
 In browsers, clients with named storage and a remote share a replica across tabs by default. One leader owns storage and remote sync. `tabs.name` defaults to the storage name; an explicit name must use the same user and data scope. `tabs: false` disables this coordination and requires exclusive ownership of that storage. See [Multiple tabs](sync.md#multiple-tabs) for the process.
