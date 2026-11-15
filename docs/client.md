@@ -46,10 +46,10 @@ Use `client.transact()` and `client.commit(tx)` for raw transactions, or registe
 
 ## Persistence
 
-By default, the local database lives in memory. To retain records and pending writes across restarts, supply IndexedDB storage. It lives in its own entry point, `@tanishqkancharla/tandem-core/indexeddb`, so code that runs outside a browser does not load it:
+By default, the local database lives in memory. To retain records and pending writes across restarts, supply IndexedDB storage. It lives in its own entry point, `@tanishqkancharla/tandem-core/idb`, so code that runs outside a browser does not load it:
 
 ```ts
-import { TandemClientIndexedDbStorage } from "@tanishqkancharla/tandem-core/indexeddb"
+import { TandemClientIndexedDbStorage } from "@tanishqkancharla/tandem-core/idb"
 import { schema, type AppSchema } from "./schema"
 
 const client = new TandemClient({

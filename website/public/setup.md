@@ -55,7 +55,7 @@ Run a single `TandemServer` instance. Apply the project's existing authenticatio
 
 ## 5. Create the client
 
-Create one `TandemClient` with the schema, `TandemClientIndexedDbStorage` from `@tanishqkancharla/tandem-core/indexeddb` for persistence, and a `remote` that forwards `push` and `pull` to `/api/tandem` and uses `connectTandemEventSource` for `/api/tandem/events`. With React, set `autoConnect: false` and wrap the app in `<TandemClientProvider client={db} connect>`.
+Create one `TandemClient` with the schema, `TandemClientIndexedDbStorage` from `@tanishqkancharla/tandem-core/idb` for persistence, and a `remote` that forwards `push` and `pull` to `/api/tandem` and uses `connectTandemEventSource` for `/api/tandem/events`. With React, set `autoConnect: false` and wrap the app in `<TandemClientProvider client={db} connect>`.
 
 ## 6. Replace one data path
 

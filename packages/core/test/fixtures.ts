@@ -17,7 +17,7 @@ import {
 	TandemClient,
 	type TimerApi,
 } from "@tanishqkancharla/tandem-core"
-import { TandemClientIndexedDbStorage } from "@tanishqkancharla/tandem-core/indexeddb"
+import { TandemClientIndexedDbStorage } from "@tanishqkancharla/tandem-core/idb"
 import {
 	TandemServer,
 	type TandemServerStorageApi,

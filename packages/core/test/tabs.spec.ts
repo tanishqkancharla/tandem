@@ -13,7 +13,7 @@ import {
 	type TandemClientArgs,
 	type TandemClientStorageApi,
 } from "@tanishqkancharla/tandem-core"
-import { TandemClientIndexedDbStorage } from "@tanishqkancharla/tandem-core/indexeddb"
+import { TandemClientIndexedDbStorage } from "@tanishqkancharla/tandem-core/idb"
 import {
 	InMemoryTabs,
 	type InMemoryTab,

@@ -16,7 +16,7 @@
 			"import": "./dist/internal.js",
 			"default": "./dist/internal.js"
 		},
-		"./indexeddb": {
+		"./idb": {
 			"types": "./dist/clientStorage/TandemClientIndexedDbStorage.d.ts",
 			"import": "./dist/clientStorage/TandemClientIndexedDbStorage.js"
 		},

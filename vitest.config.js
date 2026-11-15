@@ -14,7 +14,7 @@ export default defineConfig({
 				"./packages/core/src/internal.ts",
 				import.meta.url,
 			).pathname,
-			"@tanishqkancharla/tandem-core/indexeddb": new URL(
+			"@tanishqkancharla/tandem-core/idb": new URL(
 				"./packages/core/src/clientStorage/TandemClientIndexedDbStorage.ts",
 				import.meta.url,
 			).pathname,
