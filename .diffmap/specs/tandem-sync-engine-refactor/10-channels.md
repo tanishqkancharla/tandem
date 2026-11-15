@@ -35,14 +35,14 @@ The two must agree: a record in channel `todos:42` reaches only clients granted 
 -├── dependencies = scanWindowDependencies(scanWindow) # kept per client
 +├── channels = options.channels.pull?.({ scanWindow, context }) ?? collections read
 +├── token = sign({ clientId, channels, expires }) # only when a sync engine verifies tokens
- └── return { cookie, patch, lastMutationId, revision, live: { channels, token } }
+ └── return { cookie, patch, lastMutationId, live: { channels, token } }
 ```
 
 ```callstack [commitTransaction]
  TandemServer.commitTransaction(tx, options) [[packages/server/src/TandemServer.ts#TandemServer.commitTransaction]]
  ├── previous = before-images of set and removed records # removes are new
 +├── channels = union of channels.record(before) and channels.record(after) per write
- └── publisher?.publish({ channels, revision, payload })
+ └── publisher?.publish({ channels })
 ```
 
 A record that moves between workspaces publishes to both, so the old workspace's clients pull and drop it.

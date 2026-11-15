@@ -4,7 +4,7 @@
 
 ## Tables
 
-The server needs one table in every mode, and two more for live payloads and small pulls. The sync engine needs one only when it reads a change feed.
+The server needs one table in every mode, and two more when several instances serve one scope. The sync engine needs one only when it reads a change feed.
 
 ```sql
 -- Required. Written in the same transaction as the mutation's record writes.
@@ -14,22 +14,20 @@ create table tandem_clients (
   updated_at       bigint not null  -- for expiring abandoned clients
 );
 
--- Needed for live payloads and revisions across instances (Phase 7).
-create table tandem_revisions (
-  scope    text primary key,        -- one row per data scope; "default" for most apps
-  revision bigint not null
+-- Stateless servers on Postgres or MySQL (Phase 6). Holds no data: commits lock their scope's row.
+create table tandem_scopes (
+  scope text primary key            -- one row per data scope; "default" for most apps
 );
 
--- Optional. Lets a stateless server send diffs instead of resets (Phase 11).
+-- Optional. Lets a stateless server send diffs instead of resets (Phase 6).
 create table tandem_client_views (
   client_id  text primary key,
   cookie     text not null,
-  revision   bigint,
   view       blob not null,         -- record id -> fingerprint, compressed
   updated_at bigint not null
 );
 
--- Sync engine with a change feed only (Phase 14).
+-- Sync engine with a change feed only (Phase 9).
 create table tandem_feed_positions (
   source   text primary key,
   position text not null            -- Postgres LSN, for example
@@ -41,7 +39,7 @@ What each replaces today:
 | Table | Replaces | Read on | Written on |
 | --- | --- | --- | --- |
 | `tandem_clients` | `["client", clientId]` tuples, in memory for SQL adapters | Every push and pull | Every acknowledged mutation |
-| `tandem_revisions` | `instanceId` and `commitCount` in memory | Every pull | Every commit |
+| `tandem_scopes` | The run queue ([[packages/server/src/TandemServer.ts#TandemServer.run]]) | Locked by every commit | Once per scope |
 | `tandem_client_views` | `syncClients[id].view` and `.cookie` | Pulls with a cookie | Pulls that change the view |
 | `tandem_feed_positions` | Nothing | Sync engine start | Every few seconds |
 
@@ -52,7 +50,7 @@ Application tables stay as they are. The SQL adapter maps collections onto exist
 ## Cost and retention
 
 - `tandem_clients` grows by one row per client ID, and core rotates IDs on `clear()`. Rows idle past a retention window, such as 30 days, can be deleted; a client that returns after that gets a mutation-gap error and must clear, which matches Replicache's client expiry.
-- `tandem_revisions` is one hot row per scope. Every commit in a scope takes its row lock, so commits in a scope serialize. Today's run queue serializes them anyway, so this is no loss; apps with heavy write traffic can split scopes.
+- `tandem_scopes` is one hot row per scope. Every commit in a scope takes its row lock, so commits in a scope serialize. Today's run queue serializes them anyway, so this is no loss; apps with heavy write traffic can split scopes. On Postgres, `pg_advisory_xact_lock` gives the same lock with no table; MySQL's `GET_LOCK` is held per session rather than per transaction, so the row is simpler to use on both.
 - `tandem_client_views` costs one write per pull that changes a view. Today the server keeps the same data in memory: one key and one 64-character fingerprint per record per client ([[docs/server.md]]).
 
 ## fumadb or Kysely
@@ -84,4 +82,4 @@ With four small tables, fumadb's breadth does not pay for its runtime weight and
 
 ## Where it lands
 
-Three phases add these tables: [Phase 1](06-durable-client-acks.md) adds `tandem_clients`, [Phase 2](07-database-revisions.md) adds `tandem_revisions`, and [Phase 6](11-stateless-pulls.md) adds `tandem_client_views`. [Phase 9](14-postgres-change-feed.md) adds `tandem_feed_positions` to the sync engine's database connection.
+Three phases add these tables: [Phase 1](06-durable-client-acks.md) adds `tandem_clients`, and [Phase 6](11-stateless-pulls.md) adds `tandem_scopes` and `tandem_client_views`. [Phase 9](14-postgres-change-feed.md) adds `tandem_feed_positions` to the sync engine's database connection.

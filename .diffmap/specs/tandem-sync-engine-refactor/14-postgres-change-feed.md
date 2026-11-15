@@ -41,10 +41,10 @@ Recommendation: ship triggers with `NOTIFY` first, since they work everywhere an
 +└── on notification { table, op, row, oldRow }:
 +    ├── collection, record = decode with the table's TandemSqlTable.decode
 +    ├── channels = channels.record(old) ∪ channels.record(new)
-+    └── publisher.publish({ channels }) # bare poke; no Tandem revision
++    └── publisher.publish({ channels })
 ```
 
-Writes made by `TandemServer` itself arrive twice: once from the server's publish, with a payload, and once from the feed. The client's pull queue coalesces them, so the cost is one extra poke per commit, not an extra pull. Apps that run only the feed can omit the server's publisher.
+Writes made by `TandemServer` itself arrive twice: once from the server's publish and once from the feed. The client's pull queue coalesces them, so the cost is one extra poke per commit, not an extra pull. Apps that run only the feed can omit the server's publisher.
 
 The trigger and function come from the migration helper in [Database metadata](04-database-metadata.md#fumadb-or-kysely), generated per mapped table:
 

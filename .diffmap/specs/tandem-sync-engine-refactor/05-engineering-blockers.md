@@ -20,8 +20,8 @@ sequenceDiagram
 
 Options:
 
-1. **Lock the scope's revision row.** Open an interactive transaction, bump `tandem_revisions` first, then run the mutator and write. The row lock serializes commits per scope, exactly like today's queue, and reads after the lock see every earlier commit. Works on Postgres and MySQL. The storage API gains a `transaction(fn)` method.
-2. **Optimistic commit with retry.** Read the revision at the start, run the mutator, and commit a batch that sets the revision to the read value plus one. A trigger aborts the batch when the stored revision moved on, and the server reruns the mutator. Works on D1 and other batch-only SQLite hosts. Mutators must stay free of side effects outside `afterCommit`, which they already are.
+1. **Lock the scope's row.** Open an interactive transaction, lock the scope's row in `tandem_scopes` first, then run the mutator and write. The row lock serializes commits per scope, exactly like today's queue, and reads after the lock see every earlier commit. Works on Postgres and MySQL. The storage API gains a `transaction(fn)` method.
+2. **Optimistic commit with retry.** Read a per-scope version at the start, run the mutator, and commit a batch that bumps the version. A trigger aborts the batch when the version moved on, and the server reruns the mutator. Works on D1 and other batch-only SQLite hosts, at the cost of a version column in `tandem_scopes`. Mutators must stay free of side effects outside `afterCommit`, which they already are.
 3. **Single writer.** Keep one process per scope: a Durable Object, a Rivet actor, or one Node server. This is mode 1 and needs nothing new.
 
 Recommendation: 1 for Postgres and MySQL, 3 for D1, and 2 only if D1 users ask for stateless servers. [Phase 6](11-stateless-pulls.md) adds the transaction method and drops the queue where storage supports it.
@@ -30,17 +30,17 @@ Recommendation: 1 for Postgres and MySQL, 3 for D1, and 2 only if D1 users ask f
 
 [[packages/server/src/storage/TandemServerSqlStorage.ts#TandemServerSqlStorage.scan]] reads every row of a collection's table and filters in memory. A long-lived server pays that once per pull; a serverless function also pays cold connections and has tighter memory limits. Before serverless is a fair default, scan windows need to compile `where`, `orderBy`, and `limit` into SQL. This is separate work with its own spec; this plan only flags it.
 
-## 3. Revisions are per instance
+## 3. Streamed text gets coarser
 
-A `Revision` is `{ server: instanceId, commit }`, and the client drops live records whose `server` differs from the pull's ([[packages/core/src/Database.ts#Database.applyPull]]). Across instances, every pull from a different instance would discard live text. [Phase 2](07-database-revisions.md) numbers commits in the database and sets `server` to the scope.
+Pokes carry no data after [Phase 2](07-remove-live-payloads.md), so streamed agent text shows once per pull instead of between pulls, and each pull resends the whole message. This is a cost, not a blocker: viewers pull back to back while text streams, so it still reads as streaming. Field-level diffs in pull patches would remove the extra bytes later.
 
 ## 4. The pusher depends on a poke
 
-Only a pull removes acknowledged mutations from the outbox, so the server pokes the pusher after each push ([[packages/server/src/TandemServer.ts#TandemServer.emitLivePokes]]), and the Cloudflare remote pokes itself too ([[examples/cloudflare/apps/server/src/remote.ts#createRemote]]). A sync engine fed by channels does not know who pushed. [Phase 3](08-client-side-poke-rules.md) makes the client pull after its own successful push.
+Only a pull removes acknowledged mutations from the outbox, so the server pokes the pusher after each push ([[packages/server/src/TandemServer.ts#TandemServer.emitLivePokes]]), and the Cloudflare remote pokes itself too ([[examples/cloudflare/apps/server/src/remote.ts#createRemote]]). A sync engine fed by channels does not know who pushed. [Phase 3](08-pull-after-push.md) makes the client pull after its own successful push.
 
-## 5. Live appends need each client's view
+## 5. Server-side reactive queries
 
-The server sends text appends live only when the client has the record at the exact prior value and no query filters, orders, or joins on the appended field ([[packages/server/src/TandemServer.ts#TandemServer.liveAppends]]). That needs per-client views and read dependencies, which a channel fan-out does not have. The client knows its own queries and values, so [Phase 3](08-client-side-poke-rules.md) moves both checks there. The `after` revision also depends on `lastWrites`, an in-memory map; with database revisions, `after` becomes the commit's own revision minus one, which is conservative but correct.
+[[packages/server/src/TandemServer.ts#TandemServer.subscribe]] runs a query and re-runs it after this instance's commits. With several instances it misses the others' commits. It should move out of the stateless server, onto the sync engine or a change feed, or be documented as single-process only.
 
 ## 6. Publishing is not atomic with the commit
 

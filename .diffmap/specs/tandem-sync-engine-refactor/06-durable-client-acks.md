@@ -4,7 +4,7 @@
 
 **Today**
 
-A client pushes mutation 5 to a server on SQL storage. The server writes the record to SQL and the acknowledgement to an in-memory map. If the server restarts and the client retries, the server sees `lastMutationId` 0 and applies mutation 5 again. For an append or a counter, the user sees the effect twice.
+A client pushes mutation 5 to a server on SQL storage. The server writes the record to SQL and the acknowledgement to an in-memory map. If the server restarts and the client retries, the server sees `lastMutationId` 0 and applies mutation 5 again. For a counter or a text append, the user sees the effect twice.
 
 **Proposed**
 

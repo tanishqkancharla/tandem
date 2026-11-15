@@ -41,7 +41,7 @@ export type TandemServerArgs<Schema, Relations, Mutators, RequestContext> = {
 	mutators?: Mutators
 	hooks?: (request: RequestContext | undefined) => ServerMutatorHooks<Schema, Relations, Mutators>
 	/** Where commits are announced. Omit for no live updates. */
-	publisher?: TandemPublisher<Schema>
+	publisher?: TandemPublisher
 	/** How records and pulls map to channels. Defaults to one channel per collection. */
 	channels?: TandemChannels<Schema, RequestContext>
 	/** Where pulls store each client's view. Defaults to none: every pull is a reset. */
@@ -54,20 +54,16 @@ export type TandemServerArgs<Schema, Relations, Mutators, RequestContext> = {
 // [!note live] Phase 7 (a shared secret) and Phase 8 (Ably and Pusher tokens).
 ```
 
-A publish names channels, the commit's revision, and optionally a payload for clients that can take records:
+A publish names only channels. Pokes carry no data ([Phase 2](07-remove-live-payloads.md)), so the contract needs no schema:
 
 ```ts
-export type TandemCommitEvent<Schema extends AnySchema> = {
+export type TandemCommitEvent = {
 	channels: string[]
-	/** Missing for change-feed events, which have no Tandem revision. */
-	revision?: Revision
-	/** Live appends or records. Publishers may drop it and send a bare poke. */
-	payload?: PokePayload<Schema>
 }
 
-export interface TandemPublisher<Schema extends AnySchema> {
+export interface TandemPublisher {
 	/** Called after the commit is durable. Failures are logged, never undo the commit. */
-	publish(event: TandemCommitEvent<Schema>): Promise<void>
+	publish(event: TandemCommitEvent): Promise<void>
 }
 ```
 
@@ -95,7 +91,6 @@ export type PullResponse<Schema extends AnySchema> = {
 	cookie: Cookie
 	patch: Patch<Schema>
 	lastMutationId: MutationId
-	revision?: Revision
 	live?: TandemLiveGrant
 }
 
@@ -113,15 +108,15 @@ export type TandemLiveGrant = {
 `TandemSyncEngine` is the in-memory core every Tandem-run sync engine shares. It implements `TandemPublisher`, so mode 1 passes it straight to the server:
 
 ```ts
-export class TandemSyncEngine<Schema extends AnySchema> implements TandemPublisher<Schema> {
+export class TandemSyncEngine implements TandemPublisher {
 	constructor(args: {
 		/** Checks a grant's token. Omit when the engine runs in the server's process. */
 		verify?: (token: string, clientId: ClientId) => Promise<string[] | Error>
-		/** Milliseconds during which a connection's live payloads merge. @default 50 */
-		livePokeInterval?: number | TimerApi
+		/** At most one poke per connection per interval, in milliseconds. @default 50 */
+		pokeInterval?: number | TimerApi
 	})
-	publish(event: TandemCommitEvent<Schema>): Promise<void>
-	connect(args: { clientId: ClientId; poke: ClientApi<Schema>["poke"] }): TandemSyncConnection
+	publish(event: TandemCommitEvent): Promise<void>
+	connect(args: { clientId: ClientId; poke: () => void }): TandemSyncConnection
 }
 
 export type TandemSyncConnection = {
@@ -135,9 +130,9 @@ export type TandemSyncConnection = {
 A change feed is a publisher source:
 
 ```ts
-export interface TandemChangeSource<Schema extends AnySchema> {
+export interface TandemChangeSource {
 	/** Starts reading and calls publish for each change. Returns a stop function. */
-	start(publisher: TandemPublisher<Schema>): Promise<() => Promise<void>>
+	start(publisher: TandemPublisher): Promise<() => Promise<void>>
 }
 ```
 
@@ -146,11 +141,11 @@ export interface TandemChangeSource<Schema extends AnySchema> {
 The client keeps `RemoteApi` ([[packages/core/src/sync/SyncEngine.ts#RemoteApi]]) as its internal contract. Apps stop hand-writing remotes and compose one from a request transport and a live transport:
 
 ```ts
-export type TandemLiveTransport<Schema extends AnySchema> = {
+export type TandemLiveTransport = {
 	open(args: {
 		clientId: ClientId
-		/** Called on ready and on every poke. */
-		poke: ClientApi<Schema>["poke"]
+		/** Called on ready and on every poke. Takes nothing: the client pulls. */
+		poke: () => void
 	}): Promise<TandemLiveConnection | RemoteRequestError>
 }
 
@@ -167,11 +162,11 @@ const remote = createTandemRemote({
 })
 ```
 
-`createTandemRemote` implements `RemoteApi`. `connect` opens the live transport. `pull` forwards the response's `live` grant to the open connection when it changes. A successful `push` pulls at once, which [Phase 3](08-client-side-poke-rules.md) moves into the client so no sync engine has to poke the pusher.
+`createTandemRemote` implements `RemoteApi`. `connect` opens the live transport. `pull` forwards the response's `live` grant to the open connection when it changes. A successful `push` pulls at once, which [Phase 3](08-pull-after-push.md) moves into the client so no sync engine has to poke the pusher.
 
 ```callstack [createTandemRemote.pull]
 +response = remote.pull({ clientId, cookie, scanWindow })
-+├── response = POST url { action: "pull", args } # with MutationApi and PokeApi codecs
++├── response = POST url { action: "pull", args } # with the MutationApi codec
 +├── if response.live differs from the last grant:
 +│   └── connection.setChannels(response.live) # join and leave channels
 +└── return response

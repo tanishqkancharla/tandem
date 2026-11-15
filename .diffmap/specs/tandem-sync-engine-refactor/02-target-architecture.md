@@ -24,7 +24,7 @@ service Client
   state channels = none
 service Server "TandemServer (stateless)"
 service DB "App database"
-  state revision = 41
+  state todos = 3 rows
 service Engine "Sync engine"
   state todosSubscribers = 0
 
@@ -38,20 +38,21 @@ step "The client connects to the sync engine"
 step "The client pulls"
   Client -> Server: pull(cookie, scanWindow)
   Server -> DB: read window and acknowledgement
-  Server -> Client: patch, revision 41, live: { channels: [todos], token }
+  Server -> Client: patch, live: { channels: [todos], token }
     > The server decides the channels, so it also decides what the client may hear about.
 step "The client joins its channels"
   Client -> Engine: setChannels([todos], token)
   Client.channels = todos
   Engine.todosSubscribers = 1
 step "Another client's push commits a todo"
-  Server -> DB: commit records, acknowledgement, revision
-  DB.revision = 42
+  Server -> DB: commit records and acknowledgement
+  DB.todos = 4 rows
 step "The server publishes after the commit"
-  Server -> Engine: publish({ channels: [todos], revision 42 })
+  Server -> Engine: publish({ channels: [todos] })
     > After the commit, so a poked client never pulls an older state.
 step "The sync engine pokes subscribers, and they pull"
   Engine -> Client: poke
+    > The poke carries no data.
   Client -> Server: pull(cookie, scanWindow)
 ```
 
@@ -85,7 +86,7 @@ flowchart LR
 
 ### Mode 3: database change feed
 
-A sync engine reads the database's change feed, so any write, including a background job or a manual SQL fix, pokes clients. The server may still publish, which gives faster pokes and live payloads for its own writes. Postgres supports this through logical replication or triggers with `LISTEN`/`NOTIFY` ([Phase 9](14-postgres-change-feed.md)). D1 has no change feed; MySQL has a binlog, which is out of scope for now.
+A sync engine reads the database's change feed, so any write, including a background job or a manual SQL fix, pokes clients. The server may still publish, which pokes clients sooner for its own writes. Postgres supports this through logical replication or triggers with `LISTEN`/`NOTIFY` ([Phase 9](14-postgres-change-feed.md)). D1 has no change feed; MySQL has a binlog, which is out of scope for now.
 
 ```mermaid [Mode 3: change feed]
 flowchart LR
@@ -98,7 +99,7 @@ flowchart LR
 
 ### Mode 4: hosted pub/sub (Ably, Pusher)
 
-The server publishes to Ably or Pusher channels through their REST APIs, and clients subscribe with their SDKs. The app runs no long-lived process at all. Vercel recommends this for realtime on its platform. Pokes carry no records by default, since Pusher limits messages to 10 KB and both services bill per message ([Phase 8](13-hosted-pub-sub.md)).
+The server publishes to Ably or Pusher channels through their REST APIs, and clients subscribe with their SDKs. The app runs no long-lived process at all. Vercel recommends this for realtime on its platform. Because pokes carry no data, message size limits never matter, and each commit costs one small message per subscriber ([Phase 8](13-hosted-pub-sub.md)).
 
 ```mermaid [Mode 4: hosted pub/sub]
 flowchart LR
@@ -114,12 +115,14 @@ Clients pull on their fallback timer and after their own pushes. This already wo
 
 ## Comparison
 
-| Mode | Long-lived process | External writes live? | Live text appends | Server state between requests |
-| --- | --- | --- | --- | --- |
-| 1. Stateful server | Yes, per data scope | Only through the process | Yes | Optional (memory views) |
-| 2. Serverless + sync engine | The sync engine only | No | After [Phase 2](07-database-revisions.md) | None |
-| 3. Change feed | The sync engine only | Yes | For server writes | None |
-| 4. Ably or Pusher | None | No | Off by default | None |
+| Mode | Long-lived process | External writes live? | Server state between requests |
+| --- | --- | --- | --- |
+| 1. Stateful server | Yes, per data scope | Only through the process | Optional (memory views) |
+| 2. Serverless + sync engine | The sync engine only | No | None |
+| 3. Change feed | The sync engine only | Yes | None |
+| 4. Ably or Pusher | None | No | None |
+
+Every mode delivers data the same way, by pull, so a client behaves identically in all four. Only the poke's carrier differs.
 
 ## Rejected: pulls through the sync engine
 

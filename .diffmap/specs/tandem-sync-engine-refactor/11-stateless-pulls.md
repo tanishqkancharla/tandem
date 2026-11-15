@@ -1,6 +1,6 @@
 # Phase 6: Run TandemServer without state between requests
 
-Phases [1](06-durable-client-acks.md), [2](07-database-revisions.md), and [5](10-channels.md) moved acknowledgements, revisions, and subscriptions out of server memory. Two things remain: each client's view, used for small pulls, and the run queue that keeps mutators serial. This phase replaces both, so any number of instances can serve one scope.
+[Phase 1](06-durable-client-acks.md) moved acknowledgements into the database, [Phase 2](07-remove-live-payloads.md) deleted revisions and live payloads, and [Phase 5](10-channels.md) moved subscriptions to the sync engine. Two things remain: each client's view, used for small pulls, and the run queue that keeps mutators serial. This phase replaces both, so any number of instances can serve one scope.
 
 **Today**
 
@@ -8,7 +8,7 @@ Pull diffs depend on `syncClients[id].view` in memory, so a pull that reaches a 
 
 **Proposed**
 
-A `views` option says where views live. Without one, every pull is a reset: correct, and cheap for small windows. With a memory store, a long-lived process keeps today's small pulls. With the SQL store, a serverless server keeps them too, at one write per pull that changes the view. Commits run inside a database transaction that locks the scope's revision row, so instances serialize at the database instead of in a queue.
+A `views` option says where views live. Without one, every pull is a reset: correct, and cheap for small windows. With a memory store, a long-lived process keeps today's small pulls. With the SQL store, a serverless server keeps them too, at one write per pull that changes the view. Commits run inside a database transaction that locks the scope's row in `tandem_scopes`, so instances serialize at the database instead of in a queue.
 
 ## View stores
 
@@ -20,7 +20,6 @@ export interface TandemViewStore {
 
 export type TandemView = {
 	cookie: Cookie
-	revision?: Revision
 	/** Record ID to fingerprint, as readPull builds today. */
 	records: Map<string, RecordFingerprint | undefined>
 }
@@ -36,7 +35,7 @@ export const sqlViews = (sql: TandemSqlExecution): TandemViewStore => /* tandem_
  ├── records = executeScanWindowAsync(...)
  ├── diff records against previous fingerprints
 -├── client.view = view; client.cookie = nextCookie
-+├── if view changed: await views?.set(clientId, { cookie: nextCookie, revision, records })
++├── if view changed: await views?.set(clientId, { cookie: nextCookie, records })
  └── return { cookie, patch, ... }
 ```
 
@@ -48,8 +47,8 @@ Storage that supports interactive transactions gets a `transaction` method. The 
 
 ```ts
 export interface TandemServerStorageApi<Schema extends AnySchema> {
-	// ...scan, commit, commitRevision
-	/** Runs fn in one database transaction that holds the scope's revision lock. */
+	// ...scan, commit
+	/** Runs fn in one database transaction that holds the scope's lock. */
 	transaction?<T>(scope: string, fn: (tx: TandemStorageTransaction<Schema>) => Promise<T>): Promise<T>
 }
 ```
@@ -57,11 +56,11 @@ export interface TandemServerStorageApi<Schema extends AnySchema> {
 ```callstack [applyMutator with a storage transaction]
  TandemServer.applyMutator(clientId, mutationId, call) [[packages/server/src/TandemServer.ts#TandemServer.applyMutator]]
 +└── storage.transaction(scope, async (dbTx) =>
-+    ├── revision = bump tandem_revisions # takes the scope's row lock first
++    ├── select from tandem_scopes for update # takes the scope's lock first
 +    ├── lastMutationId = read tandem_clients # now serial for this scope
 +    ├── authorize and run the mutator against dbTx reads
 +    ├── write records and tandem_clients
-+    └── return revision ) # commit releases the lock
++    └── return ) # commit releases the lock
  publisher?.publish(...) # after the transaction commits
 ```
 

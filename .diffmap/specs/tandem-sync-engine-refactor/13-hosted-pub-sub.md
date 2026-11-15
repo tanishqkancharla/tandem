@@ -30,17 +30,15 @@ const remote = createTandemRemote({ schema, url: "/api/tandem", live: ablyLive({
 | Grant token | Token request with `subscribe` capability on the channels | Private channel auth, signed per channel by an app route |
 | `ready` (pull now) | Connection state `connected`, and channel `attached` after a gap | Connection state `connected` |
 | Channel name `todos:42` | Allowed; prefix with a namespace such as `tandem:` | Not allowed; encode to `private-tandem-todos-42` |
-| Message size limit | 64 KB by default | 10 KB |
+| Message body | Empty | Empty |
 
-## Payloads
+## Publishing
 
-The publishers send bare pokes by default. Append payloads are opt-in (`payloads: "appends"`), and the publisher drops a payload larger than the service's limit and sends a bare poke instead, since the client pulls either way. Both services bill per message delivered, so an agent streaming text to many clients costs one message per throttle interval per subscriber; the docs show the arithmetic.
+Pokes carry no data, so a publish is one empty message per channel. Both services bill per message delivered: a commit costs one message per subscriber of its channels. The sync engine's `pokeInterval` does not apply here, so an agent streaming text pokes once per committed chunk; apps that stream should commit chunks on a timer rather than per token.
 
 ```callstack [ablyPublisher.publish]
-+ablyPublisher.publish({ channels, payload })
-+├── data = payload && options.payloads === "appends" ? encode(payload) : undefined
-+├── if data is over the size limit: data = undefined
-+└── for each channel: rest.channels.get(`tandem:${channel}`).publish("poke", data)
++ablyPublisher.publish({ channels })
++└── for each channel: rest.channels.get(`tandem:${channel}`).publish("poke")
 ```
 
 On the client, the transport maps service events back to `poke`:
@@ -48,10 +46,10 @@ On the client, the transport maps service events back to `poke`:
 ```callstack [ablyLive.open]
 +connection = ablyLive.open({ clientId, poke })
 +├── realtime.connection.on("connected", () => poke()) # same as ready
-+└── return { setChannels(grant): attach to new channels, detach from old, subscribe("poke", (m) => poke(decode(m.data))) }
++└── return { setChannels(grant): attach to new channels, detach from old, subscribe("poke", () => poke()) }
 ```
 
-Tests: a contract suite for `TandemLiveTransport` and `TandemPublisher` runs against the SSE sync engine and fakes of both services, checking ready-on-connect, channel joins and leaves, and size fallback. Live tests against real accounts run only when keys are present. `dst/` needs no new model: the service is a sync engine whose publishes can drop.
+Tests: a contract suite for `TandemLiveTransport` and `TandemPublisher` runs against the SSE sync engine and fakes of both services, checking ready-on-connect and channel joins and leaves. Live tests against real accounts run only when keys are present. `dst/` needs no new model: the service is a sync engine whose publishes can drop.
 
 ```changes
 
