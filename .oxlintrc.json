@@ -21,6 +21,66 @@
 			"rules": {
 				"eslint/no-empty-pattern": "off"
 			}
+		},
+		{
+			"files": ["packages/core/src/**/*.ts"],
+			"excludeFiles": [
+				"packages/core/src/browser/**",
+				"packages/core/src/node/**",
+				"packages/core/src/platform.ts",
+				"**/*.spec.ts",
+				"**/*.types.ts"
+			],
+			"plugins": ["eslint", "typescript", "unicorn", "oxc", "import"],
+			"rules": {
+				"eslint/no-restricted-globals": [
+					"error",
+					"window",
+					"self",
+					"document",
+					"navigator",
+					"location",
+					"localStorage",
+					"sessionStorage",
+					"indexedDB",
+					"IDBKeyRange",
+					"requestAnimationFrame",
+					"ResizeObserver",
+					"IntersectionObserver",
+					"MutationObserver",
+					"BroadcastChannel",
+					"EventSource",
+					"process",
+					"Buffer",
+					"__dirname",
+					"__filename",
+					"require"
+				],
+				"eslint/no-restricted-imports": [
+					"error",
+					{
+						"patterns": [
+							{
+								"group": ["idb", "react", "react-native"],
+								"message": "Runtime-specific dependency. Put it in src/browser or src/node behind a subpath export."
+							},
+							{
+								"group": ["**/browser/**", "**/node/**"],
+								"message": "Shared core must not import environment folders."
+							}
+						]
+					}
+				],
+				"import/no-nodejs-modules": "error"
+			}
+		},
+		{
+			"files": ["packages/core/src/browser/**/*.ts"],
+			"excludeFiles": ["**/*.spec.ts"],
+			"plugins": ["eslint", "typescript", "unicorn", "oxc", "import"],
+			"rules": {
+				"import/no-nodejs-modules": "error"
+			}
 		}
 	],
 	"rules": {

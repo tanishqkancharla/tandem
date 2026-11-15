@@ -46,7 +46,8 @@
 		"prepublishOnly": "pnpm run build",
 		"type-check": "tsc --noEmit && tsc -p tsconfig.browser.json --noEmit && tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.test.json --noEmit",
 		"format": "oxfmt \"src/**/*.ts\" \"test/**/*.ts\"",
-		"lint": "oxlint src --fix && tsc --noEmit && tsc -p tsconfig.browser.json --noEmit && tsc -p tsconfig.node.json --noEmit",
+		"lint": "oxlint src --fix && pnpm run check:globals && tsc --noEmit && tsc -p tsconfig.browser.json --noEmit && tsc -p tsconfig.node.json --noEmit",
+		"check:globals": "! grep -rn globalThis src --include='*.ts' --exclude='*.spec.ts' --exclude='*.types.ts' --exclude=platform.ts --exclude-dir=browser --exclude-dir=node || (echo 'Read runtime globals only in src/platform.ts.' >&2; exit 1)",
 		"test": "vitest run --config ../../vitest.config.js"
 	},
 	"dependencies": {
