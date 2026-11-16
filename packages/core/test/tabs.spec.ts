@@ -290,6 +290,36 @@ const tabsTest = test.extend<{
 })
 
 describe("TandemClient tabs", () => {
+	tabsTest("shares aggregate source records across tabs", async ({ tabs }) => {
+		const first = await tabs.open("tab1", { autoConnect: false })
+		const second = await tabs.open("tab2", { autoConnect: false })
+		await using gatekeeper = new Gatekeeper()
+			.add("client1", () => first.client)
+			.add("client2", () => second.client)
+			.build()
+		const { client1, client2 } = gatekeeper
+		const results: unknown[] = []
+		const subscription = client1.subscribe(
+			{
+				collection: "todos",
+				groupBy: ["done"],
+				aggregate: (rows) => ({
+					totalPriority: rows.reduce((sum, row) => sum + row.priority, 0),
+				}),
+			},
+			(result) => results.push(result),
+		)
+		const tx = client2.transact()
+		tx.set("todos", todo("shared", { priority: 5 }))
+		await (
+			await client2.commit(tx)
+		).result
+		await expect
+			.poll(() => results.at(-1))
+			.toEqual([{ done: false, totalPriority: 5 }])
+		subscription.destroy()
+	})
+
 	tabsTest(
 		"takeover cannot complete a saved commit before the replacement connects and pushes",
 		async ({ tabs, server }) => {
