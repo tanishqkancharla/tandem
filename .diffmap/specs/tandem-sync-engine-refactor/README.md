@@ -54,22 +54,31 @@ The pages explain the parts in order:
 
 Phases 1 to 3 stand on their own in today's single-process deployments: they fix duplicate mutations after a restart, delete the live payload code, and stop pending mutations from waiting for a poke. Phases 4 to 6 are the split itself. Phases 7 to 10 add modes and hosts, in any order.
 
-## Assumptions
+## Design questions to confirm
 
-These are design choices whose answers change the plan. Each is my recommendation, not a decision; the page that relies on it says so.
+Each answer below is my recommendation, not a decision, and each one changes the plan.
 
-| Question | Assumed answer | Main page |
-| --- | --- | --- |
-| Do pulls go through the sync engine? | No. Pushes and pulls go to the backend; the sync engine only pokes. Pulls record nothing about subscriptions in the database. | [Target architecture](02-target-architecture.md#why-the-backend-serves-pulls) |
-| How does the sync engine learn about changes? | The backend publishes the channels of the records each commit wrote; a database change feed is an optional second source. | [Library API](03-library-api.md) |
-| Where is subscription tracking? | Channels. The backend names a pull's channels and each commit's channels; the sync engine fans out by channel. | [Phase 5](10-channels.md) |
-| How do pulls stay small without in-memory views? | Stateless pulls start as resets; a view table keeps them small for apps that want it. | [Phase 6](11-stateless-pulls.md) |
-| fumadb or Kysely for metadata tables? | Kysely, which the SQL adapters already use. | [Database metadata](04-database-metadata.md#fumadb-or-kysely) |
-| Do pokes carry data? | No. Tanishq approved dropping poke payloads, live text appends, and revisions. | [Phase 2](07-remove-live-payloads.md) |
-| How do clients authenticate to the sync engine? | A short-lived token the backend signs, listing the client and its channels. | [Phase 7](12-standalone-sync-engine.md) |
-| What is the new connection-holding piece called? | `TandemSyncEngine`. The client's existing `SyncEngine` class becomes `TandemClientSync`. | [Phase 4](09-extract-sync-engine.md) |
-| What is the stateless piece called? | `TandemBackend`, chosen. `TandemServer` becomes the backend and sync engine bundled in one process. | [Naming](#naming-the-stateless-piece) |
-| How do concurrent stateless instances keep mutators serial? | A lock on the scope's row in `tandem_scopes` inside a database transaction where the database supports one; a single writer (Durable Object, Rivet actor, one Node process) where it does not. | [Blockers](05-engineering-blockers.md#1-mutators-stop-being-serial) |
+| # | Question | Recommendation | Main alternative | Page |
+| --- | --- | --- | --- | --- |
+| 1 | Should pokes use channels? | Yes. Two optional functions name a pull's channels and a written record's channels; with neither, a channel is a collection name, as today. | Keep collection-level pokes only. Multi-tenant apps then pull more often, and Phase 5 shrinks to the grant plumbing. | [Phase 5](10-channels.md) |
+| 2 | Who serves pulls? | The backend. Pulls record nothing about subscriptions in the database; the client joins the pull's channels on the sync engine. | The sync engine serves pulls, which needs the schema, permissions, and storage there, and rules out Ably and Pusher. | [Target architecture](02-target-architecture.md#why-the-backend-serves-pulls) |
+| 3 | How does the sync engine learn about commits? | The backend publishes each commit's channels; a Postgres change feed is an optional second source. | Change feed only, which catches writes made outside Tandem but needs Postgres. | [Library API](03-library-api.md) |
+| 4 | Is a lost publish acceptable? | Yes. A crash between commit and publish delays clients until their fallback pull (60 seconds by default). | A transactional outbox table, which adds a writer and a reader. | [Blockers](05-engineering-blockers.md#6-publishing-is-not-atomic-with-the-commit) |
+| 5 | How do concurrent backend instances keep mutators serial? | Lock the scope's row in `tandem_scopes` inside a database transaction; use a single writer (Durable Object, Rivet actor, one process) where the database has no interactive transactions. | Optimistic commit with retry, which also works on D1 but adds a version column and reruns mutators. | [Blockers](05-engineering-blockers.md#1-mutators-stop-being-serial) |
+| 6 | How do stateless pulls stay small? | Start with resets; an optional view table in the database keeps pulls incremental for apps that want it. | Require the view table from the start. | [Phase 6](11-stateless-pulls.md) |
+| 7 | How do clients authenticate to the sync engine? | A short-lived HMAC token the backend signs, listing the client and its channels, refreshed on each pull. | The sync engine calls the backend to check each connection. | [Phase 7](12-standalone-sync-engine.md) |
+| 8 | What closes the gap between a pull's read and joining its channels? | The client pulls once more whenever a grant adds channels. | The sync engine buffers publishes per channel for a short time and replays them on join. | [Phase 5](10-channels.md) |
+| 9 | Is one `TandemClient` per Durable Object room acceptable? | Yes. A page that shows two rooms opens two clients. | One client with several remotes, which needs a mutation sequence per remote. | [Adapters](15-first-class-adapters.md#one-object-per-room) |
+| 10 | Which Postgres change feed ships first? | Triggers with `NOTIFY`, which work on every host; logical replication later, for apps that need to resume after downtime. | Logical replication first. | [Phase 9](14-postgres-change-feed.md#two-ways-to-read-changes) |
+| 11 | What happens to `TandemServer.subscribe`? | Keep it on `TandemServer` only, documented as seeing only that process's commits. | Feed it from the sync engine or a change feed, so it works with several instances. | [Blockers](05-engineering-blockers.md#5-server-side-reactive-queries) |
+| 12 | fumadb or Kysely for the metadata tables? | Kysely, which the SQL adapters already use. | fumadb, which adds zod, commander, and clack at runtime. | [Database metadata](04-database-metadata.md#fumadb-or-kysely) |
+| 13 | What are the package and class names? | `tandem-backend` (`TandemBackend`), `tandem-sync` (`TandemSyncEngine`), and `tandem-server` (`TandemServer`, the bundle). The client's `SyncEngine` class becomes `TandemClientSync`. | Keep one server package with subpaths for the sync engine. | [Library API](03-library-api.md#packages) |
+
+Already decided by Tanishq:
+
+- Pokes carry no data. The plan removes poke payloads, live text appends, and revisions ([Phase 2](07-remove-live-payloads.md)).
+- The stateless piece is `TandemBackend` ([Naming](#naming-the-stateless-piece)).
+- `TandemServer` is a backend and a sync engine bundled in one process. Serverless apps use `TandemBackend` directly; Node servers, Durable Objects, and Rivet actors use `TandemServer`.
 
 ## Naming the stateless piece
 
