@@ -1,6 +1,6 @@
 # Phase 3: Pull after push
 
-[Phase 2](07-remove-live-payloads.md) left one rule in [[packages/server/src/TandemServer.ts#TandemServer.emitLivePokes]] that needs the server to know who is connected: poke the client that pushed, so it pulls its acknowledgement. A channel fan-out does not know who pushed, so this phase moves that rule to the client.
+[Phase 2](08-remove-live-payloads.md) left one rule in [[packages/server/src/TandemServer.ts#TandemServer.emitLivePokes]] that needs the server to know who is connected: poke the client that pushed, so it pulls its acknowledgement. A channel fan-out does not know who pushed, so this phase moves that rule to the client.
 
 **Today**
 

@@ -1,6 +1,6 @@
 # Phase 7: Run the sync engine as its own service
 
-[Phase 6](11-stateless-pulls.md) made the backend stateless and [Phase 5](10-channels.md) made channels the only contract with the sync engine. This phase wraps `TandemSyncEngine` in an HTTP service, so a serverless backend can publish to it and clients can connect to it: mode 2 in [Target architecture](02-target-architecture.md#mode-2-serverless-backend-with-an-external-sync-engine).
+[Phase 6](12-stateless-pulls.md) made the backend stateless and [Phase 5](11-channels.md) made channels the only contract with the sync engine. This phase wraps `TandemSyncEngine` in an HTTP service, so a serverless backend can publish to it and clients can connect to it: mode 2 in [Target architecture](02-target-architecture.md#mode-2-serverless-backend-with-an-external-sync-engine).
 
 **Today**
 

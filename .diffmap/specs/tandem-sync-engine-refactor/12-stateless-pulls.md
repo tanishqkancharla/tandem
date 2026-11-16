@@ -1,6 +1,6 @@
 # Phase 6: Run TandemBackend without state between requests
 
-[Phase 1](06-durable-client-acks.md) moved acknowledgements into the database, [Phase 2](07-remove-live-payloads.md) deleted revisions and live payloads, and [Phase 5](10-channels.md) moved subscriptions to the sync engine. Two things remain: each client's view, used for small pulls, and the run queue that keeps mutators serial. This phase replaces both, so any number of instances can serve one scope.
+[Phase 1](07-durable-client-acks.md) moved acknowledgements into the database, [Phase 2](08-remove-live-payloads.md) deleted revisions and live payloads, and [Phase 5](11-channels.md) moved subscriptions to the sync engine. Two things remain: each client's view, used for small pulls, and the run queue that keeps mutators serial. This phase replaces both, so any number of instances can serve one scope.
 
 **Today**
 

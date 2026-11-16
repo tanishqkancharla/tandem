@@ -1,6 +1,6 @@
 # Phase 2: Make pokes carry no data
 
-[Phase 1](06-durable-client-acks.md) made acknowledgements durable. This phase deletes the parts of the protocol that tie a client to one server process: poke payloads, live text appends, and revisions. After it, a poke only means "pull now", which is all a channel fan-out, Ably, or Pusher can carry cheaply.
+[Phase 1](07-durable-client-acks.md) made acknowledgements durable. This phase deletes the parts of the protocol that tie a client to one server process: poke payloads, live text appends, and revisions. After it, a poke only means "pull now", which is all a channel fan-out, Ably, or Pusher can carry cheaply.
 
 **Today**
 

@@ -1,6 +1,6 @@
 # Phase 4: Split TandemServer into TandemBackend and TandemSyncEngine
 
-[Phase 2](07-remove-live-payloads.md) made pokes carry no data and [Phase 3](08-pull-after-push.md) stopped poking the pusher. What is left of the server's live code is connections and per-collection filtering. This phase moves it into `TandemSyncEngine`, renames the rest `TandemBackend`, and keeps the name `TandemServer` for the two bundled in one process ([Target architecture](02-target-architecture.md#three-pieces-and-one-bundle)). The backend reaches the sync engine only through `TandemPublisher` ([Library API](03-library-api.md#server-side)). Behavior stays the same.
+[Phase 2](08-remove-live-payloads.md) made pokes carry no data and [Phase 3](09-pull-after-push.md) stopped poking the pusher. What is left of the server's live code is connections and per-collection filtering. This phase moves it into `TandemSyncEngine`, renames the rest `TandemBackend`, and keeps the name `TandemServer` for the two bundled in one process ([Target architecture](02-target-architecture.md#three-pieces-and-one-bundle)). The backend reaches the sync engine only through `TandemPublisher` ([Library API](03-library-api.md#server-side)). Behavior stays the same.
 
 **Today**
 
@@ -60,7 +60,7 @@ class TandemSyncEngine implements TandemPublisher {
 }
 ```
 
-In this phase the backend still sets channels itself, since pulls do not yet return grants: after each pull, the backend calls `engine.setChannels(clientId, collections read)`, as `readPull` stores `dependencies` today. [Phase 5](10-channels.md) moves that to the client.
+In this phase the backend still sets channels itself, since pulls do not yet return grants: after each pull, the backend calls `engine.setChannels(clientId, collections read)`, as `readPull` stores `dependencies` today. [Phase 5](11-channels.md) moves that to the client.
 
 The event stream moves to the new `@tanishqkancharla/tandem-sync` package. `TandemBackend` does not implement `RemoteApi.connect`; the storage `subscribe` hook publishes every collection instead of poking every client.
 

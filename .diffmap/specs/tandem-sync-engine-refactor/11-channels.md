@@ -1,6 +1,6 @@
 # Phase 5: Channels in pull responses and publishes
 
-[Phase 4](09-extract-sync-engine.md) made the sync engine a separate object, but the backend still tells it which client reads what. This phase makes channels the whole contract: the backend names a pull's channels in its response, the client joins them, and each commit names the channels it wrote. After this, a sync engine needs nothing from the backend except publishes.
+[Phase 4](10-extract-sync-engine.md) made the sync engine a separate object, but the backend still tells it which client reads what. This phase makes channels the whole contract: the backend names a pull's channels in its response, the client joins them, and each commit names the channels it wrote. After this, a sync engine needs nothing from the backend except publishes.
 
 **Today**
 

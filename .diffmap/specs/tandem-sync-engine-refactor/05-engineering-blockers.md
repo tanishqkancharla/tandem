@@ -24,7 +24,7 @@ Options:
 2. **Optimistic commit with retry.** Read a per-scope version at the start, run the mutator, and commit a batch that bumps the version. A trigger aborts the batch when the version moved on, and the server reruns the mutator. Works on D1 and other batch-only SQLite hosts, at the cost of a version column in `tandem_scopes`. Mutators must stay free of side effects outside `afterCommit`, which they already are.
 3. **Single writer.** Keep one process per scope: a Durable Object, a Rivet actor, or one Node server. This is mode 1 and needs nothing new.
 
-Recommendation: 1 for Postgres and MySQL, 3 for D1, and 2 only if D1 users ask for stateless servers. [Phase 6](11-stateless-pulls.md) adds the transaction method and drops the queue where storage supports it.
+Recommendation: 1 for Postgres and MySQL, 3 for D1, and 2 only if D1 users ask for stateless servers. [Phase 6](12-stateless-pulls.md) adds the transaction method and drops the queue where storage supports it.
 
 ## 2. SQL pulls read whole tables
 
@@ -32,11 +32,11 @@ Recommendation: 1 for Postgres and MySQL, 3 for D1, and 2 only if D1 users ask f
 
 ## 3. Streamed text gets coarser
 
-Pokes carry no data after [Phase 2](07-remove-live-payloads.md), so streamed agent text shows once per pull instead of between pulls, and each pull resends the whole message. This is a cost, not a blocker: viewers pull back to back while text streams, so it still reads as streaming. Field-level diffs in pull patches would remove the extra bytes later.
+Pokes carry no data after [Phase 2](08-remove-live-payloads.md), so streamed agent text shows once per pull instead of between pulls, and each pull resends the whole message. This is a cost, not a blocker: viewers pull back to back while text streams, so it still reads as streaming. Field-level diffs in pull patches would remove the extra bytes later.
 
 ## 4. The pusher depends on a poke
 
-Only a pull removes acknowledged mutations from the outbox, so the server pokes the pusher after each push ([[packages/server/src/TandemServer.ts#TandemServer.emitLivePokes]]), and the Cloudflare remote pokes itself too ([[examples/cloudflare/apps/server/src/remote.ts#createRemote]]). A sync engine fed by channels does not know who pushed. [Phase 3](08-pull-after-push.md) makes the client pull after its own successful push.
+Only a pull removes acknowledged mutations from the outbox, so the server pokes the pusher after each push ([[packages/server/src/TandemServer.ts#TandemServer.emitLivePokes]]), and the Cloudflare remote pokes itself too ([[examples/cloudflare/apps/server/src/remote.ts#createRemote]]). A sync engine fed by channels does not know who pushed. [Phase 3](09-pull-after-push.md) makes the client pull after its own successful push.
 
 ## 5. Server-side reactive queries
 
@@ -48,7 +48,7 @@ If the server crashes after the commit and before the publish, no one is poked. 
 
 ## 7. Long connections on serverless and Durable Objects
 
-Vercel and Lambda functions cap request duration, so they cannot hold event streams; that is why mode 2 exists. A Durable Object holding SSE streams stays awake and billed; hibernatable WebSockets let it sleep between messages. [Phase 10](15-first-class-adapters.md) adds a WebSocket transport for that reason.
+Vercel and Lambda functions cap request duration, so they cannot hold event streams; that is why mode 2 exists. A Durable Object holding SSE streams stays awake and billed; hibernatable WebSockets let it sleep between messages. [Phase 10](16-first-class-adapters.md) adds a WebSocket transport for that reason.
 
 ## 8. Authenticating to the sync engine
 
@@ -64,4 +64,4 @@ A custom `record` channel function needs the record's value, but a remove carrie
 
 ## 11. Naming
 
-Core's client loop is already `SyncEngine` ([[packages/core/src/sync/SyncEngine.ts#SyncEngine]]), and the docs call it "the sync engine". [Phase 4](09-extract-sync-engine.md) renames it `TandemClientSync`, so "sync engine" means only the new piece.
+Core's client loop is already `SyncEngine` ([[packages/core/src/sync/SyncEngine.ts#SyncEngine]]), and the docs call it "the sync engine". [Phase 4](10-extract-sync-engine.md) renames it `TandemClientSync`, so "sync engine" means only the new piece.

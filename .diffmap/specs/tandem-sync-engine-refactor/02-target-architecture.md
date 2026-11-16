@@ -26,7 +26,7 @@ server.backend // the TandemBackend inside
 server.engine // the TandemSyncEngine inside, which event stream routes connect to
 ```
 
-A **channel** is a string naming a set of records that change together, such as `todos` or `room:42`. The backend names the channels a pull read and the channels a commit wrote; the sync engine pokes every connection in a written channel. [Phase 5](10-channels.md) defines channels in full.
+A **channel** is a string naming a set of records that change together, such as `todos` or `room:42`. The backend names the channels a pull read and the channels a commit wrote; the sync engine pokes every connection in a written channel. [Phase 5](11-channels.md) defines channels in full.
 
 The sync engine never needs the database. If it restarts, clients reconnect, receive `ready`, and pull, which is how a dropped event stream recovers today.
 
@@ -36,7 +36,7 @@ The sync engine never needs the database. If it restarts, clients reconnect, rec
 2. The backend checks each mutation ID against `tandem_clients` and skips duplicates. It then runs `authorize` and the mutator, and commits the records and the new `lastMutationId` in one transaction.
 3. The backend maps the records the commit wrote or removed to channels, and publishes them. With a change feed, the sync engine maps the changed rows itself, using the same channel function.
 4. The sync engine looks up the connections in those channels and pokes each one. That is a set lookup per channel.
-5. The client that pushed pulls right away, without waiting for a poke ([Phase 3](08-pull-after-push.md)). Every other poked client pulls.
+5. The client that pushed pulls right away, without waiting for a poke ([Phase 3](09-pull-after-push.md)). Every other poked client pulls.
 
 The sync engine never sees mutations, only the channels of the records they changed. A mutation is a mutator name and its arguments: what it writes depends on app code and on the database, so only the backend knows the writes, and only after running it.
 
@@ -45,7 +45,7 @@ The sync engine never sees mutations, only the channels of the records they chan
 ## Pull, and where it goes
 
 1. The client pulls from the backend with its cookie and scan window.
-2. The backend checks the window against the caller's read access, reads the records and `lastMutationId`, and diffs them against the client's stored view, if the app keeps views ([Phase 6](11-stateless-pulls.md)).
+2. The backend checks the window against the caller's read access, reads the records and `lastMutationId`, and diffs them against the client's stored view, if the app keeps views ([Phase 6](12-stateless-pulls.md)).
 3. It returns the patch, the acknowledgement, and a **grant**: the window's channels, signed.
 4. The client hands the grant to its live connection, which joins those channels.
 5. If the grant added channels, the client pulls once more.
@@ -129,7 +129,7 @@ None of these blocks the design. Points 1 and 2 belong in the Durable Object gui
 
 ### Mode 2: serverless backend with an external sync engine
 
-The backend runs per request on Vercel, Netlify, or Lambda. After each commit it publishes over HTTP to a sync engine that holds the connections: Tandem's Node service ([Phase 7](12-standalone-sync-engine.md)), a Durable Object, or a Rivet actor.
+The backend runs per request on Vercel, Netlify, or Lambda. After each commit it publishes over HTTP to a sync engine that holds the connections: Tandem's Node service ([Phase 7](13-standalone-sync-engine.md)), a Durable Object, or a Rivet actor.
 
 ```mermaid [Mode 2: serverless backend, separate sync engine]
 flowchart LR
@@ -141,7 +141,7 @@ flowchart LR
 
 ### Mode 3: database change feed
 
-A sync engine reads the database's change feed, so any write, including a background job or a manual SQL fix, pokes clients. The backend may still publish, which pokes clients sooner for its own writes. Postgres supports this through logical replication or triggers with `LISTEN`/`NOTIFY` ([Phase 9](14-postgres-change-feed.md)). D1 has no change feed; MySQL has a binlog, which is out of scope for now.
+A sync engine reads the database's change feed, so any write, including a background job or a manual SQL fix, pokes clients. The backend may still publish, which pokes clients sooner for its own writes. Postgres supports this through logical replication or triggers with `LISTEN`/`NOTIFY` ([Phase 9](15-postgres-change-feed.md)). D1 has no change feed; MySQL has a binlog, which is out of scope for now.
 
 ```mermaid [Mode 3: change feed]
 flowchart LR
@@ -154,7 +154,7 @@ flowchart LR
 
 ### Mode 4: a hosted service (Ably, Pusher)
 
-The backend publishes to Ably or Pusher channels through their REST APIs, and clients subscribe with their SDKs. The app runs no long-lived process at all. Vercel recommends this for realtime on its platform. Because pokes carry no data, message size limits never matter, and each commit costs one small message per subscriber ([Phase 8](13-hosted-pub-sub.md)).
+The backend publishes to Ably or Pusher channels through their REST APIs, and clients subscribe with their SDKs. The app runs no long-lived process at all. Vercel recommends this for realtime on its platform. Because pokes carry no data, message size limits never matter, and each commit costs one small message per subscriber ([Phase 8](14-hosted-pub-sub.md)).
 
 ```mermaid [Mode 4: hosted pub/sub]
 flowchart LR
@@ -188,4 +188,4 @@ The alternative is pulls through the sync engine, which would then track subscri
 - **The sync engine stays free of the database.** It can restart, scale, or be a hosted service without database credentials or connection pools.
 - **Subscriptions need no database writes.** Recording each client's window in the database on every pull would add a write per pull and leave stale rows for clients that went away. The grant carries the channels to the sync engine through the client instead.
 
-The cost is that a stateless backend must compute diffs without memory, which [Phase 6](11-stateless-pulls.md) handles, and that pokes are as coarse as channels. A sync engine that also reads the database can be added later behind the same client contract.
+The cost is that a stateless backend must compute diffs without memory, which [Phase 6](12-stateless-pulls.md) handles, and that pokes are as coarse as channels. A sync engine that also reads the database can be added later behind the same client contract.

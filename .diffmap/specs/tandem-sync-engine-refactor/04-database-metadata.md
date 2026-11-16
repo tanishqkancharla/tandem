@@ -45,7 +45,7 @@ What each replaces today:
 
 Nothing stores subscriptions or connections: channels are recomputed on each pull and held by the sync engine only in memory.
 
-Application tables stay as they are. The SQL adapter maps collections onto existing tables ([[packages/server/src/storage/TandemServerSqlStorage.ts#TandemSqlTable]]) and this plan keeps that: no version columns or tombstones in app tables. The change feed in [Phase 9](14-postgres-change-feed.md) is the one opt-in exception, because trigger-based feeds need triggers on app tables.
+Application tables stay as they are. The SQL adapter maps collections onto existing tables ([[packages/server/src/storage/TandemServerSqlStorage.ts#TandemSqlTable]]) and this plan keeps that: no version columns or tombstones in app tables. The change feed in [Phase 9](15-postgres-change-feed.md) is the one opt-in exception, because trigger-based feeds need triggers on app tables.
 
 ## Cost and retention
 
@@ -82,4 +82,4 @@ With four small tables, fumadb's breadth does not pay for its runtime weight and
 
 ## Where it lands
 
-Three phases add these tables: [Phase 1](06-durable-client-acks.md) adds `tandem_clients`, and [Phase 6](11-stateless-pulls.md) adds `tandem_scopes` and `tandem_client_views`. [Phase 9](14-postgres-change-feed.md) adds `tandem_feed_positions` to the sync engine's database connection.
+Three phases add these tables: [Phase 1](07-durable-client-acks.md) adds `tandem_clients`, and [Phase 6](12-stateless-pulls.md) adds `tandem_scopes` and `tandem_client_views`. [Phase 9](15-postgres-change-feed.md) adds `tandem_feed_positions` to the sync engine's database connection.

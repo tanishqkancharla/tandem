@@ -31,7 +31,7 @@ flowchart LR
 
 ## Server side
 
-`TandemBackend` takes today's server arguments plus four optional ones. Without them it is a backend with no sync engine: clients see changes on their own pushes and fallback pulls. `TandemServer` takes the same arguments minus `publisher`, and wires in its own `TandemSyncEngine` ([Phase 4](09-extract-sync-engine.md)).
+`TandemBackend` takes today's server arguments plus four optional ones. Without them it is a backend with no sync engine: clients see changes on their own pushes and fallback pulls. `TandemServer` takes the same arguments minus `publisher`, and wires in its own `TandemSyncEngine` ([Phase 4](10-extract-sync-engine.md)).
 
 ```ts
 export type TandemBackendArgs<Schema, Relations, Mutators, RequestContext> = {
@@ -54,7 +54,7 @@ export type TandemBackendArgs<Schema, Relations, Mutators, RequestContext> = {
 // [!note live] Phase 7 (a shared secret) and Phase 8 (Ably and Pusher tokens).
 ```
 
-A publish names only channels. Pokes carry no data ([Phase 2](07-remove-live-payloads.md)), so the contract needs no schema:
+A publish names only channels. Pokes carry no data ([Phase 2](08-remove-live-payloads.md)), so the contract needs no schema:
 
 ```ts
 export type TandemCommitEvent = {
@@ -125,7 +125,7 @@ export type TandemSyncConnection = {
 }
 ```
 
-[[packages/server/src/TandemEventStream.ts#createTandemEventStreamResponse]] then takes a `TandemSyncConnection` source instead of a `RemoteApi`. A WebSocket response gets the same treatment, which Durable Objects need for hibernation ([Phase 10](15-first-class-adapters.md)).
+[[packages/server/src/TandemEventStream.ts#createTandemEventStreamResponse]] then takes a `TandemSyncConnection` source instead of a `RemoteApi`. A WebSocket response gets the same treatment, which Durable Objects need for hibernation ([Phase 10](16-first-class-adapters.md)).
 
 A change feed is a publisher source:
 
@@ -162,7 +162,7 @@ const remote = createTandemRemote({
 })
 ```
 
-`createTandemRemote` implements `RemoteApi`. `connect` opens the live transport. `pull` forwards the response's `live` grant to the open connection when it changes. A successful `push` pulls at once, which [Phase 3](08-pull-after-push.md) moves into the client so no sync engine has to poke the pusher.
+`createTandemRemote` implements `RemoteApi`. `connect` opens the live transport. `pull` forwards the response's `live` grant to the open connection when it changes. A successful `push` pulls at once, which [Phase 3](09-pull-after-push.md) moves into the client so no sync engine has to poke the pusher.
 
 ```callstack [createTandemRemote.pull]
 +response = remote.pull({ clientId, cookie, scanWindow })
@@ -185,6 +185,6 @@ const remote = createTandemRemote({
 | `@tanishqkancharla/tandem-sync/node` | Standalone sync engine HTTP server | Node |
 | `@tanishqkancharla/tandem-sync/postgres` | Postgres change source | Node |
 | `.../ably`, `.../pusher` | Publishers (backend) and live transports (client) | Any runtime |
-| `.../cloudflare`, `.../next`, `.../rivet` | Adapters from [Phase 10](15-first-class-adapters.md) | Their hosts |
+| `.../cloudflare`, `.../next`, `.../rivet` | Adapters from [Phase 10](16-first-class-adapters.md) | Their hosts |
 
 Each package matches a class. A separate `tandem-sync` package keeps the sync engine free of storage code, since it can deploy apart from the backend; `tandem-server` depends on both. The hosted-service adapters can start as subpaths and move to their own packages if their SDKs weigh on installs; they would be optional peer dependencies.

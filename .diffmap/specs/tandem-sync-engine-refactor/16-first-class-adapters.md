@@ -1,6 +1,6 @@
 # Phase 10: Adapters for Durable Objects, Next.js, and Rivet
 
-Phases [4](09-extract-sync-engine.md) to [8](13-hosted-pub-sub.md) built the pieces: a stateless backend, an in-process or standalone sync engine, and hosted pub/sub. This phase packages them for three hosts, so an app on each writes a few lines instead of the request parsing and routing every example copies today. Each adapter could be its own commit; they share this page because they share the shape.
+Phases [4](10-extract-sync-engine.md) to [8](14-hosted-pub-sub.md) built the pieces: a stateless backend, an in-process or standalone sync engine, and hosted pub/sub. This phase packages them for three hosts, so an app on each writes a few lines instead of the request parsing and routing every example copies today. Each adapter could be its own commit; they share this page because they share the shape.
 
 **Today**
 
@@ -22,7 +22,7 @@ Each host gets one server-side helper and one client-side transport. The request
 
 A Durable Object is a single writer with its own SQLite, so it runs mode 1: one object per data scope holds a `TandemServer`, a backend and sync engine together. The adapter adds two things the example lacks:
 
-- **Durable Object SQLite storage.** `ctx.storage.sql` with `transactionSync` gives the interactive transactions from [Phase 6](11-stateless-pulls.md) inside the object, without D1's batch-only limit.
+- **Durable Object SQLite storage.** `ctx.storage.sql` with `transactionSync` gives the interactive transactions from [Phase 6](12-stateless-pulls.md) inside the object, without D1's batch-only limit.
 - **Hibernatable WebSockets.** SSE keeps the object awake; `ctx.acceptWebSocket` lets it sleep between messages. Each socket stores its client ID and channels with `serializeAttachment`, so a publish after waking finds them. Tags fix at accept time, so channels live in the attachment, not in tags.
 
 ```ts
@@ -54,7 +54,7 @@ const client = new TandemClient({ schema, remote: createTandemRemote({ schema, u
 
 ### Sync engine only
 
-A Durable Object can also serve as the sync engine for a backend elsewhere (mode 2): `createTandemSyncEngineObject()` exposes the [Phase 7](12-standalone-sync-engine.md) routes from an object.
+A Durable Object can also serve as the sync engine for a backend elsewhere (mode 2): `createTandemSyncEngineObject()` exposes the [Phase 7](13-standalone-sync-engine.md) routes from an object.
 
 ## Next.js
 

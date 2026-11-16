@@ -1,6 +1,6 @@
 # Phase 8: Ably and Pusher as sync engines
 
-[Phase 7](12-standalone-sync-engine.md) gave apps a sync engine they deploy themselves. This phase lets apps skip that service and use a hosted pub/sub service instead, which is mode 4 in [Target architecture](02-target-architecture.md#mode-4-a-hosted-service-ably-pusher). The [Library API](03-library-api.md#two-seams) seams carry it: a `TandemPublisher` on the backend and a `TandemLiveTransport` on the client.
+[Phase 7](13-standalone-sync-engine.md) gave apps a sync engine they deploy themselves. This phase lets apps skip that service and use a hosted pub/sub service instead, which is mode 4 in [Target architecture](02-target-architecture.md#mode-4-a-hosted-service-ably-pusher). The [Library API](03-library-api.md#two-seams) seams carry it: a `TandemPublisher` on the backend and a `TandemLiveTransport` on the client.
 
 **Today**
 

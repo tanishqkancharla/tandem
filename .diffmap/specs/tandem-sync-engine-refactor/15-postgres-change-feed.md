@@ -1,6 +1,6 @@
 # Phase 9: Feed the sync engine from Postgres
 
-Phases [7](12-standalone-sync-engine.md) and [8](13-hosted-pub-sub.md) poke clients only for writes that go through `TandemBackend`. This phase adds a `TandemChangeSource` for Postgres ([Library API](03-library-api.md#sync-engine)), so the sync engine pokes clients for any write to a mapped table: mode 3 in [Target architecture](02-target-architecture.md#mode-3-database-change-feed).
+Phases [7](13-standalone-sync-engine.md) and [8](14-hosted-pub-sub.md) poke clients only for writes that go through `TandemBackend`. This phase adds a `TandemChangeSource` for Postgres ([Library API](03-library-api.md#sync-engine)), so the sync engine pokes clients for any write to a mapped table: mode 3 in [Target architecture](02-target-architecture.md#mode-3-database-change-feed).
 
 **Today**
 
