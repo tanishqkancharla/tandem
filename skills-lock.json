@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "skills": {
+    "generate-product-doc": {
+      "source": "tanishqkancharla/diffmap",
+      "commit": "6efed1abf7d9eb849c8ccf3cef8a7bd055d0c94d",
+      "sourceType": "github",
+      "skillPath": "skills/generate-product-doc/SKILL.md",
+      "computedHash": "4e621df2f4724a79ad629320ac670d20bb77dad35ddc5ad5f063e0c3b7a56498"
+    }
+  }
+}
