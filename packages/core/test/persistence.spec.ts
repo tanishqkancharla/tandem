@@ -25,47 +25,13 @@ import {
 	type DemoRng,
 	type TestsSchema,
 } from "./fixtures.js"
-
-class EventStart {
-	constructor(readonly iso: string) {}
-}
-
-type TestsEvent = {
-	id: string
-	title: string
-	startAt: EventStart
-}
-
-type TestsEventStorageValue = {
-	id: string
-	title: string
-	startAt: string
-}
-
-type TestsEventSchema = {
-	events: TestsEvent
-}
-
-const eventCodec = partialObject({
-	id: string,
-	title: string,
-	startAt: codec<EventStart, string>(
-		"EventStart",
-		(input) => (input as EventStart).iso,
-		(input) => new EventStart(input as string),
-	),
-})
-
-const testsEventRuntimeSchema = defineSchema({
-	events: collection<TestsEvent, TestsEventStorageValue>({
-		fields: ["id", "title", "startAt"],
-		codec: eventCodec,
-	}),
-})
-
-function buildClientGatekeeper<Client extends object>(client: Client) {
-	return new Gatekeeper().add("client", () => client).build()
-}
+import {
+	buildClientGatekeeper,
+	EventStart,
+	eventCodec,
+	testsEventRuntimeSchema,
+	type TestsEventSchema,
+} from "./testsEvents.js"
 
 function createPersistentSyncGatekeeper({
 	server,
@@ -996,168 +962,6 @@ describe("TandemClient persistence", () => {
 		},
 	)
 
-	test("round-trips replica metadata, sparse bases, and ordered outbox operations alongside codec-backed records", async ({
-		makeStorage,
-		rng,
-		logger,
-	}) => {
-		const dbName = rng.next("replica-tuples")
-		const storage = makeStorage<TestsEventSchema>({
-			dbName,
-			schema: testsEventRuntimeSchema,
-		})
-		const event = {
-			id: "event-1",
-			title: "Confirmed",
-			startAt: new EventStart("2026-05-04T12:00:00.000Z"),
-		}
-		const edited = {
-			...event,
-			title: "Pending",
-			startAt: new EventStart("2026-05-05T16:30:00.000Z"),
-		}
-		const mutationId = tag<MutationId>(8)
-		const tuples: TandemClientTuple<TestsEventSchema>[] = [
-			// The saved record is the base with the pending operations applied.
-			{ key: ["record", "events", event.id], value: edited },
-			{
-				key: ["base", "events", event.id],
-				value: {
-					server: { type: "set", value: event },
-					lastWrittenBy: mutationId,
-				},
-			},
-			{
-				key: ["base", "events", "event-2"],
-				value: { server: { type: "remove" }, lastWrittenBy: mutationId },
-			},
-			{
-				key: ["replica"],
-				value: {
-					clientId: tag<ClientId>("client-a"),
-					lastIssuedMutationId: mutationId,
-					cookie: tag<Cookie>("view-b"),
-				},
-			},
-			{
-				key: ["outbox", mutationId],
-				value: [
-					{ type: "remove", collection: "events", id: "event-2" },
-					{ type: "set", collection: "events", value: edited },
-					{
-						type: "update",
-						collection: "events",
-						id: event.id,
-						payload: { startAt: edited.startAt },
-					},
-				],
-			},
-		]
-		await storage.commit({ set: tuples })
-		await storage.close()
-
-		// A new adapter restores class instances in bases and outbox operations, and explicit absence.
-		const reopened = makeStorage<TestsEventSchema>({
-			dbName,
-			schema: testsEventRuntimeSchema,
-		})
-		const restored = await reopened.scan()
-		expect(restored).toHaveLength(5)
-		expect(restored).toEqual(expect.arrayContaining(tuples))
-		const outbox = restored.find((tuple) => tuple.key[0] === "outbox")
-		assert(outbox && Array.isArray(outbox.value))
-		const set = outbox.value[1]
-		assert(set?.type === "set")
-		expect(set.value.startAt).toBeInstanceOf(EventStart)
-		const update = outbox.value[2]
-		assert(update?.type === "update")
-		expect(update.payload).toEqual({ startAt: edited.startAt })
-		expect(update.payload.startAt).toBeInstanceOf(EventStart)
-		const base = restored.find(
-			(tuple) => tuple.key[0] === "base" && tuple.key[2] === event.id,
-		)
-		assert(base && "server" in base.value && base.value.server.type === "set")
-		expect(base.value.server.value.startAt).toBeInstanceOf(EventStart)
-
-		// Hydration exposes only record tuples to application queries.
-		await using harness = buildClientGatekeeper(
-			new TandemClient<TestsEventSchema>({
-				schema: testsEventRuntimeSchema,
-				clientStorage: reopened,
-				logger,
-				autoConnect: false,
-			}),
-		)
-		await harness.client.ready
-		expect(harness.client.query({ collection: "events" })).toEqual([edited])
-
-		// Removing an outbox entry leaves records, bases, and metadata untouched.
-		await reopened.commit({ remove: [["outbox", mutationId]] })
-		expect(await reopened.scan()).toEqual(
-			expect.arrayContaining(
-				tuples.filter((tuple) => tuple.key[0] !== "outbox"),
-			),
-		)
-		expect(await reopened.scan()).toHaveLength(4)
-	})
-
-	test.for(["set", "update"] as const)(
-		"does not persist a batch prefix when an outbox %s codec fails",
-		async (type, { makeStorage, rng }) => {
-			const storage = makeStorage<TestsEventSchema>({
-				dbName: rng.next("failed-outbox-codec"),
-				codecs: {
-					events: partialObject({
-						id: string,
-						title: string,
-						startAt: codec<EventStart, string>(
-							"reject",
-							() => {
-								throw new Error("Cannot encode event")
-							},
-							(value) => new EventStart(value as string),
-						),
-					}),
-				},
-			})
-			await expect(
-				storage.commit({
-					set: [
-						{
-							key: ["replica"],
-							value: {
-								clientId: tag<ClientId>("client-a"),
-								lastIssuedMutationId: tag<MutationId>(1),
-							},
-						},
-						{
-							key: ["outbox", tag<MutationId>(1)],
-							value: [
-								type === "set"
-									? {
-											type,
-											collection: "events",
-											value: {
-												id: "event-1",
-												title: "Rejected",
-												startAt: new EventStart("2026-05-04"),
-											},
-										}
-									: {
-											type,
-											collection: "events",
-											id: "event-1",
-											payload: { startAt: new EventStart("2026-05-04") },
-										},
-							],
-						},
-					],
-				}),
-			).rejects.toThrow("Cannot encode event")
-			expect(await storage.scan()).toEqual([])
-		},
-	)
-
 	test("replays restored field updates over a new base before delivering their runtime payloads", async ({
 		makeStorage,
 		makeRemote,
@@ -1423,7 +1227,7 @@ describe("TandemClient persistence", () => {
 		expect(persistedEvents[0]?.startAt).toBeInstanceOf(EventStart)
 	})
 
-	test("keeps explicit IndexedDB codec support without a runtime schema", async ({
+	test("keeps explicit storage codec support without a runtime schema", async ({
 		logger,
 		makeStorage,
 		rng,

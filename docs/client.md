@@ -46,10 +46,10 @@ Use `client.transact()` and `client.commit(tx)` for raw transactions, or registe
 
 ## Persistence
 
-By default, the local database lives in memory. To retain records and pending writes across restarts, supply IndexedDB storage. It lives in its own entry point, `@tanishqkancharla/tandem-core/indexeddb`, so code that runs outside a browser does not load it:
+By default, the local database lives in memory. To retain records and pending writes across restarts, supply IndexedDB storage. It lives in its own entry point, `@tanishqkancharla/tandem-core/idb`, so code that runs outside a browser does not load it:
 
 ```ts
-import { TandemClientIndexedDbStorage } from "@tanishqkancharla/tandem-core/indexeddb"
+import { TandemClientIndexedDbStorage } from "@tanishqkancharla/tandem-core/idb"
 import { schema, type AppSchema } from "./schema"
 
 const client = new TandemClient({
@@ -61,6 +61,21 @@ const client = new TandemClient({
 	}),
 })
 await client.ready
+```
+
+Outside a browser, `TandemClientMemoryStorage` from the main entry keeps the same tuples in memory. It suits tests, server rendering, and short-lived clients. Storages created with the same `name` share data for the life of the process, so a client recreated with that name restores its records and pending writes. Memory storage never turns on tab coordination:
+
+```ts
+import { TandemClientMemoryStorage } from "@tanishqkancharla/tandem-core"
+
+const client = new TandemClient({
+	schema,
+	remote,
+	clientStorage: new TandemClientMemoryStorage<AppSchema>({
+		name: "tasks",
+		schema,
+	}),
+})
 ```
 
 `flushClientStorage()` writes pending local persistence immediately; it does not wait for server acknowledgement. Scope the database name to the authenticated user and data scope. Updating code does not migrate cached records or pending writes; see [Schema changes and client compatibility](migrations.md).

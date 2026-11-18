@@ -7,14 +7,16 @@ import {
 	getSchemaCodecs,
 	type CollectionCodecs,
 } from "../schema/collectionCodecs.js"
+import {
+	transformClientTupleValue,
+	type AnyStorageSchema,
+} from "../clientStorage/clientTupleValues.js"
 import type {
-	TandemClientBase,
 	TandemClientStorageApi,
 	TandemClientTuple,
-} from "./TandemClientStorage.js"
-import type { MutationOp } from "../transaction/Transaction.js"
+} from "../clientStorage/TandemClientStorage.js"
 import { codec, type Codec, type PartialObjectCodec } from "../utils/Codec.js"
-import { unreachable, type Json } from "../utils/typeUtils.js"
+import type { Json } from "../utils/typeUtils.js"
 
 const version = 1
 
@@ -25,10 +27,6 @@ interface TandemIndexedDbSchema extends DBSchema {
 		key: string
 		value: unknown
 	}
-}
-
-export type AnyStorageSchema<Schema extends AnySchema> = {
-	[K in keyof Schema]?: Json
 }
 
 export type TandemClientIndexedDbStorageArgs<
@@ -45,73 +43,13 @@ export type TandemClientIndexedDbStorageArgs<
 function createTupleCodec<Schema extends AnySchema>(
 	codecs: Record<string, Codec<unknown, unknown> | undefined>,
 ): Codec<TandemClientTuple<Schema>, { key: string; value: unknown }> {
-	function transformValue(
-		tuple: TandemClientTuple<Schema>,
-		direction: "encode" | "decode",
-	): unknown {
-		switch (tuple.key[0]) {
-			case "record": {
-				const valueCodec = codecs?.[tuple.key[1]]
-				return valueCodec ? valueCodec[direction](tuple.value) : tuple.value
-			}
-			case "base": {
-				const base = tuple.value as TandemClientBase<Schema[keyof Schema]>
-				switch (base.server.type) {
-					case "set": {
-						const valueCodec = codecs[tuple.key[1]]
-						return valueCodec
-							? {
-									...base,
-									server: {
-										type: "set",
-										value: valueCodec[direction](base.server.value),
-									},
-								}
-							: base
-					}
-					case "remove":
-						return base
-					default:
-						return unreachable(base.server)
-				}
-			}
-			case "replica":
-			case "mutator":
-			case "session":
-			case "tab-write":
-				return tuple.value
-			case "outbox":
-				return (tuple.value as MutationOp<Schema>[]).map((op) => {
-					switch (op.type) {
-						case "set": {
-							const valueCodec = codecs?.[op.collection]
-							return valueCodec
-								? { ...op, value: valueCodec[direction](op.value) }
-								: op
-						}
-						case "update": {
-							const valueCodec = codecs?.[op.collection]
-							return valueCodec
-								? { ...op, payload: valueCodec[direction](op.payload) }
-								: op
-						}
-						case "remove":
-							return op
-						default:
-							return unreachable(op)
-					}
-				})
-			default:
-				return unreachable(tuple.key)
-		}
-	}
 	return codec(
 		"TandemClientTuple",
 		(input) => {
 			const tuple = input as TandemClientTuple<Schema>
 			return {
 				key: encodeTuple(tuple.key),
-				value: transformValue(tuple, "encode"),
+				value: transformClientTupleValue(codecs, tuple, "encode"),
 			}
 		},
 		(input) => {
@@ -122,7 +60,7 @@ function createTupleCodec<Schema extends AnySchema>(
 			} as TandemClientTuple<Schema>
 			return {
 				key: tuple.key,
-				value: transformValue(tuple, "decode"),
+				value: transformClientTupleValue(codecs, tuple, "decode"),
 			} as TandemClientTuple<Schema>
 		},
 	)

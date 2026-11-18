@@ -49,7 +49,7 @@ export type CollectionDefinition<
 	readonly kind: "collection"
 	readonly name?: string
 	readonly codec?: CollectionCodec
-	readonly shape?: globalThis.Record<string, AnyRuntimeFieldDefinition>
+	readonly shape?: Record<string, AnyRuntimeFieldDefinition>
 	readonly fields?: readonly (keyof CollectionRecord & string)[]
 	readonly [collectionRecord]?: CollectionRecord
 }

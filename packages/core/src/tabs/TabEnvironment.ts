@@ -27,27 +27,6 @@ export function tabLifetimeLock(name: string, tabId: string): string {
 	return `tandem:${name}:tab:${tabId}`
 }
 
-type BrowserGlobals = {
-	document?: unknown
-	navigator?: { locks?: TabLocksApi }
-	BroadcastChannel?: new (name: string) => TabChannelApi
-}
-
-/**
- * Web Locks and BroadcastChannel in a browser document, or undefined elsewhere.
- * Node also has both APIs, but its processes do not share IndexedDB.
- */
-export function browserTabEnvironment(): TabEnvironmentApi | undefined {
-	const globals = globalThis as BrowserGlobals
-	const locks = globals.navigator?.locks
-	const Channel = globals.BroadcastChannel
-	if (!globals.document || !locks || !Channel) return undefined
-	return {
-		locks: { request: (name, callback) => locks.request(name, callback) },
-		openChannel: (name) => new Channel(name),
-	}
-}
-
 type InMemoryLock = {
 	holder?: InMemoryTab
 	waiting: { tab: InMemoryTab; grant: () => void }[]

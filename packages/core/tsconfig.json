@@ -4,10 +4,11 @@
 		"outDir": "./dist",
 		"rootDir": "./src",
 		"composite": true,
-		// Core runs in browsers, Node, and other runtimes, so it gets no DOM types.
-		// tsconfig.indexeddb.json builds the browser-only IndexedDB entry.
+		// Shared core runs in every JavaScript runtime, so it sees only ECMAScript
+		// and the globals in src/globals.d.ts. src/browser and src/node build
+		// through tsconfig.browser.json and tsconfig.node.json.
 		"lib": ["ESNext", "ESNext.Disposable"],
-		"types": ["node"]
+		"types": []
 	},
 	"include": ["src/**/*.ts"],
 	"exclude": [
@@ -15,6 +16,7 @@
 		"node_modules",
 		"src/**/*.spec.ts",
 		"src/**/*.types.ts",
-		"src/clientStorage/TandemClientIndexedDbStorage.ts"
+		"src/browser/**",
+		"src/node/**"
 	]
 }

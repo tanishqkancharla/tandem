@@ -1,4 +1,5 @@
 import * as errore from "errore"
+import { globalEventSource } from "../platform.js"
 import type { AnySchema, RuntimeSchemaDefinition } from "../schema/Schema.js"
 import type { AsyncUnsubscribe } from "../utils/typeUtils.js"
 import { type ClientApi, PokeApi, type PokePayload } from "./SyncEngine.js"
@@ -32,7 +33,7 @@ export type TandemEventSourceArgs<
 	/**
 	 * Opens the stream. Pass one, such as `EventSource` from the `eventsource`
 	 * package, where the runtime has no global `EventSource`.
-	 * @default globalThis.EventSource
+	 * @default the global `EventSource`
 	 */
 	EventSource?: TandemEventSourceConstructor<Init>
 	/** Options for the `EventSource` constructor, such as `withCredentials`. */
@@ -87,9 +88,7 @@ export function connectTandemEventSource<
 	schema,
 	pullInterval = 60_000,
 	reconnectDelay = 5_000,
-	EventSource = (
-		globalThis as { EventSource?: TandemEventSourceConstructor<Init> }
-	).EventSource,
+	EventSource = globalEventSource<Init>(),
 	eventSourceInit,
 }: TandemEventSourceArgs<Schema, Init>): AsyncUnsubscribe {
 	if (!EventSource) throw new MissingEventSourceError()

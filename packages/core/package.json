@@ -16,13 +16,13 @@
 			"import": "./dist/internal.js",
 			"default": "./dist/internal.js"
 		},
-		"./indexeddb": {
-			"types": "./dist/clientStorage/TandemClientIndexedDbStorage.d.ts",
-			"import": "./dist/clientStorage/TandemClientIndexedDbStorage.js"
+		"./idb": {
+			"types": "./dist/browser/TandemClientIndexedDbStorage.d.ts",
+			"import": "./dist/browser/TandemClientIndexedDbStorage.js"
 		},
 		"./node": {
-			"types": "./dist/utils/Logger.node.d.ts",
-			"import": "./dist/utils/Logger.node.js"
+			"types": "./dist/node/JsonlLoggerSink.d.ts",
+			"import": "./dist/node/JsonlLoggerSink.js"
 		}
 	},
 	"publishConfig": {
@@ -42,11 +42,12 @@
 		"!dist/**/*.map"
 	],
 	"scripts": {
-		"build": "rm -rf dist tsconfig.tsbuildinfo && tsc && tsc -p tsconfig.indexeddb.json",
+		"build": "rm -rf dist tsconfig.tsbuildinfo && tsc && tsc -p tsconfig.browser.json && tsc -p tsconfig.node.json",
 		"prepublishOnly": "pnpm run build",
-		"type-check": "tsc --noEmit && tsc -p tsconfig.indexeddb.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+		"type-check": "tsc --noEmit && tsc -p tsconfig.browser.json --noEmit && tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.test.json --noEmit",
 		"format": "oxfmt \"src/**/*.ts\" \"test/**/*.ts\"",
-		"lint": "oxlint src --fix && tsc --noEmit && tsc -p tsconfig.indexeddb.json --noEmit",
+		"lint": "oxlint src --fix && pnpm run check:globals && tsc --noEmit && tsc -p tsconfig.browser.json --noEmit && tsc -p tsconfig.node.json --noEmit",
+		"check:globals": "! grep -rn globalThis src --include='*.ts' --exclude='*.spec.ts' --exclude='*.types.ts' --exclude=platform.ts --exclude-dir=browser --exclude-dir=node || (echo 'Read runtime globals only in src/platform.ts.' >&2; exit 1)",
 		"test": "vitest run --config ../../vitest.config.js"
 	},
 	"dependencies": {
@@ -58,8 +59,10 @@
 	},
 	"devDependencies": {
 		"@tanishqkancharla/gatekeeper": "workspace:*",
+		"esbuild": "^0.28.2",
 		"extendable-expect": "^1.0.5",
 		"fake-indexeddb": "^6.2.5",
+		"miniflare": "^4.20260730.0",
 		"typescript": "^7.0.2",
 		"vitest": "^5.0.3"
 	}

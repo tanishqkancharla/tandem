@@ -43,7 +43,7 @@ Field builders are `t.id()`, `t.string()`, `t.number()`, and `t.boolean()`. To u
 ```ts
 // client/db.ts
 import { TandemClient } from "@tanishqkancharla/tandem-core"
-import { TandemClientIndexedDbStorage } from "@tanishqkancharla/tandem-core/indexeddb"
+import { TandemClientIndexedDbStorage } from "@tanishqkancharla/tandem-core/idb"
 import { schema, type TodoSchema } from "../shared/schema"
 import { todoRemote } from "./remote"
 

@@ -1,5 +1,3 @@
-import "fake-indexeddb/auto"
-
 import { Gatekeeper } from "@tanishqkancharla/gatekeeper"
 import {
 	type AnyRelations,
@@ -15,9 +13,9 @@ import {
 	type RuntimeSchemaDefinition,
 	t,
 	TandemClient,
+	TandemClientMemoryStorage,
 	type TimerApi,
 } from "@tanishqkancharla/tandem-core"
-import { TandemClientIndexedDbStorage } from "@tanishqkancharla/tandem-core/indexeddb"
 import {
 	TandemServer,
 	type TandemServerStorageApi,
@@ -147,7 +145,7 @@ export type MakeRemote = {
 export type MakeStorage = {
 	<Schema extends AnySchema = TestsSchema>(
 		options?: MakeStorageOptions<Schema>,
-	): TandemClientIndexedDbStorage<Schema>
+	): TandemClientMemoryStorage<Schema>
 }
 
 // A real transport creates a fresh async context when it delivers a poke. The
@@ -299,34 +297,24 @@ export const test = base.extend<Fixtures>({
 	},
 
 	makeStorage: async ({ rng }, use) => {
-		const storages: {
-			dbName: string
-			storage: TandemClientIndexedDbStorage<any>
-		}[] = []
+		const storages: TandemClientMemoryStorage<any>[] = []
 
 		const makeStorage = <Schema extends AnySchema = TestsSchema>(
 			options: MakeStorageOptions<Schema> = {},
 		) => {
-			const dbName = options.dbName ?? rng.next("storage")
-			const storage = new TandemClientIndexedDbStorage<Schema>({
-				dbName,
+			const storage = new TandemClientMemoryStorage<Schema>({
+				name: options.dbName ?? rng.next("storage"),
 				schema: options.schema,
 				codecs: options.codecs,
 			})
-			storages.push({ dbName, storage })
+			storages.push(storage)
 			return storage
 		}
 
 		await use(makeStorage as MakeStorage)
 
-		for (const { storage } of storages) {
-			await storage.close()
-		}
-
-		for (const dbName of new Set(storages.map(({ dbName }) => dbName))) {
-			const storage = new TandemClientIndexedDbStorage<any>({ dbName })
+		for (const storage of storages) {
 			await storage.clear()
-			await storage.close()
 		}
 	},
 

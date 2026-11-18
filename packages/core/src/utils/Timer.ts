@@ -1,3 +1,5 @@
+import { visibilityDocument } from "../platform.js"
+
 export type TimerApi = {
 	waitForNextTick: () => Promise<void>
 }
@@ -30,12 +32,6 @@ function nextTask(): Promise<void> {
 	})
 }
 
-type VisibilityDocument = {
-	visibilityState: string
-	addEventListener(type: "visibilitychange", listener: () => void): void
-	removeEventListener(type: "visibilitychange", listener: () => void): void
-}
-
 /**
  * Waits `interval` ms while the page is visible. In a hidden page, or once the
  * page hides, waits only for the next task instead of a throttled timer.
@@ -48,7 +44,7 @@ export class VisibilityAwareTimer implements TimerApi {
 	}
 
 	waitForNextTick(): Promise<void> {
-		const document = (globalThis as { document?: VisibilityDocument }).document
+		const document = visibilityDocument()
 		if (document?.visibilityState === "hidden") return nextTask()
 		return new Promise((resolve) => {
 			const done = () => {

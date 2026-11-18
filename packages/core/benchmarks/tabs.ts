@@ -14,7 +14,7 @@ import { performance } from "node:perf_hooks"
 import { InMemoryTupleStorage } from "tuple-database"
 import { TandemClient } from "../src/TandemClient.js"
 import { collection, defineSchema, t } from "../src/index.js"
-import { TandemClientIndexedDbStorage } from "../src/clientStorage/TandemClientIndexedDbStorage.js"
+import { TandemClientIndexedDbStorage } from "../src/browser/TandemClientIndexedDbStorage.js"
 import {
 	InMemoryTabs,
 	type InMemoryTab,

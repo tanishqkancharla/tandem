@@ -35,9 +35,9 @@ Pass a `remote` to sync with a server built on [`@tanishqkancharla/tandem-server
 
 Two entry points hold code for one runtime, so the main entry runs anywhere:
 
-| Entry                                     | Holds                                                    |
-| ----------------------------------------- | -------------------------------------------------------- |
-| `@tanishqkancharla/tandem-core/indexeddb` | `TandemClientIndexedDbStorage`, browser IndexedDB storage |
-| `@tanishqkancharla/tandem-core/node`      | `JsonlLoggerSink`, a Node file logger                    |
+| Entry                                | Holds                                                     |
+| ------------------------------------ | --------------------------------------------------------- |
+| `@tanishqkancharla/tandem-core/idb`  | `TandemClientIndexedDbStorage`, browser IndexedDB storage |
+| `@tanishqkancharla/tandem-core/node` | `JsonlLoggerSink`, a Node file logger                     |
 
 Read the [documentation](https://docs.tandemsync.dev), starting with the [Quickstart](https://docs.tandemsync.dev/quickstart).

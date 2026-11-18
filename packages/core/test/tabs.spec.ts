@@ -11,9 +11,9 @@ import {
 	type RuntimeSchemaDefinition,
 	TandemClient,
 	type TandemClientArgs,
+	type TandemClientMemoryStorage,
 	type TandemClientStorageApi,
 } from "@tanishqkancharla/tandem-core"
-import { TandemClientIndexedDbStorage } from "@tanishqkancharla/tandem-core/indexeddb"
 import {
 	InMemoryTabs,
 	type InMemoryTab,
@@ -57,7 +57,7 @@ function createTabs<Schema extends AnySchema>({
 	makeStorage: (options: {
 		dbName: string
 		schema?: RuntimeSchemaDefinition<Schema>
-	}) => TandemClientIndexedDbStorage<Schema>
+	}) => TandemClientMemoryStorage<Schema>
 	logger: TandemClientArgs<Schema, {}>["logger"]
 	rng: { create(prefix: string): { randomId(): string } }
 }) {
@@ -114,7 +114,7 @@ function createTabs<Schema extends AnySchema>({
 		let alive = true
 		const storage = makeStorage({ dbName, schema })
 		const tabStorage: TandemClientStorageApi<Schema> = {
-			name: storage.name,
+			name: dbName,
 			get codecs() {
 				return storage.codecs
 			},

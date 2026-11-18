@@ -11,14 +11,15 @@
 		"paths": {
 			"@tanishqkancharla/tandem-core": ["./src/index.ts"],
 			"@tanishqkancharla/tandem-core/internal": ["./src/internal.ts"],
-			"@tanishqkancharla/tandem-core/indexeddb": [
-				"./src/clientStorage/TandemClientIndexedDbStorage.ts"
+			"@tanishqkancharla/tandem-core/idb": [
+				"./src/browser/TandemClientIndexedDbStorage.ts"
 			],
 			"@tanishqkancharla/tandem-server": ["../server/src/index.ts"],
 			"@tanishqkancharla/gatekeeper": ["../gatekeeper/src/Gatekeeper.ts"]
 		}
 	},
 	"include": ["src/**/*.ts", "test/**/*.ts", "benchmarks/**/*.ts"],
+	"exclude": ["src/globals.d.ts"],
 	"references": [
 		{
 			"path": "../server"
